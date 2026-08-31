@@ -29,7 +29,7 @@ import { rollback } from "../lib/index-builder";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
-import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer } from "../lib/plugin-fetch";
+import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
@@ -720,6 +720,7 @@ const appRoutes = {
           facetRows: store.facetCacheCount(),
           facetImages: store.facetImageCount(),
           facetRowsPruned,
+          timings: { providers: facets.timingReport(), outbound: outboundTimings().report() },
           runtime: {
             uptimeSeconds: Math.round(rt.uptimeSeconds),
             rss: rt.rss,

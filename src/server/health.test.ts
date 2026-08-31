@@ -31,6 +31,16 @@ function deps(onCoverage: () => void): HealthDeps {
     facetRows: 4321,
     facetImages: 87,
     facetRowsPruned: 12,
+    timings: {
+      providers: { "servarr-metadata|cast": { n: 9, totalMs: 3100, maxMs: 800, p50Ms: 330, p95Ms: 780 } },
+      outbound: {
+        "api.themoviedb.org": {
+          host: { n: 9, totalMs: 2900, maxMs: 700, p50Ms: 310, p95Ms: 690 },
+          waitGateMs: 0,
+          waitPaceMs: 1250,
+        },
+      },
+    },
     runtime: {
       uptimeSeconds: 62,
       rss: 168_394_752,

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { BulkheadRejectedError } from "cockatiel";
 import { loadConfig } from "./config";
-import { FacetResolver } from "./facet-resolver";
+import { FacetResolver, SLOW_PROVIDER_MS } from "./facet-resolver";
 import type { FacetEntity } from "./facets";
 import type { FacetProvider, LoadedPlugin, PluginMeta } from "./plugins";
 import { DEFAULT_CONFIG_VERSION, PluginRegistry } from "./plugins";
@@ -704,5 +705,61 @@ describe("naming the plugin that failed, and why", () => {
 
     await resolver.resolve(INCEPTION, { deadlineMs: 300 });
     expect(resolver.workState(INCEPTION)).toMatchObject({ working: 0, facets: [], problems: [] });
+  });
+});
+
+/**
+ * Which plugin is slow was, until this landed, a question you answered by writing a
+ * throwaway harness. Twice.
+ */
+describe("timing report", () => {
+  test("names the pluginId|facet pair and records what the call took", async () => {
+    const resolver = resolverFor(
+      registryOf({ id: "slowly", facet: "ratings", run: ratingProvider("x", 40) }),
+    );
+    await resolver.resolve(INCEPTION, { deadlineMs: 500 });
+
+    const report = resolver.timingReport();
+    expect(Object.keys(report)).toEqual(["slowly|ratings"]);
+    expect(report["slowly|ratings"]?.n).toBe(1);
+    expect(report["slowly|ratings"]?.maxMs).toBeGreaterThanOrEqual(35);
+  });
+
+  test("a provider slower than the threshold is named in the log", async () => {
+    // The threshold is injected via the clock rather than by actually waiting three
+    // seconds: `callProvider` measures with `this.now`, so a fake one proves the branch.
+    let now = 0;
+    const resolver = new FacetResolver({
+      store,
+      registry: registryOf({
+        id: "glacial",
+        facet: "ratings",
+        run: async () => {
+          now += SLOW_PROVIDER_MS + 1;
+          return { data: [{ source: "x", kind: "critics", value: 1, outOf: 100 }] } as never;
+        },
+      }),
+      log: (m) => logs.push(m),
+      now: () => now,
+    });
+
+    await resolver.resolve(INCEPTION, { deadlineMs: 50 });
+    expect(logs.some((l) => l.includes("glacial") && l.includes("took"))).toBe(true);
+  });
+
+  test("a gate refusal is NOT counted, because we never asked", async () => {
+    // A refusal returns in about no time; counting it would drag the provider's own
+    // distribution down and make a slow plugin read as a fast one.
+    const resolver = resolverFor(
+      registryOf({
+        id: "refused",
+        facet: "ratings",
+        run: () => Promise.reject(new BulkheadRejectedError(1, 0)),
+      }),
+    );
+
+    await resolver.resolve(INCEPTION, { deadlineMs: 200 });
+    expect(resolver.refusedCount()).toBe(1);
+    expect(resolver.timingReport()).toEqual({});
   });
 });

@@ -112,34 +112,30 @@ function PersonAwardsSummary({ awards }: { awards: PersonAwards | null }) {
             key={`${e.ceremony}-${e.category}-${e.films.map((f) => f.tconst ?? f.title).join("|")}`}
             won={e.won}
             detail={e.detail}
-            subject={
-              <>
-                {e.films.map((f, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: source order, never reordered
-                  <span key={`${f.tconst ?? f.title}-${i}`}>
-                    {i > 0 && " · "}
-                    {/*
-                      No `titles` map on this payload, so a film links on having an id
-                      rather than on our holding a row. The person page already accepts
-                      that trade for its own credits -- a 404 on a click is a worse
-                      outcome than plain text, but a far better one than a wrong page,
-                      and the id came from the source rather than from a name match.
-                    */}
-                    {f.tconst ? (
-                      <Link
-                        to="/title/$tconst"
-                        params={{ tconst: f.tconst }}
-                        className="underline-offset-2 hover:text-accent hover:underline"
-                      >
-                        {f.title}
-                      </Link>
-                    ) : (
-                      f.title
-                    )}
-                  </span>
-                ))}
-              </>
-            }
+            subject={e.films.map((f, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: source order, never reordered
+              <span key={`${f.tconst ?? f.title}-${i}`}>
+                {i > 0 && " · "}
+                {/*
+                  No `titles` map on this payload, so a film links on having an id
+                  rather than on our holding a row. The person page already accepts
+                  that trade for its own credits -- a 404 on a click is a worse
+                  outcome than plain text, but a far better one than a wrong page,
+                  and the id came from the source rather than from a name match.
+                */}
+                {f.tconst ? (
+                  <Link
+                    to="/title/$tconst"
+                    params={{ tconst: f.tconst }}
+                    className="underline-offset-2 hover:text-accent hover:underline"
+                  >
+                    {f.title}
+                  </Link>
+                ) : (
+                  f.title
+                )}
+              </span>
+            ))}
             credit={
               <Link
                 to="/awards/oscars/$ceremony"

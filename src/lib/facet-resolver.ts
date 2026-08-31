@@ -39,6 +39,7 @@ import {
 } from "./facets";
 import type { PluginRegistry, RegisteredProvider } from "./plugins";
 import type { FacetContributionRow, FacetOutcome } from "./store";
+import { type SamplerReport, Timings } from "./timings";
 
 /**
  * Four states, not two. A pane renders a skeleton for `pending`, hides for `empty`, and
@@ -131,6 +132,16 @@ const EMPTY_IMMUTABLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export const WARM_PAUSE_MS = 750;
 
+/**
+ * A provider slower than this is named in the log, once per call.
+ *
+ * Above the whole cold-title budget rather than near it: a title fills in around a second,
+ * so a threshold of a second would print a line for every ordinary first view and the log
+ * would say nothing. This is set where "something is wrong with this provider" starts,
+ * which is a call that has taken longer than a reader will wait for the page.
+ */
+export const SLOW_PROVIDER_MS = 3_000;
+
 export interface FacetResolverDeps {
   store: FacetCache;
   registry: PluginRegistry;
@@ -162,6 +173,15 @@ export class FacetResolver {
   private readonly hardTimeoutMs: number;
   /** Calls the outbound gate turned away. The only outcome that writes nothing. */
   private refused = 0;
+  /**
+   * How long each provider takes, keyed `pluginId|facet`.
+   *
+   * Keyed by the PAIR, not by the plugin: `servarr-metadata` serves thirteen facets from
+   * one document, so its thirteen providers settle together and a per-plugin number would
+   * be thirteen copies of the same measurement. The pair is also what the log line and the
+   * cache row already name, so nothing new has to be correlated by hand.
+   */
+  private readonly timings = new Timings();
 
   constructor(deps: FacetResolverDeps) {
     this.store = deps.store;
@@ -360,6 +380,7 @@ export class FacetResolver {
   private async callProvider(provider: RegisteredProvider, entity: FacetEntity): Promise<void> {
     const { facet, pluginId } = provider;
     const startedAt = this.now();
+    let refused = false;
     try {
       const answer = await this.deadline.execute((ctx) => provider.run(entity, ctx.signal));
 
@@ -410,6 +431,7 @@ export class FacetResolver {
       */
       if (isBulkheadRejectedError(err)) {
         this.refused++;
+        refused = true;
         this.log(`refused '${facet}' for ${entity.tconst} -- outbound gate full, will retry`);
         return;
       }
@@ -417,7 +439,32 @@ export class FacetResolver {
       const why = cancelled ? `gave up after ${this.hardTimeoutMs}ms` : (err as Error).message;
       this.log(`plugin ${pluginId}: '${facet}' failed for ${entity.tconst} -- ${why}`);
       this.write(entity, provider, "failed", null, DEFAULT_FRESHNESS, cancelled ? "timeout" : "error");
+    } finally {
+      /*
+        EVERY exit is timed EXCEPT the gate refusal, for the same reason it writes no row:
+        we never asked. A refusal returns in about no time at all, so counting it would pull
+        the provider's distribution down -- a busy minute would make a slow plugin look fast,
+        which is the one direction a latency report must never be wrong in.
+      */
+      if (!refused) {
+        const elapsed = this.now() - startedAt;
+        this.timings.add(`${pluginId}|${facet}`, elapsed);
+        if (elapsed >= SLOW_PROVIDER_MS) {
+          this.log(`plugin ${pluginId}: '${facet}' took ${Math.round(elapsed)}ms for ${entity.tconst}`);
+        }
+      }
     }
+  }
+
+  /**
+   * How long each `pluginId|facet` has been taking, worst total first.
+   *
+   * Reported beside the outbound per-host figures on `/api/health`: this is what a title
+   * WAITED, the other is where that wait went. A provider slow while its host is fast is
+   * doing several serial calls, which is the shape worth catching.
+   */
+  timingReport(): Record<string, SamplerReport> {
+    return this.timings.report();
   }
 
   /** Provider calls the outbound gate turned away since boot. The only silent outcome. */

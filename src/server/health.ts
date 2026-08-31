@@ -122,6 +122,16 @@ export interface HealthDeps {
    * no read path can reach.
    */
   facetRowsPruned: number;
+  /**
+   * Where a cold title's second actually goes: what each provider took, and what each
+   * upstream host took underneath it.
+   *
+   * A plain value rather than a thunk, unlike `coverage`: both sides are in-memory tallies
+   * over a bounded window, so reading them asks nobody anything and costs a sort of at most
+   * a few hundred numbers. The rule this endpoint already states -- asking a question must
+   * not do the work -- is what separates the two.
+   */
+  timings: { providers: Record<string, unknown>; outbound: Record<string, unknown> };
   runtime: HealthRuntime;
   /**
    * The expensive one. A THUNK, not a value: it runs every shelf query plus a facet
@@ -179,6 +189,7 @@ export function healthPayload(
       rows: deps.facetRows,
       images: deps.facetImages,
       pruned: deps.facetRowsPruned,
+      timing: deps.timings,
       ...(opts.coverage ? { coverage: deps.coverage() } : {}),
     },
   };

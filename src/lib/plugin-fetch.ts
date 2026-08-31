@@ -19,6 +19,7 @@
  */
 
 import { type BulkheadPolicy, bulkhead } from "cockatiel";
+import { type SamplerReport, Timings } from "./timings";
 
 /**
  * What a plugin gets instead of the global `fetch`.
@@ -154,6 +155,56 @@ function sharedOutboundGate(): BulkheadPolicy {
   return processGate;
 }
 
+/**
+ * Where an outbound call's time actually went, per host.
+ *
+ * THREE NUMBERS, NOT ONE, and the split is the whole reason this exists. "TMDB took 900 ms"
+ * is not a finding: it can mean the host was slow, or that we held the call behind five
+ * others, or that `HostPacer` was spacing us at 250 ms and this was the third call in a
+ * burst. Those have three different fixes -- ask them less, raise the ceiling, stop making
+ * three serial calls -- and a single total cannot tell them apart.
+ *
+ *   - `waitGate` is OUR ceiling. Non-zero means we are the bottleneck.
+ *   - `waitPace` is OUR courtesy. Non-zero means one title is making several calls to one
+ *     host and paying 250 ms between each; collapsing them into one call is the fix.
+ *   - `host` is THEIR latency, and the only part no amount of local cleverness improves.
+ */
+export class OutboundTimings {
+  private readonly gate = new Timings();
+  private readonly pace = new Timings();
+  private readonly host = new Timings();
+
+  record(hostname: string, sample: { waitGateMs: number; waitPaceMs: number; hostMs: number }): void {
+    this.gate.add(hostname, sample.waitGateMs);
+    this.pace.add(hostname, sample.waitPaceMs);
+    this.host.add(hostname, sample.hostMs);
+  }
+
+  /** Per host: what the far end cost, and what we cost ourselves waiting to ask it. */
+  report(): Record<string, { host: SamplerReport; waitGateMs: number; waitPaceMs: number }> {
+    const out: Record<string, { host: SamplerReport; waitGateMs: number; waitPaceMs: number }> = {};
+    for (const [hostname, host] of Object.entries(this.host.report())) {
+      out[hostname] = {
+        host,
+        waitGateMs: this.gate.get(hostname)?.report().totalMs ?? 0,
+        waitPaceMs: this.pace.get(hostname)?.report().totalMs ?? 0,
+      };
+    }
+    return out;
+  }
+}
+
+/**
+ * Process-wide, for the same reason the gate is: the interesting question is what THIS
+ * finderr is spending on each host, across every plugin that talks to it. A per-plugin
+ * tally would hide the case where two addons are queueing behind each other.
+ */
+let processTimings: OutboundTimings | undefined;
+export function outboundTimings(): OutboundTimings {
+  processTimings ??= new OutboundTimings();
+  return processTimings;
+}
+
 export interface PluginFetchOptions {
   pluginId: string;
   /** Exactly the hosts this plugin declared. Anything else is refused. */
@@ -169,6 +220,8 @@ export interface PluginFetchOptions {
    * arranging 70 concurrent calls.
    */
   gate?: BulkheadPolicy;
+  /** Where per-host latency is recorded. Omitted, the process-wide one is used. */
+  timings?: OutboundTimings;
 }
 
 /**
@@ -183,6 +236,7 @@ export function createPluginFetch(opts: PluginFetchOptions): PluginFetch {
   const allowed = new Set(opts.hosts.map((h) => h.toLowerCase()));
   const doFetch = opts.fetchImpl ?? fetch;
   const outbound = opts.gate ?? sharedOutboundGate();
+  const timings = opts.timings ?? outboundTimings();
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -232,9 +286,31 @@ export function createPluginFetch(opts: PluginFetchOptions): PluginFetch {
       outbound work in progress, and holding a slot while it happens is backpressure rather
       than waste: it is what stops a slow host quietly authorising unbounded new work.
     */
+    /*
+      The three marks below are placed so each interval measures ONE wait, which is what
+      makes the split readable: `askedAt` before the gate, `admittedAt` the moment a slot
+      was granted, `pacedAt` the moment the host's turn came round. A single `startedAt` at
+      the top and a duration at the bottom would total the same milliseconds and answer
+      none of the three questions.
+    */
+    const hostname = target.hostname.toLowerCase();
+    const askedAt = performance.now();
     return outbound.execute(async () => {
-      await opts.pacer.take(target.hostname.toLowerCase());
-      return doFetch(target, { ...init, headers, signal });
+      const admittedAt = performance.now();
+      await opts.pacer.take(hostname);
+      const pacedAt = performance.now();
+      try {
+        return await doFetch(target, { ...init, headers, signal });
+      } finally {
+        // In `finally` so a refused, aborted or failed call still records what it cost --
+        // a host that times out at 15 s is exactly the one worth seeing in the report, and
+        // recording only successes would hide it.
+        timings.record(hostname, {
+          waitGateMs: admittedAt - askedAt,
+          waitPaceMs: pacedAt - admittedAt,
+          hostMs: performance.now() - pacedAt,
+        });
+      }
     });
   };
 }

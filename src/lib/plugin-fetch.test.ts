@@ -4,6 +4,7 @@ import {
   createPluginFetch,
   HostPacer,
   OutboundHostError,
+  OutboundTimings,
   PLUGIN_USER_AGENT,
   type PluginFetch,
 } from "./plugin-fetch";
@@ -155,6 +156,69 @@ describe("HostPacer", () => {
     await one("https://a.example/x");
     await two("https://a.example/y");
     expect(slept).toEqual([250]);
+  });
+});
+
+/**
+ * The split is the reason this is recorded at all: "TMDB took 900 ms" cannot tell a slow
+ * host from our own pacer spacing three serial calls, and those have different fixes.
+ *
+ * Real sleeps rather than the fake clock above, deliberately -- the instrumentation reads
+ * `performance.now()`, so a fake clock would measure a pacer wait as zero and the test
+ * would pass while proving nothing.
+ */
+describe("OutboundTimings", () => {
+  const GAP_MS = 60;
+
+  function timedFetchFor(timings: OutboundTimings, pacer: HostPacer, impl: PluginFetch) {
+    return createPluginFetch({
+      pluginId: "test-plugin",
+      hosts: ["a.example"],
+      pacer,
+      fetchImpl: impl,
+      timings,
+    });
+  }
+
+  test("the pacer's spacing is reported as OUR wait, not as the host being slow", async () => {
+    const timings = new OutboundTimings();
+    const { impl } = recordingFetch();
+    const f = timedFetchFor(timings, new HostPacer(GAP_MS), impl);
+
+    await f("https://a.example/x");
+    await f("https://a.example/y");
+
+    const report = timings.report()["a.example"];
+    expect(report?.host.n).toBe(2);
+    expect(report?.waitPaceMs).toBeGreaterThanOrEqual(GAP_MS - 5);
+    // An instant fake fetch: whatever the pacer cost, none of it is the host's.
+    expect(report?.host.totalMs).toBeLessThan(GAP_MS);
+  });
+
+  test("a call that THROWS is still recorded -- a dead host is the one worth seeing", async () => {
+    const timings = new OutboundTimings();
+    const failing: PluginFetch = () => Promise.reject(new Error("connection reset"));
+    const f = timedFetchFor(timings, new HostPacer(0), failing);
+
+    await expect(f("https://a.example/x")).rejects.toThrow("connection reset");
+    expect(timings.report()["a.example"]?.host.n).toBe(1);
+  });
+
+  test("a refused host never reaches the gate, so it is not in the report", async () => {
+    // The check happens before `outbound.execute`, on purpose: a refusal is cheap and must
+    // not consume a slot. It is therefore not an outbound call and does not appear here.
+    const timings = new OutboundTimings();
+    const { impl } = recordingFetch();
+    const f = createPluginFetch({
+      pluginId: "test-plugin",
+      hosts: ["a.example"],
+      pacer: new HostPacer(0),
+      fetchImpl: impl,
+      timings,
+    });
+
+    await expect(f("https://evil.example/steal")).rejects.toBeInstanceOf(OutboundHostError);
+    expect(timings.report()).toEqual({});
   });
 });
 
