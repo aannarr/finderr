@@ -1,0 +1,2410 @@
+{
+ "results": [
+  {
+   "hits": [
+    {
+     "emsId": "afbf1c81-1bfe-3996-9cbc-2e1be23d1f61",
+     "rtId": 770805418,
+     "type": "movie",
+     "title": "Inception",
+     "titles": [
+      "Inception"
+     ],
+     "aka": [
+      "A Origem",
+      "Baslangiç",
+      "El Origen",
+      "El origen",
+      "Origen",
+      "Origine",
+      "Orixe",
+      "Pocetak"
+     ],
+     "vanity": "inception",
+     "releaseYear": 2010,
+     "rottenTomatoes": {
+      "audienceScore": 91,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 169839,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 86,
+      "newAdjustedTMScore": 980278
+     },
+     "objectID": "83154e17-511c-30a7-9ca6-3f0776bb5c1c",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Inception</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "A Origem",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Baslangiç",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Origen",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El origen",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Origen",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Origine",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Orixe",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Pocetak",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "<em>inception</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Action",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Warner Bros.",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Leonardo DiCaprio",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Joseph Gordon-Levitt",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Elliot Page",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Tom Hardy",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ken Watanabe",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Christopher Nolan",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "15798a72-a3aa-342f-bc53-56401b2bf6ea",
+     "rtId": 900028863,
+     "type": "movie",
+     "title": "Inception: The Cobol Job",
+     "titles": [
+      "Inception: The Cobol Job",
+      "Inception"
+     ],
+     "vanity": "inception_the_cobol_job",
+     "releaseYear": 2010,
+     "rottenTomatoes": {
+      "audienceScore": 74,
+      "wantToSeeCount": 12,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE"
+     },
+     "objectID": "a21200cb-5fd4-3644-8eea-aec70b5dcdbc",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Inception</em>: The Cobol Job",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "<em>inception</em>_the_cobol_job",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Action",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Animation",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Leonardo DiCaprio",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Joseph Gordon-Levitt",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Lukas Haas",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Ian Kirby",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "774dd822-8d9f-3291-9a63-99de9012d385",
+     "rtId": 771320964,
+     "type": "movie",
+     "title": "Spinning Plates",
+     "titles": [
+      "Spinning Plates",
+      "Spinning"
+     ],
+     "vanity": "spinning_plates",
+     "releaseYear": 2012,
+     "rottenTomatoes": {
+      "audienceScore": 84,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 634,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 86
+     },
+     "objectID": "f5850d3d-4a80-3165-84af-3a88c9ebd029",
+     "_highlightResult": {
+      "title": {
+       "value": "Spinning Plates",
+       "matchLevel": "none",
+       "matchedWords": []
+      },
+      "vanity": {
+       "value": "spinning_plates",
+       "matchLevel": "none",
+       "matchedWords": []
+      },
+      "genres": [
+       {
+        "value": "Documentary",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "<em>Inception</em> Media Group",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "The Film Arcade",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Grant Achatz",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Thomas Keller",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Joseph Levy",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "1ef785e8-7a1c-33ae-98c0-3be6d55e36bc",
+     "rtId": 771318627,
+     "type": "movie",
+     "title": "Back From Hell",
+     "titles": [
+      "Back From Hell",
+      "Back From"
+     ],
+     "aka": [
+      "Ex Inferis"
+     ],
+     "vanity": "ex_inferis",
+     "releaseYear": 2011,
+     "rottenTomatoes": {
+      "audienceScore": 4,
+      "wantToSeeCount": 2,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE"
+     },
+     "objectID": "b7d0294d-39a5-30c9-bdaf-cc915e7c680c",
+     "_highlightResult": {
+      "title": {
+       "value": "Back From Hell",
+       "matchLevel": "none",
+       "matchedWords": []
+      },
+      "aka": [
+       {
+        "value": "Ex Inferis",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "ex_inferis",
+       "matchLevel": "none",
+       "matchedWords": []
+      },
+      "genres": [
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "<em>Inception</em> Media Group",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Giovanni Guidelli",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Marco Quaglia",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Roberto Zibetti",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Aran Bertetto",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jennifer Mischiati",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Leonardo Araneo",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "74bdb8ab-58e4-3fe6-80f4-77680bd0edb5",
+     "rtId": 16563,
+     "type": "movie",
+     "title": "Cruel Intentions",
+     "titles": [
+      "Cruel Intentions",
+      "Cruel"
+     ],
+     "aka": [
+      "Cruel Intentions - Sex Games",
+      "Cruel Intentions: Prima regola non innamorarsi",
+      "Crueles Intenciones",
+      "Eiskalte Engel",
+      "En djävulsk romans",
+      "Intenções Criminosas",
+      "Juegos Sexuales",
+      "Juegos sexuales",
+      "Julmia aikeita",
+      "Okrutne Namjere",
+      "Segundas Intenções",
+      "Sex Games",
+      "Sexe intentions",
+      "Un pari cruel"
+     ],
+     "vanity": "cruel_intentions",
+     "releaseYear": 1999,
+     "rottenTomatoes": {
+      "audienceScore": 80,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 33438,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 55,
+      "newAdjustedTMScore": 685017
+     },
+     "objectID": "a8ec3a6d-1742-3897-a257-4bad6c3a1466",
+     "_highlightResult": {
+      "title": {
+       "value": "Cruel <em>Intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Cruel <em>Intention</em>s - Sex Games",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Cruel <em>Intention</em>s: Prima regola non innamorarsi",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Crueles Intenciones",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Eiskalte Engel",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "En djävulsk romans",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Intenções Criminosas",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Juegos Sexuales",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Juegos sexuales",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Julmia aikeita",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Okrutne Namjere",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Segundas Intenções",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sex Games",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sexe <em>intention</em>s",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Un pari cruel",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "cruel_<em>intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Columbia Pictures",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sony",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Sarah Michelle Gellar",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ryan Phillippe",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Reese Witherspoon",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Selma Blair",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Louise Fletcher",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Roger Kumble",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "c19e2139-6933-3beb-ad0c-92805ecd18be",
+     "rtId": 770717076,
+     "type": "movie",
+     "title": "The Invention of Lying",
+     "titles": [
+      "The Invention of Lying",
+      "Lying"
+     ],
+     "aka": [
+      "Bylo sobie klamstwo",
+      "En sand løgn",
+      "Il primo dei bugiardi",
+      "Increíble pero falso",
+      "Increïble però fals",
+      "L'Invention du mensonge",
+      "L'envers de la vérité",
+      "L'invention du mensonge",
+      "La Mentira Original",
+      "La mentira original",
+      "Lügen macht erfinderisch",
+      "Mytho-Man !",
+      "O Primeiro Mentiroso",
+      "Uærlighetens pris",
+      "Valehtelemisen sietämätön keveys"
+     ],
+     "vanity": "invention_of_lying",
+     "releaseYear": 2009,
+     "rottenTomatoes": {
+      "audienceScore": 39,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 222643,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 56,
+      "newAdjustedTMScore": 592120
+     },
+     "objectID": "e5f0e32a-c030-3596-a03f-95c776eec7d5",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Invention</em> of Lying",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Bylo sobie klamstwo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "En sand løgn",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Il primo dei bugiardi",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Increíble pero falso",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Increïble però fals",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'<em>Invention</em> du mensonge",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "L'envers de la vérité",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'<em>invention</em> du mensonge",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "La Mentira Original",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La mentira original",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Lügen macht erfinderisch",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mytho-Man !",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "O Primeiro Mentiroso",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Uærlighetens pris",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Valehtelemisen sietämätön keveys",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "<em>invention</em>_of_lying",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Warner Bros.",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Universal",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Ricky Gervais",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jennifer Garner",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jonah Hill",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Louis C.K.",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jeffrey Tambor",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Ricky Gervais",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Matthew Robinson",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "94316e1a-27b6-3e6d-8d0d-9003912e7d72",
+     "rtId": 14673,
+     "type": "movie",
+     "title": "Cruel Intentions II",
+     "titles": [
+      "Cruel Intentions II",
+      "Cruel II"
+     ],
+     "aka": [
+      "Cruel Intentions 2",
+      "Crueles Intenciones 2",
+      "Eiskalte Engel 2",
+      "Juegos Sexuales 2",
+      "Julmia aikeita 2",
+      "Segundas Intenções 2",
+      "Sexe Intentions 2",
+      "Un pari cruel 2"
+     ],
+     "vanity": "cruel_intentions_2",
+     "releaseYear": 2000,
+     "rottenTomatoes": {
+      "audienceScore": 21,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 3573,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 18
+     },
+     "objectID": "26f74564-8833-38d1-ac20-70d9af53ee36",
+     "_highlightResult": {
+      "title": {
+       "value": "Cruel <em>Intention</em>s II",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Cruel <em>Intention</em>s 2",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Crueles Intenciones 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Eiskalte Engel 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Juegos Sexuales 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Julmia aikeita 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Segundas Intenções 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sexe <em>Intention</em>s 2",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Un pari cruel 2",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "cruel_<em>intention</em>s_2",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Robin Dunne",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Amy Adams",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Sarah Thompson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Keri Lynn Pratt",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Deanna Wright",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Roger Kumble",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "f956b72f-6f9e-3431-934a-d4acfdc6069d",
+     "rtId": 771506322,
+     "type": "movie",
+     "title": "Infection",
+     "titles": [
+      "Infection"
+     ],
+     "aka": [
+      "Infección",
+      "Infection"
+     ],
+     "vanity": "infection_2019",
+     "releaseYear": 2019,
+     "rottenTomatoes": {
+      "audienceScore": 74,
+      "wantToSeeCount": 15,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE"
+     },
+     "objectID": "41c47e0b-3efa-3f67-a3e7-a5364f1b4ef3",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Infección",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "<em>Infection</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": true,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "<em>infection</em>_2019",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Rubén Guevara",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Leonidas Urbina",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Magdiel González",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Genna Chanelle Hayes",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Isabel Bertelsen",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Flavio Pedota",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "c2ff3808-ad10-4473-a042-e7b0bee35857",
+     "rtId": 900071702,
+     "type": "movie",
+     "title": "Invention",
+     "titles": [
+      "Invention"
+     ],
+     "vanity": "invention",
+     "releaseYear": 2024,
+     "rottenTomatoes": {
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 95
+     },
+     "objectID": "e7eb6233-6b0a-4263-a73e-ed5261c72b6e",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "<em>invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Callie Hernandez",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Sahm McGlynn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Tony Torn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "James N. Kienitz Wilkins",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Lucy Kaminsky",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Courtney Stephens",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "09885cff-7fba-3a89-8f27-779c893112ed",
+     "rtId": 770819801,
+     "type": "movie",
+     "title": "Father of Invention",
+     "titles": [
+      "Father of Invention",
+      "Father"
+     ],
+     "aka": [
+      "Détestable papa",
+      "Professione inventore",
+      "Selfmade-Dad - Not macht erfinderisch"
+     ],
+     "vanity": "father-of-invention",
+     "releaseYear": 2010,
+     "rottenTomatoes": {
+      "audienceScore": 28,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 802,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 0
+     },
+     "objectID": "44892852-9196-3e2b-b709-c353e084274d",
+     "_highlightResult": {
+      "title": {
+       "value": "Father of <em>Invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Détestable papa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Professione inventore",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Selfmade-Dad - Not macht erfinderisch",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "father-of-<em>invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Anchor Bay",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Kevin Spacey",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Camilla Belle",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Heather Graham",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Johnny Knoxville",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Craig Robinson",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Trent Cooper",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "af62392f-ba86-33dc-9ab6-9d50efbc9616",
+     "rtId": 18822,
+     "type": "movie",
+     "title": "Infection",
+     "titles": [
+      "Infection"
+     ],
+     "aka": [
+      "Infección",
+      "Infection",
+      "Infecção",
+      "La Maldad"
+     ],
+     "vanity": "infection",
+     "releaseYear": 2004,
+     "rottenTomatoes": {
+      "audienceScore": 57,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 886,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 60
+     },
+     "objectID": "6871b7bc-2489-3449-9a32-27c6156abde8",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Infección",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "<em>Infection</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": true,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Infecção",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Maldad",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "<em>infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Michiko Hada",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kaho Minami",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Shiro Sano",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Moro Morooka",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Koichi Sato",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Masayuki Ochiai",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "e3454140-fd5b-3cd6-b77e-2a5b71a04d7c",
+     "rtId": 14604,
+     "type": "movie",
+     "title": "Cruel Intentions 3",
+     "titles": [
+      "Cruel Intentions 3",
+      "Cruel 3"
+     ],
+     "aka": [
+      "Crueles intenciones 3",
+      "Eiskalte Engel 3",
+      "Juegos Sexuales 3",
+      "Juegos sexuales 3",
+      "Julmia aikeita 3",
+      "Segundas Intenções 3",
+      "Sexe Attitudes 3",
+      "Sexe Intentions 3",
+      "Un pari cruel 3"
+     ],
+     "vanity": "cruel-intentions-3",
+     "releaseYear": 2004,
+     "rottenTomatoes": {
+      "audienceScore": 31,
+      "wantToSeeCount": 2974,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE"
+     },
+     "objectID": "aeac4c0f-f394-35c1-bc34-62401112bf38",
+     "_highlightResult": {
+      "title": {
+       "value": "Cruel <em>Intention</em>s 3",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Crueles intenciones 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Eiskalte Engel 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Juegos Sexuales 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Juegos sexuales 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Julmia aikeita 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Segundas Intenções 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sexe Attitudes 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sexe <em>Intention</em>s 3",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "Un pari cruel 3",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "cruel-<em>intention</em>s-3",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Kerr Smith",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kristina Anapau",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Nathan Wetherington",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Melissa Yvonne Lewis",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Natalie Ramsey",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Scott Ziehl",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "08400d6d-b3c8-3e97-b488-92f48bc6d047",
+     "type": "movie",
+     "title": "The Infection",
+     "titles": [
+      "The Infection",
+      "Infection"
+     ],
+     "vanity": "the_infection",
+     "releaseYear": 2018,
+     "rtId": 0,
+     "objectID": "86c923e3-c0b3-30ac-82e7-7ce25ba21c6a",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "the_<em>infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Keros Lowder",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Cherie Julander",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "David Lassetter",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kyle Fotheringham",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Cam Findley",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Keros Lowder",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "12144058-9365-3bdc-beb8-bd8069823a07",
+     "rtId": 770677156,
+     "type": "movie",
+     "title": "The Best Intentions",
+     "titles": [
+      "The Best Intentions",
+      "Best Int."
+     ],
+     "aka": [
+      "As Melhores Intenções",
+      "Con las Mejores Intenciones",
+      "Con las mejores intenciones",
+      "Con le migliori intenzioni",
+      "Den Goda Viljan",
+      "Las mejores intenciones",
+      "Legjobb Szándékok",
+      "Les Meilleures intentions",
+      "The Best Intentions"
+     ],
+     "vanity": "the_best_intentions",
+     "releaseYear": 1992,
+     "rottenTomatoes": {
+      "audienceScore": 88,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 180,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 81
+     },
+     "objectID": "c1cc85cb-3aeb-3611-be8f-67b630e74045",
+     "_highlightResult": {
+      "title": {
+       "value": "The Best <em>Intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "As Melhores Intenções",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Con las Mejores Intenciones",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Con las mejores intenciones",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Con le migliori intenzioni",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Den Goda Viljan",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Las mejores intenciones",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Legjobb Szándékok",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Les Meilleures <em>intention</em>s",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       },
+       {
+        "value": "The Best <em>Intention</em>s",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "the_best_<em>intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Biography",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Romance",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Samuel Goldwyn Films",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Samuel Fröler",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Pernilla August",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Max von Sydow",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ghita Nørby",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Lennart Hjulström",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Bille August",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "c8a55769-41ad-3176-a1e1-bfe225d0696a",
+     "rtId": 770800657,
+     "type": "movie",
+     "title": "Intentions of Murder",
+     "titles": [
+      "Intentions of Murder",
+      "Inte Murd"
+     ],
+     "aka": [
+      "Deseo impuro",
+      "Desiderio d'omicidio",
+      "Desiderio di omicidio",
+      "Intentions of Murder"
+     ],
+     "vanity": "intentions_of_murder_1964",
+     "releaseYear": 1964,
+     "rottenTomatoes": {
+      "audienceScore": 60,
+      "wantToSeeCount": 5,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE"
+     },
+     "objectID": "f64992d3-fbc4-3052-8619-4500caafeede",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Intention</em>s of Murder",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Deseo impuro",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Desiderio d'omicidio",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Desiderio di omicidio",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "<em>Intention</em>s of Murder",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "<em>intention</em>s_of_murder_1964",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Masumi Harukawa",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kô Nishimura",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Shigeru Tsuyuguchi",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Yûko Kusunoki",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ranko Akagi",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Shôhei Imamura",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "e29a30fe-bbd4-35bf-8cec-4cf7fd36bb61",
+     "rtId": 771561455,
+     "type": "movie",
+     "title": "Witness Infection",
+     "titles": [
+      "Witness Infection",
+      "Witness"
+     ],
+     "vanity": "witness_infection",
+     "releaseYear": 2020,
+     "rottenTomatoes": {
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 40
+     },
+     "objectID": "635ed1b0-820d-3f9d-beb2-22ced0b76b4b",
+     "_highlightResult": {
+      "title": {
+       "value": "Witness <em>Infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "witness_<em>infection</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Robert Belushi",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jill-Michele Melean",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Tara Strong",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Erinn Hayes",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Maurice LaMarche",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Andy Palmer",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "c9563f0d-583c-3ffd-9d5e-512e35fec704",
+     "rtId": 770946698,
+     "type": "movie",
+     "title": "Infection: The Invasion Begins",
+     "titles": [
+      "Infection: The Invasion Begins",
+      "Infection"
+     ],
+     "aka": [
+      "Infection"
+     ],
+     "vanity": "infection_the_invasion_begins",
+     "releaseYear": 2010,
+     "rottenTomatoes": {
+      "audienceScore": 0,
+      "wantToSeeCount": 16,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE"
+     },
+     "objectID": "bbed14a1-66c8-365b-8835-6f15c68b9756",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Infection</em>: The Invasion Begins",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "<em>Infection</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": true,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "<em>infection</em>_the_invasion_begins",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Kelly Pendygraft",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Bryan Brewer",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Terry Becker",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Chuck Carter",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kent Faulcon",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Howard Wexler",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "46b7a544-c144-4aec-912b-23af98c90777",
+     "rtId": 771563681,
+     "type": "movie",
+     "title": "Grave Intentions",
+     "titles": [
+      "Grave Intentions",
+      "Grave"
+     ],
+     "vanity": "grave_intentions",
+     "releaseYear": 2021,
+     "rottenTomatoes": {
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 60
+     },
+     "objectID": "20c1e512-87e8-4709-be34-e5e3c9292898",
+     "_highlightResult": {
+      "title": {
+       "value": "Grave <em>Intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "grave_<em>intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Astarte Abraham",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Johanah Basanta",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Paw Aya Bugarin",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Colleen Carey",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Catherine Carlen",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Brian Patrick Lim",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Gabriel Olson",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Jaime Snyder",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Matthew Richards",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Jocelyn Rish",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "8b535b73-5ac8-38d5-9823-a85f2292a0b4",
+     "rtId": 771238304,
+     "type": "movie",
+     "title": "The Bad Intentions",
+     "titles": [
+      "The Bad Intentions",
+      "Bad Intent"
+     ],
+     "aka": [
+      "As Más Intenções",
+      "Las Malas Intenciones",
+      "The Bad Intentions"
+     ],
+     "vanity": "the_bad_intentions",
+     "releaseYear": 2011,
+     "rottenTomatoes": {
+      "audienceScore": 64,
+      "wantToSeeCount": 13,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE"
+     },
+     "objectID": "f1744da8-3589-3060-a81a-7569c337ccdd",
+     "_highlightResult": {
+      "title": {
+       "value": "The Bad <em>Intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "aka": [
+       {
+        "value": "As Más Intenções",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Las Malas Intenciones",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "The Bad <em>Intention</em>s",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "inception"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "the_bad_<em>intention</em>s",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Fatima Buntinx",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Katerina D'Onofrio",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Melchor Gorrochátegui",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kani Hart",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jean-Paul Strauss",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Rosario Garcia-Montero",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "c8f30eb4-816b-3d0c-b373-03e88ea431f5",
+     "rtId": 771019044,
+     "type": "movie",
+     "title": "The Mother of Invention",
+     "titles": [
+      "The Mother of Invention",
+      "Mother of"
+     ],
+     "vanity": "mother_of_invention",
+     "releaseYear": 2009,
+     "rottenTomatoes": {
+      "audienceScore": 57,
+      "wantToSeeCount": 13,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE"
+     },
+     "objectID": "e130b3e4-5370-3384-bedf-a3711668f7d2",
+     "_highlightResult": {
+      "title": {
+       "value": "The Mother of <em>Invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "vanity": {
+       "value": "mother_of_<em>invention</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "inception"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "MGM Television",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Andy Bowser",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jimmi Simpson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kevin Corrigan",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ruby Wendell",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Craig Anton",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Andy Bowser",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Joseph M. Petrick",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    }
+   ],
+   "nbHits": 133,
+   "page": 0,
+   "nbPages": 7,
+   "hitsPerPage": 20,
+   "exhaustiveNbHits": false,
+   "exhaustiveTypo": false,
+   "exhaustive": {
+    "nbHits": false,
+    "typo": false
+   },
+   "query": "Inception",
+   "params": "query=Inception&filters=isEmsSearchable%3D1+AND+type%3A%22movie%22&hitsPerPage=20&attributesToRetrieve=%5B%22emsId%22%2C%22rtId%22%2C%22vanity%22%2C%22type%22%2C%22title%22%2C%22titles%22%2C%22aka%22%2C%22releaseYear%22%2C%22rottenTomatoes%22%5D",
+   "index": "content_rt",
+   "renderingContent": {},
+   "processingTimeMS": 7,
+   "processingTimingsMS": {
+    "_request": {
+     "roundTrip": 222
+    },
+    "fetch": {
+     "query": 5,
+     "total": 6
+    },
+    "total": 7
+   },
+   "serverTimeMS": 8
+  }
+ ]
+}

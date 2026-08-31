@@ -1,0 +1,189 @@
+# finderr -- drop-in for the existing arr stack.
+#
+#   docker compose up -d
+#   docker compose exec finderr bun src/jobs/build-index.ts   # first index build
+#
+# Everything is configured by environment variable. The YAML file at /config is
+# optional and exists only for people who prefer editing a file; ENV always wins.
+
+services:
+  finderr:
+    build: .
+    image: finderr:latest
+    container_name: finderr
+    restart: unless-stopped
+
+    environment:
+      # --- core
+      FINDERR_PORT: "7979"
+      FINDERR_DATA_DIR: /data
+      FINDERR_LOG_LEVEL: info
+
+      # --- Radarr. Point at the container name or the LAN address.
+      #
+      # Every value here reads from .env with a default that assumes finderr shares a
+      # Docker network with the arrs. Override any of them in .env to point at a LAN
+      # address instead -- that file is gitignored, so a real deployment's topology
+      # never lands in the repo.
+      #
+      # > [!IMPORTANT] The .env names are deliberately NOT `FINDERR_`-prefixed
+      # > Bun auto-loads `.env` from the working directory, and `loadConfig()` reads
+      # > `FINDERR_*` straight out of the environment. So a `FINDERR_RADARR_URL` in .env
+      # > is not inert -- it configures the app for every `bun test` and `bun run` on the
+      # > HOST, outside this container entirely. Measured 2026-08-31: it took the suite
+      # > from 770 pass to 206 fail, because .env carries the URL but the API key is
+      # > mapped here rather than named `FINDERR_RADARR_API_KEY`, so every test calling
+      # > `loadConfig()` hit "radarr is configured but FINDERR_RADARR_API_KEY is missing".
+      # > Keep .env on the unprefixed names and let compose do the mapping.
+      FINDERR_RADARR_URL: ${RADARR_URL:-http://radarr:7878}
+      FINDERR_RADARR_API_KEY: ${RADARR_API_KEY:?set RADARR_API_KEY in .env}
+      FINDERR_RADARR_ROOT_FOLDER: ${RADARR_ROOT_FOLDER:-/media/movies}
+      FINDERR_RADARR_QUALITY_PROFILE_ID: ${RADARR_QUALITY_PROFILE_ID:-4} # 4 = HD-1080p
+
+      # --- Sonarr
+      FINDERR_SONARR_URL: ${SONARR_URL:-http://sonarr:8989}
+      FINDERR_SONARR_API_KEY: ${SONARR_API_KEY:?set SONARR_API_KEY in .env}
+      FINDERR_SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-/media/tv}
+      FINDERR_SONARR_QUALITY_PROFILE_ID: ${SONARR_QUALITY_PROFILE_ID:-4}
+
+      # --- TMDB. OPTIONAL, unlike the two above: every facet that ships today is
+      # served keyless through the Servarr proxies, and the app must still boot for
+      # anyone without a key. So this is `:-` (empty default), never `:?` (required).
+      # It buys the two things nothing keyless carries: streaming availability
+      # (`watchProviders`) and keywords for SERIES -- film keywords already arrive
+      # free via api.radarr.video.
+      FINDERR_TMDB_API_KEY: ${TMDB_API_KEY:-}
+
+      # --- Plex. OPTIONAL, same `:-` rule as TMDB: without it every title's `plex`
+      # field is null and the page loses its Play button, nothing else.
+      #
+      # This is what turns "you already have this" into somewhere to click. Plex
+      # cannot be queried by IMDb id, so finderr walks the video sections on the
+      # library timer and keeps a tconst -> ratingKey mirror. The token is read-only
+      # in practice and travels as a header, never a query parameter.
+      #
+      # The machineIdentifier is NOT configured for the MIRROR -- that one is read
+      # from the server's own /identity, because a hand-copied id can be silently
+      # wrong and a wrong one still opens Plex's home screen.
+      FINDERR_PLEX_URL: ${PLEX_URL:-}
+      FINDERR_PLEX_TOKEN: ${PLEX_TOKEN:-}
+
+      # FINDERR_PLEX_MACHINE_ID is a SEPARATE thing and does not feed the deeplink.
+      # It is gate two of the Plex sign-in: with it set, an account must additionally
+      # appear to own or be shared this server (checked against /api/v2/resources)
+      # before it may sign in. Never a substitute for gate one -- see plex-auth.ts.
+      #
+      # Unset means the gate is OFF, which is the correct default for a checkout that
+      # does not know which Plex server it belongs to. Setting it can LOCK OUT an
+      # existing user who was un-shared on Plex but still has a finderr row; that is
+      # the gate working, and the fix is on the Plex side, not here.
+      FINDERR_PLEX_MACHINE_ID: ${PLEX_MACHINE_ID:-}
+
+      # --- auth. finderr is INVITE-ONLY: nothing but /api/health and the sign-in
+      # ceremonies is reachable without a session.
+      #
+      # > RP_ID IS PERMANENT. Change it and every passkey ever registered stops
+      # > verifying, for everyone, with no migration short of re-inviting all users.
+      # > It is set to the name finderr will live at, chosen 2026-08-31 while it is
+      # > still LAN-only, precisely so the credentials made later are portable.
+      #
+      # THE CONSEQUENCE TODAY: a browser refuses WebAuthn outside a secure context, so
+      # nobody can register a passkey against a plain-http LAN address. Until DNS and
+      # TLS are in front of this, the working way in is "Continue with Plex". For
+      # passkey work on this machine, set AUTH_RP_ID=localhost with a localhost origin --
+      # credentials made that way are useless in production, which is normal for WebAuthn
+      # and means two accounts.
+      #
+      # > [!CAUTION] The .env names here are UNPREFIXED, and a mismatch fails SILENTLY
+      # > These are deployment facts rather than product ones, so they come from `.env`
+      # > under the same convention as `RADARR_API_KEY`: unprefixed in the file, mapped to
+      # > the app's `FINDERR_*` name here. Both carry a default, so a missing or renamed
+      # > variable does not fail the boot -- it starts a container with NO admin key and
+      # > `rpId` quietly reset to `localhost`, which is the one value that must never
+      # > change by accident. That very nearly happened on 2026-08-31 when `.env` was
+      # > reorganised while this file still read the prefixed names. If you rename one
+      # > side, rename both and check `docker exec finderr printenv FINDERR_AUTH_RP_ID`.
+      FINDERR_AUTH_RP_ID: ${AUTH_RP_ID:-localhost}
+      FINDERR_AUTH_RP_NAME: ${AUTH_RP_NAME:-finderr}
+      # Comma-separated, and every origin that may complete a ceremony must be listed.
+      # `cookieSecure` is DERIVED from these: it turns on only when every origin is https,
+      # because a browser silently discards a Secure cookie sent over plain http and the
+      # user is then never logged in, with nothing in any error message to say why.
+      FINDERR_AUTH_ORIGINS: ${AUTH_ORIGINS:-http://localhost:7979}
+      # Believe X-Forwarded-For when identifying a caller for rate limiting. Set it to
+      # true ONLY when a reverse proxy you control is in front. Off behind a proxy puts
+      # the whole internet in one rate-limit bucket; on without one lets any caller mint
+      # a fresh identity per request. Both fail silently -- see config.ts.
+      FINDERR_AUTH_TRUST_PROXY: ${AUTH_TRUST_PROXY:-false}
+      # How an AGENT administers finderr without being a person: mint invites, manage
+      # users, reset an account. Optional -- without it the admin API is reachable only
+      # by an admin's own session.
+      FINDERR_ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+
+      # --- index
+      # 09:00 UTC: after TMDB publishes (~07:20 UTC observed) and IMDb's daily drop.
+      # Bun.cron is UTC-only, which is what we want -- the dumps publish on UTC.
+      FINDERR_INDEX_REFRESH_CRON: "0 9 * * *"
+      # Titles below this vote count stay searchable via FTS but leave the fuzzy pool.
+      # 100 keeps obscure-but-real titles (Solstollarna has 122) reachable by typo.
+      FINDERR_INDEX_FUZZY_MIN_VOTES: "100"
+
+      FINDERR_LIBRARY_REFRESH_SECONDS: "60"
+
+    volumes:
+      # The index (~435 MB), poster cache, app DB and downloaded dumps.
+      #
+      # A BIND MOUNT, not a named volume. This file declared `finderr-data:/data` for a
+      # while, but the container that was actually running had been created against
+      # ./data -- so `docker compose up` would have started on an empty volume, found no
+      # index, and either exited or re-downloaded 235 MB of dumps. Corrected 2026-08-31
+      # to match what was really in use, which is also where the live index sits.
+      #
+      # The cost of a bind mount is the trap the README spells out: the host can reach these
+      # files too, so running `bun run dev` against this directory while the container
+      # is up puts two writers on one SQLite file and corrupts it. Give the dev server
+      # its own data dir.
+      - ./data:/data
+      # Optional hand-edited config. Remove if you only use ENV.
+      - ./config:/config:ro
+
+    ports:
+      - "7979:7979"
+
+    # --- hardening ---------------------------------------------------------
+    # The process only ever writes to /data, so the rest of the filesystem can be
+    # read-only. Anything that needs scratch space gets an explicit tmpfs.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Non-root, matching the Dockerfile's finderr user.
+    user: "1001:1001"
+
+    # The index build holds ~550 MB of trigram sets plus SQLite page cache.
+    mem_limit: 1500m
+    memswap_limit: 1500m
+    pids_limit: 256
+
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "const r=await fetch('http://127.0.0.1:7979/api/health');process.exit(r.ok?0:1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+    # --- reverse proxy ------------------------------------------------------
+    # No labels here on purpose. A hostname is deployment-specific and belongs in
+    # docker-compose.override.yml, which Compose merges automatically and which is
+    # gitignored -- so your domains stay yours. See docker-compose.override.example.yml.
+    #
+    # finderr is invite-only with per-IP rate limiting, but the in-memory limiter resets
+    # on restart -- it is a floor, not a wall. Put CloudFlare (or equivalent) in front
+    # before pointing a public name at this, and read the README's exposure notes.

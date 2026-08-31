@@ -1,0 +1,20 @@
+<!-- finderr's mark: a folded map with an X on it. The pirate joke the whole arr
+     stack is named for, told without a skull in it -- what a treasure map is FOR
+     is finding one thing among many, which is the product.
+
+     Strokes are currentColor so this can be dropped inline into the UI and
+     inherit the surrounding text colour. The rendered assets under web/public/
+     paint it in the app's own accent green instead. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"
+     fill="none" stroke="currentColor" stroke-width="2.1"
+     stroke-linecap="round" stroke-linejoin="round"
+     role="img" aria-label="finderr">
+  <!-- Three-panel folded map. The top and bottom edges zigzag in step, which is
+       what reads as folded paper rather than as a rectangle with lines in it. -->
+  <path d="M2 7 8 4l8 3 6-3v13l-6 3-8-3-6 3Z"/>
+  <!-- The two creases, each running the full height of its own fold. -->
+  <path d="M8 4v13M16 7v13"/>
+  <!-- X marks the spot. The middle panel is the widest of the three on purpose:
+       below about 24px the X and the creases fuse into a mesh without that air. -->
+  <path d="m10.3 10.3 3.4 3.4M13.7 10.3l-3.4 3.4"/>
+</svg>

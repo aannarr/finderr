@@ -1,0 +1,606 @@
+# finderr
+
+A fast media request UI for the arr stack. Arr.
+
+Type a title badly and finderr still finds it, in a few milliseconds. It tells you if
+Radarr or Sonarr already has it and hands it over if not. I wrote it from scratch to
+replace [Seerr](https://github.com/seerr-team/seerr/): same idea, one process, a ~150 MB
+image, and a search that never waits on the network.
+
+```
+budapest hostel  ->  The Grand Budapest Hotel (2014)     typo + word order + missing word
+strager thigs    ->  Stranger Things (2016)
+interstelar      ->  Interstellar (2014)                 not the 439-vote film also called that
+buda pest        ->  Budapest / The Grand Budapest Hotel split word
+Nile City        ->  NileCity 105.6 (1995)               a space the title does not have
+alien 1992       ->  Alien³ (1992)                       superscript, via NFKD
+Låt den rätte    ->  Let the Right One In (2008)         original titles are indexed too
+The Matrix 2021  ->  The Matrix Resurrections            the year beats the exact title match
+```
+
+All of that is one plain search box. There is no "fuzzy" checkbox.
+
+> [!NOTE]
+> This is a v0. My household uses it every day, but the
+> [known gaps](#known-gaps-and-non-goals) list is long and I mean every line of it. Read
+> it before you throw Seerr out.
+
+## Why
+
+Seerr is slow because it is a thin proxy. A search, a poster, a "do I have this already?"
+are all live round trips to TMDB, Radarr and Sonarr while you sit there. On a NAS that
+round trip is the whole experience, and I got sick of it.
+
+finderr keeps the whole searchable universe local: 1.27 million titles from the IMDb
+datasets in one SQLite file, plus a mirror of both arr libraries that refreshes every
+minute. Every page comes off disk. finderr only hits the network for things that actually
+change, in the background, after the page has painted.
+
+One rule runs the whole codebase: the render path touches nothing but local SQLite and
+local disk. A handler that can block on a network call while somebody is waiting is a bug,
+and I treat it as one. Metadata comes in from cached addons a moment later and fills in
+behind the page.
+
+## Screenshots
+
+<!--
+  Not in the tree yet. When they land they go in docs/screenshots/:
+    docs/screenshots/search.png    -- a misspelt query, the right answer on top
+    docs/screenshots/title.png     -- a title page with cast, seasons and the Play button
+    docs/screenshots/browse.png    -- the browse grid with year and genre chips
+    docs/screenshots/login.png     -- the invite-only sign-in page
+-->
+
+_No screenshots yet. The queries above are what it looks like._
+
+## What it does
+
+Search survives typos, swapped words, missing words and pasted release names. Three tiers
+escalate on their own: full-text, relaxed full-text, then SQLite's `spellfix1` for edit
+distance. One scorer ranks everything every tier found, so the best answer wins no matter
+which tier caught it. Details under [How search works](#how-search-works).
+
+It also reads intent out of the query. `stranger things s3` is the series and season 3.
+`bridgerton 1080p x265` is Bridgerton. `blade runner 2049` is a title, not a year. What it
+pulls out of the text is used to score, never to filter, so a year you misremember
+demotes the result instead of returning nothing.
+
+Browse and discovery are local too: chips for genre, decade, year and kind. The front
+page is a stack of shelves -- recently added, top films, top series, hidden gems, coming
+soon, this decade, one row per genre -- and every one of them is an index query. Every
+view has a URL. Back steps through your refinements and any result set is a link you can
+send someone.
+
+The title page paints at once and fills in behind itself: synopsis, ratings from IMDb,
+TMDB, Metacritic, Trakt and Rotten Tomatoes (critics and audience), a trailer link, cast
+with headshots, crew, named seasons with air dates per episode, collection, more like
+this, certification, release dates, keywords, and a "Where to watch" row for your own
+country. Nothing on it waits for a provider.
+
+Person and collection pages come from the local index too. Cast and crew names are links,
+a filmography is one click, and the reverse index is built from IMDb's `title.principals`
+dump, so it costs no API call at all.
+
+Requests return immediately. The POST answers `202`, a background worker adds the title
+to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
+before anything is queued. Retry is a button.
+
+With a Plex token, a title you already own gets a Play button that deep-links into the
+Plex app or web player, instead of a line of text saying you have it.
+
+Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
+table. The first boot prints an invite link for the first admin; admins mint invites,
+manage users and roles, and can reset anyone's access. An anonymous visitor gets a bare
+login page and nothing else.
+
+Metadata comes from addons, not from core. Three ship in the box: the Servarr metadata
+proxies (keyless), Rotten Tomatoes' public index (the audience score, keyless), and TMDB
+(needs a key; buys streaming availability and series keywords). Writing your own is one
+file with two exports. See [ADDONS.md](ADDONS.md).
+
+It is small: one process, one SQLite index, one app database, a ~150 MB image. No
+Postgres and no Redis, and it runs without a TMDB key.
+
+## Install
+
+### What you need
+
+- Docker, amd64 or arm64. The image is built for both and needs no AVX, so an old
+  Celeron NAS is fine.
+- A running Radarr and Sonarr and their API keys (Settings -> General in each).
+- RAM: the shipped compose caps the container at 1.5 GB and the index build runs inside
+  that. Serving idles far lower.
+- Disk: about 4 GB. The index is ~550 MB, the previous generation is kept, the dumps are
+  downloaded, and the poster cache ceiling is 2 GB by default. Put the data directory
+  somewhere with room. One heads up: if that volume has a filesystem quota, check it
+  first. A full quota on a shared NAS volume takes down whatever else lives there.
+- Optional: a TMDB API key for streaming availability and series keywords, and a Plex
+  token for the Play button.
+
+### 1. Docker Compose from the published image
+
+The image is `ghcr.io/aannarr/finderr:latest`, multi-arch, built and published by CI on
+every push to `main`.
+
+```yaml
+# docker-compose.yml
+services:
+  finderr:
+    image: ghcr.io/aannarr/finderr:latest
+    container_name: finderr
+    restart: unless-stopped
+    ports:
+      - "7979:7979"
+    volumes:
+      - ./data:/data          # index, poster cache, app db, dumps. Persist this.
+    environment:
+      FINDERR_RADARR_URL: http://radarr:7878
+      FINDERR_RADARR_API_KEY: ${RADARR_API_KEY:?set it in .env}
+      FINDERR_RADARR_ROOT_FOLDER: /media/movies        # as Radarr sees it
+      FINDERR_RADARR_QUALITY_PROFILE_ID: "4"           # 4 = HD-1080p on a stock install
+      FINDERR_SONARR_URL: http://sonarr:8989
+      FINDERR_SONARR_API_KEY: ${SONARR_API_KEY:?set it in .env}
+      FINDERR_SONARR_ROOT_FOLDER: /media/tv
+      FINDERR_SONARR_QUALITY_PROFILE_ID: "4"
+      # optional
+      FINDERR_TMDB_API_KEY: ${TMDB_API_KEY:-}
+      FINDERR_PLEX_URL: http://plex:32400
+      FINDERR_PLEX_TOKEN: ${PLEX_TOKEN:-}
+      # identity -- read the note below before setting these
+      FINDERR_AUTH_RP_ID: finderr.example.com
+      FINDERR_AUTH_ORIGINS: https://finderr.example.com,http://192.168.1.10:7979
+    # hardening the shipped compose file uses; all optional
+    read_only: true
+    tmpfs: [ "/tmp:size=64m,mode=1777" ]
+    security_opt: [ "no-new-privileges:true" ]
+    cap_drop: [ ALL ]
+    user: "1001:1001"
+    mem_limit: 1500m
+```
+
+```bash
+docker compose up -d
+docker compose run --rm finderr bun src/jobs/build-index.ts   # first index build
+docker compose logs finderr | grep invite                     # your first admin link
+```
+
+> [!IMPORTANT]
+> The first index build is `run --rm`, not `exec`. finderr exits when there is no index at
+> `/data/titles.db`, `restart` starts it again, and `exec` then fails with *"Container is
+> restarting"* forever; the thing that would stop the restarting is the command you are
+> trying to run. `run --rm` starts a one-off container with the same volumes and
+> environment and does not care whether the service is up. Once an index exists, `exec`
+> works for everything else.
+
+The build downloads the IMDb dumps (a few hundred MB), builds the index, runs a canary
+suite of real queries against it, and only then swaps it live. Count on about 100 s on a
+desktop-class CPU and about six minutes on a low-power NAS (more under
+[Known gaps](#known-gaps-and-non-goals)). After that it refreshes itself daily and swaps
+in place. No restart.
+
+Open `http://<host>:7979` and follow the invite link from the log.
+
+#### Pick the identity settings before the first passkey exists
+
+`FINDERR_AUTH_RP_ID` is the domain every passkey is bound to and it is permanent. Change
+it after the first passkey is registered and every credential on the system stops
+verifying, for everyone, with no fix short of re-inviting every user. Set it to the name
+finderr will finally live at, even if DNS is not there yet.
+
+Two more things the browser decides for you. A passkey cannot be created over plain http
+(`localhost` is the only exemption), so on a LAN address the passkey buttons hide
+themselves and "Continue with Plex" is the door that works. And the session cookie's
+`Secure` flag is derived from `FINDERR_AUTH_ORIGINS`: it turns on only when every listed
+origin is https, because a browser silently drops a `Secure` cookie sent over http and you
+would be logged out on the very next request with no error anywhere.
+
+#### Putting it on the internet
+
+I run it on the public internet. Here is what you have to do first, and what is still on
+you;
+
+- Put a reverse proxy with TLS in front, and set `FINDERR_AUTH_TRUST_PROXY=true` so the
+  rate limiter sees real client addresses instead of the proxy's. That flag is wrong
+  silently in both directions, so set it to match what is actually in front.
+- Put a CDN or WAF in front of the proxy if you can. The built-in limiter is in memory and
+  resets on restart. It slows brute force down; it does not stop it.
+- Remember what is in the container: the Radarr and Sonarr API keys, which grant full
+  control of both. An RCE here is worse than one in Radarr.
+
+Copy [`docker-compose.override.example.yml`](docker-compose.override.example.yml) to
+`docker-compose.override.yml` for a proxy-label example. The real file is gitignored so
+your hostnames never end up in the repo.
+
+### 2. From source
+
+```bash
+git clone https://github.com/aannarr/finderr.git && cd finderr
+bun install
+cp .env.example .env               # arr keys, optional TMDB and Plex, auth
+bun run logos:import               # studio / network / rating marks, ~12 MB, optional
+bun run index:build                # downloads the dumps, builds, gates, promotes
+bun run build                      # the web UI
+bun start                          # http://localhost:7979
+```
+
+`logos:import` pulls the studio, network, streaming and rating marks from a pinned
+[Kometa](https://github.com/Kometa-Team/Kometa/) commit into `web/public/logos/`. They
+belong to their trademark holders and are not tracked here. Skip the step and every badge
+prints its name instead. The Docker build runs it for you.
+
+`bun run dev` gives you hot reload (API on 7979, Vite on 7980). The repo's own
+`docker-compose.yml` builds the image locally and reads the unprefixed names in `.env`;
+`docker compose up -d --build` is the whole deploy loop.
+
+> [!WARNING]
+> Never point a dev server at a data directory a container is also using. Two writers on
+> one SQLite file over a Docker Desktop bind mount corrupts it. I did not reason my way to
+> that; I did it. Give the dev server its own `FINDERR_DATA_DIR` and share only the
+> read-only `titles.db` (a symlink is fine):
+>
+> ```bash
+> mkdir -p ~/finderr-dev && ln -s "$PWD/data/titles.db" ~/finderr-dev/titles.db
+> FINDERR_DATA_DIR=~/finderr-dev FINDERR_PORT=9779 bun start
+> ```
+
+On macOS the fuzzy tier needs Homebrew's SQLite, because Apple's build has extension
+loading disabled: `brew install sqlite && bun run spellfix:build`. Without it finderr logs
+loudly and serves the two full-text tiers only.
+
+## Configuration
+
+Environment variables are the primary surface. A YAML file at `/config/config.yml` is
+optional and ENV always wins, so a compose file can override a baked-in config without a
+rebuild.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FINDERR_PORT` | `7979` | |
+| `FINDERR_HOST` | `0.0.0.0` | |
+| `FINDERR_DATA_DIR` | `/data` | Index, poster cache, app DB, dumps. Persist it |
+| `FINDERR_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `FINDERR_RADARR_URL` | | Required. Container name or a LAN address; the repo's compose falls back to `http://radarr:7878` |
+| `FINDERR_RADARR_API_KEY` | | Required |
+| `FINDERR_RADARR_ROOT_FOLDER` | | As Radarr sees it, not as finderr does. Compose fallback `/media/movies` |
+| `FINDERR_RADARR_QUALITY_PROFILE_ID` | `4` if unset | Check yours; 4 is HD-1080p on a stock install |
+| `FINDERR_SONARR_*` | | The same four keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
+| `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability and series keywords |
+| `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
+| `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
+| `FINDERR_AUTH_RP_ID` | `localhost` | The bare domain passkeys are bound to. Permanent, see above |
+| `FINDERR_AUTH_RP_NAME` | `finderr` | What the OS prompt shows |
+| `FINDERR_AUTH_ORIGINS` | `http://localhost:7979,http://localhost:7980` | Comma-separated. Every origin that may complete a sign-in |
+| `FINDERR_AUTH_SESSION_DAYS` | `30` | |
+| `FINDERR_AUTH_INVITE_HOURS` | `72` | |
+| `FINDERR_AUTH_COOKIE_SECURE` | derived | Empty = on when every origin is https |
+| `FINDERR_AUTH_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Only behind a proxy you control |
+| `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
+| `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
+| `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
+| `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
+| `FINDERR_INDEX_REFRESH_TZ` | `UTC` | IANA zone for the cron. The dumps publish on UTC |
+| `FINDERR_INDEX_REFRESH_ON_BOOT` | `true` | |
+| `FINDERR_INDEX_TITLE_TYPES` | `movie,tvSeries,tvMiniSeries,tvMovie` | IMDb title types to ingest |
+| `FINDERR_INDEX_INCLUDE_ADULT` | `false` | |
+| `FINDERR_INDEX_FUZZY_MIN_VOTES` | `100` | Below this a title is full-text only; above it typos find it too |
+| `FINDERR_INDEX_CAST_MIN_VOTES` | `1000` | Cast and crew are indexed for titles above this. `0` indexes everybody and the build takes tens of minutes |
+| `FINDERR_INDEX_CAST_CATEGORIES` | ten IMDb job categories | Which credits earn a row. Empty = no cast tables, no person pages |
+| `FINDERR_INDEX_CAST_REFRESH_DAYS` | `7` | How often the 100M-row `title.principals` dump is re-scanned. Other builds carry the cast tables forward in seconds |
+| `FINDERR_LIBRARY_REFRESH_SECONDS` | `60` | Arr and Plex mirror interval |
+| `FINDERR_ARTWORK_CACHE_MAX_BYTES` | `2000000000` | Poster cache ceiling, least-recently-written evicted first |
+| `FINDERR_TMDB_CACHE_IMAGES` | `true` | |
+| `FINDERR_RESOURCE_LOG_SECONDS` | `300` | One-line RSS/heap/GC summary in the log. `0` disables |
+| `FINDERR_PLUGINS_DIR` | | Addon directory. Empty = the built-in `src/plugins` |
+| `FINDERR_PLUGIN_MODULES` | | Comma-separated installed packages. Runs their code; read [ADDONS.md](ADDONS.md) first |
+| `FINDERR_CONFIG_FILE` | `/config/config.yml` | Optional YAML, same keys in camelCase |
+
+`/api/health` answers `{"ok":true}` to anyone, which is all the container probe needs.
+With the admin key (or an admin session) it reports index rows and build time, the last
+in-place swap and its canary score, library and Plex mirror counts, addon coverage of the
+front page, user and session counts, and memory.
+
+## How search works
+
+```
+IMDb daily dumps ──► index builder ──► titles.db (SQLite + FTS5 + spellfix1)
+                          │                    │
+                     drift gates          SearchEngine ◄── in-place swap, canary-gated
+                          │                    │
+                     atomic swap               ▼
+                                          Bun.serve ──► REST ──► React (Vite) client
+                                               ▲
+Radarr / Sonarr / Plex ──► library mirror ─────┘        addons ──► facet cache (SQLite)
+       (every 60 s)        (local SQLite)                (background, paced, hard-cached)
+```
+
+### The ladder
+
+Three tiers, escalated on their own when a tier returns zero rows, a low score, low token
+coverage or a thin margin between the top two. You never ask for fuzzy matching.
+
+| Tier | Mechanism | Typical |
+|---|---|---|
+| `fts` | FTS5 AND over normalised title + original title + a de-spaced blob | 0-5 ms |
+| `or` | Same, OR'd, stopwords dropped, gated on token coverage | 30-70 ms |
+| `fuzzy` | SQLite's `spellfix1` (edit distance + phonetics) over a vocabulary stored in the index | ~12 ms |
+
+Candidates pile up across tiers and the one scorer weights votes, year, kind and title
+similarity on a single scale. The fuzzy vocabulary only holds titles above
+`FUZZY_MIN_VOTES`, which is what stops a typo surfacing some 40-vote short over the film
+you meant.
+
+`spellfix1` replaced a hand-rolled trigram index that got rebuilt in RAM on every boot.
+That thing cost 1.5 GB and nine million live objects, and kept the garbage collector busy
+enough to burn 14% of a core on an idle container. The extension does the same job from
+one disk-backed table at 78 MB resident. Measurements are in
+[`vendor/sqlite-spellfix/README.md`](vendor/sqlite-spellfix/README.md).
+
+### Query understanding
+
+The raw string is parsed into intent before any search runs. Whatever gets pulled out of
+the text becomes scoring, not filtering.
+
+| You type | Parsed as |
+|---|---|
+| `The Matrix 1999` | text `the matrix`, year 1999 |
+| `stranger things s3` | text `stranger things`, kind series, season 3 |
+| `bridgerton 1080p x265` | text `bridgerton`, release junk stripped |
+| `blade runner 2049` | text unchanged; 2049 is the title |
+| `horror 1980s` | text `horror`, decade 1980 |
+
+Franchise ordinals (`Rocky 4`) do not auto-resolve to one film, on purpose. A title-prefix
+guess sent `Rocky 4` to *Rocky III* and `Alien 3` to *Alien Nation*, so I ripped it out.
+The OR tier returns the whole franchise and you pick.
+
+### The daily refresh
+
+The refresh rebuilds, it never patches. A full rebuild is cheaper and safer than diffing
+1.27M rows. IMDb honours conditional GETs, so a day with no new dump costs one HEAD
+request and zero bytes. When there is a new one, four gates stand between it and your
+users, and the build targets `titles.new.db` until all of them pass:
+
+| Gate | Catches | On failure |
+|---|---|---|
+| Header assertion | IMDb reorders or renames a TSV column | Hard fail. Never ingest into shifted columns |
+| Volume | truncated download, bad gunzip | Abort if under 95% of the live row count |
+| Canary | ranking silently regressing | Abort unless real queries still pass |
+| ETag | nothing changed | Skip the whole cycle |
+
+The canary is the one that matters. A dump can be structurally perfect and still wreck
+results: a tokenizer change, or IMDb re-scoring its votes. Only running real queries
+catches that, and the same suite validates the new file in the running process before the
+engine swaps to it. A refused swap shows up in `/api/health` as `index.reload.ok: false`.
+
+```bash
+bun run index:build -- --dry-run     # build and gate, do not promote
+bun run index:build -- --no-fetch    # rebuild from dumps already on disk
+bun run index:build -- --force       # ignore ETags
+```
+
+## How metadata works
+
+Core knows nothing about cast, ratings or seasons. It declares a facet vocabulary (fifteen
+fact types an addon can provide: `synopsis`, `ratings`, `cast`, `seasons`,
+`watchProviders`, ...) and an addon fills them in. The resolver caches every contribution
+in SQLite with a freshness class that scales with the title's age, so a 2010 film's cast is
+fetched once and a series airing this week re-checks its episode list every twelve hours.
+A page never waits. It paints from local data and polls until the server says nothing is
+still owed.
+
+Three addons ship:
+
+| Addon | Source | Key | Gives |
+|---|---|---|---|
+| `servarr-metadata` | `api.radarr.video`, `skyhook.sonarr.tv` | none | cast, crew, ratings from five sources, certification, keywords, trailer, collection, related, synopsis, release dates, seasons, episodes |
+| `rotten-tomatoes` | RT's public index | none | the audience score, which nothing else carries |
+| `tmdb` | `api.themoviedb.org` | yes | streaming availability per country, keywords for series |
+
+The first two are somebody else's servers being generous: Servarr's own metadata proxies,
+paid for by them, meant for Radarr and Sonarr clients. finderr caches hard, honours their
+TTLs, sends an honest User-Agent, paces every call per host, and resolves one click deep
+only -- on view and on front-page pre-warm, never a sweep. If you fork this, keep the
+caching and the pacing. A rude fork gets the whole fleet blocked, and losing that access
+would cost nearly every facet at once.
+
+An addon is one file exporting `meta` and `init`. [ADDONS.md](ADDONS.md) is the guide: a
+twenty-line hello world, both install paths, every facet you can provide, how to draw your
+own pane on the title page, and a straight account of what the extension surface does not
+do yet.
+
+## API
+
+Everything except `/api/health` and the sign-in routes needs a session cookie or the admin
+bearer key.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/health` | `{"ok":true}` anonymously; the full payload to an admin |
+| `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered |
+| `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
+| `GET` | `/api/browse?genre=&decade=&year=&kind=&offset=` | paginated, votes-ordered |
+| `GET` | `/api/discover` | the front-page shelves, pure index queries |
+| `GET` | `/api/person/:nconst` | filmography |
+| `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
+| `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side |
+| `POST` | `/api/requests` `{tconst, seasons?}` | returns `202`, queued in the background |
+| `POST` | `/api/requests/:tconst/retry` | |
+| `POST` | `/api/library/sync` | admin. Walk Radarr, Sonarr and Plex now |
+| `GET` | `/api/admin/invites`, `/users`, `/requests` | admin. Mint, list, revoke, reset |
+| `GET` | `/img/t/:tconst` | poster by IMDb id, disk-cached, never hotlinked |
+| `GET` | `/img/f/:key` | a headshot, season poster or still, by content-addressed key |
+
+The browser is never handed a provider's image URL. Every image is proxied through
+finderr, because the arrs and the metadata providers sit on your LAN and the person
+looking at the page might not. Links out are derived from ids rather than stored, with two
+exceptions that have no id to derive from: TMDB's per-country watch page and a rating
+source's own page.
+
+## Known gaps and non-goals
+
+Every line here is a real limitation. It is not a roadmap.
+
+### Not built yet
+
+- No request quotas and no approval workflow. Requests are attributed to whoever made
+  them and admins can see who asked for what, but nothing limits how much one person may
+  ask for and nothing holds a request for review. Every request goes straight to the arr.
+- No notifications. Nobody is told when a download lands. The lifecycle hooks an addon
+  would need for Discord, ntfy or a webhook are designed and not built;
+  [ADDONS.md](ADDONS.md) lists them and says plainly that they do not exist yet.
+- No request cancel or delete from the UI. A request that reached the arr is undone in
+  the arr. There is also no "my requests" page for a normal user; you get a toast and an
+  in-flight badge, and the full log lives on the admin screen.
+- A series already in Sonarr cannot be extended. Season picking works when a series is
+  first requested; asking again for a show the library mirror already knows answers
+  `409 already in your library`, and the worker only ever calls *add*. Adding seasons to a
+  partially-monitored show is done in Sonarr for now. Episode-level requests do not exist
+  at all.
+- A request that finds nothing goes `no_release` on its own after a day and nine
+  reconcile passes, rather than showing "Processing" forever. You can retry it.
+- No per-addon configuration. An addon needing an API key reads `process.env` itself.
+  That is the biggest single gap in the extension surface and it blocks every addon that
+  is not keyless.
+- The rate limiter is in memory, per process, and resets on restart. See
+  [Putting it on the internet](#putting-it-on-the-internet).
+- Series get no trailer, no "more like this" and no official-site link. Films get all
+  three from Radarr's lookup for free; neither Sonarr's lookup nor skyhook carries any of
+  them, so a series resolves those facets as empty. Source gaps, and each is an addon over
+  TMDB rather than a core change.
+- Search is titles only. You cannot type an actor's name into the search box. People are
+  reached by clicking a name on a title page; from there a filmography is one click.
+- Regional release titles are not indexed. `originalTitle` is the production-language
+  title; a foreign film's Swedish or German release title needs `title.akas` filtered to a
+  region, and that is not wired in yet.
+- English only. The UI has no translation layer and synopses arrive in English from
+  upstream. The facet vocabulary carries `language` and `country`, so a translated-synopsis
+  addon is possible today; the app's own chrome is not translatable yet.
+- The front page is the same for everyone. Shelves come from the index and the library;
+  no watch history, no "because you watched", no personalisation.
+- It installs to a home screen but needs the server. There is a web manifest and phone
+  layouts, and no service worker.
+
+### Limits of the sources
+
+- `Episode.runtime` is always null. Skyhook carries a show-level typical runtime only,
+  and the provider refuses to copy a guess onto every episode.
+- Most "Where to watch" tiles print a name, not a logo. Kometa ships 26 streaming marks
+  against the ~300 services TMDB knows, so outside the big ones you get text. Every tile
+  links to TMDB's watch page for your country, which is the one URL TMDB provides; there is
+  no per-offer link in the payload.
+- A studio badge appears only once the title's poster has been resolved. Both come from
+  the same arr lookup, which runs lazily, so an unowned title seen for the first time has
+  no badge until its poster has been fetched. Owned titles are seeded by the library sync
+  and have badges immediately.
+- Posters depend on the arrs being reachable. The IMDb-to-TMDB crosswalk runs through
+  Radarr and Sonarr's lookup endpoints; a title neither can resolve gets a typographic
+  tile.
+- Plex must have matched the item with the modern agent. finderr finds a title in Plex by
+  the `imdb://` guid the new agent writes. A library scanned by a legacy agent
+  (`com.plexapp.agents.*`) matches nothing, and `/api/health` shows `plex.items: 0` beside
+  a configured URL.
+
+### Cost you should know about
+
+- The index rebuild is heavy on low-power hardware. About 100 s on a desktop-class CPU,
+  about six minutes on a Celeron NAS, inside the 1.5 GB the compose file allows. It runs
+  unattended at 09:00 UTC by default, and the cast stage (the part that scans a 100M-row
+  dump) runs weekly rather than daily. It only hurts if you rebuild by hand and wait.
+- The cast index is floored at 1,000 votes. Person pages and linked names exist for
+  titles above that; below it a name is plain text. Lowering the floor is a config change
+  and a much longer build.
+- Four IMDb title types are indexed by default: `movie`, `tvSeries`, `tvMiniSeries`,
+  `tvMovie`. No shorts, specials, video games or adult titles unless you widen
+  `FINDERR_INDEX_TITLE_TYPES` and rebuild.
+
+### Non-goals, decided rather than pending
+
+- Not a Seerr replacement for a Jellyfin or Emby household. Plex is the only media server
+  finderr talks to, for sign-in and for the Play button. Radarr and Sonarr are the only
+  arrs.
+- No 4K or second-instance requests. One Radarr, one Sonarr, one quality profile and one
+  root folder each.
+- Nothing is embedded from a third party. The trailer is a link out, never an iframe.
+  finderr is meant to face the internet, and a third party's player and its tracking do
+  not go on the page.
+- No addon marketplace, ever. An addon runs with the server's privileges, and the server
+  holds the arr keys. Installing one means reading its code first. There is no catalogue
+  to click through.
+- No feature that needs a live network call while someone is looking at the screen. See
+  [Why](#why).
+
+## finderr and Seerr, fairly
+
+[Seerr](https://github.com/seerr-team/seerr/) (formerly Overseerr and Jellyseerr) is the
+mature one, and it does plenty finderr does not:
+
+| | Seerr | finderr |
+|---|---|---|
+| Search | live TMDB round trip per keystroke | local index, milliseconds, typo-tolerant |
+| Needs a TMDB key | yes | no (optional, for streaming availability) |
+| Media servers | Plex, Jellyfin, Emby | Plex |
+| Users | any server user, imported | invite-only, passkey or Plex |
+| Request approval, quotas | yes | no |
+| Notifications | Discord, Telegram, email, Pushover, webhooks, ... | none |
+| 4K / second instance | yes | no |
+| Issue reporting | yes | no |
+| Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
+| Extensibility | none | addons: facets and panes |
+| Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
+
+If you run a big shared library with users you do not fully trust and you need approval
+and quotas, Seerr is still the right tool today. If it is a handful of people you invited
+yourself, and what bugs you about Seerr is the waiting, run this instead. The two run side
+by side fine, against the same arrs.
+
+## Join the crew
+
+Bug reports, typos, an addon for a source nobody has wired up, a translated synopsis
+facet, a better "more like this" -- all welcome. Open an issue or a pull request. Not sure
+it fits? Open the issue anyway and we will figure it out ;-)
+
+```bash
+bun run test && bun run test:web && bun run typecheck && bun run lint
+```
+
+That is the gate CI runs and the one a PR has to pass. Two rules while you are in here;
+
+1. The render path touches nothing but local SQLite and local disk. A handler that can
+   block on the network while a person waits is a bug.
+2. Be polite on other people's servers. Every outbound call goes through the paced,
+   hard-cached fetch. There is no second route to a third party.
+
+The reasoning behind most decisions sits in doc comments next to the code it describes.
+`src/server/live-index.ts`, `src/lib/facet-resolver.ts` and `web/src/lib/facet-panes.ts`
+are the three to read before changing anything structural.
+
+## Licence and attribution
+
+finderr is MIT licensed; see [LICENSE](LICENSE). Some of what it uses belongs to other
+people and is not covered by that licence:
+
+- The [IMDb datasets](https://developer.imdb.com/non-commercial-datasets/) are published
+  for personal and non-commercial use. A private request UI for one household is inside
+  that. A public or commercial deployment is not.
+- TMDB's image CDN serves the posters and, with a key, its API serves streaming
+  availability and series keywords. *This product uses the TMDB API but is not endorsed or
+  certified by TMDB.* The availability catalogue is JustWatch's, credited on the pane
+  beside the data.
+- The Servarr metadata proxies (`api.radarr.video`, `skyhook.sonarr.tv`) are run by the
+  Servarr team for Radarr and Sonarr clients. finderr is a third party on them and behaves
+  like one.
+- Rotten Tomatoes' public search index supplies the audience score.
+- The logo set is fetched at build time from [Kometa](https://github.com/Kometa-Team/Kometa/)
+  (MIT). The marks themselves remain their trademark holders' property and are used for
+  identification only.
+- `vendor/sqlite-spellfix/spellfix.c` is SQLite's own `spellfix1` extension, placed in the
+  public domain by its authors and vendored because no packaged build ships it.
+- The Plex deep-link templates are reproduced from
+  [Jellyseerr](https://github.com/Fallenbagel/jellyseerr/)'s `Media.ts`, because Plex
+  documents neither of them.
+
+finderr is not affiliated with IMDb, TMDB, JustWatch, Rotten Tomatoes, Plex, the Servarr
+team or Kometa. I wrote it from scratch, loosely around the shape of Seerr, with the search
+moved off the network.
+
+--\
+[aannarr](https://github.com/aannarr/)

@@ -1,0 +1,352 @@
+/**
+ * One title, at its own URL.
+ *
+ * THE PAGE NEVER WAITS. Everything already local -- poster, title, year, runtime,
+ * genres, IMDb score, studio, library state -- comes out of `/api/title/:tconst` in a
+ * few milliseconds and renders immediately. Everything a plugin has to fetch renders as
+ * a skeleton beside it and fills in, or quietly disappears if nobody can answer. A slow
+ * provider is slow once per title, never once per request: its answer is cached whether
+ * or not this view waited for it.
+ *
+ * `useTitleDetail` owns that policy, including what happens to a facet that misses the
+ * deadline; this file owns the layout.
+ */
+
+import { Link, useCanGoBack, useParams, useRouter } from "@tanstack/react-router";
+import { useState } from "react";
+import { BrowseChip } from "../components/BrowseChip";
+import { useKeyAction } from "../components/Kbd";
+import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
+import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
+import { posterUrl, type Title } from "../lib/api";
+import { useApp } from "../lib/app-context";
+import { formatVotes } from "../lib/facet-panes";
+import { decadeOf } from "../lib/search-params";
+import { useTitleDetail } from "../lib/use-title-detail";
+
+const KIND_LABEL: Record<string, string> = {
+  movie: "Film",
+  tvSeries: "Series",
+  tvMiniSeries: "Mini-series",
+  tvMovie: "TV film",
+};
+
+function runtimeLabel(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m}m`;
+  // "1h", not "1h 0m" -- a round hour is extremely common for a TV episode slot.
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+export function TitleRoute() {
+  const { tconst } = useParams({ strict: false }) as { tconst: string };
+  const { request } = useApp();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
+
+  const { title, facets, people, collectionTitles, relatedTitles, panes, working, error } =
+    useTitleDetail(tconst);
+
+  /*
+    Both keys are bound before the early returns below, because hooks must be, and both
+    are gated on the same condition that decides whether their button is drawn at all --
+    that is what keeps the glyph honest. A title already in the library, or already
+    requested, has no Request button and no `⌘⏎`.
+  */
+  const canRequest = Boolean(title && !title.inLibrary && !title.requestStatus);
+
+  /*
+    Whether a chooser is offered is decided by the FACET, never by `title.kind`. A film
+    is not served the `seasons` facet at all (`entities: ["series"]` in facets.ts), so it
+    can never reach the chooser -- the same rule that keeps a `title.kind` check out of
+    every pane. It also means the button never WAITS on a facet: until `seasons` lands,
+    or if it never does, the button queues the whole series exactly as it always has.
+  */
+  const seasonsFacet = facets?.seasons;
+  const seasons = seasonsFacet?.status === "ready" ? seasonsFacet.data : null;
+  const choosable = Boolean(seasons && seasons.length > 0);
+  const [choosing, setChoosing] = useState(false);
+
+  const startRequest = () => {
+    if (!title) return;
+    if (choosable) setChoosing(true);
+    else void request(title);
+  };
+
+  const requestKey = useKeyAction("request", startRequest, canRequest);
+  const backKey = useKeyAction("back", () => router.history.back(), canGoBack);
+
+  if (error && !title) {
+    return (
+      <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm">
+        {error}{" "}
+        <Link to="/" search={{}} className="underline">
+          Back to search
+        </Link>
+      </div>
+    );
+  }
+
+  // No spinner: the local half is a SQLite round trip on the LAN and lands in a few
+  // milliseconds, and arriving from search means we already hold the row. A spinner
+  // would flash and be gone before it was read -- and a global one over a page that is
+  // 80% ready is a lie about what we know.
+  if (!title) return null;
+
+  const poster = posterUrl(title);
+  const genres = title.genres ? title.genres.split(",").filter(Boolean) : [];
+
+  return (
+    <>
+      {/*
+        history.back() rather than a link to "/": it returns to the exact results the
+        user came from, facets and scroll position intact, which a fresh "/" cannot do.
+        Deep-linked visitors have no history to pop, so they get a plain link instead
+        of a button that would throw them out of the app.
+      */}
+      {canGoBack ? (
+        <button
+          type="button"
+          onClick={() => router.history.back()}
+          {...backKey.props}
+          className="mb-4 text-sm text-muted hover:text-ink"
+        >
+          ← Back to results
+          {backKey.hint}
+        </button>
+      ) : (
+        <Link to="/" search={{}} className="mb-4 block text-sm text-muted hover:text-ink">
+          ← Search
+        </Link>
+      )}
+
+      {/*
+        Two columns from `sm` up: a sticky rail (poster + the facts card) and the reading
+        column. `items-start` is what lets the rail be sticky -- a stretched grid cell is
+        as tall as the page and never has anywhere to stick.
+      */}
+      <article className="sm:grid sm:grid-cols-[16rem_minmax(0,1fr)] sm:items-start sm:gap-8">
+        <aside className="hidden sm:sticky sm:top-4 sm:block">
+          <Poster poster={poster} />
+          <TitleFactsCard facets={facets} working={working} className="mt-4" />
+        </aside>
+
+        <div className="min-w-0">
+          {/*
+            On a phone the poster is a thumbnail BESIDE the title rather than a full-width
+            image above it -- the old stack put a screenful of artwork between the reader
+            and the name they tapped. The rail poster and this thumb are one component in
+            two mounts; breakpoints show exactly one.
+          */}
+          <div className="flex gap-4">
+            <div className="w-24 shrink-0 sm:hidden">
+              <Poster poster={poster} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                <span className="rounded bg-surface-2 px-1.5 py-0.5 uppercase tracking-wide">
+                  {KIND_LABEL[title.kind] ?? title.kind}
+                </span>
+                {/*
+              The year and its decade are exits, not captions: `/browse` has served
+              both filters since v0 and nothing ever linked them, so the page had one
+              way out (genre) where it could have three.
+            */}
+                {title.year && (
+                  <>
+                    <BrowseChip filters={{ year: title.year, kind: title.kind }} label={String(title.year)} />
+                    <BrowseChip
+                      filters={{ decade: decadeOf(title.year), kind: title.kind }}
+                      label={`${decadeOf(title.year)}s`}
+                    />
+                  </>
+                )}
+                {title.runtime && <span>{runtimeLabel(title.runtime)}</span>}
+                {title.studioLogo ? (
+                  <span className="flex items-center rounded bg-black/55 px-1.5 py-1">
+                    <img
+                      src={title.studioLogo}
+                      alt={title.studio ?? ""}
+                      title={title.studio ?? undefined}
+                      className="h-3.5 w-auto max-w-20 object-contain opacity-90"
+                    />
+                  </span>
+                ) : (
+                  title.studio && <span>{title.studio}</span>
+                )}
+              </div>
+
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">{title.title}</h2>
+
+              {/* Often the name a non-English speaker actually searched for. */}
+              {title.orig && title.orig !== title.title && (
+                <p className="mt-1 text-sm text-muted italic">{title.orig}</p>
+              )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+                {title.rating > 0 && (
+                  <span className="tabular-nums">
+                    ★ {title.rating.toFixed(1)}
+                    <span className="ml-1 text-muted">({formatVotes(title.votes)} votes)</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {genres.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {/* A real destination, not decoration. */}
+              {genres.map((g) => (
+                <BrowseChip key={g} filters={{ genre: g, kind: title.kind }} label={g} />
+              ))}
+            </div>
+          )}
+
+          <div className="mt-6 max-w-xs">
+            {title.plex ? (
+              <PlayOnPlex plex={title.plex} />
+            ) : title.inLibrary ? (
+              <span className="block rounded-lg border border-line px-3 py-2 text-center text-sm text-muted">
+                {title.hasFile ? "Available in your library" : "Monitored, not downloaded"}
+                {title.progress !== null && title.progress > 0 && title.progress < 1 && (
+                  <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
+                )}
+              </span>
+            ) : title.requestStatus ? (
+              <span className="block rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-center text-sm">
+                {title.requestStatus === "no_release" ? "No release found" : title.requestStatus}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={startRequest}
+                {...requestKey.props}
+                className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-black
+                         transition-opacity hover:opacity-90 active:opacity-75"
+              >
+                {/*
+                  The label changes when the chooser becomes available, so the button
+                  never promises to queue and then opens a dialog instead. It is a text
+                  swap inside a fixed-width button: no reflow, which is what the header
+                  rule is protecting.
+                */}
+                {choosable
+                  ? "Choose seasons"
+                  : `Request from ${title.service === "sonarr" ? "Sonarr" : "Radarr"}`}
+                {requestKey.hint}
+              </button>
+            )}
+          </div>
+
+          {/*
+            The "tt1375666 on IMDb" line used to sit here: one hard-coded destination,
+            wearing an internal id as its label. It is the links row under the synopsis
+            now -- IMDb beside every other place this title lives, each called by its name.
+          */}
+
+          {/*
+            Below the header, never inside it: the header is the local half and is on
+            screen at t=0, and nothing arriving late is allowed to push it around. The
+            reading-flow panes share the main column; the wide rows follow the grid.
+          */}
+          <TitleMainPanes title={title} facets={facets} working={working} panes={panes} />
+        </div>
+      </article>
+
+      {/*
+        Rendered outside the header and outside the panes: a native dialog lives in the
+        browser's top layer, so where it sits in the tree costs nothing, and keeping it
+        out of the header keeps that block purely local.
+      */}
+      {seasons && (
+        <SeasonRequestDialog
+          open={choosing}
+          seasons={seasons}
+          title={title.title}
+          onCancel={() => setChoosing(false)}
+          onConfirm={(chosen) => {
+            setChoosing(false);
+            void request(title, chosen);
+          }}
+        />
+      )}
+
+      <TitleLowerPanes
+        title={title}
+        facets={facets}
+        working={working}
+        people={people}
+        collectionTitles={collectionTitles}
+        relatedTitles={relatedTitles}
+        panes={panes}
+      />
+    </>
+  );
+}
+
+/**
+ * The poster, or an honest placeholder -- one component for its two mounts (desktop
+ * rail, mobile thumbnail), so a restyle cannot drift them apart. The mount decides the
+ * width; this only fills it.
+ */
+function Poster({ poster }: { poster: string | null }) {
+  if (poster) {
+    return (
+      <img src={poster} alt="" className="w-full rounded-xl border border-line bg-surface object-cover" />
+    );
+  }
+  return (
+    <div className="flex aspect-2/3 w-full items-center justify-center rounded-xl border border-line bg-surface text-xs text-muted">
+      No artwork
+    </div>
+  );
+}
+
+/**
+ * The action for a title Plex already holds: play it.
+ *
+ * It takes the primary slot the Request button occupies for everything else, and it
+ * OUTRANKS "Available in your library" -- that span was the end of the road for an owned
+ * title, telling the reader they had it and then leaving them to go find it themselves.
+ * This is the whole reason the Plex mirror exists.
+ *
+ * Legitimately in the header, and it is worth saying why, because the route's own rule is
+ * that a facet-driven element may never go here: this is not facet-driven. `title.plex` is
+ * built from the local Plex mirror and arrives with the row at t=0, exactly like
+ * `inLibrary`, so it cannot pop in late and push the header around.
+ *
+ * TWO LINKS, because they fail in opposite directions and neither is safe alone. The web
+ * app works on any machine but lands the reader in a browser tab; `plex://` opens the real
+ * client and does NOTHING AT ALL when no client is installed to claim the scheme -- no
+ * error, no navigation, a dead button. So the web link is the one wearing the weight, and
+ * the app link sits under it as an offer.
+ *
+ * `hasFile` is deliberately not consulted. Plex holding a scanned item IS the stronger
+ * statement -- the arr's `hasFile` can be true for a file Plex has not seen yet, and it can
+ * be false for something imported outside the arr entirely.
+ */
+function PlayOnPlex({ plex }: { plex: NonNullable<Title["plex"]> }) {
+  return (
+    <div className="space-y-1.5">
+      <a
+        href={plex.web}
+        target="_blank"
+        rel="noreferrer"
+        className="block w-full rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium
+                   text-black transition-opacity hover:opacity-90 active:opacity-75"
+      >
+        Play on Plex
+      </a>
+      {/*
+        No `target`/`rel`: this never navigates the page, it hands the URL to whatever
+        registered the `plex:` scheme. Opening it in a tab would leave an empty one behind
+        on the machines where it works.
+      */}
+      <a href={plex.app} className="block text-center text-xs text-muted hover:text-ink">
+        Open in the Plex app
+      </a>
+    </div>
+  );
+}

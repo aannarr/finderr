@@ -1,0 +1,903 @@
+/**
+ * The search engine.
+ *
+ * Three tiers, escalated AUTOMATICALLY on zero rows / low score / low coverage /
+ * thin margin. The user never asks for fuzzy matching -- they just type badly and
+ * get the right answer.
+ *
+ *   1. FTS    AND over normalized title + original title + despaced blob   0-5ms
+ *   2. OR     same, OR'd, stopwords dropped, gated on token coverage       30-70ms
+ *   3. FUZZY  spellfix1 over the vocabulary in the index file              ~12ms
+ *
+ * There used to be a fourth tier. `LEV` ran a Levenshtein scan across an in-memory
+ * pool for short queries, because the trigram index that served tier 4 is blind under
+ * about six characters. Both tiers were backed by a trigram index rebuilt in RAM on
+ * every boot -- 205k entries, ~9M live objects, 1,514 MB, which cost 14.5% of a core
+ * in GC on an idle container. spellfix1 does edit distance and phonetic matching from
+ * one disk-backed table, so the two tiers collapsed into one that holds nothing.
+ *
+ * `Tier` keeps `lev` in its union deliberately: it is serialised into the search API
+ * response, and an old client or a stored log line may still carry it.
+ */
+
+import { Database } from "bun:sqlite";
+import type { Config } from "./config";
+import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
+import { nconstsByNameForTitle, type PersonCreditsOptions, type PersonPage, personPage } from "./people";
+import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
+import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
+
+export type Tier = "fts" | "or" | "lev" | "fuzzy" | "empty";
+
+export interface TitleRow {
+  tconst: string;
+  title: string;
+  orig: string | null;
+  year: number | null;
+  kind: string;
+  votes: number;
+  rating: number;
+  genres: string;
+  runtime: number | null;
+}
+
+export interface Hit extends TitleRow {
+  score: number;
+  /** Fraction of query tokens found in the title. Drives the escalation gate. */
+  coverage: number;
+}
+
+export interface Facets {
+  genre: { value: string; count: number }[];
+  decade: { value: number; count: number }[];
+  year: { value: number; count: number }[];
+  kind: { value: string; count: number }[];
+}
+
+export interface SearchResult {
+  hits: Hit[];
+  facets: Facets;
+  tier: Tier;
+  parsed: ParsedQuery;
+  ms: number;
+  /** Total candidates considered before the page was cut. */
+  candidates: number;
+}
+
+export interface SearchOptions {
+  limit?: number;
+  genre?: string;
+  decade?: number;
+  year?: number;
+  kind?: string;
+  /** Skip facet computation when the caller only wants rows. */
+  facets?: boolean;
+}
+
+/**
+ * Stopwords are a LATENCY bug as much as a quality one: `"the"*` prefix-matches
+ * nearly every title in the index. Leaving it in an OR clause cost 1138ms.
+ */
+const STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "of",
+  "and",
+  "in",
+  "on",
+  "to",
+  "is",
+  "it",
+  "for",
+  "at",
+  "by",
+  "der",
+  "die",
+  "das",
+  "den",
+  "dem",
+  "ein",
+  "eine",
+  "le",
+  "la",
+  "les",
+  "un",
+  "une",
+  "des",
+  "du",
+  "el",
+  "los",
+  "las",
+  "una",
+  "och",
+  "en",
+  "ett",
+  "som",
+  "pa",
+  "av",
+  "det",
+  "il",
+  "lo",
+  "gli",
+  "di",
+  "da",
+  "che",
+]);
+
+/** Number of rows pulled from FTS before ranking. Facet counts are computed over this. */
+const CANDIDATE_WINDOW = 400;
+
+/**
+ * The decade a year falls in -- 1994 is in the 1990s.
+ *
+ * One owner for the floor division. It was spelled out inline in four places before,
+ * which is three chances for a browse query and the facet count beside it to disagree
+ * about which decade a title belongs to.
+ *
+ * `web/src/lib/search-params.ts` keeps its own copy on purpose: importing this one
+ * would pull a server module into the browser bundle, which is a build-config
+ * decision rather than a de-duplication.
+ */
+export function decadeOf(year: number): number {
+  return Math.floor(year / 10) * 10;
+}
+
+/**
+ * How many spellfix1 candidates to pull for the fuzzy tier.
+ *
+ * Matches the window the old in-memory trigram tier used, so the ranking layer below
+ * sees the same amount of material to work with and scores are comparable across the
+ * change.
+ */
+const FUZZY_WINDOW = 300;
+
+export class SearchEngine {
+  private db: Database;
+
+  /** Whether the fuzzy tier is available: extension loaded AND vocabulary present. */
+  private fuzzyReady = false;
+  private vocabWords = 0;
+
+  /**
+   * Trigram sets for CANDIDATE titles, memoized across queries.
+   *
+   * Only rows that reach `rank()` land here -- a few hundred per query, not the corpus.
+   * The bound is deliberately small: this is a micro-optimisation worth a few
+   * microseconds per candidate, and it is not worth handing the garbage collector a
+   * million more objects to trace. The in-RAM pool this class used to carry is the
+   * cautionary tale -- 9M live objects cost 14.5% of a core in GC on an idle box.
+   */
+  private trigramCache = new Map<number, Set<string>[]>();
+
+  /**
+   * Whether this index carries the cast tables.
+   *
+   * **An index built before they existed is still perfectly valid**, and the server has to
+   * keep serving it -- the cast stage is additive precisely so a running deployment
+   * survives the upgrade and picks people up at its next nightly rebuild. Without this
+   * check every person query would throw `no such table: person` against exactly the index
+   * most likely to be live during a rollout.
+   *
+   * Assigned in the CONSTRUCTOR BODY, not as a field initializer. Initializers run before
+   * the body, so `= this.tableExists(...)` here ran while `this.db` was still undefined
+   * and took down every SearchEngine construction -- including the canary gate, which is
+   * where it was caught. Declared here and set below.
+   *
+   * Answered once from `sqlite_master` rather than per request: the file is opened
+   * read-only and its schema cannot change under us.
+   */
+  readonly hasPeople: boolean;
+
+  constructor(
+    dbPath: string,
+    private cfg: Config,
+  ) {
+    this.db = new Database(dbPath, { readonly: true });
+    this.db.run("pragma temp_store = memory");
+    this.db.run("pragma cache_size = -64000"); // 64 MB page cache
+    this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
+  }
+
+  /**
+   * Attach the fuzzy tier.
+   *
+   * This used to build a trigram index in RAM on every boot: 205k entries, ~9 million
+   * live objects, 1,514 MB resident, 4-11 seconds of startup. It was the single most
+   * expensive thing in the product, and the cost was not the memory -- it was that
+   * JavaScriptCore must re-mark every one of those objects forever, which burned 14.5%
+   * of a core on a container serving no traffic.
+   *
+   * Now the vocabulary is built once by the index builder and lives in the index file
+   * (`vendor/sqlite-spellfix/README.md` has the measurements). All this does is load
+   * the extension and confirm the table is there, so it costs a few milliseconds and
+   * holds nothing.
+   *
+   * Degrades rather than throws: without the extension, search still serves the FTS
+   * tiers and only loses typo tolerance.
+   */
+  prepareFuzzy(log: (m: string) => void = () => {}): void {
+    const t0 = Bun.nanoseconds();
+    if (!loadSpellfix(this.db, log).ok) {
+      log("fuzzy: DISABLED -- spellfix1 did not load. Exact and prefix search still work.");
+      return;
+    }
+
+    // An index built before the vocabulary existed is still perfectly serviceable; it
+    // just has no fuzzy tier until the next rebuild. Say so rather than throwing.
+    const present = this.db
+      .query("select count(*) c from sqlite_master where type in ('table','view') and name = ?")
+      .get(SPELLFIX_TABLE) as { c: number };
+    if (present.c === 0) {
+      log(`fuzzy: DISABLED -- no '${SPELLFIX_TABLE}' table in this index. Rebuild it to enable typo search.`);
+      return;
+    }
+
+    this.vocabWords = (
+      this.db.query(`select count(*) c from ${SPELLFIX_MAP_TABLE}`).get() as { c: number }
+    ).c;
+    this.fuzzyReady = true;
+
+    // The vocabulary was built at whatever floor was configured AT BUILD TIME. If the
+    // running config has moved since, fuzzy coverage is not what config says it is --
+    // and the only symptom would be one obscure title becoming unfindable, which nobody
+    // notices. Say it out loud instead.
+    const builtFloor = this.db.query("select value from meta where key = 'vocab_min_votes'").get() as
+      | { value: string }
+      | undefined;
+    if (builtFloor && Number(builtFloor.value) !== this.cfg.index.fuzzyMinVotes) {
+      log(
+        `fuzzy: WARNING -- vocabulary was built at votes >= ${builtFloor.value} but config says ` +
+          `${this.cfg.index.fuzzyMinVotes}. Rebuild the index to apply the new floor.`,
+      );
+    }
+
+    log(
+      `fuzzy: spellfix1 ready, ${this.vocabWords.toLocaleString()} words ` +
+        `in ${((Bun.nanoseconds() - t0) / 1e6).toFixed(0)}ms`,
+    );
+  }
+
+  /** Trigram sets for a candidate's title variants, computed once and reused. */
+  private variantTrigrams(rowid: number, variants: string[]): Set<string>[] {
+    let cached = this.trigramCache.get(rowid);
+    if (cached) return cached;
+    cached = [];
+    for (const v of variants) {
+      cached.push(trigrams(v));
+      cached.push(trigrams(v.replace(/ /g, "")));
+    }
+    // Bound the cache. 5,000 rowids is roughly 240k objects at the top end, which is a
+    // rounding error next to a heap; the previous 50,000 was ten times that for a
+    // saving measured in microseconds per candidate.
+    if (this.trigramCache.size > 5_000) this.trigramCache.clear();
+    this.trigramCache.set(rowid, cached);
+    return cached;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  get ready(): boolean {
+    return this.fuzzyReady;
+  }
+
+  /**
+   * What the fuzzy tier costs, as one short string for the resource log.
+   *
+   * Printed beside heap and GC on purpose. The previous implementation held 205k
+   * entries and ~9M objects here, and seeing that count next to a GC percentage is
+   * what makes the relationship legible without a profiler. It now reads `vocab N
+   * words (disk)`, which is the whole point: the number is large and costs nothing.
+   */
+  poolStats(): string {
+    if (!this.fuzzyReady) return "fuzzy off";
+    return `vocab ${this.vocabWords.toLocaleString()} words (disk)`;
+  }
+
+  meta(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const r of this.db.query("select key, value from meta").all() as {
+      key: string;
+      value: string;
+    }[]) {
+      out[r.key] = r.value;
+    }
+    return out;
+  }
+
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build an FTS5 MATCH expression.
+   *
+   * Two latency rules learned the hard way:
+   *  - Stopwords are dropped whenever something else remains. `"the"*` prefix-matches
+   *    nearly every title in the index; leaving it in cost 80-1138ms depending on tier.
+   *    Dropping it is also harmless for recall, since the normalized columns already
+   *    have leading articles stripped.
+   *  - Tokens of <=2 chars get no `*`. `"io"*` alone cost 35ms.
+   */
+  private matchExpr(text: string, or: boolean): string | null {
+    let tokens = normalize(text).split(" ").filter(Boolean);
+    const meaningful = tokens.filter((t) => !STOPWORDS.has(t));
+    if (meaningful.length > 0) tokens = or ? meaningful.filter((t) => t.length > 2) : meaningful;
+    if (tokens.length === 0) {
+      // The query was nothing but stopwords ("the", "it"). Match them literally.
+      tokens = normalize(text).split(" ").filter(Boolean);
+    }
+    if (tokens.length === 0) return null;
+    const parts = tokens.map((t) => (t.length <= 2 ? `"${t}"` : `"${t}"*`));
+    return or ? parts.join(" OR ") : parts.join(" ");
+  }
+
+  private ftsCandidates(expr: string): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
+    return this.db
+      .query(
+        `select t.rowid_ as rowid, t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating,
+                t.genres, t.runtime, t.ntitle, t.norig, -bm25(tfts) as bm
+         from tfts join title t on t.rowid_ = tfts.rowid
+         where tfts match ?
+         order by (-bm25(tfts)) + 1.6 * ln(t.votes + 10) desc
+         limit ${CANDIDATE_WINDOW}`,
+      )
+      .all(expr) as (TitleRow & {
+      rowid: number;
+      bm: number;
+      ntitle: string;
+      norig: string;
+    })[];
+  }
+
+  /**
+   * The single scoring function. Every candidate goes through this regardless of
+   * which tier produced it, so scores from FTS and from the fuzzy pool are directly
+   * comparable and the tiers can be merged rather than chosen between.
+   *
+   * Text similarity is computed here (not taken from bm25) precisely so the scales
+   * match; bm25 is used only to pick which 400 rows are worth scoring.
+   */
+  private rank(
+    rows: (TitleRow & { rowid: number; ntitle?: string; norig?: string })[],
+    p: ParsedQuery,
+  ): Hit[] {
+    const nq = normalizeStripped(p.text);
+    const dq = despace(p.text);
+    const gq = trigrams(nq);
+    const gd = trigrams(dq);
+    const qTokens = nq.split(" ").filter(Boolean);
+
+    const seen = new Set<number>();
+    const out: Hit[] = [];
+
+    for (const r of rows) {
+      if (seen.has(r.rowid)) continue;
+      seen.add(r.rowid);
+
+      const variants = [
+        r.ntitle ?? normalizeStripped(r.title),
+        r.norig ?? normalizeStripped(r.orig ?? ""),
+      ].filter(Boolean);
+
+      // How much of the query's text is actually present, 0..1.
+      // Trigram sets are memoized -- recomputing them per candidate per query was
+      // most of the cost of a fuzzy search.
+      let textSim = 0;
+      for (const set of this.variantTrigrams(r.rowid, variants)) {
+        const s = Math.max(similarity(gq, set), similarity(gd, set));
+        if (s > textSim) textSim = s;
+      }
+
+      // Token coverage: a separate signal from character similarity. "Budapest Hostel"
+      // covers 1 of 2 tokens against "Hostel" -- that is what the escalation gate reads.
+      let cov = 0;
+      for (const v of variants) {
+        let n = 0;
+        for (const t of qTokens) if (v.includes(t)) n++;
+        cov = Math.max(cov, qTokens.length ? n / qTokens.length : 0);
+      }
+
+      const ys = yearScore(r.year, p.year, p.decade);
+
+      // Exact / prefix / coverage all measure THE SAME THING. Stacking them
+      // (12 + 4 + 7 = 23) let a 439-vote "Interstelar" beat the 2.6M-vote
+      // "Interstellar". Take the strongest single signal, never the sum.
+      //
+      // The year gate: an explicit year must be able to beat an exact title match,
+      // or "The Matrix 2021" returns The Matrix (1999).
+      let match: number;
+      if (variants.includes(nq)) {
+        // An exact match on an obscure title is SUSPICIOUS -- far more often a typo of
+        // something famous than a deliberate search for a 439-vote film. Scale the
+        // bonus by how plausible it is that anyone meant this title.
+        match = p.year && ys < 0 ? 0 : 14 * Math.min(1, Math.log(r.votes + 10) / Math.log(50_000));
+      } else if (variants.some((v) => v.startsWith(nq))) {
+        match = 9;
+      } else if (cov >= 0.999) {
+        // Matching EVERY query word is qualitatively different from matching half of
+        // them, and deserves more than a linear share. This is what lets "Nile City"
+        // find NileCity 105.6 over the far more popular Sin City.
+        match = 12;
+      } else {
+        match = 10 * cov;
+      }
+
+      const score =
+        22 * textSim +
+        match +
+        // Popularity, saturating. The difference between 300k and 2.6M votes is not
+        // informative -- both are famous -- but 439 vs 300k is decisive. Without the
+        // cap, blockbusters bulldoze every correct-but-smaller match.
+        2.4 * Math.log(Math.min(r.votes, 300_000) + 10) +
+        ys +
+        kindScore(r.kind, p.kind) +
+        recencyScore(r.year);
+
+      out.push({ ...r, score, coverage: cov } as Hit);
+    }
+
+    return out.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Typo-tolerant candidates, straight out of the index.
+   *
+   * Replaces two in-memory tiers -- a Levenshtein scan over all 205k pool entries and a
+   * trigram posting-list walk -- with one indexed query. spellfix1 does both jobs: its
+   * edit-distance core handles the short queries trigrams are blind to ("sielo" vs
+   * "silo"), and its phonetic bucketing handles the long ones.
+   *
+   * Candidates only. Everything about ORDER is still `rank()`'s job, exactly as before,
+   * so scores stay comparable with the FTS tiers and the tuning above is untouched.
+   *
+   * Both title forms are in the vocabulary, so a query matching a Swedish original
+   * resolves through the same path as an English one -- `vocab_map` collapses both back
+   * to one title rowid, and the de-duplication happens in `rank()`.
+   */
+  private fuzzyCandidates(p: ParsedQuery, limit: number): number[] {
+    if (!this.fuzzyReady) return [];
+    const nq = normalizeStripped(p.text);
+    if (nq.length === 0) return [];
+
+    const rows = this.db
+      .query(
+        `select m.rowid_ as rowid from ${SPELLFIX_TABLE} v
+         join ${SPELLFIX_MAP_TABLE} m on m.id = v.rowid
+         where v.word match ? and v.top = ?`,
+      )
+      .all(nq, limit) as { rowid: number }[];
+
+    // One title can appear twice (primary and original form); keep first occurrence,
+    // which is the closer match since spellfix1 returns in distance order.
+    const seen = new Set<number>();
+    const out: number[] = [];
+    for (const r of rows) {
+      if (seen.has(r.rowid)) continue;
+      seen.add(r.rowid);
+      out.push(r.rowid);
+    }
+    return out;
+  }
+
+  /** Load full rows for a set of rowids, preserving nothing about order. */
+  private hydrate(rowids: number[]): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
+    if (rowids.length === 0) return [];
+    const out: (TitleRow & { rowid: number; ntitle: string; norig: string })[] = [];
+    // Chunk to stay under SQLite's variable limit on large candidate sets.
+    for (let i = 0; i < rowids.length; i += 500) {
+      const chunk = rowids.slice(i, i + 500);
+      out.push(
+        ...(this.db
+          .query(
+            `select rowid_ as rowid, tconst, title, orig, year, kind, votes, rating, genres, runtime, ntitle, norig
+             from title where rowid_ in (${chunk.map(() => "?").join(",")})`,
+          )
+          .all(...chunk) as (TitleRow & {
+          rowid: number;
+          ntitle: string;
+          norig: string;
+        })[]),
+      );
+    }
+    return out;
+  }
+
+  // -------------------------------------------------------------------------
+
+  search(raw: string, opts: SearchOptions = {}): SearchResult {
+    const t0 = Bun.nanoseconds();
+    const limit = opts.limit ?? 25;
+    const parsed = parseQuery(raw);
+    const empty: Facets = { genre: [], decade: [], year: [], kind: [] };
+
+    if (parsed.text.length === 0) {
+      return {
+        hits: [],
+        facets: empty,
+        tier: "empty",
+        parsed,
+        ms: 0,
+        candidates: 0,
+      };
+    }
+
+    // Candidates accumulate across tiers; rank() scores them all on one scale and the
+    // best answer wins regardless of which tier found it. Choosing a tier and
+    // discarding the others is how a 439-vote exact match beats a 2.6M-vote near match.
+    const candidates = new Map<number, TitleRow & { rowid: number; ntitle: string; norig: string }>();
+    const add = (rows: (TitleRow & { rowid: number; ntitle: string; norig: string })[]) => {
+      for (const r of rows) if (!candidates.has(r.rowid)) candidates.set(r.rowid, r);
+    };
+
+    let tier: Tier = "fts";
+    const andExpr = this.matchExpr(parsed.text, false);
+    if (andExpr) add(this.ftsCandidates(andExpr));
+
+    let ranked = this.rank([...candidates.values()], parsed);
+
+    /**
+     * Escalate when the top hit is weak, ambiguous, barely covers the query, OR is
+     * obscure. The obscurity check is the one that catches "interstelar": an exact
+     * title match on a 439-vote film looks confident but almost certainly means the
+     * user typo'd something famous.
+     */
+    const weak = (hits: Hit[]): boolean =>
+      hits.length === 0 ||
+      hits[0].score < 20 ||
+      hits[0].coverage < 0.6 ||
+      hits[0].votes < 5000 ||
+      (hits[1] !== undefined && hits[0].score - hits[1].score < 1.0 && hits[0].score < 26);
+
+    if (weak(ranked)) {
+      const orExpr = this.matchExpr(parsed.text, true);
+      if (orExpr && orExpr !== andExpr) {
+        const before = candidates.size;
+        add(this.ftsCandidates(orExpr));
+        if (candidates.size > before) {
+          ranked = this.rank([...candidates.values()], parsed);
+          tier = "or";
+        }
+      }
+    }
+
+    // One fuzzy tier, not two. The old `lev` and `fuzzy` tiers existed because an
+    // in-memory trigram index is blind under about six characters and needed a separate
+    // Levenshtein scan beside it. spellfix1 covers both cases in a single query, so the
+    // split has no meaning any more -- and a second escalation that could only ever add
+    // what the first already found is pure latency.
+    if (weak(ranked) && this.fuzzyReady) {
+      const before = candidates.size;
+      add(this.hydrate(this.fuzzyCandidates(parsed, FUZZY_WINDOW)));
+      if (candidates.size > before) {
+        ranked = this.rank([...candidates.values()], parsed);
+        tier = "fuzzy";
+      }
+    }
+
+    const candidateCount = candidates.size;
+
+    // Facet filters from the UI narrow the ranked set.
+    let filtered = ranked;
+    if (opts.genre) filtered = filtered.filter((h) => h.genres.split(",").includes(opts.genre as string));
+    if (opts.decade !== undefined)
+      filtered = filtered.filter((h) => h.year !== null && decadeOf(h.year) === opts.decade);
+    if (opts.year !== undefined) filtered = filtered.filter((h) => h.year === opts.year);
+    if (opts.kind) filtered = filtered.filter((h) => h.kind === opts.kind);
+
+    const facets = opts.facets === false ? empty : computeFacets(ranked);
+
+    return {
+      hits: filtered.slice(0, limit),
+      facets,
+      tier: ranked.length === 0 ? "empty" : tier,
+      parsed,
+      ms: (Bun.nanoseconds() - t0) / 1e6,
+      candidates: candidateCount || ranked.length,
+    };
+  }
+
+  byTconst(tconst: string): TitleRow | null {
+    return (
+      (this.db
+        .query(
+          "select tconst, title, orig, year, kind, votes, rating, genres, runtime from title where tconst = ?",
+        )
+        .get(tconst) as TitleRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * Discovery rows that cost ZERO API calls -- pure queries over data we already hold.
+   * Seerr cannot do this at all.
+   */
+  topRated(
+    opts: { minVotes?: number; kind?: string; limit?: number; excludeTconsts?: Set<string> } = {},
+  ): TitleRow[] {
+    const rows = this.db
+      .query(
+        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+         from title
+         where votes >= ? and rating >= 7.5 ${opts.kind ? "and kind = ?" : ""}
+         order by rating * ln(votes) desc
+         limit ?`,
+      )
+      .all(
+        ...([opts.minVotes ?? 50_000, ...(opts.kind ? [opts.kind] : []), (opts.limit ?? 40) * 3] as never[]),
+      ) as TitleRow[];
+    const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
+    return out.slice(0, opts.limit ?? 40);
+  }
+
+  /**
+   * Coming up: titles dated this year or later, ordered by how much attention they
+   * already have. Note the window starts at the CURRENT year, not next -- an
+   * unreleased film accrues votes slowly, so a `year >= nextYear` window is almost
+   * always empty and useless as a discovery row.
+   */
+  anticipated(limit = 40): TitleRow[] {
+    const thisYear = new Date().getFullYear();
+    return this.db
+      .query(
+        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+         from title
+         where year >= ?
+         order by year asc, votes desc
+         limit ?`,
+      )
+      .all(thisYear, limit) as TitleRow[];
+  }
+
+  /**
+   * Hidden gems: rated highly by the people who found them, but few people found them.
+   *
+   * This is the row Seerr structurally cannot produce -- it has no local corpus to
+   * ask, so it can only show you what is already popular. The vote window is the whole
+   * trick: a floor high enough that the rating means something, a ceiling low enough
+   * that the title is genuinely obscure. Ordered by rating, NOT by rating x votes,
+   * because weighting by votes would just re-rank the ceiling back toward the famous.
+   */
+  hiddenGems(opts: { minVotes?: number; maxVotes?: number; kind?: string; limit?: number } = {}): TitleRow[] {
+    return this.db
+      .query(
+        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+         from title
+         where votes >= ? and votes <= ? and rating >= 7.6 ${opts.kind ? "and kind = ?" : ""}
+         order by rating desc, votes desc
+         limit ?`,
+      )
+      .all(
+        ...([
+          opts.minVotes ?? 2_000,
+          opts.maxVotes ?? 30_000,
+          ...(opts.kind ? [opts.kind] : []),
+          opts.limit ?? 40,
+        ] as never[]),
+      ) as TitleRow[];
+  }
+
+  /**
+   * Highly rated within one genre, excluding what is owned.
+   *
+   * Separate from `browse` because browse orders by votes -- fine for "show me
+   * everything", wrong for a shelf, where the point is quality not familiarity.
+   */
+  topRatedInGenre(
+    genre: string,
+    opts: { minVotes?: number; limit?: number; excludeTconsts?: Set<string> } = {},
+  ): TitleRow[] {
+    const rows = this.db
+      .query(
+        `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
+         from title t join title_genre g on g.title_rowid = t.rowid_
+         where g.genre = ? and t.votes >= ? and t.rating >= 7.0
+         order by t.rating * ln(t.votes) desc
+         limit ?`,
+      )
+      .all(...([genre, opts.minVotes ?? 20_000, (opts.limit ?? 30) * 3] as never[])) as TitleRow[];
+    const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
+    return out.slice(0, opts.limit ?? 30);
+  }
+
+  /** Everything from the current decade, best first. */
+  newThisDecade(opts: { limit?: number; excludeTconsts?: Set<string> } = {}): TitleRow[] {
+    const decade = decadeOf(new Date().getFullYear());
+    const rows = this.db
+      .query(
+        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+         from title
+         where year >= ? and votes >= 5000 and rating >= 7.0
+         order by rating * ln(votes) desc
+         limit ?`,
+      )
+      .all(decade, (opts.limit ?? 30) * 3) as TitleRow[];
+    const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
+    return out.slice(0, opts.limit ?? 30);
+  }
+
+  /** Which genres actually have enough good titles to be worth a shelf. */
+  topGenres(limit = 6): string[] {
+    return (
+      this.db
+        .query(
+          `select g.genre, count(*) c
+           from title_genre g join title t on t.rowid_ = g.title_rowid
+           where t.votes >= 20000 and t.rating >= 7.0
+           group by g.genre order by c desc limit ?`,
+        )
+        .all(limit) as { genre: string }[]
+    ).map((r) => r.genre);
+  }
+
+  browse(opts: BrowseOptions): BrowseResult {
+    return browseIndex(this.db, opts);
+  }
+
+  private tableExists(name: string): boolean {
+    return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
+  }
+
+  /** A person and their filmography. `null` for an unknown id, or an index without people. */
+  personPage(nconst: string, opts: PersonCreditsOptions = {}): PersonPage | null {
+    return this.hasPeople ? personPage(this.db, nconst, opts) : null;
+  }
+
+  /** Our own ids for the names credited on a title, so a cast list can become links. */
+  nconstsByNameForTitle(tconst: string): Map<string, string> {
+    return this.hasPeople ? nconstsByNameForTitle(this.db, tconst) : new Map();
+  }
+}
+
+/** What a browse query filters on. `minVotes` and paging are deliberately not in here. */
+export interface BrowseFilters {
+  genre?: string;
+  decade?: number;
+  year?: number;
+  kind?: string;
+}
+
+export interface BrowseOptions extends BrowseFilters {
+  /** Overrides the floor `browseVoteFloor` would pick. 0 means "show everything". */
+  minVotes?: number;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * How many titles the vote floor removed, and how high that floor was.
+ *
+ * Without it the UI cannot tell "there are no 1901 films" apart from "there are eight
+ * and a threshold nobody mentioned is hiding them", so it has to render the same dead
+ * end for both. The floor carries its own value here so the copy that offers to lift
+ * it never spells a second threshold that could drift from the one applied.
+ */
+export interface HiddenByFloor {
+  titles: number;
+  minVotes: number;
+}
+
+export interface BrowseResult {
+  rows: TitleRow[];
+  total: number;
+  /** Present ONLY when the vote floor is the reason this query came back empty. */
+  hiddenByFloor?: HiddenByFloor;
+}
+
+/**
+ * The default vote floor for an unfiltered grid: below this, "all movies by votes"
+ * opens on titles nobody has heard of.
+ */
+const BROWSE_VOTE_FLOOR = 1000;
+
+/**
+ * The vote floor a browse query gets when the caller does not name one.
+ *
+ * The floor is CURATION for a broad grid, and it stops being that the moment the
+ * query pins a year or a decade: 94% of the index sits below 1000 votes, so
+ * `?year=1901` returned nothing at all while eight 1901 shorts sat in the index, and
+ * the user was given no way to learn they existed. A single year or decade cannot
+ * flood anything -- the rows are ordered by votes and paged either way, so dropping
+ * the floor changes the first page not at all and the last page completely.
+ *
+ * Genre and kind do NOT drop it: `?kind=movie` IS the broad grid.
+ */
+export function browseVoteFloor(f: BrowseFilters): number {
+  return f.year !== undefined || f.decade !== undefined ? 0 : BROWSE_VOTE_FLOOR;
+}
+
+/** SQL shared by the row query and the count queries of one browse. */
+function browseSql(f: BrowseFilters, minVotes: number): { join: string; where: string; args: unknown[] } {
+  const where = ["t.votes >= ?"];
+  const args: unknown[] = [minVotes];
+  let join = "";
+  if (f.genre) {
+    join = "join title_genre g on g.title_rowid = t.rowid_";
+    where.push("g.genre = ?");
+    args.push(f.genre);
+  }
+  if (f.decade !== undefined) {
+    where.push("t.year >= ? and t.year <= ?");
+    args.push(f.decade, f.decade + 9);
+  }
+  if (f.year !== undefined) {
+    where.push("t.year = ?");
+    args.push(f.year);
+  }
+  if (f.kind) {
+    where.push("t.kind = ?");
+    args.push(f.kind);
+  }
+  return { join, where: where.join(" and "), args };
+}
+
+function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
+  return (
+    db
+      .query(`select count(*) c from title t ${sql.join} where ${sql.where}`)
+      .get(...(sql.args as never[])) as { c: number }
+  ).c;
+}
+
+/**
+ * Paginated browse over the index, ordered by votes.
+ *
+ * Takes the database rather than reaching for one, so the floor policy and the
+ * dead-end report can be exercised against a handful of rows in a temp file instead
+ * of against the 1.27M-row production index.
+ */
+export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
+  const minVotes = opts.minVotes ?? browseVoteFloor(opts);
+  const sql = browseSql(opts, minVotes);
+  const total = browseTotal(db, sql);
+  const rows = db
+    .query(
+      `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
+       from title t ${sql.join} where ${sql.where}
+       order by t.votes desc limit ? offset ?`,
+    )
+    .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as TitleRow[];
+
+  // The second count only runs when the floor could be what emptied the page, so the
+  // overwhelmingly common case -- a query that found rows -- pays for one count, not two.
+  if (total > 0 || minVotes === 0) return { rows, total };
+  const unfloored = browseTotal(db, browseSql(opts, 0));
+  return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
+}
+
+/**
+ * Facet counts over the ranked candidate set.
+ *
+ * Done in JS rather than SQL because the candidate set is already in memory and
+ * capped at CANDIDATE_WINDOW -- a second SQL pass would re-run the whole match.
+ */
+export function computeFacets(hits: Hit[]): Facets {
+  const genre = new Map<string, number>();
+  const decade = new Map<number, number>();
+  const year = new Map<number, number>();
+  const kind = new Map<string, number>();
+
+  for (const h of hits) {
+    for (const g of h.genres.split(",")) if (g) genre.set(g, (genre.get(g) ?? 0) + 1);
+    if (h.year !== null) {
+      const d = decadeOf(h.year);
+      decade.set(d, (decade.get(d) ?? 0) + 1);
+      year.set(h.year, (year.get(h.year) ?? 0) + 1);
+    }
+    kind.set(h.kind, (kind.get(h.kind) ?? 0) + 1);
+  }
+
+  const top = <T>(m: Map<T, number>, n: number, sort: "count" | "key" = "count") =>
+    [...m.entries()]
+      .sort((a, b) =>
+        sort === "count" ? b[1] - a[1] || Number(b[0]) - Number(a[0]) : Number(b[0]) - Number(a[0]),
+      )
+      .slice(0, n)
+      .map(([value, count]) => ({ value, count }));
+
+  return {
+    genre: top(genre, 10) as { value: string; count: number }[],
+    decade: top(decade, 10, "key") as { value: number; count: number }[],
+    year: top(year, 10) as { value: number; count: number }[],
+    kind: top(kind, 5) as { value: string; count: number }[],
+  };
+}

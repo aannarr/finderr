@@ -1,0 +1,46 @@
+node_modules/
+web/dist/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.tsv.gz
+*.log
+.DS_Store
+.env
+.env.local
+
+# Compiled spellfix1. The SOURCE is vendored (vendor/sqlite-spellfix/spellfix.c) and
+# tracked; the binary is per-platform and built by the Dockerfile, or by
+# `bun run spellfix:build` for macOS dev. Committing one would be committing the wrong
+# architecture for somebody.
+*.so
+*.dylib
+
+# Local tooling -- never committed.
+.claude/
+
+# The agent brief, both halves. NOT tracked, and this is deliberate rather than an
+# oversight: it is a working document about how this codebase is built and who decided
+# what, which is a different thing from the code itself. It stays on the machines that
+# need it. A negation (`!CLAUDE.md`) used to force it INTO the repo; that is gone.
+CLAUDE.md
+CLAUDE.local.md
+
+# Deployment-specific, never committed: real hostnames, addresses and reverse-proxy
+# labels live here rather than in the tracked compose file.
+docker-compose.override.yml
+
+# The icon candidates that lost -- four rounds of exploration kept locally as a record
+# of what was already tried and why it died. Useful to whoever proposes a redesign,
+# uninteresting to anyone else, and 2.3 MB of PNGs nothing in the app ever loads.
+# `assets/brand/*.svg` is still tracked and is the single owner of the shipped mark.
+assets/brand/explorations/
+
+# The Kometa logo set, fetched at build time by `bun run logos:import` rather than
+# tracked: 826 PNGs that belong to their trademark holders, not to this repo.
+web/public/logos/
+
+# Local screenshots from browser checks.
+preview/
+.rclaude/

@@ -1,0 +1,2517 @@
+{
+ "results": [
+  {
+   "hits": [
+    {
+     "emsId": "5a101291-a726-31d8-943e-392f936e509d",
+     "type": "movie",
+     "title": "Is This Thing On?",
+     "titles": [
+      "Is This Thing On?",
+      "This Thing"
+     ],
+     "releaseYear": 2025,
+     "rtId": 900103459,
+     "vanity": "is_this_thing_on",
+     "rottenTomatoes": {
+      "dateCertified": "Oct 30, 2025, 6:17:39 PM",
+      "audienceScore": 82,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 5245,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 87,
+      "newAdjustedTMScore": 928052
+     },
+     "objectID": "6a7fee83-cc2a-3c4c-9f21-19deae003ce5",
+     "_highlightResult": {
+      "title": {
+       "value": "Is This <em>Thing</em> On?",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Will Arnett",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Laura Dern",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Andra Day",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Bradley Cooper",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Amy Sedaris",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Bradley Cooper",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      },
+      "vanity": {
+       "value": "is_this_<em>thing</em>_on",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      }
+     }
+    },
+    {
+     "emsId": "70531264-23dc-3aa7-90c4-149726ab26de",
+     "rtId": 13831,
+     "type": "movie",
+     "title": "The Thing",
+     "titles": [
+      "The Thing"
+     ],
+     "aka": [
+      "A Coisa",
+      "Das Ding aus einer anderen Welt",
+      "El Enigma de Otro Mundo",
+      "Enigma do Outro Mundo",
+      "John Carpenter's The Thing",
+      "L'Effroyable chose",
+      "L'Effroyable créature",
+      "L'effroyable chose",
+      "L'effroyable créature",
+      "La Chose",
+      "La Cosa de Otro Mundo",
+      "La chose",
+      "La cosa",
+      "La cosa del otro mundo",
+      "O Enigma de Outro Mundo",
+      "Stvor",
+      "The Thing - Se jostakin",
+      "Tingen fra en annen verden"
+     ],
+     "vanity": "1021244-thing",
+     "releaseYear": 1982,
+     "rottenTomatoes": {
+      "audienceScore": 92,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 14267,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 85,
+      "newAdjustedTMScore": 939105
+     },
+     "objectID": "bb5c5ba7-ff7f-34f1-9880-d54f82498a89",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "A Coisa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Das Ding aus einer anderen Welt",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Enigma de Otro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Enigma do Outro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "John Carpenter's The <em>Thing</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "L'Effroyable chose",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'Effroyable créature",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'effroyable chose",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'effroyable créature",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Chose",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Cosa de Otro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La chose",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa del otro mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "O Enigma de Outro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Stvor",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "The <em>Thing</em> - Se jostakin",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "Tingen fra en annen verden",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "1021244-<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Universal Pictures",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Universal",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Kurt Russell",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Wilford Brimley",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "T.K. Carter",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Richard Dysart",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Richard Masur",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "John Carpenter",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "44f2445a-287a-308f-ba21-bac138faea84",
+     "rtId": 13900,
+     "type": "movie",
+     "title": "Do the Right Thing",
+     "titles": [
+      "Do the Right Thing",
+      "Do Right"
+     ],
+     "aka": [
+      "Do the Right Thing - Kuuma päivä",
+      "Fa' la cosa giusta",
+      "Faça a Coisa Certa",
+      "Haz lo Correcto",
+      "Haz lo correcto",
+      "Haz lo que debas",
+      "La pizzeria en révolte"
+     ],
+     "vanity": "do_the_right_thing",
+     "releaseYear": 1989,
+     "rottenTomatoes": {
+      "audienceScore": 89,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 8801,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 92,
+      "newAdjustedTMScore": 1005034
+     },
+     "objectID": "5a9f26b0-f820-3a8d-996c-229f3e1efda4",
+     "_highlightResult": {
+      "title": {
+       "value": "Do the Right <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Do the Right <em>Thing</em> - Kuuma päivä",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "Fa' la cosa giusta",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Faça a Coisa Certa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Haz lo Correcto",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Haz lo correcto",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Haz lo que debas",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La pizzeria en révolte",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "do_the_right_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Criterion Collection",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "MCA/Universal Pictures [us]",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Universal",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Danny Aiello",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ossie Davis",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ruby Dee",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Richard Edson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Giancarlo Esposito",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Spike Lee",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "6189beb4-5552-31cb-89bb-f5bd03a7488a",
+     "rtId": 771517277,
+     "type": "movie",
+     "title": "The Last Thing He Wanted",
+     "titles": [
+      "The Last Thing He Wanted",
+      "The Last"
+     ],
+     "aka": [
+      "Das Letzte, was er wollte",
+      "Sa dernière volonté",
+      "Su último deseo"
+     ],
+     "vanity": "the_last_thing_he_wanted",
+     "releaseYear": 2020,
+     "rottenTomatoes": {
+      "audienceScore": 14,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 54,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 5,
+      "newAdjustedTMScore": 97722
+     },
+     "objectID": "e1642e33-ee17-3459-b30a-6ff6eec07bb7",
+     "_highlightResult": {
+      "title": {
+       "value": "The Last <em>Thing</em> He Wanted",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Das Letzte, was er wollte",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sa dernière volonté",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Su último deseo",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "the_last_<em>thing</em>_he_wanted",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Crime",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Anne Hathaway",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ben Affleck",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Willem Dafoe",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Dee Rees",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "d17786a6-32e0-3303-ad26-afb7f47bb6c9",
+     "rtId": 11693,
+     "type": "movie",
+     "title": "Love Don't Cost a Thing",
+     "titles": [
+      "Love Don't Cost a Thing",
+      "Love Don't"
+     ],
+     "aka": [
+      "Amar no Cuesta Nada",
+      "Amor de Aluguel",
+      "El Amor No Cuesta Nada",
+      "Fidanzata in prestito",
+      "L'Amour n'a pas de prix",
+      "Una Novia Cuesta Caro"
+     ],
+     "vanity": "love_dont_cost_a_thing",
+     "releaseYear": 2003,
+     "rottenTomatoes": {
+      "audienceScore": 65,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 3369,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 13,
+      "newAdjustedTMScore": 294300
+     },
+     "objectID": "60ce069f-7021-31fa-9b83-6f22083858ba",
+     "_highlightResult": {
+      "title": {
+       "value": "Love Don't Cost a <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Amar no Cuesta Nada",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Amor de Aluguel",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Amor No Cuesta Nada",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Fidanzata in prestito",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "L'Amour n'a pas de prix",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Una Novia Cuesta Caro",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "love_dont_cost_a_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Romance",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Warner Bros. Pictures",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Warner Bros.",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Nick Cannon",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Christina Milian",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kenan Thompson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kal Penn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Steve Harvey",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Troy Byer",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "d2a17d7d-aa12-3562-b453-fe3194d76901",
+     "rtId": 771202933,
+     "type": "movie",
+     "title": "The Thing",
+     "titles": [
+      "The Thing"
+     ],
+     "aka": [
+      "A Coisa",
+      "La Cosa",
+      "La Cosa del Otro Mundo",
+      "La chose",
+      "La cosa",
+      "La cosa del otro mundo",
+      "O Enigma de Outro Mundo",
+      "Stvor"
+     ],
+     "vanity": "the_thing_2011",
+     "releaseYear": 2011,
+     "rottenTomatoes": {
+      "audienceScore": 43,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 14416,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 34,
+      "newAdjustedTMScore": 424084
+     },
+     "objectID": "b95661c3-d478-3573-9e7d-7f4d236bd86b",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "A Coisa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Cosa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Cosa del Otro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La chose",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa del otro mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "O Enigma de Outro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Stvor",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "the_<em>thing</em>_2011",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Universal Pictures",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Universal",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Mary Elizabeth Winstead",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Joel Edgerton",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Adewale Akinnuoye-Agbaje",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Trond Espen Seim",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ulrich Thomsen",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Matthijs van Heijningen Jr.",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "5ab637ac-8bf5-3ad7-bd2e-8c6fdfe662b8",
+     "rtId": 900000551,
+     "type": "movie",
+     "title": "Marvel One-Shot: A Funny Thing Happened on the Way to Thor's Hammer",
+     "titles": [
+      "Marvel One-Shot: A Funny Thing Happened on the Way to Thor's Hammer",
+      "Thor's"
+     ],
+     "vanity": "marvel_one_shot_a_funny_thing_happened_on_the_way_to_thors_hammer",
+     "releaseYear": 2011,
+     "rottenTomatoes": {
+      "audienceScore": 78,
+      "wantToSeeCount": 16,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE"
+     },
+     "objectID": "91851f97-f61e-3eab-8f50-0865c8c1ccc9",
+     "_highlightResult": {
+      "title": {
+       "value": "Marvel One-Shot: A Funny <em>Thing</em> Happened on the Way to Thor's Hammer",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "vanity": {
+       "value": "marvel_one_shot_a_funny_<em>thing</em>_happened_on_the_way_to_thors_hammer",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Action",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Clark Gregg",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jessica Manuel",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jeff Prewett",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Zach Hudson",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Leythum",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "aceca9cd-afa4-3ee6-b234-7e25eae74074",
+     "rtId": 10233,
+     "type": "movie",
+     "title": "That Thing You Do!",
+     "titles": [
+      "That Thing You Do!",
+      "That Thing"
+     ],
+     "aka": [
+      "Les Wonders",
+      "Music Graffiti",
+      "The Wonders",
+      "The Wonders - O Sonho Não Acabou",
+      "¡Eso que tú haces!"
+     ],
+     "vanity": "that_thing_you_do",
+     "releaseYear": 1996,
+     "rottenTomatoes": {
+      "audienceScore": 78,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 13780,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 93,
+      "newAdjustedTMScore": 963397
+     },
+     "objectID": "3da7381b-2379-3ab6-9f73-cfb1fb2a0ed7",
+     "_highlightResult": {
+      "title": {
+       "value": "That <em>Thing</em> You Do!",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Les Wonders",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Music Graffiti",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "The Wonders",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "The Wonders - O Sonho Não Acabou",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "¡Eso que tú haces!",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "that_<em>thing</em>_you_do",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "20th Century Fox",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Fox",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Tom Everett Scott",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Liv Tyler",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Johnathon Schaech",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Steve Zahn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ethan Embry",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Tom Hanks",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "e5cc62bc-1850-3be5-8601-2b3beac2117e",
+     "rtId": 771449918,
+     "type": "movie",
+     "title": "I Am the Pretty Thing That Lives in the House",
+     "titles": [
+      "I Am the Pretty Thing That Lives in the House",
+      "I Am"
+     ],
+     "aka": [
+      "Soy la bonita criatura que vive en esta casa"
+     ],
+     "vanity": "i_am_the_pretty_thing_that_lives_in_the_house",
+     "releaseYear": 2016,
+     "rottenTomatoes": {
+      "audienceScore": 24,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 269,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 62
+     },
+     "objectID": "2cfb337f-c87c-37dc-a125-335dbc5104c5",
+     "_highlightResult": {
+      "title": {
+       "value": "I Am the Pretty <em>Thing</em> That Lives in the House",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Soy la bonita criatura que vive en esta casa",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "i_am_the_pretty_<em>thing</em>_that_lives_in_the_house",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Ruth Wilson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Paula Prentiss",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Bob Balaban",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Lucy Boynton",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Brad Milne",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Oz Perkins",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "27a2d5ad-bf0a-397b-ad64-e40b793dff0f",
+     "rtId": 14667,
+     "type": "movie",
+     "title": "The Sweetest Thing",
+     "titles": [
+      "The Sweetest Thing",
+      "Sweetest"
+     ],
+     "aka": [
+      "Allumeuses !",
+      "Bonjour l'amour",
+      "La cosa más dulce",
+      "La cosa més dolça",
+      "La cosa più dolce",
+      "Radalla",
+      "Smuk, sexet & single",
+      "Snygg, sexig och singel",
+      "Super Süß und Super Sexy",
+      "Tudo para Ficar com Ele"
+     ],
+     "vanity": "sweetest_thing",
+     "releaseYear": 2002,
+     "rottenTomatoes": {
+      "audienceScore": 64,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 17117,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 25,
+      "newAdjustedTMScore": 397822
+     },
+     "objectID": "e79b8d1a-9ea0-31c6-a7bc-eb8c68f06055",
+     "_highlightResult": {
+      "title": {
+       "value": "The Sweetest <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Allumeuses !",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Bonjour l'amour",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa más dulce",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa més dolça",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa più dolce",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Radalla",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Smuk, sexet & single",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Snygg, sexig och singel",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Super Süß und Super Sexy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Tudo para Ficar com Ele",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "sweetest_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Romance",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Columbia Pictures",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sony",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Cameron Diaz",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Christina Applegate",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Selma Blair",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Thomas Jane",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jason Bateman",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Roger Kumble",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "51dcb3a2-8457-340b-b052-879b7c432006",
+     "rtId": 771522225,
+     "type": "movie",
+     "title": "A Most Beautiful Thing",
+     "titles": [
+      "A Most Beautiful Thing",
+      "Beautiful"
+     ],
+     "vanity": "a_most_beautiful_thing",
+     "releaseYear": 2020,
+     "rottenTomatoes": {
+      "audienceScore": 97,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 396,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 100
+     },
+     "objectID": "622db40d-c42e-3c2c-83a7-44cca726fec5",
+     "_highlightResult": {
+      "title": {
+       "value": "A Most Beautiful <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "vanity": {
+       "value": "a_most_beautiful_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Documentary",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Common",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Mary Mazzio",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "17ff5474-7e55-3d32-abb0-d53c81c2eac5",
+     "type": "movie",
+     "title": "The Thing with Feathers",
+     "titles": [
+      "The Thing with Feathers",
+      "Thing"
+     ],
+     "releaseYear": 2025,
+     "rtId": 900101220,
+     "vanity": "the_thing_with_feathers",
+     "rottenTomatoes": {
+      "audienceScore": 51,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 89,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 46,
+      "newAdjustedTMScore": 519966
+     },
+     "objectID": "dc13026d-9f16-37e3-91e7-133ff74c3f6e",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Thing</em> with Feathers",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Benedict Cumberbatch",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Richard Boxall",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Henry Boxall",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Eric Lampaert",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Vinette Robinson",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Dylan Southern",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      },
+      "vanity": {
+       "value": "the_<em>thing</em>_with_feathers",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      }
+     }
+    },
+    {
+     "emsId": "0ee0216c-8951-35cf-b130-d6aead5fef55",
+     "type": "movie",
+     "title": "This Ordinary Thing",
+     "titles": [
+      "This Ordinary Thing",
+      "Ordinary"
+     ],
+     "releaseYear": 2025,
+     "rtId": 900106144,
+     "vanity": "this_ordinary_thing",
+     "objectID": "ccee15b0-a4d8-3b53-8213-cc0d0826609a",
+     "_highlightResult": {
+      "title": {
+       "value": "This Ordinary <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Documentary",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "F. Murray Abraham",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jeannie Berlin",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Eric Bogosian",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ellen Burstyn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Bill Camp",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Nick Davis",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      },
+      "vanity": {
+       "value": "this_ordinary_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      }
+     }
+    },
+    {
+     "emsId": "0fc8e458-b456-4761-919e-3ec530b3433d",
+     "rtId": 771495098,
+     "type": "movie",
+     "title": "There's No Such Thing as Vampires",
+     "titles": [
+      "There's No Such Thing as Vampires",
+      "There's No"
+     ],
+     "vanity": "theres_no_such_thing_as_vampires",
+     "releaseYear": 2020,
+     "rottenTomatoes": {
+      "audienceScore": 99,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 8,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": false,
+      "criticsScore": 71
+     },
+     "objectID": "9b102d9f-a1aa-46f3-91e8-0abace04841c",
+     "_highlightResult": {
+      "title": {
+       "value": "There's No Such <em>Thing</em> as Vampires",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "vanity": {
+       "value": "theres_no_such_<em>thing</em>_as_vampires",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Action",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Emma Holzer",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Aric Cushing",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Josh Plasse",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Meg Foster",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Raphael Sbarge",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Logan Thomas",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "df35bb9d-ba7d-35c9-b9be-dd512991f2fe",
+     "rtId": 12160,
+     "type": "movie",
+     "title": "Swamp Thing",
+     "titles": [
+      "Swamp Thing",
+      "Swamp"
+     ],
+     "aka": [
+      "Das Ding aus dem Sumpf",
+      "El Monstruo del Lago",
+      "El Monstruo del Pantano",
+      "El monstruo del pantano",
+      "Il mostro della palude",
+      "La cosa del pantano"
+     ],
+     "vanity": "swamp_thing",
+     "releaseYear": 1982,
+     "rottenTomatoes": {
+      "audienceScore": 40,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "wantToSeeCount": 2213,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 62,
+      "newAdjustedTMScore": 609435
+     },
+     "objectID": "4176b3d0-4e82-3295-96d9-1fe1c3b4253f",
+     "_highlightResult": {
+      "title": {
+       "value": "Swamp <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Das Ding aus dem Sumpf",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Monstruo del Lago",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Monstruo del Pantano",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El monstruo del pantano",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Il mostro della palude",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa del pantano",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "swamp_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "MGM",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Louis Jourdan",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Adrienne Barbeau",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Ray Wise",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "David Hess",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Nicholas Worth",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Wes Craven",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "47817bad-be52-312a-88e2-8d352a600d9c",
+     "rtId": 771376591,
+     "type": "movie",
+     "title": "Every Secret Thing",
+     "titles": [
+      "Every Secret Thing",
+      "Secret"
+     ],
+     "aka": [
+      "Cada secreto",
+      "Ogni cosa è segreta",
+      "Secretos de un crimen",
+      "Secrets d'un crim",
+      "Toda Cosa Encubierta",
+      "Toda cosa encubierta",
+      "Todos os Segredos",
+      "Um Passado Sombrio"
+     ],
+     "vanity": "every_secret_thing",
+     "releaseYear": 2014,
+     "rottenTomatoes": {
+      "audienceScore": 32,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 1791,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 32
+     },
+     "objectID": "81f8c110-e718-3863-9e28-b4d02994f986",
+     "_highlightResult": {
+      "title": {
+       "value": "Every Secret <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Cada secreto",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Ogni cosa è segreta",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Secretos de un crimen",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Secrets d'un crim",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Toda Cosa Encubierta",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Toda cosa encubierta",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Todos os Segredos",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Um Passado Sombrio",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "every_secret_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Crime",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Diane Lane",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Elizabeth Banks",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Dakota Fanning",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Danielle Macdonald",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Nate Parker",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Amy Berg",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "60596b46-2aad-35f2-85ef-14017e939449",
+     "rtId": 17013,
+     "type": "movie",
+     "title": "The Thing from Another World",
+     "titles": [
+      "The Thing From Another World",
+      "The Thing",
+      "The Thing from Another World"
+     ],
+     "aka": [
+      "Das Ding aus einer anderen Welt",
+      "El Enigma de Otro Mundo",
+      "El enigma de otro mundo",
+      "La Cosa",
+      "La chose d'un autre monde",
+      "La cosa",
+      "La cosa da un altro mondo",
+      "O Monstro do Ártico",
+      "The Thing",
+      "The Thing - se toisesta maailmasta",
+      "The Thing From Another World"
+     ],
+     "vanity": "the_thing_from_another_world",
+     "releaseYear": 1951,
+     "rottenTomatoes": {
+      "audienceScore": 73,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/certifiedfresh.png",
+      "wantToSeeCount": 1107,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "POSITIVE",
+      "certifiedFresh": true,
+      "criticsScore": 87,
+      "newAdjustedTMScore": 898903
+     },
+     "objectID": "0cad107b-a5c6-3160-879b-b8ceead81199",
+     "_highlightResult": {
+      "title": {
+       "value": "The <em>Thing</em> from Another World",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Das Ding aus einer anderen Welt",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El Enigma de Otro Mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "El enigma de otro mundo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La Cosa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La chose d'un autre monde",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "La cosa da un altro mondo",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "O Monstro do Ártico",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "The <em>Thing</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "The <em>Thing</em> - se toisesta maailmasta",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "The <em>Thing</em> From Another World",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       }
+      ],
+      "vanity": {
+       "value": "the_<em>thing</em>_from_another_world",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Sci-Fi",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Warner Bros.",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Margaret Sheridan",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Kenneth Tobey",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "James Arness",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Robert Cornthwaite",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Douglas Spencer",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Christian Nyby",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "512440e2-b170-3e7a-bf9b-907765d8367f",
+     "rtId": 900096045,
+     "type": "movie",
+     "title": "Pretty Thing",
+     "titles": [
+      "Pretty Thing",
+      "Pretty"
+     ],
+     "vanity": "pretty_thing",
+     "releaseYear": 2025,
+     "rottenTomatoes": {
+      "audienceScore": 30,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 106,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 47
+     },
+     "objectID": "e9d26638-6c4c-3993-87c8-6e99411a5d5e",
+     "_highlightResult": {
+      "title": {
+       "value": "Pretty <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "vanity": {
+       "value": "pretty_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Mystery & Thriller",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Alicia Silverstone",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Karl Glusman",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Catherine Curtin",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Britne Oldford",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Tammy Blanchard",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Justin Kelly",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "58fc0655-8b5f-3371-8869-23e04d2a331d",
+     "rtId": 771432537,
+     "type": "movie",
+     "title": "Bunny the Killer Thing",
+     "titles": [
+      "Bunny the Killer Thing",
+      "Bunny the"
+     ],
+     "aka": [
+      "Bunny - Operation Pussy",
+      "Bunny und sein Killerding",
+      "Bunny, la cosa asesina"
+     ],
+     "vanity": "bunny_the_killer_thing",
+     "releaseYear": 2015,
+     "rottenTomatoes": {
+      "audienceScore": 41,
+      "wantToSeeCount": 91,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE"
+     },
+     "objectID": "42fe76c7-e558-36bd-8286-4cff76d73fcd",
+     "_highlightResult": {
+      "title": {
+       "value": "Bunny the Killer <em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Bunny - Operation Pussy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Bunny und sein Killerding",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Bunny, la cosa asesina",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "bunny_the_killer_<em>thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Action",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Comedy",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Hiski Hämäläinen",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Enni Ojutkangas",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Veera W. Vilo",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Jari Manninen",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Katja Jaskari",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Joonas Makkonen",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "4a7809b1-7ce1-3eb7-be85-e35079191ac4",
+     "rtId": 221245671,
+     "type": "movie",
+     "title": "Man-Thing",
+     "titles": [
+      "Man-Thing"
+     ],
+     "aka": [
+      "Man Thing: La natura del terrore",
+      "Man-Thing - La naturaleza del miedo",
+      "Marvel's Man-Thing",
+      "O Homem-coisa - A Natureza do Medo"
+     ],
+     "vanity": "manthing",
+     "releaseYear": 2005,
+     "rottenTomatoes": {
+      "audienceScore": 14,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/rotten.png",
+      "wantToSeeCount": 649,
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/green_popcorn.png",
+      "verifiedHot": false,
+      "scoreSentiment": "NEGATIVE",
+      "certifiedFresh": false,
+      "criticsScore": 14
+     },
+     "objectID": "c1d0f196-c76c-32f2-b998-d83bc377d1f1",
+     "_highlightResult": {
+      "title": {
+       "value": "Man-<em>Thing</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": false,
+       "matchedWords": [
+        "thing"
+       ]
+      },
+      "aka": [
+       {
+        "value": "Man <em>Thing</em>: La natura del terrore",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "Man-<em>Thing</em> - La naturaleza del miedo",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "Marvel's Man-<em>Thing</em>",
+        "matchLevel": "full",
+        "fullyHighlighted": false,
+        "matchedWords": [
+         "thing"
+        ]
+       },
+       {
+        "value": "O Homem-coisa - A Natureza do Medo",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "vanity": {
+       "value": "manthing",
+       "matchLevel": "none",
+       "matchedWords": []
+      },
+      "genres": [
+       {
+        "value": "Horror",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "studios": [
+       {
+        "value": "Artisan Entertainment",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Lionsgate",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Jack Thompson",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Matthew Le Nevez",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Rachael Taylor",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Rawiri Paratene",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Patrick Thompson",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Brett Leonard",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    }
+   ],
+   "nbHits": 2479,
+   "page": 0,
+   "nbPages": 50,
+   "hitsPerPage": 20,
+   "exhaustiveNbHits": true,
+   "exhaustiveTypo": true,
+   "exhaustive": {
+    "nbHits": true,
+    "typo": true
+   },
+   "query": "Thing",
+   "params": "query=Thing&filters=isEmsSearchable%3D1+AND+type%3A%22movie%22&hitsPerPage=20&attributesToRetrieve=%5B%22emsId%22%2C%22rtId%22%2C%22vanity%22%2C%22type%22%2C%22title%22%2C%22titles%22%2C%22aka%22%2C%22releaseYear%22%2C%22rottenTomatoes%22%5D",
+   "index": "content_rt",
+   "renderingContent": {},
+   "processingTimeMS": 5,
+   "processingTimingsMS": {
+    "_request": {
+     "roundTrip": 222
+    },
+    "fetch": {
+     "scanning": 3,
+     "total": 4
+    },
+    "total": 5
+   },
+   "serverTimeMS": 6
+  }
+ ]
+}

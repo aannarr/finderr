@@ -1,0 +1,52 @@
+# The build context was 5.8 GB without this file, and `data/` was 2.4 GB of it -- the
+# whole index, the poster cache and the downloaded IMDb dumps, tarred up and handed to
+# the daemon on every single build. Nothing in the Dockerfile ever reads it.
+
+# The data volume. Mounted at runtime, never built in.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.tsv.gz
+
+# The Dockerfile runs its own `bun install` per stage, and the host's tree is the wrong
+# platform anyway once arm64 and amd64 are both being built.
+node_modules/
+web/dist/
+
+# Fetched inside the web stage from the pinned Kometa commit. Excluding them keeps the
+# image reproducible: what ships is what the pin says, never what happened to be on the
+# machine that ran the build.
+web/public/logos/
+
+# Compiled spellfix1 -- built per-platform inside the spellfix stage.
+vendor/sqlite-spellfix/*.dylib
+vendor/sqlite-spellfix/*.so
+
+# Secrets and local-only files. `.env` reaching a layer would bake credentials into an
+# image that is pushed to a PUBLIC registry.
+.env
+.env.local
+docker-compose.override.yml
+CLAUDE.md
+CLAUDE.local.md
+
+# Local tooling and history.
+.git/
+.gitignore
+.github/
+.claude/
+.rclaude/
+preview/
+*.log
+.DS_Store
+
+# Docs and assets the runtime does not serve. `assets/brand/` is the source for the icon
+# job, which is run by hand rather than at build time.
+assets/
+guides/
+README.md
+ADDONS.md
+LICENSE
+docker-compose.yml
+docker-compose.override.example.yml

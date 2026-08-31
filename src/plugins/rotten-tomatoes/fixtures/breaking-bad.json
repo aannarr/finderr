@@ -1,0 +1,188 @@
+{
+ "results": [
+  {
+   "hits": [
+    {
+     "emsId": "6a74def4-dc62-319e-ae3d-360dcf360244",
+     "rtId": 2503,
+     "type": "tv",
+     "title": "Breaking Bad",
+     "titles": [
+      "Breaking Bad",
+      "Break-Bad"
+     ],
+     "vanity": "breaking_bad",
+     "releaseYear": 2008,
+     "rottenTomatoes": {
+      "audienceScore": 97,
+      "criticsIconUrl": "https://content6.flixster.com/static/images/rt-icons/fresh.png",
+      "audienceIconUrl": "https://content6.flixster.com/static/images/rt-icons/red_popcorn.png",
+      "criticsScoreSentiment": "POSITIVE",
+      "criticsScore": 96,
+      "audienceScoreSentiment": "POSITIVE"
+     },
+     "objectID": "6a74def4-dc62-319e-ae3d-360dcf360244",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Breaking</em> <em>Bad</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "breaking",
+        "bad"
+       ]
+      },
+      "vanity": {
+       "value": "<em>breaking</em>_<em>bad</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "breaking",
+        "bad"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Crime",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Drama",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Bryan Cranston",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Aaron Paul",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Anna Gunn",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "RJ Mitte",
+         "matchLevel": "none",
+         "matchedWords": []
+        },
+        {
+         "value": "Dean Norris",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ],
+       "crew": {
+        "Director": [
+         {
+          "value": "Michelle MacLaren",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Adam Bernstein",
+          "matchLevel": "none",
+          "matchedWords": []
+         },
+         {
+          "value": "Vince Gilligan",
+          "matchLevel": "none",
+          "matchedWords": []
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "emsId": "89940fd0-8540-33ae-8373-7ccf87924d1e",
+     "rtId": 8381275,
+     "type": "tv",
+     "title": "Baking Bad",
+     "titles": [
+      "Baking Bad"
+     ],
+     "vanity": "baking_bad",
+     "releaseYear": 2019,
+     "objectID": "89940fd0-8540-33ae-8373-7ccf87924d1e",
+     "_highlightResult": {
+      "title": {
+       "value": "<em>Baking</em> <em>Bad</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "breaking",
+        "bad"
+       ]
+      },
+      "vanity": {
+       "value": "<em>baking</em>_<em>bad</em>",
+       "matchLevel": "full",
+       "fullyHighlighted": true,
+       "matchedWords": [
+        "breaking",
+        "bad"
+       ]
+      },
+      "genres": [
+       {
+        "value": "Special Interest",
+        "matchLevel": "none",
+        "matchedWords": []
+       },
+       {
+        "value": "Reality",
+        "matchLevel": "none",
+        "matchedWords": []
+       }
+      ],
+      "castCrew": {
+       "cast": [
+        {
+         "value": "Stephanie Boswell",
+         "matchLevel": "none",
+         "matchedWords": []
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "nbHits": 2,
+   "page": 0,
+   "nbPages": 1,
+   "hitsPerPage": 20,
+   "exhaustiveNbHits": true,
+   "exhaustiveTypo": true,
+   "exhaustive": {
+    "nbHits": true,
+    "typo": true
+   },
+   "query": "Breaking Bad",
+   "params": "query=Breaking+Bad&filters=isEmsSearchable%3D1+AND+type%3A%22tv%22&hitsPerPage=20&attributesToRetrieve=%5B%22emsId%22%2C%22rtId%22%2C%22vanity%22%2C%22type%22%2C%22title%22%2C%22titles%22%2C%22aka%22%2C%22releaseYear%22%2C%22rottenTomatoes%22%5D",
+   "index": "content_rt",
+   "renderingContent": {},
+   "processingTimeMS": 6,
+   "processingTimingsMS": {
+    "_request": {
+     "roundTrip": 222
+    },
+    "fetch": {
+     "query": 5,
+     "total": 6
+    },
+    "total": 6
+   },
+   "serverTimeMS": 7
+  }
+ ]
+}

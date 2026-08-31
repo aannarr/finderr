@@ -1,0 +1,18 @@
+# Copy to docker-compose.override.yml -- Compose merges it automatically, and the
+# real file is gitignored so your hostnames never reach the repo.
+#
+# This example matches the caddy-docker-proxy label convention. Adapt it to whatever
+# reverse proxy you run, or delete the file if finderr is only ever reached on
+# http://<host>:7979.
+#
+# Before pointing a public hostname at this, read "Putting it on the internet" in the
+# README. finderr is invite-only and rate-limits sign-in and search per IP, but the
+# limiter is in memory and resets on restart, and the container holds the Radarr and
+# Sonarr API keys. Terminate TLS in front, set AUTH_TRUST_PROXY=true so the limiter
+# sees real client addresses, and put a CDN or WAF in front of the proxy if you can.
+
+services:
+  finderr:
+    labels:
+      caddy_0: finderr.example.com
+      caddy_0.reverse_proxy: "{{upstreams 7979}}"

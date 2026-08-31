@@ -1,0 +1,16 @@
+<!-- The maskable variant. Android crops a PWA icon to whatever shape the launcher
+     wants, so this one is FULL BLEED (no rounded corners of our own, or they get
+     cropped into a lumpy edge) and the mark is scaled down to sit inside the 80%
+     safe circle the spec guarantees will survive any mask. That is the only
+     difference from finderr-icon.svg; do not merge the two. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"
+     role="img" aria-label="finderr">
+  <rect width="512" height="512" fill="#1A1C22"/>
+  <g transform="translate(256 256) scale(13.4) translate(-12 -12)"
+     fill="none" stroke="#16BE7D" stroke-width="2.1"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 7 8 4l8 3 6-3v13l-6 3-8-3-6 3Z"/>
+    <path d="M8 4v13M16 7v13"/>
+    <path d="m10.3 10.3 3.4 3.4M13.7 10.3l-3.4 3.4"/>
+  </g>
+</svg>

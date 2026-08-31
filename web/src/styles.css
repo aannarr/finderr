@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: oklch(0.16 0.012 265);
+  --color-surface: oklch(0.21 0.014 265);
+  --color-surface-2: oklch(0.26 0.016 265);
+  --color-line: oklch(0.32 0.018 265);
+  --color-ink: oklch(0.95 0.005 265);
+  --color-muted: oklch(0.68 0.014 265);
+  --color-accent: oklch(0.72 0.16 155);
+  --color-danger: oklch(0.65 0.19 25);
+  --color-warn: oklch(0.78 0.15 75);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Search-as-you-type repaints constantly; stop the scrollbar appearing and
+     disappearing and shifting the whole grid sideways. */
+  scrollbar-gutter: stable;
+}
+
+/* The result grid updates on every keystroke. Without this the browser re-rasterizes
+   posters that have not changed. */
+.card-grid {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+/* A visible scrollbar under every shelf is noise, and on a trackpad it never gets
+   used anyway. Keyboard scrolling and card focus are unaffected, so nothing becomes
+   unreachable -- this is purely the bar's appearance. */
+.shelf-row {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* Momentum scrolling on touch, and no vertical rubber-banding fighting the page. */
+  overscroll-behavior-x: contain;
+}
+.shelf-row::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

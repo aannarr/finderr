@@ -1,0 +1,30 @@
+{
+ "TmdbId": 2344,
+ "Name": "The Matrix Collection",
+ "Parts": [
+  {
+   "TmdbId": 603,
+   "ImdbId": "tt0133093",
+   "Title": "The Matrix",
+   "Year": 1999
+  },
+  {
+   "TmdbId": 604,
+   "ImdbId": "tt0234215",
+   "Title": "The Matrix Reloaded",
+   "Year": 2003
+  },
+  {
+   "TmdbId": 605,
+   "ImdbId": "tt0242653",
+   "Title": "The Matrix Revolutions",
+   "Year": 2003
+  },
+  {
+   "TmdbId": 624860,
+   "ImdbId": "tt10838180",
+   "Title": "The Matrix Resurrections",
+   "Year": 2021
+  }
+ ]
+}

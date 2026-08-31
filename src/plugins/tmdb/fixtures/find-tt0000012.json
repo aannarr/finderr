@@ -1,0 +1,28 @@
+{
+  "movie_results": [
+    {
+      "adult": false,
+      "backdrop_path": "/kLDi7ST92diaAzISLgd94BYO6Zw.jpg",
+      "id": 160,
+      "title": "The Arrival of a Train at La Ciotat",
+      "original_title": "L'arrivée d'un train à La Ciotat",
+      "overview": "A group of people are standing along the platform of a railway station in La Ciotat, waiting for a train. One is seen coming, at some distance, and eventually stops at the platform. Doors of the railway-cars open and attendants help passengers off and on.  Popular legend has it that, when this film was shown, the first-night audience fled the café in terror, fearing being run over by the \"approaching\" train. This legend has since been identified as promotional embellishment, though there is evidence to suggest that people were astounded at the capabilities of the Lumières' cinématographe.",
+      "poster_path": "/m5HSlaNCzwV95rAriDmT19el5h1.jpg",
+      "media_type": "movie",
+      "original_language": "fr",
+      "genre_ids": [
+        36
+      ],
+      "popularity": 1.8244,
+      "release_date": "1896-06-30",
+      "softcore": false,
+      "video": false,
+      "vote_average": 7.134,
+      "vote_count": 552
+    }
+  ],
+  "person_results": [],
+  "tv_results": [],
+  "tv_episode_results": [],
+  "tv_season_results": []
+}
