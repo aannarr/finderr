@@ -168,6 +168,12 @@ services:
     memswap_limit: 1500m
     pids_limit: 256
 
+    # `start_period` does NOT have to cover a first index build, and that is deliberate.
+    # A container with no index comes up, serves a progress page and builds one in a
+    # subprocess (FINDERR_INDEX_REFRESH_ON_BOOT, on by default) -- and /api/health answers
+    # 200 the whole time, because liveness is not the same question as "is there an index".
+    # Every route that needs one returns 503 until it exists. So 90s is about boot, not
+    # about the 376s the build takes on a Synology.
     healthcheck:
       test:
         - CMD

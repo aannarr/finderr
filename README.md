@@ -160,23 +160,30 @@ services:
 
 ```bash
 docker compose up -d
-docker compose run --rm finderr bun src/jobs/build-index.ts   # first index build
 docker compose logs finderr | grep invite                     # your first admin link
 ```
 
-> [!IMPORTANT]
-> The first index build is `run --rm`, not `exec`. finderr exits when there is no index at
-> `/data/titles.db`, `restart` starts it again, and `exec` then fails with *"Container is
-> restarting"* forever; the thing that would stop the restarting is the command you are
-> trying to run. `run --rm` starts a one-off container with the same volumes and
-> environment and does not care whether the service is up. Once an index exists, `exec`
-> works for everything else.
+That is the whole install. There is no separate first-build step: with no index at
+`/data/titles.db`, finderr comes up anyway, serves a page telling you what it is doing, and
+builds one in the background. Open `http://<host>:7979` and watch it — the page reloads
+itself when the index lands. Every route that needs an index answers `503` until then, and
+`/api/health` stays green throughout, so the container does not fail its own healthcheck
+while doing what you asked.
 
 The build downloads the IMDb dumps (a few hundred MB), builds the index, runs a canary
 suite of real queries against it, and only then swaps it live. Count on about 100 s on a
 desktop-class CPU and about six minutes on a low-power NAS (more under
 [Known gaps](#known-gaps-and-non-goals)). After that it refreshes itself daily and swaps
 in place. No restart.
+
+> [!NOTE]
+> Set `FINDERR_INDEX_REFRESH_ON_BOOT=false` if you would rather build the index yourself.
+> finderr then exits when there is no index, and you build one with
+> `docker compose run --rm finderr bun src/jobs/build-index.ts`. It has to be `run --rm`
+> and not `exec`: with `restart` set, a container that exits for want of an index is
+> restarting, and `exec` fails with *"Container is restarting"* forever — the thing that
+> would stop the restarting is the command you are trying to run. Once an index exists,
+> `exec` works for everything else.
 
 Open `http://<host>:7979` and follow the invite link from the log.
 
@@ -279,7 +286,7 @@ rebuild.
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
 | `FINDERR_INDEX_REFRESH_TZ` | `UTC` | IANA zone for the cron. The dumps publish on UTC |
-| `FINDERR_INDEX_REFRESH_ON_BOOT` | `true` | |
+| `FINDERR_INDEX_REFRESH_ON_BOOT` | `true` | Build an index on boot when there is none, instead of exiting. The server listens and serves a progress page while it runs |
 | `FINDERR_INDEX_TITLE_TYPES` | `movie,tvSeries,tvMiniSeries,tvMovie` | IMDb title types to ingest |
 | `FINDERR_INDEX_INCLUDE_ADULT` | `false` | |
 | `FINDERR_INDEX_FUZZY_MIN_VOTES` | `100` | Below this a title is full-text only; above it typos find it too |
