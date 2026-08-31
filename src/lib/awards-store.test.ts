@@ -36,7 +36,7 @@ function nom(over: Partial<Nomination>): Nomination {
     ceremony: 98,
     seq: 0,
     year: "2025",
-    className: "Production",
+    className: "Title",
     category: "BEST PICTURE",
     rawCategory: "BEST PICTURE",
     films: [],

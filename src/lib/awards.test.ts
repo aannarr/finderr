@@ -157,7 +157,7 @@ function nom(over: Partial<Nomination>): Nomination {
     ceremony: 98,
     seq: 0,
     year: "2025",
-    className: "Production",
+    className: "Title",
     category: "BEST PICTURE",
     rawCategory: "BEST PICTURE",
     films: [],
@@ -185,7 +185,7 @@ describe("groupByCategory", () => {
     const groups = groupByCategory([
       nom({ seq: 0, category: "MUSIC (Original Score)", className: "Music" }),
       nom({ seq: 1, category: "DIRECTING", className: "Directing" }),
-      nom({ seq: 2, category: "BEST PICTURE", className: "Production" }),
+      nom({ seq: 2, category: "BEST PICTURE", className: "Title" }),
     ]);
     expect(groups.map((g) => g.category)).toEqual(["BEST PICTURE", "DIRECTING", "MUSIC (Original Score)"]);
   });

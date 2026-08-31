@@ -82,15 +82,22 @@ describe("isPersonLed", () => {
   });
 
   test("Best Picture leads with the FILM however many producers are credited", () => {
-    // The whole bug in one assertion: `Production` is the class Best Picture belongs to,
-    // and the answer must not depend on anything about a particular row.
-    expect(isPersonLed("Production")).toBe(false);
+    /*
+      Best Picture's class is `Title`, and this assertion said `Production` until it was
+      checked against the pinned file. Both answer `false`, so the SCREEN was right either
+      way -- which is exactly why it is worth pinning: a fixture that is wrong about the
+      data still passes, and goes on being cited as if it were a measurement.
+
+      `Title` is the class for an award to a whole WORK; `Production` is the crafts.
+    */
+    expect(isPersonLed("Title")).toBe(false);
   });
 
   test("every other class leads with the film", () => {
-    // The source's full vocabulary, measured from the real file. Naming them all is what
-    // makes a future class ADDED upstream visibly unhandled rather than silently person-led.
-    for (const cls of ["Production", "Directing", "Writing", "Music", "Title", "Special", "SciTech"]) {
+    // The source's full vocabulary, measured from the pinned file rather than remembered.
+    // Naming them all is what makes a class ADDED upstream visibly unhandled here rather
+    // than silently changing how a category reads.
+    for (const cls of ["Title", "Production", "Directing", "Writing", "Music", "Special", "SciTech"]) {
       expect(isPersonLed(cls)).toBe(false);
     }
   });

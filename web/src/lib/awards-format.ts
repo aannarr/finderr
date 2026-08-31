@@ -57,9 +57,26 @@ export function prettyCategory(name: string): string {
  *
  * `Class` is the source's own coarse grouping and it already answers the question: in
  * `Acting`, the PERSON is the nomination and the film is what it was for. Everywhere else
- * -- Production, Directing, Writing, Music, Title, Special, SciTech -- the achievement
- * belongs to the film and the names are who made it. So a category is one shape for all of
- * its rows, whoever happened to be credited.
+ * the achievement belongs to the film and the names are who made it. So a category is one
+ * shape for all of its rows, whoever happened to be credited.
+ *
+ * The eight classes, measured against the pinned file rather than remembered. **Best
+ * Picture is `Title`, NOT `Production`** -- which is the one an English reader guesses
+ * wrong, and this comment did until it was checked against the data:
+ *
+ * | Class | What it covers |
+ * |---|---|
+ * | `Acting` | the four acting categories, and the ONLY person-led class |
+ * | `Title` | awards to a WHOLE WORK -- Best Picture, the shorts, documentary, international |
+ * | `Production` | the crafts: cinematography, art direction, editing, sound, costume, casting |
+ * | `Directing` | directing, and assistant director |
+ * | `Writing` | the screenplay categories |
+ * | `Music` | score, song, and dance direction |
+ * | `Special` | honorary and special awards, Thalberg |
+ * | `SciTech` | the scientific and technical awards |
+ *
+ * The table is DOCUMENTATION, never a lookup: the function tests `Acting` and everything
+ * else falls through, so a class added upstream is film-led rather than unhandled.
  */
 export function isPersonLed(className: string): boolean {
   return className === "Acting";

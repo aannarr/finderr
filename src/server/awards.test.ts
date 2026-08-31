@@ -66,7 +66,7 @@ function nom(over: Partial<Nomination>): Nomination {
     ceremony: 98,
     seq: 0,
     year: "2025",
-    className: "Production",
+    className: "Title",
     category: "BEST PICTURE",
     rawCategory: "BEST PICTURE",
     films: [],
@@ -228,7 +228,9 @@ describe("ceremonyPayload", () => {
     const acting = p?.groups.find((g) => g.category === "ACTOR IN A LEADING ROLE");
     const bp = p?.groups.find((g) => g.category === "BEST PICTURE");
     expect(acting?.nominations[0]?.className).toBe("Acting");
-    expect(bp?.nominations[0]?.className).toBe("Production");
+    // `Title`, not `Production` -- the source files an award to a whole WORK under Title
+    // and reserves Production for the crafts. The fixture below carries the real value.
+    expect(bp?.nominations[0]?.className).toBe("Title");
   });
 
   test("every row in one category carries the SAME class", () => {
