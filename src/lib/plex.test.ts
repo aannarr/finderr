@@ -5,6 +5,14 @@
  * including the shapes that are easy to get wrong from memory:
  * `ratingKey` arrives as a STRING, the IMDb id is a `Guid` CHILD rather than the top-level
  * `guid`, and a section list contains types we must not walk.
+ *
+ * > [!CAUTION] The machineIdentifier below is INVENTED, and it must stay invented
+ * > It is a hex placeholder, matching `FAKE_API_KEY` in `tmdb.test.ts`. A real one was
+ * > pasted in here when this file was written and reached the public repo before anyone
+ * > caught it -- it is not a credential, but it is the permanent, unique identity of one
+ * > private server, which is exactly the class of fact this repository does not carry.
+ * > Nothing about these assertions needs a real value: they pin URL TEMPLATES, and any
+ * > 40-hex string exercises them identically.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -18,7 +26,7 @@ import { Store } from "./store";
 // --- the deeplink ----------------------------------------------------------
 
 describe("plexLinks", () => {
-  const machine = "edbad7cf97fe2da8e88499e2cd7e6264411c9cee";
+  const machine = "0123456789abcdef0123456789abcdef01234567";
 
   /**
    * Both templates are Jellyseerr's `mediaUrl` and `iOSPlexUrl` verbatim. Pinning them
@@ -52,7 +60,7 @@ describe("plexLinks", () => {
 // --- the mirror ------------------------------------------------------------
 
 const IDENTITY = {
-  MediaContainer: { machineIdentifier: "edbad7cf97fe2da8e88499e2cd7e6264411c9cee" },
+  MediaContainer: { machineIdentifier: "0123456789abcdef0123456789abcdef01234567" },
 };
 
 const SECTIONS = {

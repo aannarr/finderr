@@ -16,7 +16,7 @@ function deps(onCoverage: () => void): HealthDeps {
   return {
     index: { rows: 1_275_341, builtAt: "2026-08-30T06:26:27.095Z", reload: null },
     library: { radarr: 1371, sonarr: 596 },
-    plex: { items: 1730, machineId: "edbad7cf97fe2da8e88499e2cd7e6264411c9cee" },
+    plex: { items: 1730, machineId: "0123456789abcdef0123456789abcdef01234567" },
     services: { radarr: true, sonarr: true },
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true },
     queue: { pending: 0 },
