@@ -188,7 +188,7 @@ Exactly one thing: **provide a facet**, under the `facets` key of what `init` re
 facet is a fact type core declares, with a shape core owns, and there are sixteen of them
 (fifteen providable plus one core-only).
 
-Typing `facets: { ` in an editor lists all fifteen, and each key infers its own return
+Typing `facets: { ` in an editor lists every one of them, and each key infers its own return
 type -- `ratings` wants a `Rating[]`, `seasons` wants a `Season[]`. That discoverability is
 the reason the surface is shaped this way.
 
@@ -206,10 +206,26 @@ the reason the surface is shaped this way.
 | `collection` | movie | single | franchise membership and its members |
 | `related` | movie, series | list | **a recommender** -- this is the interesting one |
 | `keywords` | movie, series | list | tags, themes, moods |
+| `language` | movie, series | list | the language a title was made in -- see the note below |
 | `watchProviders` | movie, series | list | JustWatch-shaped streaming availability |
 | `externalIds` | movie, series, episode | object | any id space core does not already hold |
 | `links` | movie, series, episode | list | an official site, a wiki, a fan page -- see the note below |
 | `availability` | movie, series | single | **core-only.** Comes from the local library mirror; an addon could only make it wrong. |
+
+> [!IMPORTANT] `language` is a CODE, and core folds whichever ISO you send
+> Send `{ code: "hi" }` or `{ code: "hin" }` -- `languageCode` in `src/lib/facets.ts` folds
+> both to `hi` through `Intl.getCanonicalLocales`, so you do not have to know which ISO your
+> upstream speaks. It exists because ours disagree: `api.radarr.video` answers `hi` and
+> `skyhook.sonarr.tv` answers `eng`, and the facet merges as a list, so unfolded codes would
+> render one film's language twice.
+>
+> **Never send a NAME.** "Hindi" is English's word for it; the page calls `Intl.DisplayNames`
+> at render time, so one cached row reads correctly to a reader in any language. A name in
+> the row is one reader's English frozen into everybody else's page.
+>
+> A region subtag is dropped (`pt-BR` stores as `pt`) -- the facet answers which language,
+> not which dialect. `und` and anything malformed are dropped entirely rather than stored as
+> a non-answer.
 
 > [!IMPORTANT] `links` is for addresses no id can express -- do NOT send one core can build
 > Anything reachable FROM an id is built at render time out of `externalIds`: IMDb, Trakt,

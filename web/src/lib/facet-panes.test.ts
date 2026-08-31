@@ -18,6 +18,7 @@ import {
   hasPendingFacet,
   initialsOf,
   isCacheableFacetSet,
+  languageNames,
   localImageUrl,
   localImdbRating,
   mergeRatings,
@@ -292,6 +293,51 @@ describe("preferredCountries", () => {
   /** A hand-edited or truncated locale is expected input, not an error case. */
   test("survives a junk locale and a locale with no region", () => {
     expect(preferredCountries(["not a locale", "en"])).toEqual(["US", "GB"]);
+  });
+});
+
+/**
+ * The locale is passed explicitly in every case here. `Intl` with no locale follows the
+ * test RUNNER's, which makes an assertion on a formatted string machine-dependent -- the
+ * same rule `formatCalendarDate`'s tests follow.
+ */
+describe("languageNames", () => {
+  test("names a stored code in the reader's own language", () => {
+    expect(languageNames([{ code: "hi" }], ["en"])).toEqual(["Hindi"]);
+    expect(languageNames([{ code: "en" }], ["de"])).toEqual(["Englisch"]);
+    expect(languageNames([{ code: "ja" }, { code: "ko" }], ["en"])).toEqual(["Japanese", "Korean"]);
+  });
+
+  /**
+   * The reason the facet stores a code and never a name: one cached row serves every
+   * reader, and the name is made where the reader is.
+   */
+  test("one code, two readers, two names", () => {
+    const hindi = [{ code: "hi" }];
+    expect(languageNames(hindi, ["en"])).not.toEqual(languageNames(hindi, ["fr"]));
+  });
+
+  test("drops a well-formed code that names no language, rather than printing it", () => {
+    // `languageCode` cannot refuse these -- they are syntactically valid tags. This is the
+    // only place the miss is detectable: `DisplayNames` hands the code straight back.
+    expect(languageNames([{ code: "xx" }, { code: "qqq" }], ["en"])).toEqual([]);
+    expect(languageNames([{ code: "" }, { code: "  " }], ["en"])).toEqual([]);
+    expect(languageNames([], ["en"])).toEqual([]);
+  });
+
+  /**
+   * The facet merges as a LIST, so two providers agreeing about a title contribute two
+   * entries -- the same collision `mergeRatings` and `watchServices` guard against.
+   * Deduped on the NAME, so two codes that render one word collapse to one word.
+   */
+  test("says each language once, however many providers said it", () => {
+    expect(languageNames([{ code: "en" }, { code: "en" }], ["en"])).toEqual(["English"]);
+    expect(languageNames([{ code: "zh" }, { code: "cmn" }], ["en"])).toEqual(["Chinese"]);
+  });
+
+  test("survives a junk locale from the browser", () => {
+    expect(languageNames([{ code: "hi" }], ["not a locale"])).toEqual(["Hindi"]);
+    expect(languageNames([{ code: "hi" }], [])).toEqual(["Hindi"]);
   });
 });
 

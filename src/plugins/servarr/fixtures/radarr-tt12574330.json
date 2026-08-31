@@ -1,0 +1,459 @@
+[
+  {
+    "TmdbId": 718833,
+    "ImdbId": "tt12574330",
+    "Title": "Bokshi",
+    "Overview": "Anahita, traumatised by the brutal disappearance of her mother, finds comfort in Shalini, her history teacher. On an unconventional school excursion to a mysterious prehistoric site, she confronts her terrifying destiny.",
+    "OriginalTitle": "Bokshi",
+    "OriginalLanguage": "hi",
+    "TitleSlug": "718833",
+    "Runtime": 142,
+    "Popularity": 13.4759,
+    "Year": 2026,
+    "Premier": "2025-01-31T00:00:00Z",
+    "InCinema": "2026-10-09T00:00:00Z",
+    "PhysicalRelease": null,
+    "DigitalRelease": null,
+    "Ratings": [
+      {
+        "Count": 0,
+        "Value": 0,
+        "Origin": "Tmdb",
+        "Type": "User"
+      }
+    ],
+    "MovieRatings": {
+      "Tmdb": {
+        "Count": 0,
+        "Value": 0,
+        "Type": "User"
+      },
+      "Imdb": {
+        "Count": 60,
+        "Value": 6.4,
+        "Type": "User"
+      },
+      "Metacritic": null,
+      "RottenTomatoes": null,
+      "Trakt": {
+        "Count": 4,
+        "Value": 5,
+        "Type": "User"
+      }
+    },
+    "Genres": [
+      "Horror",
+      "Drama"
+    ],
+    "Keywords": [
+      "fantasy",
+      "folk horror",
+      "independent film"
+    ],
+    "Recommendations": [
+      {
+        "TmdbId": 530385,
+        "Title": "Midsommar"
+      },
+      {
+        "TmdbId": 2662,
+        "Title": "House of 1000 Corpses"
+      },
+      {
+        "TmdbId": 591273,
+        "Title": "Fear Street: 1994"
+      },
+      {
+        "TmdbId": 808396,
+        "Title": "God Is a Bullet"
+      },
+      {
+        "TmdbId": 354251,
+        "Title": "Southbound"
+      },
+      {
+        "TmdbId": 9871,
+        "Title": "Ginger Snaps"
+      },
+      {
+        "TmdbId": 715123,
+        "Title": "Books of Blood"
+      },
+      {
+        "TmdbId": 1109406,
+        "Title": "Compulsion"
+      },
+      {
+        "TmdbId": 18256,
+        "Title": "Castle Freak"
+      },
+      {
+        "TmdbId": 1339206,
+        "Title": "The Surrender"
+      }
+    ],
+    "Credits": {
+      "Cast": [
+        {
+          "Name": "Prasanna Bisht",
+          "Order": 0,
+          "Character": "Anahita",
+          "TmdbId": 3529304,
+          "CreditId": "626c484a7cffda0b29ed54c5",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/2Y3yCH7EswDLekyoexZ7hxxfJiD.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Mansi Multani",
+          "Order": 1,
+          "Character": "Shalini",
+          "TmdbId": 1795074,
+          "CreditId": "626c483ea284eb0067bcd988",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/l6QOJLPK6ijdmDjln0u2CufakFC.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Swaroopa Ghosh",
+          "Order": 2,
+          "Character": "Kadambari",
+          "TmdbId": 2058170,
+          "CreditId": "626c4857ea37e0005075f66a",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/12p3p0GMDagVZvelK4RgZfZ3pJt.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Rohit Tiwari",
+          "Order": 3,
+          "Character": "Lalit",
+          "TmdbId": 1875573,
+          "CreditId": "626c4860a6c10400a7b1d33a",
+          "Images": []
+        },
+        {
+          "Name": "Sandeep Shridhar Dhabale",
+          "Order": 4,
+          "Character": "Avinash",
+          "TmdbId": 4602192,
+          "CreditId": "65f93ae6798c940162157227",
+          "Images": []
+        },
+        {
+          "Name": "Shernaz Patel",
+          "Order": 5,
+          "Character": "Bokshi (voice)",
+          "TmdbId": 85603,
+          "CreditId": "65f93afb391b9c0148c7dcee",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/rmF9GXYp2gaXOtXhAs3cscv1604.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Siddharth Shaw",
+          "Order": 6,
+          "Character": "Rishav",
+          "TmdbId": 4170969,
+          "CreditId": "65f93b10c8113d0164b3d195",
+          "Images": []
+        },
+        {
+          "Name": "Trishala Tamang",
+          "Order": 7,
+          "Character": "Punam",
+          "TmdbId": 4602195,
+          "CreditId": "65f93b2324b33301617a073e",
+          "Images": []
+        },
+        {
+          "Name": "Shivangi Vyas",
+          "Order": 8,
+          "Character": "Nisha",
+          "TmdbId": 4602196,
+          "CreditId": "65f93b3007e2810163c12728",
+          "Images": []
+        },
+        {
+          "Name": "Gaurangi Vyas",
+          "Order": 9,
+          "Character": "Misha",
+          "TmdbId": 4602200,
+          "CreditId": "65f93b3f798c9401621572b3",
+          "Images": []
+        },
+        {
+          "Name": "Kasvi Sonkorison",
+          "Order": 10,
+          "Character": "Jhuma",
+          "TmdbId": 2584013,
+          "CreditId": "65f93b4fc8113d017db3f69f",
+          "Images": []
+        },
+        {
+          "Name": "Avishek Lama",
+          "Order": 11,
+          "Character": "Imay",
+          "TmdbId": 4602202,
+          "CreditId": "65f93b5915a4a101840dcd96",
+          "Images": []
+        },
+        {
+          "Name": "Aditya Bharakhda",
+          "Order": 12,
+          "Character": "Hussain",
+          "TmdbId": 4602204,
+          "CreditId": "65f93b64223e20014678ac18",
+          "Images": []
+        },
+        {
+          "Name": "Bhasker Pradhan",
+          "Order": 13,
+          "Character": "Meryak",
+          "TmdbId": 4602206,
+          "CreditId": "65f93b72a31440016436b2c7",
+          "Images": []
+        },
+        {
+          "Name": "Biru Tamang",
+          "Order": 14,
+          "Character": "Lakhpa",
+          "TmdbId": 4602207,
+          "CreditId": "65f93b7d07e2810163c12791",
+          "Images": []
+        },
+        {
+          "Name": "Prabhat Pakhrin",
+          "Order": 15,
+          "Character": "John",
+          "TmdbId": 4602209,
+          "CreditId": "65f93b87223e20014678ac34",
+          "Images": []
+        },
+        {
+          "Name": "Dagi Ngomdir",
+          "Order": 16,
+          "Character": "Rebecca",
+          "TmdbId": 4602212,
+          "CreditId": "65f93b91549dda01867d6ca8",
+          "Images": []
+        }
+      ],
+      "Crew": [
+        {
+          "Name": "Bhargav Saikia",
+          "Order": 0,
+          "Job": "Director",
+          "Department": "Directing",
+          "TmdbId": 1485167,
+          "CreditId": "5ef46bd7bccf1e0035397503",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/jdppHSGuFOK8NSB2nEqlJMJrCRv.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Harsh Vaibhav",
+          "Order": 1,
+          "Job": "Writer",
+          "Department": "Writing",
+          "TmdbId": 2690943,
+          "CreditId": "5ef46be9c3bffe00376be4a6",
+          "Images": []
+        },
+        {
+          "Name": "Bhargav Saikia",
+          "Order": 2,
+          "Job": "Producer",
+          "Department": "Production",
+          "TmdbId": 1485167,
+          "CreditId": "626c48077cffda0b3720f39a",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/jdppHSGuFOK8NSB2nEqlJMJrCRv.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Sinoy Joseph",
+          "Order": 3,
+          "Job": "Sound Mixer",
+          "Department": "Sound",
+          "TmdbId": 1753481,
+          "CreditId": "65f93cfb33a376018436a793",
+          "Images": []
+        },
+        {
+          "Name": "Bhargav Saikia",
+          "Order": 4,
+          "Job": "Production Design",
+          "Department": "Art",
+          "TmdbId": 1485167,
+          "CreditId": "65f93c44abdec0014a6a512a",
+          "Images": [
+            {
+              "CoverType": "Headshot",
+              "Url": "https://image.tmdb.org/t/p/original/jdppHSGuFOK8NSB2nEqlJMJrCRv.jpg"
+            }
+          ]
+        },
+        {
+          "Name": "Vikram Mor",
+          "Order": 5,
+          "Job": "Action Director",
+          "Department": "Directing",
+          "TmdbId": 2200164,
+          "CreditId": "65f93d2babdec001866b28ac",
+          "Images": []
+        },
+        {
+          "Name": "Advait Nemlekar",
+          "Order": 6,
+          "Job": "Original Music Composer",
+          "Department": "Sound",
+          "TmdbId": 1513933,
+          "CreditId": "65f93bd4549dda01867d6d05",
+          "Images": []
+        },
+        {
+          "Name": "Dhiman Karmakar",
+          "Order": 7,
+          "Job": "Sound Designer",
+          "Department": "Sound",
+          "TmdbId": 1736919,
+          "CreditId": "65f93d0833a376018436a7a8",
+          "Images": []
+        },
+        {
+          "Name": "Prithvi Buddhavarapu",
+          "Order": 8,
+          "Job": "Colorist",
+          "Department": "Editing",
+          "TmdbId": 3904545,
+          "CreditId": "65f93d5b223e20016079aeb6",
+          "Images": []
+        },
+        {
+          "Name": "Navneet Ranga",
+          "Order": 9,
+          "Job": "Casting",
+          "Department": "Production",
+          "TmdbId": 3088291,
+          "CreditId": "65f93c2f223e200179790dda",
+          "Images": []
+        },
+        {
+          "Name": "A. Vasanth",
+          "Order": 10,
+          "Job": "Cinematography",
+          "Department": "Crew",
+          "TmdbId": 1477546,
+          "CreditId": "65f93bfcc8113d017db3f739",
+          "Images": []
+        },
+        {
+          "Name": "Santhosh Panchal",
+          "Order": 11,
+          "Job": "Art Direction",
+          "Department": "Art",
+          "TmdbId": 2254190,
+          "CreditId": "65f93c6b549dda01637cd29d",
+          "Images": []
+        },
+        {
+          "Name": "Chandrashekhar Thanvi",
+          "Order": 12,
+          "Job": "Visual Effects Supervisor",
+          "Department": "Visual Effects",
+          "TmdbId": 2261574,
+          "CreditId": "65f93d1ea31440016436b3de",
+          "Images": []
+        },
+        {
+          "Name": "Siddharth Sivasankaran",
+          "Order": 13,
+          "Job": "Cinematography",
+          "Department": "Crew",
+          "TmdbId": 4602216,
+          "CreditId": "65f93bf14b9bae01467dbfaa",
+          "Images": []
+        },
+        {
+          "Name": "Sakshi Gulati",
+          "Order": 14,
+          "Job": "Casting",
+          "Department": "Production",
+          "TmdbId": 2629821,
+          "CreditId": "65f93c1da314400187373bec",
+          "Images": []
+        },
+        {
+          "Name": "Serleen Ingtipi Kathar",
+          "Order": 15,
+          "Job": "Costume Design",
+          "Department": "Costume & Make-Up",
+          "TmdbId": 4602220,
+          "CreditId": "65f93c7d223e200179790e47",
+          "Images": []
+        },
+        {
+          "Name": "Subramanyam G",
+          "Order": 16,
+          "Job": "Art Direction",
+          "Department": "Art",
+          "TmdbId": 4602219,
+          "CreditId": "65f93c5ba314400187373c53",
+          "Images": []
+        },
+        {
+          "Name": "Mercy Azem Simick",
+          "Order": 17,
+          "Job": "Art Department Coordinator",
+          "Department": "Art",
+          "TmdbId": 4602221,
+          "CreditId": "65f93c9b33a376018436a69b",
+          "Images": []
+        },
+        {
+          "Name": "Himanshu Chutia Saikia",
+          "Order": 18,
+          "Job": "Editor",
+          "Department": "Editing",
+          "TmdbId": 4602218,
+          "CreditId": "65f93c0a38469a01497d605b",
+          "Images": []
+        }
+      ]
+    },
+    "Studio": "Lorien Motion Pictures",
+    "YoutubeTrailerId": "AU4hlB0ZdOE",
+    "Certifications": [
+      {
+        "Country": "CH",
+        "Certification": "16"
+      },
+      {
+        "Country": "GB",
+        "Certification": "18"
+      }
+    ],
+    "Status": null,
+    "Collection": null,
+    "Homepage": ""
+  }
+]

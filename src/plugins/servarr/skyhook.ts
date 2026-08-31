@@ -9,7 +9,7 @@
  * first time and one call forever after -- see `resolveTvdbId`.
  */
 
-import type { Episode, FacetShapes, Season } from "../../lib/facets";
+import { type Episode, type FacetShapes, languageFacet, type Season } from "../../lib/facets";
 import { getJson, type PluginFetch } from "../../lib/plugin-fetch";
 import type { PluginKv } from "../../lib/plugins";
 import { calendarDate, dateRange } from "./upstream";
@@ -56,6 +56,12 @@ export interface SkyhookShow {
   tmdbId?: number | null;
   tvMazeId?: number | null;
   tvRageId?: number | null;
+  /**
+   * The language the show was MADE in, in ISO 639-2 (`eng`) -- not `language`, which is
+   * the language of the text in THIS document and is whatever `LANGUAGE` asked for.
+   * `languageFacet` folds the code down to the 639-1 form Radarr sends.
+   */
+  originalLanguage?: string | null;
   malIds?: number[] | null;
   anidbIds?: number[] | null;
   aniListIds?: number[] | null;
@@ -115,6 +121,7 @@ export function seriesFacets(show: SkyhookShow): Partial<FacetShapes> {
     seasons: seasonsOf(show, episodes),
     episodes,
     externalIds: externalIdsOf(show),
+    language: languageFacet(show.originalLanguage),
     // Neither skyhook nor Sonarr's own lookup carries a TV trailer. An explicitly empty
     // facet says "we looked and there is none", which is a different fact from silence.
     trailer: [],

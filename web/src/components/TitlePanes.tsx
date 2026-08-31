@@ -34,6 +34,7 @@ import {
   groupCrewByJob,
   imdbUrl,
   initialsOf,
+  languageNames,
   localImageUrl,
   localImdbRating,
   mergeRatings,
@@ -57,6 +58,7 @@ import type {
   CrewMember,
   FacetName,
   Keyword,
+  Language,
   Rating,
   ReleaseDates,
   ResolvedFacets,
@@ -181,7 +183,7 @@ export function TitleMainPanes({
  * panes it draws cannot disagree. Adding a fact to the card is one entry here and one
  * `<FacetPane>` in `TitleFactsPanes`.
  */
-const FACT_FACETS = ["certification", "releaseDates", "watchProviders", "keywords"] as const;
+const FACT_FACETS = ["certification", "language", "releaseDates", "watchProviders", "keywords"] as const;
 
 /**
  * Whether the facts card has anything to say at all, by the same `paneView` rule each
@@ -224,6 +226,22 @@ function TitleFactsPanes({ facets, working }: Pick<TitlePanesProps, "facets" | "
         heading="Certification"
         skeleton={<Skeleton className="h-6 w-20" />}
         render={(certs: Certification[]) => <CertificationBadge certs={certs} />}
+      />
+
+      {/*
+        PLAIN TEXT, not a chip, and that is a decision rather than an omission.
+        `.claude/CLAUDE.md`'s dead-end rule: a term becomes a link only once it has
+        somewhere real to go, and `/browse` cannot filter on language -- the IMDb dumps the
+        index is built from carry no language column at all, so there is nothing to
+        populate 1.27M rows with. A chip that looks like the year and decade chips beside
+        it and does nothing when clicked is worse than a word.
+      */}
+      <FacetPane
+        {...shared}
+        facet="language"
+        heading="Language"
+        skeleton={<Skeleton className="h-4 w-24" />}
+        render={(langs: Language[]) => <LanguageNames langs={langs} />}
       />
 
       <FacetPane
@@ -960,6 +978,27 @@ function CertificationBadge({ certs }: { certs: Certification[] }) {
 function browserLocales(): string[] {
   if (typeof navigator === "undefined") return [];
   return [...(navigator.languages ?? [navigator.language])];
+}
+
+// --- language --------------------------------------------------------------
+
+/**
+ * What the title was made in, named in the reader's own language.
+ *
+ * The locale list is read here and passed down, exactly as `CertificationBadge` does it,
+ * so the rule stays pure and a user setting can replace this one line later.
+ *
+ * `null` when nothing can name any of the codes -- see `languageNames`. The pane's heading
+ * is drawn by `FacetPane` before this runs, so that case leaves an empty "Language" label
+ * behind. It takes a plugin contributing a code no CLDR knows to reach it, which is a
+ * plugin bug and worth being visible rather than a mechanism in the shared pane frame.
+ */
+function LanguageNames({ langs }: { langs: Language[] }) {
+  const names = languageNames(langs, browserLocales());
+  if (names.length === 0) return null;
+  // Plain text and no chip: `/browse` has no language filter and the index cannot grow one
+  // -- see the comment where this pane is mounted.
+  return <p className="text-sm text-ink">{names.join(", ")}</p>;
 }
 
 // --- keywords --------------------------------------------------------------

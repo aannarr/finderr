@@ -4,15 +4,16 @@
  * Radarr and Sonarr each host a public proxy for their own clients -- `api.radarr.video`
  * and `skyhook.sonarr.tv` -- and neither needs a key, an account or a registration. One
  * call to either returns almost everything a detail page wants, which is why this one
- * plugin is the default provider for thirteen facets while every other plugin adds a
- * detail to what it already said.
+ * plugin is the default provider for most of the vocabulary while every other plugin adds
+ * a detail to what it already said. `FRESHNESS` below is the list; it is not written out
+ * in prose here, because a count in a comment is wrong on the commit that adds a facet.
  *
  * ETIQUETTE, AND IT IS NOT OPTIONAL. This is somebody else's infrastructure, paid for by
  * them, intended for Radarr and Sonarr clients. We are a third party on it. Three things
  * keep it available and all three are enforced rather than remembered:
  *
- *   - ONE call per title, not one per facet. See `documentFacets` -- thirteen providers
- *     share a single fetch.
+ *   - ONE call per title, not one per facet. See `documentFacets` -- every provider here
+ *     shares a single fetch.
  *   - `cast`, `crew`, `collection` and `externalIds` are `immutable` and never re-fetched,
  *     so most of this payload is bought once in the product's lifetime.
  *   - An honest User-Agent, a timeout and per-host pacing come from `c.fetch`, which is
@@ -44,9 +45,8 @@ export const meta = {
  * How settled each kind of fact is, and -- since the surface became declarative -- also
  * the list of what this plugin provides. A class, never a duration; core owns the ladder.
  *
- * These thirteen are cut from ONE upstream document and differ only in how long they keep,
- * so a table plus a loop says that better than thirteen near-identical object entries
- * would. The keys of what `init` returns are still the declaration; they are just computed
+ * These are all cut from ONE upstream document and differ only in how long they keep, so a
+ * table plus a loop says that better than a column of near-identical object entries would. The keys of what `init` returns are still the declaration; they are just computed
  * from here rather than typed out twice.
  *
  * The `immutable` four are also declared immutable in the facet vocabulary and would be
@@ -63,6 +63,10 @@ const FRESHNESS = {
   trailer: "settled",
   releaseDates: "recent",
   keywords: "settled",
+  // The language a title was shot in cannot change, so `immutable` is tempting -- and the
+  // vocabulary declines it for a reason worth reading before "correcting" this: an
+  // immutable EMPTY answer is cached forever, and `tt0468569` answers `null` today.
+  language: "settled",
   collection: "immutable",
   related: "settled",
   seasons: "recent",
@@ -112,9 +116,9 @@ export function init(c: PluginContext): PluginExports {
 /**
  * The upstream document for one title, fetched at most once however many facets ask.
  *
- * Thirteen providers are registered and the resolver starts all of them for a title in
- * the same synchronous burst, so without this each view would buy thirteen copies of a
- * 71 KB payload from somebody else's free proxy. The entry is dropped as soon as the call
+ * Every facet in `FRESHNESS` registers a provider and the resolver starts all of them for a
+ * title in the same synchronous burst, so without this each view would buy one copy of a
+ * 71 KB payload per facet from somebody else's free proxy. The entry is dropped as soon as the call
  * settles: this coalesces one burst, and the facet cache -- not a second cache here --
  * is what stops the next view asking at all.
  *

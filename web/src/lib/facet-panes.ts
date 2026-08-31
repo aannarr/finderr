@@ -16,6 +16,7 @@ import type {
   ExternalLink,
   FacetName,
   FacetShapes,
+  Language,
   Rating,
   ReleaseDates,
   ResolvedFacets,
@@ -364,6 +365,77 @@ export function pickCertification(
     if (hit) return hit;
   }
   return rated[0] ?? null;
+}
+
+// --- language --------------------------------------------------------------
+
+/**
+ * The languages a title was made in, named in the reader's own words.
+ *
+ * THE NAME IS MADE HERE AND NEVER STORED. `Intl.DisplayNames` is a full CLDR table in
+ * every browser, so `hi` reads as "Hindi" to an English reader and "हिन्दी" to a Hindi one
+ * off the same cached row -- which is the whole reason the facet carries a code. A name in
+ * the database would be one reader's English frozen into every other reader's page, and a
+ * hand-written code -> name map would be a worse copy of a table already shipped.
+ *
+ * TWO THINGS ARE DROPPED, and neither can be caught upstream in `languageCode`:
+ *
+ *   - a code nothing can NAME. `xx` and `qqq` are well-formed language tags that name no
+ *     language, so the canonicaliser accepts them; `DisplayNames` gives back the code
+ *     itself, which is how this recognises the miss. Printing "Language: xx" at a reader
+ *     is worse than printing nothing.
+ *   - a DUPLICATE. The facet merges as a list, so two providers agreeing that a film is in
+ *     Hindi contribute two entries -- the same collision `mergeRatings` and `watchServices`
+ *     each guard from their own direction. Deduped on the NAME rather than the code, so
+ *     `cmn` and `zh` cannot both print "Chinese".
+ *
+ * Locales are passed in rather than read off `navigator`, so this stays pure and the tests
+ * pin a locale: `Intl` with no locale follows the test runner's, which makes an assertion
+ * on a formatted string machine-dependent. Same rule `formatCalendarDate` follows.
+ */
+export function languageNames(langs: readonly Language[], locales: readonly string[]): string[] {
+  const names = new Intl.DisplayNames(readableLocales(locales), { type: "language" });
+  const out: string[] = [];
+  for (const lang of langs) {
+    const name = languageName(names, lang.code);
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * The reader's locales, minus anything `Intl` would throw on, with English behind them.
+ *
+ * ONE bad entry poisons the whole list -- the `DisplayNames` constructor rejects the array
+ * rather than skipping the member -- so a truncated or hand-edited `navigator.languages`
+ * would cost the reader every language name on the page rather than one. Filtering first
+ * is what makes a junk locale cost nothing. `preferredCountries` treats the same input the
+ * same way and for the same reason.
+ */
+function readableLocales(locales: readonly string[]): string[] {
+  const usable = locales.filter((locale) => {
+    try {
+      return Intl.getCanonicalLocales(locale).length > 0;
+    } catch {
+      return false;
+    }
+  });
+  return [...usable, "en"];
+}
+
+/** One language's name, or `null` when nothing can put a name to the code. */
+function languageName(names: Intl.DisplayNames, code: string): string | null {
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+  try {
+    const name = names.of(trimmed);
+    // `of` hands the code straight back when it knows no name for it.
+    return !name || name.toLowerCase() === trimmed.toLowerCase() ? null : name;
+  } catch {
+    // A malformed code is expected input here, not an error case -- `of` throws on one,
+    // and the pane simply has one less thing to say.
+    return null;
+  }
 }
 
 // --- crew ------------------------------------------------------------------
