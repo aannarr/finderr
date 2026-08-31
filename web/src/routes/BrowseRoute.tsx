@@ -28,6 +28,7 @@ import {
   type Title,
   titleStateVersion,
 } from "../lib/api";
+import { RANK_EXPLAINER } from "../lib/lists";
 import { filtersOf, type SearchParams } from "../lib/search-params";
 
 const PAGE = 60;
@@ -39,10 +40,18 @@ const KIND_LABEL: Record<string, string> = {
   tvMovie: "TV films",
 };
 
-/** "Horror films from the 1980s" -- a sentence, not a list of key=value pairs. */
+/**
+ * "Horror films from the 1980s" -- a sentence, not a list of key=value pairs.
+ *
+ * A ranked browse says "Best" rather than naming the ordering, because that IS the name of
+ * the list: nobody calls it "horror films sorted by weighted rating". The ordering still
+ * has to be stated somewhere, and `RANK_EXPLAINER` under the heading is where -- a page
+ * that says "Best" without saying whose measure it is, is the one thing the card that
+ * built this forbade.
+ */
 function describe(f: SearchParams): string {
   const noun = f.kind ? (KIND_LABEL[f.kind] ?? f.kind) : "titles";
-  const parts = [f.genre, noun];
+  const parts = [f.sort === "rank" ? "best" : undefined, f.genre, noun];
   if (f.year) parts.push(`from ${f.year}`);
   else if (f.decade) parts.push(`from the ${f.decade}s`);
   return parts.filter(Boolean).join(" ");
@@ -62,6 +71,16 @@ export function BrowseRoute() {
 
   // The filter identity is the URL, so a key built from it is stable and cheap.
   const filterKey = JSON.stringify(filtersOf(params));
+  /*
+    The sort rides beside the filters rather than inside them, and `filtersOf` is why.
+
+    That function PICKS known filter keys precisely so a non-filter param cannot ride into
+    `/api/browse` and into the cache key -- the lesson `role` bought. `sort` is not a filter:
+    it selects no rows, it orders them. So it travels as a fetch option, like `minVotes`,
+    and every request identity below has to name it explicitly. Leaving it out of the key
+    would serve a ranked list the votes-ordered page it had already cached.
+  */
+  const sort = params.sort;
 
   /**
    * Which filter the user asked to see past the vote floor for.
@@ -83,10 +102,10 @@ export function BrowseRoute() {
    * without the route remounting -- a genre chip clicked from inside /browse keeps this
    * component alive, so a lazy `useState` initializer would only ever seed the first one.
    */
-  const requestKey = `${filterKey}|${minVotes ?? ""}`;
+  const requestKey = `${filterKey}|${minVotes ?? ""}|${sort ?? ""}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (seededFor !== requestKey) {
-    const run = cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes });
+    const run = cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort });
     setSeededFor(requestKey);
     setRows(run?.rows ?? []);
     setTotal(run?.total ?? 0);
@@ -96,12 +115,12 @@ export function BrowseRoute() {
 
   useEffect(() => {
     // Already served from cache -- no request, no spinner, nothing to wait for.
-    if (cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes })) return;
+    if (cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort })) return;
 
     let stale = false;
     setLoading(true);
     setError(null);
-    browse(JSON.parse(filterKey), { limit: PAGE, offset: 0, minVotes })
+    browse(JSON.parse(filterKey), { limit: PAGE, offset: 0, minVotes, sort })
       .then((r) => {
         if (stale) return;
         setRows(r.rows);
@@ -117,12 +136,12 @@ export function BrowseRoute() {
     return () => {
       stale = true;
     };
-  }, [filterKey, minVotes]);
+  }, [filterKey, minVotes, sort]);
 
   const loadMore = async () => {
     setLoading(true);
     try {
-      const r = await browse(JSON.parse(filterKey), { limit: PAGE, offset: rows.length, minVotes });
+      const r = await browse(JSON.parse(filterKey), { limit: PAGE, offset: rows.length, minVotes, sort });
       setRows((prev) => [...prev, ...r.rows]);
       setTotal(r.total);
     } catch (e) {
@@ -156,6 +175,16 @@ export function BrowseRoute() {
           </span>
         )}
       </div>
+
+      {/*
+        A ranked page says whose measure it is, right under the word "Best".
+
+        Not decoration and not a tooltip: this order reproduces IMDb's Top 250 head almost
+        exactly and will never match it, so a page claiming "best" without naming the
+        measure is claiming somebody else's authority. One sentence, one owner
+        (`RANK_EXPLAINER`), shown here and on `/lists`.
+      */}
+      {params.sort === "rank" && <p className="-mt-2 mb-4 max-w-2xl text-xs text-muted">{RANK_EXPLAINER}</p>}
 
       {activeFilters > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5 text-xs">

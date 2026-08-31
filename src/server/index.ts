@@ -33,7 +33,7 @@ import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer } from "../lib/pl
 import { loadPlugins } from "../lib/plugins";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
-import type { TitleRow } from "../lib/search";
+import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
@@ -945,6 +945,10 @@ const appRoutes = {
       decade: num("decade"),
       year: num("year"),
       kind: u.searchParams.get("kind") ?? undefined,
+      // An unknown `sort` falls back to the default rather than 400ing: it reaches SQL as
+      // an ORDER BY, so it is validated against the closed union at the door, and a stale
+      // bookmark asking for a sort we removed should still render the grid.
+      sort: isBrowseSort(u.searchParams.get("sort")) ? (u.searchParams.get("sort") as BrowseSort) : undefined,
       minVotes: num("minVotes"),
       limit: Math.min(num("limit") ?? 60, 200),
       offset: num("offset") ?? 0,

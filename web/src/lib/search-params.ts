@@ -19,6 +19,18 @@ export interface SearchParams extends Filters {
    * and sending only one would drop half the filmography while still looking right.
    */
   role?: string;
+  /**
+   * Which ORDER a browse is in -- and therefore which list you are looking at.
+   *
+   * In the URL, unlike `minVotes`, and the two are different kinds of thing. `minVotes` is
+   * a tuning threshold that would become shareable state somebody has to keep meaningful
+   * across index rebuilds; `sort=rank` is the difference between "every horror film" and
+   * "the best horror films", which is a destination worth sending to someone.
+   *
+   * Absent means votes-ordered, so every link that existed before this param still means
+   * exactly what it meant.
+   */
+  sort?: "rank";
 }
 
 /** Parse a positive integer, or undefined for anything that is not one. */
@@ -72,6 +84,9 @@ export function validateSearch(raw: Record<string, unknown>): SearchParams {
   if (year) out.year = year;
   const role = nonEmpty(raw.role);
   if (role) out.role = role;
+  // Only the non-default is spelled: `?sort=votes` would be a second way to write the URL
+  // that already means that, and two spellings of one page are two cache entries.
+  if (raw.sort === "rank") out.sort = "rank";
   return out;
 }
 

@@ -35,7 +35,10 @@ export interface DiscoveryShelf {
  * the shelf rules are checked without an index, a database or a network.
  */
 export interface ShelfDeps {
-  engine: Pick<SearchEngine, "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst">;
+  engine: Pick<
+    SearchEngine,
+    "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse" | "hasRank"
+  >;
   store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource">;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
   now?: () => number;
@@ -122,6 +125,39 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       title: "Recently added to your library",
       subtitle: "newest in Radarr and Sonarr",
       rows: recentlyAdded(deps, 24),
+    },
+    /*
+      THE ONE SHELF THAT IS A LIST RATHER THAN A SELECTION, AND IT KEEPS WHAT YOU OWN.
+
+      Every other row here excludes the library, because "here is something you do not
+      have" is the point of a recommendation. A canonical list is the opposite: a Top 250
+      with the good ones quietly removed is not the Top 250, it is a list with holes and no
+      way to tell that from the numbering. The grid already marks an owned title, so
+      nothing is lost by leaving them in.
+
+      It is `browse` with `sort: "rank"` and no second ranking expression anywhere -- the
+      weighted rank lives in the index column, so this shelf and the full list behind its
+      "see all" link cannot disagree about the order. `movie` is pinned because a mixed
+      film-and-series list has no honest title: the two are rated by different crowds at
+      different volumes, and the series would take the head.
+
+      NEVER call this IMDb's Top 250. It reproduces IMDb's head almost exactly and will
+      not match it, because IMDb's vote filtering is unpublished.
+
+      > [!IMPORTANT] `hasRank` is what keeps the NAME honest across a deploy
+      > A redeploy keeps its data directory, so for up to a day after this ships the live
+      > index has no rank column. `engine.browse` would quietly downgrade to a votes sort
+      > and this shelf would render the most POPULAR films under the heading "finderr Top
+      > 250" -- a wrong list wearing a right one's label, and nothing on screen to say so.
+      > An empty `rows` array drops the shelf entirely (see the filter below), which is the
+      > honest version of the same state: the list is not available yet, so it is not shown.
+    */
+    {
+      id: "top-250",
+      title: "finderr Top 250",
+      subtitle: "weighted by rating and how many people voted",
+      browse: { sort: "rank", kind: "movie" },
+      rows: engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : [],
     },
     {
       id: "top-movies",

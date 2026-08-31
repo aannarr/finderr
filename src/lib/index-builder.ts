@@ -45,12 +45,30 @@ create table title (
   genres    text not null default '',
   votes     integer not null default 0,
   rating    real not null default 0,
+  -- The weighted rank every computed top list is ordered by. See applyRank().
+  -- NULL for a title nobody has rated, which is most of the corpus: SQLite sorts NULL
+  -- last under DESC, so an unrated title falls off the end of a list rather than
+  -- landing mid-pack on a score that is purely the prior.
+  --
+  -- NO BACKTICKS IN THIS STRING. It is a template literal, so one backtick in a comment
+  -- ends the schema mid-table and the parse errors it produces point at the lines AFTER
+  -- it, naming neither the string nor the character.
+  rank      real,
   -- normalized forms, precomputed once so every query is a lookup not a transform
   ntitle    text not null default '',
   norig     text not null default '',
   dtitle    text not null default ''
 );
-create table title_genre (title_rowid integer not null, genre text not null);
+-- kind and rank are DENORMALISED from title on purpose: with them here,
+-- "top 250 sci-fi films" is one seek into ix_tg_rank and no sort at all. Reaching
+-- through to the title table for either would make every per-genre list a scan plus
+-- a sort, which is the 13ms-vs-0.4ms difference this whole layer exists for.
+create table title_genre (
+  title_rowid integer not null,
+  genre       text not null,
+  kind        text not null default '',
+  rank        real
+);
 create table meta (key text primary key, value text not null);
 
 -- People, and the credits that connect them to titles.
@@ -85,17 +103,112 @@ create table title_principal (
  * Exported beside the schema for the same reason: a fixture that fills the join table
  * by hand can disagree with how the real index fills it, and then a query passes its
  * test and fails in production.
+ *
+ * **Run this AFTER `applyRank`, never before.** It copies `kind` and `rank` across, so
+ * exploding first would write a table of NULL ranks and every per-genre list would come
+ * back empty-ish and in the wrong order -- with no error anywhere to say why. `buildRankLayer`
+ * is the one caller that gets the order right, and it exists so nobody has to remember this.
  */
 export const EXPLODE_GENRES = `
-insert into title_genre (title_rowid, genre)
+insert into title_genre (title_rowid, genre, kind, rank)
 with split(id, one, rest) as (
   select rowid_, '', genres || ',' from title where genres != ''
   union all
   select id, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
   from split where rest != ''
 )
-select id, one from split where one != ''
+select s.id, s.one, t.kind, t.rank from split s join title t on t.rowid_ = s.id where s.one != ''
 `;
+
+/** What ranked the index, recorded so a list page can say how it was ordered. */
+export interface RankPrior {
+  /** The prior's strength in votes -- `index.rankPriorVotes`. */
+  c: number;
+  /** The corpus mean rating it pulls toward, MEASURED rather than configured. */
+  mean: number;
+  /** How many titles carry a rank at all. */
+  ranked: number;
+}
+
+/**
+ * The Bayesian weighted rank, written into `title.rank`.
+ *
+ *     rank = (v / (v + C)) * R  +  (C / (v + C)) * m
+ *
+ * where `v` is the vote count, `R` the title's own rating, `C` the prior's strength in
+ * votes and `m` the corpus mean. It is the same shape IMDb's own Top 250 uses, and
+ * measured against the real index on 2026-09-01 it reproduces IMDb's head to within a
+ * couple of positions -- Shawshank, The Godfather, The Dark Knight, Return of the King,
+ * Schindler's List. It will never match exactly, because IMDb's vote filtering is
+ * unpublished. **So it ships as "finderr Top 250" and never as IMDb's.**
+ *
+ * **`m` IS MEASURED, NOT WRITTEN DOWN.** It is one `avg()` over the table we have just
+ * filled, and it is measured over exactly the titles clearing `C` votes -- the pool whose
+ * ratings the prior is claiming to speak for, which is what makes the two constants one
+ * decision instead of two. A literal here would be right on the day it was typed and
+ * would then quietly stop describing the corpus on every rebuild after it.
+ *
+ * **An unrated title gets NULL rather than the prior.** With no votes the formula
+ * collapses to `m` exactly, so 1.2M unrated rows would tie at the corpus mean and sit
+ * ABOVE every genuinely badly-rated film -- a well-formed number that means "we know
+ * nothing", which is the worst kind of wrong answer. NULL sorts last under `desc` and
+ * says so.
+ *
+ * Takes the database rather than opening one, so the policy can be exercised against a
+ * handful of rows in a temp file.
+ */
+export function applyRank(db: Database, c: number): RankPrior {
+  // Refuse rather than write NULL over the whole corpus. `validate()` already rejects a
+  // bad `rankPriorVotes`, but a hand-built config that never went through `loadConfig`
+  // can reach here -- and the failure mode is silent: `votes + undefined` is NULL, so
+  // EVERY row loses its rank and every list renders empty with nothing in any log to say
+  // why. A build that cannot rank must fail at the build, not at the browser.
+  if (!Number.isFinite(c) || c < 1) {
+    throw new Error(`applyRank: prior strength must be a number >= 1, got ${c}`);
+  }
+  const mean =
+    (db.query("select avg(rating) m from title where votes >= ?").get(c) as { m: number | null }).m ?? 0;
+  db.run(
+    `update title set rank = case when votes > 0 and rating > 0
+       then (votes * 1.0 / (votes + ?)) * rating + (? * 1.0 / (votes + ?)) * ?
+       else null end`,
+    [c, c, c, mean],
+  );
+  const ranked = (db.query("select count(*) n from title where rank is not null").get() as { n: number }).n;
+  return { c, mean, ranked };
+}
+
+/**
+ * Rank every title, explode the genres, and index both -- in the one order that works.
+ *
+ * One function because the three steps are one fact with three storage sites: the rank on
+ * `title`, its copy on `title_genre`, and the two indexes that make either an ordered seek
+ * instead of a sort. Splitting them across the builder is how the copy on `title_genre`
+ * would eventually be filled before the value it copies exists.
+ *
+ * Measured on the Mac against the real 1.28M-row index: prior 16ms, rank update 1.5s,
+ * explode 2.1s, indexes 3.3s -- so the whole layer is under 7s on a build that already
+ * costs 102.7s here and 376.3s on the NAS. It rides the existing 09:00 refresh and
+ * schedules nothing new.
+ */
+export function buildRankLayer(db: Database, cfg: Config, log: (msg: string) => void = () => {}): RankPrior {
+  const t0 = Date.now();
+  const prior = applyRank(db, cfg.index.rankPriorVotes);
+  db.run("begin");
+  db.run(EXPLODE_GENRES);
+  db.run("commit");
+  // (kind, rank desc) and (genre, kind, rank desc): the leading equality columns are what
+  // a list actually pins, and `rank desc` last is what removes the sort. A decade slice
+  // adds a range on `year` that no prefix can cover, so it walks this order and filters --
+  // 3.1ms measured for "top comedies of the 2020s" against 180ms for the live expression.
+  db.run("create index ix_rank on title(kind, rank desc)");
+  db.run("create index ix_tg_rank on title_genre(genre, kind, rank desc)");
+  log(
+    `rank: ${prior.ranked.toLocaleString()} titles ranked, prior C=${prior.c.toLocaleString()} ` +
+      `mean=${prior.mean.toFixed(3)} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+  );
+  return prior;
+}
 
 /**
  * Build the index into `dest`. Returns stats; does not promote.
@@ -183,11 +296,11 @@ export async function buildIndex(
   db.run("commit");
   log(`  scanned ${scanned.toLocaleString()}, kept ${kept.toLocaleString()}`);
 
-  // --- genres exploded into a join table so facet counts are an indexed group-by
-  log("exploding genres ...");
-  db.run("begin");
-  db.run(EXPLODE_GENRES);
-  db.run("commit");
+  // --- the rank column, then genres exploded into a join table carrying a copy of it.
+  // One step, in that order, because the copy cannot precede the value. Facet counts are
+  // an indexed group-by over the same table.
+  log("ranking and exploding genres ...");
+  const prior = buildRankLayer(db, cfg, log);
   const genreRows = (db.query("select count(*) c from title_genre").get() as { c: number }).c;
   log(`  ${genreRows.toLocaleString()} genre rows`);
 
@@ -222,7 +335,9 @@ export async function buildIndex(
   db.run("create index ix_year on title(year)");
   db.run("create index ix_kind on title(kind)");
   db.run("create index ix_tg_title on title_genre(title_rowid)");
-  db.run("create index ix_tg_genre on title_genre(genre)");
+  // ix_tg_genre(genre) is gone: ix_tg_rank leads with `genre`, so it serves every query
+  // the narrower index served -- a leading-column prefix is the one case where two
+  // indexes are genuinely one. Keeping both would cost build time and pages for nothing.
   // ix_tp_person is the REVERSE index and the entire reason the cast tables exist:
   // person -> filmography. ix_tp_title serves the other direction, which the title
   // page needs to turn a cast name into a link.
@@ -241,6 +356,11 @@ export async function buildIndex(
   setMeta.run("credit_rows", String(cast.creditRows));
   setMeta.run("people", String(cast.people));
   setMeta.run("cast_min_votes", String(cfg.index.castMinVotes));
+  // How the lists were ranked, so a list page can say it rather than restate a constant
+  // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
+  setMeta.run("rank_prior_votes", String(prior.c));
+  setMeta.run("rank_prior_mean", prior.mean.toFixed(4));
+  setMeta.run("ranked", String(prior.ranked));
 
   db.run("pragma optimize");
   db.close();

@@ -32,6 +32,10 @@ function configWith(over: Partial<Config["index"]> = {}): Config {
       includeAdult: false,
       castMinVotes: 1000,
       castCategories: ["actor", "actress", "director", "writer"],
+      // Required by the rank layer. It is spelled out here because the `as Config` below
+      // means TypeScript will NOT tell you when a new field is missing -- this fixture went
+      // red on the day `rankPriorVotes` landed and the compiler stayed silent.
+      rankPriorVotes: 25_000,
       refreshCron: "",
       refreshOnBoot: false,
       ...over,
