@@ -22,6 +22,7 @@ import {
   type RenderedPane,
   subscribeTitleState,
   type Title,
+  type TitleAwards,
   type TitleDetail,
   titleStateVersion,
 } from "./api";
@@ -166,6 +167,15 @@ export interface TitleDetailView {
    * lands, and empty for anything Sonarr does not hold.
    */
   episodeState: EpisodeState[] | undefined;
+  /**
+   * What the Academy gave this film. `null` for nearly every title, undefined before the
+   * response lands -- and the pane draws nothing in either case.
+   *
+   * There is no third state here, which is the point: awards come from our own imported
+   * tables rather than from a provider, so they arrive complete with the first response
+   * and never sit `pending`. Nothing about them belongs in the poll.
+   */
+  awards: TitleAwards | null | undefined;
   error: string | null;
 }
 
@@ -235,6 +245,7 @@ export function useTitleDetail(tconst: string): TitleDetailView {
     problems: detail?.work.problems ?? [],
     arrLink: detail?.arrLink ?? null,
     episodeState: detail?.episodeState,
+    awards: detail?.awards,
     error,
   };
 }

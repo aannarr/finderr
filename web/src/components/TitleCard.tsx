@@ -3,6 +3,7 @@ import { memo, useState } from "react";
 import { posterUrl, prefetchTitle, type Title } from "../lib/api";
 import { shelfDateLabel, todayUtc } from "../lib/facet-panes";
 import { BrowseChip } from "./BrowseChip";
+import { RequestAction } from "./RequestAction";
 
 /**
  * What KIND of date this is, spelt for a reader.
@@ -59,7 +60,6 @@ export const TitleCard = memo(function TitleCard({
   title: Title;
   onRequest: (t: Title) => void;
 }) {
-  const requested = t.requestStatus !== null;
   const owned = t.inLibrary;
   const up = t.upcoming;
   const today = todayUtc();
@@ -286,31 +286,7 @@ export const TitleCard = memo(function TitleCard({
         )}
 
         <div className="mt-auto pt-2">
-          {owned ? (
-            <span className="block rounded-lg border border-line px-2 py-1.5 text-center text-xs text-muted">
-              {t.hasFile ? "Available" : "Monitored"}
-            </span>
-          ) : requested ? (
-            <span
-              className={[
-                "block rounded-lg px-2 py-1.5 text-center text-xs",
-                t.requestStatus === "failed" || t.requestStatus === "no_release"
-                  ? "border border-danger/50 bg-danger/10 text-ink"
-                  : "border border-warn/40 bg-warn/10 text-ink",
-              ].join(" ")}
-            >
-              {t.requestStatus === "no_release" ? "No release found" : t.requestStatus}
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onRequest(t)}
-              className="w-full rounded-lg bg-accent px-2 py-1.5 text-xs font-medium text-black
-                         transition-opacity hover:opacity-90 active:opacity-75"
-            >
-              Request
-            </button>
-          )}
+          <RequestAction title={t} onRequest={onRequest} />
         </div>
       </div>
     </article>

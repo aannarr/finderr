@@ -332,6 +332,15 @@ export interface TitleDetail extends Title {
    * thing here -- there is nothing to say about any episode, so nothing is drawn.
    */
   episodeState?: EpisodeState[];
+  /**
+   * What the Academy gave this film, from our own imported tables.
+   *
+   * NOT a facet, and it must not be routed through `paneView`: there is no provider owing
+   * it an answer, so it is complete the moment the response arrives and has no `pending`
+   * state to reserve space for. `null` for the overwhelming majority of titles, which the
+   * pane renders as nothing at all.
+   */
+  awards?: TitleAwards | null;
 }
 
 export interface Person {
@@ -360,6 +369,13 @@ export interface PersonPage {
   total: number;
   /** Counts over ALL their credits, not this page -- so the number does not shrink. */
   categories: { category: string; count: number }[];
+  /**
+   * Their award record, joined on the nconst. `null` for nearly everybody.
+   *
+   * Beside the credits rather than inside them: a credit is our index saying they worked
+   * on a film, and this is a mirrored dataset saying the Academy nominated them.
+   */
+  awards?: PersonAwards | null;
 }
 
 export interface PersonQuery {
@@ -405,6 +421,155 @@ export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise
     // Same as search and browse: holding the rows means opening one from a filmography
     // paints its local half with no request.
     for (const c of data.credits) titleCache.set(c.tconst, c);
+    return data;
+  });
+}
+
+// --- awards ----------------------------------------------------------------
+//
+// The whole award surface is served from local SQLite, so none of this polls, none of it
+// has a `pending` state and none of it goes through `paneView`. It is either there or the
+// server does not hold it -- the same footing `LinksRow` is on.
+
+/** Provenance, so a page can say where its data came from and under what licence. */
+export interface AwardSource {
+  sha: string | null;
+  url: string;
+  licence: string;
+  attribution: string;
+  importedAt: string;
+  sourceDate: string | null;
+  rows: number;
+}
+
+export interface CeremonySummary {
+  award: string;
+  ceremony: number;
+  /** `1927/28` for the first six. Displayed, never parsed -- the ceremony number is the key. */
+  year: string;
+  nominations: number;
+  wins: number;
+  categories: number;
+  bestPictureTconst: string | null;
+  bestPictureTitle: string | null;
+  bestPictureAlsoWon: string[];
+  bestPictureNominations: number;
+  bestPictureWins: number;
+  films: number;
+  filmsOwned: number;
+}
+
+export interface AwardsTimeline {
+  award: string;
+  source: AwardSource | null;
+  totals: { ceremonies: number; nominations: number; wins: number };
+  anchor: { category: string; owned: number; total: number };
+  ceremonies: CeremonySummary[];
+  /**
+   * Decorated rows for the anchor films, keyed by tconst.
+   *
+   * ABSENT is meaningful: a film we do not index has no entry, so the row prints its title
+   * as plain text and draws no poster and no request button. That is the dead-end rule as a
+   * data shape -- the client never has to decide whether a link would work.
+   */
+  titles: Record<string, Title>;
+}
+
+export interface NominationView {
+  seq: number;
+  category: string;
+  /** The name as it was awarded that year. Shown as a footnote when it differs. */
+  rawCategory: string;
+  won: boolean;
+  films: { title: string; tconst: string | null }[];
+  nominees: { name: string; nconst: string | null }[];
+  detail: string | null;
+  note: string | null;
+}
+
+export interface CeremonyPage {
+  award: string;
+  ceremony: number;
+  year: string;
+  nominations: number;
+  wins: number;
+  categories: number;
+  films: number;
+  filmsOwned: number;
+  bestPicture: { title: string; tconst: string | null } | null;
+  groups: { category: string; nominations: NominationView[] }[];
+  titles: Record<string, Title>;
+  prev: number | null;
+  next: number | null;
+}
+
+/** A title's award record, sent on `/api/title/:tconst`. Null for nearly every title. */
+export interface TitleAwards {
+  award: string;
+  nominations: number;
+  wins: number;
+  entries: {
+    ceremony: number;
+    year: string;
+    category: string;
+    won: boolean;
+    nominees: { name: string; nconst: string | null }[];
+    detail: string | null;
+  }[];
+}
+
+/** A person's award record, sent on `/api/person/:nconst`. Null for nearly everybody. */
+export interface PersonAwards {
+  award: string;
+  nominations: number;
+  wins: number;
+  entries: {
+    ceremony: number;
+    year: string;
+    category: string;
+    won: boolean;
+    films: { title: string; tconst: string | null }[];
+    detail: string | null;
+  }[];
+}
+
+const timelineCache = new Cache<AwardsTimeline>(1);
+const ceremonyCache = new Cache<CeremonyPage>(20);
+
+/** The timeline we already hold. Synchronous, for the same reason `cachedDiscover` is. */
+export function cachedAwards(): AwardsTimeline | undefined {
+  return timelineCache.get("oscars");
+}
+
+export async function getAwards(): Promise<AwardsTimeline> {
+  const hit = timelineCache.get("oscars");
+  if (hit) return hit;
+  return dedupe("awards", async () => {
+    const res = await fetch("/api/awards/oscars");
+    if (!res.ok) throw new Error(`awards failed: ${res.status}`);
+    const data = (await res.json()) as AwardsTimeline;
+    timelineCache.set("oscars", data);
+    // Same as search and browse: holding the anchor rows means opening one from the
+    // timeline paints its local half with no request.
+    for (const t of Object.values(data.titles)) titleCache.set(t.tconst, t);
+    return data;
+  });
+}
+
+export function cachedCeremony(ceremony: number): CeremonyPage | undefined {
+  return ceremonyCache.get(String(ceremony));
+}
+
+export async function getCeremony(ceremony: number): Promise<CeremonyPage> {
+  const key = String(ceremony);
+  const hit = ceremonyCache.get(key);
+  if (hit) return hit;
+  return dedupe(`ceremony:${key}`, async () => {
+    const res = await fetch(`/api/awards/oscars/${ceremony}`);
+    if (!res.ok) throw new Error(res.status === 404 ? "unknown ceremony" : `ceremony failed: ${res.status}`);
+    const data = (await res.json()) as CeremonyPage;
+    ceremonyCache.set(key, data);
+    for (const t of Object.values(data.titles)) titleCache.set(t.tconst, t);
     return data;
   });
 }

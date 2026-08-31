@@ -15,7 +15,9 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
 import { AdminRoute } from "./routes/AdminRoute";
+import { AwardsRoute } from "./routes/AwardsRoute";
 import { BrowseRoute } from "./routes/BrowseRoute";
+import { CeremonyRoute } from "./routes/CeremonyRoute";
 import { CollectionRoute } from "./routes/CollectionRoute";
 import { PersonRoute } from "./routes/PersonRoute";
 import { RootLayout } from "./routes/RootLayout";
@@ -113,12 +115,42 @@ const adminRoute = createRoute({
   component: AdminRoute,
 });
 
+/**
+ * `/awards/oscars` -- ninety-eight ceremonies, newest first.
+ *
+ * The award is IN THE PATH rather than a parameter, deliberately. `/awards/$award` would
+ * promise a vocabulary we do not have: the Oscars are the only source anybody has found
+ * that carries both `tconst` and `nconst`, and a general shape designed against one
+ * example is a shape designed against nothing. A second award becomes a second literal
+ * route, and the generalisation happens when there is something to generalise FROM.
+ */
+const awardsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/awards/oscars",
+  component: AwardsRoute,
+});
+
+/**
+ * `/awards/oscars/96` -- one ceremony.
+ *
+ * The parameter is the CEREMONY NUMBER, never the year. The first six ceremonies carry
+ * `1927/28` as their year, so the year is a label; the number is the only stable key the
+ * source has, and routing on it is what keeps `/awards/oscars/1` meaningful.
+ */
+const ceremonyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/awards/oscars/$ceremony",
+  component: CeremonyRoute,
+});
+
 const routeTree = rootRoute.addChildren([
   searchRoute,
   browseRoute,
   titleRoute,
   personRoute,
   collectionRoute,
+  awardsRoute,
+  ceremonyRoute,
   accountRoute,
   adminRoute,
 ]);

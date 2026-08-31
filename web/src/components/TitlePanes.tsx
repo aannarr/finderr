@@ -22,8 +22,9 @@
 
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import type { EpisodeState, RenderedPane, Title } from "../lib/api";
+import type { EpisodeState, RenderedPane, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
+import { prettyCategory } from "../lib/awards-format";
 import {
   byBillingOrder,
   entityKindOf,
@@ -66,8 +67,9 @@ import type {
   Trailer,
   WatchProviders,
 } from "../lib/facets";
+import { NominationRow, NomineeList } from "./Awards";
 import { InertChip } from "./Chip";
-import { FacetPane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
+import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
 import { PluginPanes, panesForSlot } from "./PluginPane";
 import { SeriesPane } from "./SeriesPane";
 import { TitleCard } from "./TitleCard";
@@ -108,6 +110,14 @@ export interface TitlePanesProps {
   episodeState?: readonly EpisodeState[];
   /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
   onRequestEpisode?: (season: number, episode: number) => void;
+  /**
+   * What the Academy gave this film, from our own imported tables.
+   *
+   * NOT a facet, so it is not in `facets` and never reaches `paneView`: no provider owes
+   * it an answer, so it is complete when the payload lands and has no pending state. Null
+   * or absent for nearly every title, which draws nothing.
+   */
+  awards?: TitleAwards | null;
 }
 
 /*
@@ -308,6 +318,7 @@ export function TitleLowerPanes({
   relatedTitles,
   panes,
   episodeState,
+  awards,
   onRequestEpisode,
 }: TitlePanesProps) {
   const shared = { facets, working };
@@ -350,6 +361,18 @@ export function TitleLowerPanes({
         skeleton={<SkeletonLines widths={["w-64", "w-52", "w-72", "w-44"]} />}
         render={(crew: CrewMember[]) => <CrewList crew={crew} people={people} />}
       />
+
+      {/*
+        What the Academy gave it. AFTER the people, because every line in it names one of
+        them, and BEFORE the collection and more-like-this, because those are the exits
+        from this page and awards are still about the film itself.
+
+        Not a `FacetPane`, and the reason is on `Pane`'s doc comment: awards are our own
+        imported rows rather than a provider's answer, so they are complete at t=0 and have
+        no pending state to reserve space for. Null for nearly every title, and null draws
+        nothing at all.
+      */}
+      <AwardsPane awards={awards} />
 
       {/*
         The same facts the desktop rail shows, behind one tap. `sm:hidden` and the rail
@@ -422,6 +445,65 @@ export function TitleLowerPanes({
           somewhere to put it without claiming a position between two core panes. */}
       {slot("title.end")}
     </>
+  );
+}
+
+// --- awards -----------------------------------------------------------------
+
+/**
+ * What the Academy gave this film.
+ *
+ * The heading carries the RECORD -- "11 nominations, 3 wins" -- because that is the fact a
+ * reader wants and the list under it is the evidence. Every ceremony links to its year
+ * page and every nominee to their filmography, so the pane is a junction rather than a
+ * dead end.
+ *
+ * Null draws nothing at all. That is the overwhelming majority of the index, and it is the
+ * same disappearance an empty facet pane makes -- reached down a different path, because
+ * nothing here was ever pending.
+ */
+function AwardsPane({ awards }: { awards: TitleAwards | null | undefined }) {
+  if (!awards || awards.entries.length === 0) return null;
+
+  // Every entry for one film is nearly always one ceremony, so the year is stated once in
+  // the heading rather than repeated down every line.
+  const ceremonies = [...new Set(awards.entries.map((e) => e.year))];
+
+  return (
+    <Pane
+      heading={
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span>Academy Awards</span>
+          <span className="text-xs font-normal text-muted tabular-nums">
+            {awards.nominations} nomination{awards.nominations === 1 ? "" : "s"}
+            {awards.wins > 0 && `, ${awards.wins} win${awards.wins === 1 ? "" : "s"}`}
+            {ceremonies.length === 1 && ` · ${ceremonies[0]}`}
+          </span>
+        </span>
+      }
+    >
+      <ol>
+        {awards.entries.map((e) => (
+          <NominationRow
+            // Category alone is not unique -- two songs from one film compete in the same
+            // category -- so the nominees join the key.
+            key={`${e.ceremony}-${e.category}-${e.nominees.map((n) => n.nconst ?? n.name).join("|")}`}
+            won={e.won}
+            detail={e.detail}
+            subject={
+              <Link
+                to="/awards/oscars/$ceremony"
+                params={{ ceremony: String(e.ceremony) }}
+                className={PERSON_LINK_CLASS}
+              >
+                {prettyCategory(e.category)}
+              </Link>
+            }
+            credit={e.nominees.length > 0 ? <NomineeList nominees={e.nominees} /> : undefined}
+          />
+        ))}
+      </ol>
+    </Pane>
   );
 }
 

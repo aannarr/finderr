@@ -124,12 +124,20 @@ export function FacetPane<F extends FacetName>({
 /**
  * The section chrome, and nothing else: a heading, and whatever goes under it.
  *
- * PRIVATE again. It was exported for the links pane, the one pane whose visibility was not
- * a facet's to decide; that row has since moved under the synopsis and dropped its heading
- * entirely, so `FacetPane` is once more the only thing that draws a section on this page.
- * Export it again only for a second caller that genuinely needs the same `<section>` and
- * `<h3>` -- it is chrome, never an invitation to re-decide the skeleton/content/hidden rule
- * per pane.
+ * EXPORTED AGAIN, for `AwardsPane`, and the note it carried is the test that admitted it.
+ * It said to export it only for "a second caller that genuinely needs the same `<section>`
+ * and `<h3>`", and awards is that caller: it draws a heading over content on the title
+ * page exactly as the facet panes do.
+ *
+ * What makes it legitimate rather than a loophole is WHY it cannot use `FacetPane`. Awards
+ * are not a facet. They come from our own imported tables, arrive complete with the title
+ * payload, and no provider ever owes them an answer -- so there is no `pending` state, no
+ * skeleton to reserve and nothing for `paneView` to decide. Routing them through
+ * `FacetPane` would mean inventing a fake `FacetName` for data no plugin provides.
+ *
+ * That is the same reasoning `LinksRow` used, and the same limit applies: this is CHROME,
+ * never an invitation to re-decide the skeleton/content/hidden rule per pane. **Any pane
+ * whose visibility depends on a provider still goes through `FacetPane`.**
  *
  * Three variants, all still one `<section>` + `<h3>` so the outline reads the same:
  * - `section`: the default reading-flow chrome.
@@ -150,7 +158,7 @@ const PANE_CHROME: Record<PaneVariant, { section: string; heading: string }> = {
   },
 };
 
-function Pane({
+export function Pane({
   heading,
   busy,
   variant = "section",

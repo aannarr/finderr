@@ -14,10 +14,19 @@
 
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { NominationRow } from "../components/Awards";
 import { ToggleChip } from "../components/Chip";
 import { useKeyAction } from "../components/Kbd";
 import { TitleGrid } from "../components/TitleGrid";
-import { cachedPerson, getPerson, type PersonPage, subscribeTitleState, titleStateVersion } from "../lib/api";
+import {
+  cachedPerson,
+  getPerson,
+  type PersonAwards,
+  type PersonPage,
+  subscribeTitleState,
+  titleStateVersion,
+} from "../lib/api";
+import { prettyCategory } from "../lib/awards-format";
 
 const PAGE = 60;
 
@@ -65,6 +74,86 @@ export function mergedCategories(
   return [...byLabel]
     .map(([label, v]) => ({ label, values: v.values.sort(), count: v.count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+/**
+ * "Nominated 8 times, won 2" -- and every nomination behind a disclosure.
+ *
+ * `null` for nearly everybody, which renders as nothing rather than "0 nominations". The
+ * summary line is always visible because it is the fact worth knowing; the list is behind
+ * a `<details>` because John Williams has 54 of them and that is a page of its own sitting
+ * on top of a filmography.
+ *
+ * No skeleton and no polling: awards arrive with the person payload from local SQLite, so
+ * this is complete the moment the page paints. It is not a facet and must not be routed
+ * through `paneView`.
+ */
+function PersonAwardsSummary({ awards }: { awards: PersonAwards | null }) {
+  if (!awards || awards.nominations === 0) return null;
+
+  return (
+    <details className="group mt-1.5">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs text-muted hover:text-ink">
+        <span className="text-accent">★</span>
+        <span className="tabular-nums">
+          Nominated {awards.nominations} time{awards.nominations === 1 ? "" : "s"}
+          {awards.wins > 0 && `, won ${awards.wins}`}
+        </span>
+        <span className="text-muted/60 transition-transform group-open:rotate-90" aria-hidden="true">
+          ›
+        </span>
+      </summary>
+
+      <ol className="mt-2 border-l border-line pl-3">
+        {awards.entries.map((e) => (
+          <NominationRow
+            // Ceremony plus category is not unique on its own -- a songwriter can hold two
+            // nominations in one category at one ceremony -- so the film joins the key.
+            key={`${e.ceremony}-${e.category}-${e.films.map((f) => f.tconst ?? f.title).join("|")}`}
+            won={e.won}
+            detail={e.detail}
+            subject={
+              <>
+                {e.films.map((f, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: source order, never reordered
+                  <span key={`${f.tconst ?? f.title}-${i}`}>
+                    {i > 0 && " · "}
+                    {/*
+                      No `titles` map on this payload, so a film links on having an id
+                      rather than on our holding a row. The person page already accepts
+                      that trade for its own credits -- a 404 on a click is a worse
+                      outcome than plain text, but a far better one than a wrong page,
+                      and the id came from the source rather than from a name match.
+                    */}
+                    {f.tconst ? (
+                      <Link
+                        to="/title/$tconst"
+                        params={{ tconst: f.tconst }}
+                        className="underline-offset-2 hover:text-accent hover:underline"
+                      >
+                        {f.title}
+                      </Link>
+                    ) : (
+                      f.title
+                    )}
+                  </span>
+                ))}
+              </>
+            }
+            credit={
+              <Link
+                to="/awards/oscars/$ceremony"
+                params={{ ceremony: String(e.ceremony) }}
+                className="underline-offset-2 hover:text-accent hover:underline"
+              >
+                {prettyCategory(e.category)}, {e.year}
+              </Link>
+            }
+          />
+        ))}
+      </ol>
+    </details>
+  );
 }
 
 /** "1974-2019", "1974-", or nothing at all. */
@@ -164,6 +253,13 @@ export function PersonRoute() {
           {years && " · "}
           {page.total.toLocaleString()} {page.total === 1 ? "credit" : "credits"}
         </p>
+        {/*
+          Their award record, which is null for nearly everybody and therefore draws
+          nothing at all. It sits in the header rather than under the grid because it is a
+          fact ABOUT the person, like the lifespan beside it -- the grid below is what they
+          were in, and this is what it got them.
+        */}
+        <PersonAwardsSummary awards={page.awards ?? null} />
       </div>
 
       {/*
