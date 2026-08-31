@@ -248,6 +248,18 @@ create table if not exists episode (
   primary key (imdb_id, season, episode)
 );
 
+-- WHEN we last asked Sonarr about a series' episodes, whatever it answered.
+--
+-- Separate from the rows themselves because "we asked and got nothing" has to be
+-- recordable. Deriving the walk time from max(episode.updated_at) reads as never-walked
+-- for a series with no episodes, and a never-walked series is always due -- so one empty
+-- series would be re-fetched on every single pass, forever. That is the exact hot loop
+-- the batching exists to prevent, arriving through the back door.
+create table if not exists episode_walk (
+  imdb_id   text primary key,
+  walked_at text not null
+);
+
 create table if not exists request (
   id         integer primary key autoincrement,
   tconst     text not null,
@@ -634,6 +646,9 @@ export class Store {
       for (const r of rows) {
         ins.run(imdbId, r.season, r.episode, r.arr_episode_id, r.has_file, r.monitored, r.air_date, now);
       }
+      // Inside the same transaction as the rows it describes: a walk that half-wrote and
+      // rolled back must not be able to claim it happened.
+      this.db.run("insert or replace into episode_walk (imdb_id, walked_at) values (?,?)", [imdbId, now]);
       this.db.run("commit");
     } catch (err) {
       this.db.run("rollback");
@@ -658,12 +673,42 @@ export class Store {
   }
 
   /**
+   * Which mirrored series are due an episode walk, neediest first.
+   *
+   * > [!IMPORTANT] This exists because the episode mirror costs ONE CALL PER SERIES
+   * > Sonarr's `/episode` takes a `seriesId`, so there is no "everything" form. Walking
+   * > every series on the 60-second library timer is one request per series per minute --
+   * > roughly 600 a minute on a real library, forever, for a fact that changes when a file
+   * > lands. So the walk is a SLICE of the stale ones rather than the whole library, and
+   * > this query is what picks the slice.
+   *
+   * Never-walked first (`updated_at is null` sorts first), then oldest. That ordering is
+   * the useful half: a series added a minute ago, or a first boot with an empty mirror,
+   * fills in on the next tick or two instead of waiting out a full cycle.
+   */
+  seriesNeedingEpisodeRefresh(limit: number, staleBefore: string): string[] {
+    return (
+      this.db
+        .query(
+          `select l.imdb_id as imdb_id, w.walked_at as walked_at
+             from library l
+             left join episode_walk w on w.imdb_id = l.imdb_id
+            where l.service = 'sonarr'
+              and (w.walked_at is null or w.walked_at < ?)
+            order by w.walked_at is not null, w.walked_at
+            limit ?`,
+        )
+        .all(staleBefore, limit) as { imdb_id: string }[]
+    ).map((r) => r.imdb_id);
+  }
+
+  /**
    * Mark episodes monitored in the mirror, right after Sonarr accepted the same change.
    *
-   * OPTIMISTIC and short-lived: it stops the row a reader is looking at offering a button
-   * they have already pressed. The next library sync overwrites it with Sonarr's own
-   * answer, which is why this is not a second source of truth -- it is the same truth,
-   * sixty seconds early.
+   * OPTIMISTIC, and it is what makes the slow walk above acceptable: the row a reader is
+   * looking at stops offering a button they already pressed, immediately, instead of
+   * waiting hours for its series to come round again. Not a second source of truth -- the
+   * next walk overwrites it with whatever Sonarr says.
    */
   markEpisodesMonitored(imdbId: string, arrEpisodeIds: readonly number[]): number {
     if (arrEpisodeIds.length === 0) return 0;
@@ -1229,6 +1274,7 @@ export function posterFrom(images: unknown): string | null {
 export async function syncLibrary(
   store: Store,
   clients: { radarr?: RadarrClient; sonarr?: SonarrClient },
+  episodePolicy: EpisodeRefreshPolicy,
   log: (m: string) => void = () => {},
 ): Promise<{ radarr?: number; sonarr?: number; episodes?: number; errors: string[] }> {
   const errors: string[] = [];
@@ -1291,7 +1337,8 @@ export async function syncLibrary(
       );
       log(`library: ${out.sonarr} series mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
 
-      const eps = await syncEpisodes(store, clients.sonarr, series, log);
+      // A SLICE of the stale series, never all of them -- see `syncEpisodes`.
+      const eps = await syncEpisodes(store, clients.sonarr, series, episodePolicy, log);
       out.episodes = eps.episodes;
       errors.push(...eps.errors);
     } catch (err) {
@@ -1302,19 +1349,33 @@ export async function syncLibrary(
   return out;
 }
 
+/** How hard the episode walk is allowed to push, per library refresh. */
+export interface EpisodeRefreshPolicy {
+  /** How many series may be walked on this pass. */
+  batch: number;
+  /** How stale a series' rows must be before it is a candidate, in seconds. */
+  staleSeconds: number;
+}
+
 /**
- * Mirror Sonarr's per-EPISODE state for every series we hold.
+ * Mirror Sonarr's per-EPISODE state for a SLICE of the series we hold.
  *
- * > [!IMPORTANT] One call PER SERIES, and that is the whole cost model
- * > Sonarr has no "every episode you hold" endpoint -- `/episode` requires a `seriesId` --
- * > so this is N calls against a LAN service we already talk to on this timer, not a crawl
- * > of somebody else's infrastructure. The one-click-deep rule that governs the Servarr
- * > metadata proxies does not apply: this is the operator's own Sonarr, answering about
- * > the operator's own library.
+ * > [!CAUTION] One call PER SERIES -- walking the whole library every minute is ~600 rpm
+ * > Sonarr has no "every episode you hold" endpoint (`/episode` requires a `seriesId`), so
+ * > the cost of this mirror is linear in the library and NOT in the number of passes. The
+ * > first version of this function walked every series on the 60-second library timer,
+ * > which on a 596-series library is around six hundred requests a minute, indefinitely,
+ * > for a fact that changes when a file is imported. That it is the operator's own Sonarr
+ * > on the LAN makes it rude rather than forbidden; it is still the wrong thing to do.
+ *
+ * So each pass takes `batch` series whose rows are older than `staleSeconds`, neediest
+ * first (`Store.seriesNeedingEpisodeRefresh`). At the defaults -- 25 per minute, six-hour
+ * staleness -- a first boot fills a 600-series library inside half an hour and the steady
+ * state is under two calls a minute. A reader's own request does not wait for its turn:
+ * `markEpisodesMonitored` writes that through as soon as Sonarr accepts it.
  *
  * Serial rather than parallel, deliberately. There is no deadline on a background mirror,
- * and a burst of hundreds of concurrent requests is how a mirror that runs every minute
- * becomes the reason Sonarr is slow.
+ * and a burst of concurrent requests is how a mirror becomes the reason Sonarr is slow.
  *
  * A series whose fetch fails is SKIPPED and keeps the rows it already had. The failure is
  * collected rather than thrown, for the same reason `syncLibrary` splits Radarr from
@@ -1324,15 +1385,24 @@ export async function syncEpisodes(
   store: Store,
   sonarr: SonarrClient,
   series: readonly SonarrSeries[],
+  policy: EpisodeRefreshPolicy,
   log: (m: string) => void = () => {},
 ): Promise<{ episodes: number; series: number; errors: string[] }> {
   const errors: string[] = [];
   let episodes = 0;
   let walked = 0;
 
+  if (policy.batch <= 0) return { episodes, series: walked, errors };
+
+  const staleBefore = new Date(Date.now() - policy.staleSeconds * 1000).toISOString();
+  const due = new Set(store.seriesNeedingEpisodeRefresh(policy.batch, staleBefore));
+  if (due.size === 0) return { episodes, series: walked, errors };
+
   for (const s of series) {
     const imdbId = s.imdbId;
-    if (!imdbId) continue; // no IMDb id = nothing on our side to key it to
+    // The slice is chosen from the MIRROR rather than from this list, so a series Sonarr
+    // just dropped cannot be walked and one with no IMDb id was never a candidate.
+    if (!imdbId || !due.has(imdbId)) continue;
     try {
       const rows = (await sonarr.episodes(s.id)) ?? [];
       episodes += store.replaceEpisodes(

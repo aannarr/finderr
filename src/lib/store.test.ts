@@ -263,6 +263,36 @@ describe("episode mirror", () => {
     expect(store.getEpisode("tt1", 1, 1)?.has_file).toBe(1);
   });
 
+  /**
+   * The bug this pins is a load bug, and it is invisible in a unit test unless asked for
+   * directly: the first version of the episode walk fetched EVERY series on the 60-second
+   * library timer, which on a real library is hundreds of Sonarr requests a minute forever.
+   */
+  test("only stale series are due, neediest first, and never more than the batch", () => {
+    store.replaceLibrary("sonarr", [
+      { imdb_id: "tt1", arr_id: 1, has_file: 1, monitored: 1, progress: 1 },
+      { imdb_id: "tt2", arr_id: 2, has_file: 1, monitored: 1, progress: 1 },
+      { imdb_id: "tt3", arr_id: 3, has_file: 1, monitored: 1, progress: 1 },
+    ]);
+    // A film is never a candidate -- Radarr has no episodes.
+    store.replaceLibrary("radarr", [{ imdb_id: "tt9", arr_id: 9, has_file: 1, monitored: 1, progress: 1 }]);
+
+    // Nothing walked yet: every series is due, and the batch is the ceiling.
+    expect(store.seriesNeedingEpisodeRefresh(2, "2026-08-31T00:00:00.000Z")).toHaveLength(2);
+    expect(store.seriesNeedingEpisodeRefresh(99, "2026-08-31T00:00:00.000Z")).toEqual(["tt1", "tt2", "tt3"]);
+
+    store.replaceEpisodes("tt1", [
+      { season: 1, episode: 1, arr_episode_id: 11, has_file: 1, monitored: 1, air_date: "2025-05-28" },
+    ]);
+    // A series with NO episodes still records the walk. Deriving the walk time from the
+    // rows would leave this one permanently due and re-fetched on every single pass.
+    store.replaceEpisodes("tt2", []);
+
+    // Both were walked just now, so only the never-walked one is left.
+    const due = store.seriesNeedingEpisodeRefresh(99, new Date(Date.now() - 60_000).toISOString());
+    expect(due).toEqual(["tt3"]);
+  });
+
   test("markEpisodesMonitored touches only the named episodes of the named series", () => {
     store.replaceEpisodes("tt1", [
       { season: 1, episode: 1, arr_episode_id: 11, has_file: 0, monitored: 0, air_date: "2025-05-28" },

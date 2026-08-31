@@ -52,6 +52,11 @@ services:
       FINDERR_SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-/media/tv}
       FINDERR_SONARR_QUALITY_PROFILE_ID: ${SONARR_QUALITY_PROFILE_ID:-4}
       FINDERR_SONARR_PUBLIC_URL: ${SONARR_PUBLIC_URL:-}
+      # The per-episode mirror's load dials. Sonarr answers /episode one series at a time,
+      # so each refresh walks a BATCH of the stalest series rather than the whole library.
+      # Batch 0 turns the episode mirror off, and with it the per-episode marks and requests.
+      FINDERR_EPISODE_REFRESH_SECONDS: ${EPISODE_REFRESH_SECONDS:-21600}
+      FINDERR_EPISODE_REFRESH_BATCH: ${EPISODE_REFRESH_BATCH:-25}
 
       # --- TMDB. OPTIONAL, unlike the two above: every facet that ships today is
       # served keyless through the Servarr proxies, and the app must still boot for

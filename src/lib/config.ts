@@ -263,6 +263,31 @@ export interface Config {
   libraryRefreshSeconds: number;
 
   /**
+   * How stale one series' EPISODE mirror may get before it is walked again, in seconds.
+   *
+   * > [!CAUTION] This is not `libraryRefreshSeconds` and it must never become it
+   * > Sonarr answers `/episode` for ONE series at a time, so mirroring episodes costs one
+   * > call per series rather than one call per pass. On a 596-series library, walking the
+   * > lot on the 60-second library timer is ~596 requests a minute against Sonarr, forever
+   * > -- for a fact that changes when a file lands or a new episode airs.
+   *
+   * Six hours, so a whole library is re-walked four times a day. Combined with the batch
+   * below the steady state is a couple of calls a minute, and the mirror still notices a
+   * newly imported episode within a few hours. A request the reader just made does NOT
+   * wait for it: `markEpisodesMonitored` writes that through the moment Sonarr accepts.
+   */
+  episodeRefreshSeconds: number;
+
+  /**
+   * How many series' episode lists to walk per library refresh.
+   *
+   * The rate limiter for the above. Stale series are taken oldest-first, and one that has
+   * never been walked comes first of all -- so a freshly added show, or a first boot,
+   * fills in within a minute or two instead of waiting out a full cycle.
+   */
+  episodeRefreshBatch: number;
+
+  /**
    * How often to log the one-line resource summary (RSS, heap, cgroup usage against
    * its ceiling, and the GC share of CPU). Zero disables it.
    *
@@ -348,6 +373,8 @@ const DEFAULTS: Config = {
     searchRatePerMinute: 120,
   },
   libraryRefreshSeconds: 60,
+  episodeRefreshSeconds: 21_600,
+  episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
   pluginsDir: "",
   pluginModules: [],
@@ -461,6 +488,8 @@ function envOverrides(): Record<string, unknown> {
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
     },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
+    episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),
+    episodeRefreshBatch: envInt("FINDERR_EPISODE_REFRESH_BATCH"),
     resourceLogSeconds: envInt("FINDERR_RESOURCE_LOG_SECONDS"),
     pluginsDir: envStr("FINDERR_PLUGINS_DIR"),
     pluginModules: envStr("FINDERR_PLUGIN_MODULES")

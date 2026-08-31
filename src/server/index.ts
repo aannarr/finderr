@@ -242,7 +242,15 @@ function indexHasRow(tconst: string): boolean {
 
 // Mirror the arr libraries on a timer so "do we have it?" is a local lookup.
 async function refreshLibrary(): Promise<void> {
-  const res = await syncLibrary(store, { radarr, sonarr }, log);
+  // The episode half is SLICED rather than swept: it costs one Sonarr call per series, so
+  // walking the whole library on this 60s timer would be hundreds of requests a minute.
+  // `syncEpisodes` in `../lib/store` has the arithmetic.
+  const res = await syncLibrary(
+    store,
+    { radarr, sonarr },
+    { batch: cfg.episodeRefreshBatch, staleSeconds: cfg.episodeRefreshSeconds },
+    log,
+  );
   for (const e of res.errors) log(`library sync error -- ${e}`);
   // Same cadence, one function: "can I request it" and "can I play it" go stale together.
   // A failed walk leaves the previous mirror in place rather than emptying it -- a

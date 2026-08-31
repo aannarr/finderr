@@ -270,7 +270,10 @@ rebuild.
 | `FINDERR_RADARR_API_KEY` | | Required |
 | `FINDERR_RADARR_ROOT_FOLDER` | | As Radarr sees it, not as finderr does. Compose fallback `/media/movies` |
 | `FINDERR_RADARR_QUALITY_PROFILE_ID` | `4` if unset | Check yours; 4 is HD-1080p on a stock install |
-| `FINDERR_SONARR_*` | | The same four keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
+| `FINDERR_RADARR_PUBLIC_URL` | falls back to the URL above | Where an **admin's browser** reaches Radarr, for the "Open in Radarr" link. Set it when finderr is public and Radarr is on a private address; that link is the only place finderr hands a browser an upstream URL, and it is sent to admins only |
+| `FINDERR_SONARR_*` | | The same five keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
+| `FINDERR_EPISODE_REFRESH_SECONDS` | `21600` | How stale one series' episode list may get before it is walked again. Sonarr answers per series, so this is a load dial, not a freshness one |
+| `FINDERR_EPISODE_REFRESH_BATCH` | `25` | Series walked per library refresh, neediest first. `0` turns the episode mirror off, and with it the per-episode marks and requests |
 | `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability and series keywords |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
