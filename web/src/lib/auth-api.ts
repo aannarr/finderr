@@ -16,6 +16,14 @@ export interface PublicUser {
   displayName: string;
   role: Role;
   plexUsername: string | null;
+  /**
+   * Is a Plex account attached?
+   *
+   * Its own field rather than `plexUsername !== null`, because Plex does not promise a
+   * username -- a linked account with none would otherwise render as "not connected" beside
+   * a Connect button that then refuses with a 409.
+   */
+  plexConnected: boolean;
   createdAt: string;
   lastSeenAt: string | null;
   disabled: boolean;
@@ -168,6 +176,51 @@ export async function deleteCredential(id: string): Promise<void> {
 export async function deleteSession(id: string): Promise<void> {
   const res = await fetch(`/api/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!res.ok) throw new Error("could not end that session");
+}
+
+/**
+ * Name a passkey. `null` clears the name back to the device type.
+ *
+ * `registerPasskey` guesses a label from the user agent, and a guess is exactly the kind of
+ * thing that needs correcting: two rows both reading "Mac" are two rows nobody can revoke
+ * with any confidence.
+ */
+export async function renameCredential(id: string, label: string | null): Promise<void> {
+  const res = await fetch(`/api/auth/credentials/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "could not rename that passkey");
+  }
+}
+
+/**
+ * Start attaching a Plex account to the account you are already signed in to.
+ *
+ * A DIFFERENT ceremony from `plexBegin`, which is the public sign-in one -- see the routes.
+ * This one carries no invite token, because there is no account to create.
+ */
+export function plexLinkBegin(): Promise<{ pinId: string; authUrl: string }> {
+  return post("/api/auth/plex/link/begin");
+}
+
+/** `{ pending: true }` while the user is still on plex.tv. The caller polls. */
+export function plexLinkFinish(
+  pinId: string,
+): Promise<{ pending?: boolean; ok?: boolean; plexUsername?: string | null }> {
+  return post("/api/auth/plex/link/finish", { pinId });
+}
+
+/** Refused with a 409 when Plex is your only way back in. That message is shown verbatim. */
+export async function unlinkPlex(): Promise<void> {
+  const res = await fetch("/api/auth/plex", { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "could not disconnect Plex");
+  }
 }
 
 // --- admin -----------------------------------------------------------------

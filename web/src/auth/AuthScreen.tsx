@@ -26,6 +26,7 @@ import {
   plexFinish,
   registerPasskey,
 } from "../lib/auth-api";
+import { pollPlexPin } from "../lib/plex-poll";
 
 /**
  * `/invite/<token>` is the only path here that means anything.
@@ -73,18 +74,16 @@ export function AuthScreen() {
    */
   const pollPlex = useCallback(
     async (pinId: string) => {
-      for (let i = 0; i < 150; i++) {
-        try {
-          const res = await plexFinish(pinId);
-          if (!res.pending) return enterApp();
-        } catch (e) {
-          setError((e as Error).message);
-          setPhase({ kind: "signin" });
-          return;
-        }
-        await new Promise((r) => setTimeout(r, 2000));
+      // The loop itself is in `../lib/plex-poll.ts` -- the account page runs the identical
+      // wait for the LINK ceremony, and the cadence is a property of Plex's PIN flow rather
+      // than of either screen. What stays here is what this screen does with the outcome.
+      try {
+        const res = await pollPlexPin(() => plexFinish(pinId));
+        if ("done" in res) return enterApp();
+        setError("that took too long -- try again");
+      } catch (e) {
+        setError((e as Error).message);
       }
-      setError("that took too long -- try again");
       setPhase({ kind: "signin" });
     },
     [enterApp],

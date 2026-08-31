@@ -567,3 +567,256 @@ describe("requireAdmin guards app routes that live outside the auth table", () =
     expect(h.service.requireAdmin(request({ authorization: `Bearer ${API_KEY}` }))).toBeNull();
   });
 });
+
+describe("naming your own passkeys", () => {
+  /** Sign in and attach a credential, returning the cookie and the credential id. */
+  function withPasskey(label: string | null = null) {
+    const u = h.auth.createUser({ displayName: "A", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0, label });
+    const token = h.auth.createSession({ userId: u.id, expiresAt: isoIn(60_000) });
+    return { cookie: `${SESSION_COOKIE}=${token}`, userId: u.id };
+  }
+
+  test("an owner may rename their passkey", async () => {
+    const { cookie } = withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie,
+      body: JSON.stringify({ label: "work laptop" }),
+    });
+    expect(res.status).toBe(200);
+    expect(h.auth.getCredential("c1")?.label).toBe("work laptop");
+  });
+
+  test("anonymous is refused", async () => {
+    withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      body: JSON.stringify({ label: "mine now" }),
+    });
+    expect(res.status).toBe(401);
+    expect(h.auth.getCredential("c1")?.label).toBe("Mac");
+  });
+
+  test("somebody else's passkey is a 404, not a rename", async () => {
+    // A credential id is not a secret. Holding one must never be authority over it, and the
+    // refusal must not confirm that the id exists.
+    withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie: signIn("user"),
+      body: JSON.stringify({ label: "stolen" }),
+    });
+    expect(res.status).toBe(404);
+    expect(h.auth.getCredential("c1")?.label).toBe("Mac");
+  });
+
+  test("an admin has no special power over somebody else's passkey either", async () => {
+    // Admin is about administering finderr, not about wearing another person's identity.
+    // "Reset access" is the admin path here, and it revokes rather than renames.
+    withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie: signIn("admin"),
+      body: JSON.stringify({ label: "admin was here" }),
+    });
+    expect(res.status).toBe(404);
+    expect(h.auth.getCredential("c1")?.label).toBe("Mac");
+  });
+
+  test("a label is capped, so one row cannot render as a wall of text", async () => {
+    const { cookie } = withPasskey();
+    await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie,
+      body: JSON.stringify({ label: "x".repeat(500) }),
+    });
+    expect(h.auth.getCredential("c1")?.label).toHaveLength(60);
+  });
+
+  test("null clears the name", async () => {
+    const { cookie } = withPasskey("Mac");
+    await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie,
+      body: JSON.stringify({ label: null }),
+    });
+    expect(h.auth.getCredential("c1")?.label).toBeNull();
+  });
+
+  test("a non-string label is refused rather than coerced", async () => {
+    const { cookie } = withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie,
+      body: JSON.stringify({ label: { evil: true } }),
+    });
+    expect(res.status).toBe(400);
+    expect(h.auth.getCredential("c1")?.label).toBe("Mac");
+  });
+});
+
+describe("connecting and disconnecting Plex from an account you already have", () => {
+  function plexFetch(opts: { token?: string | null; accountId?: string; machineIds?: string[] }): FetchLike {
+    return async (url) => {
+      if (url.includes("/pins?strong=true"))
+        return Response.json({ id: 1682300520, code: "abc123", expiresIn: 1800 });
+      if (url.includes("/pins/")) return Response.json({ authToken: opts.token ?? null });
+      if (url.endsWith("/user")) return Response.json({ id: opts.accountId ?? "42", username: "guest" });
+      if (url.includes("/resources"))
+        return Response.json((opts.machineIds ?? []).map((id) => ({ clientIdentifier: id })));
+      return new Response("{}", { status: 404 });
+    };
+  }
+
+  /** A signed-in user on a harness whose plex.tv is scripted. */
+  function linked(p: Harness) {
+    const u = p.auth.createUser({ displayName: "A", role: "user" });
+    const token = p.auth.createSession({ userId: u.id, expiresAt: isoIn(60_000) });
+    return { user: u, cookie: `${SESSION_COOKIE}=${token}` };
+  }
+
+  test("begin is refused for an anonymous caller -- there is no account to link to", async () => {
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const res = await p.call("/api/auth/plex/link/begin", { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+
+  test("begin forwards back to /account, not to the sign-in page", async () => {
+    // The caller never stopped being signed in. Landing them on a sign-in screen would read
+    // as a failure of the thing that just succeeded.
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const { cookie } = linked(p);
+    const body = (await (await p.call("/api/auth/plex/link/begin", { method: "POST", cookie })).json()) as {
+      authUrl: string;
+      pinId: string;
+    };
+    expect(decodeURIComponent(body.authUrl)).toContain("forwardUrl=http://localhost:7979/account?plex=");
+  });
+
+  test("an approved pin attaches the Plex account", async () => {
+    const p = harness({ fetchImpl: plexFetch({ token: "plex-token", accountId: "77" }) });
+    const { user, cookie } = linked(p);
+    const begin = (await (await p.call("/api/auth/plex/link/begin", { method: "POST", cookie })).json()) as {
+      pinId: string;
+    };
+
+    const res = await p.call("/api/auth/plex/link/finish", {
+      method: "POST",
+      cookie,
+      body: JSON.stringify({ pinId: begin.pinId }),
+    });
+    expect(res.status).toBe(200);
+    expect(p.auth.getUser(user.id)?.plexId).toBe("77");
+  });
+
+  test("a pin the user has not approved yet is `pending`", async () => {
+    const p = harness({ fetchImpl: plexFetch({ token: null }) });
+    const { cookie } = linked(p);
+    const begin = (await (await p.call("/api/auth/plex/link/begin", { method: "POST", cookie })).json()) as {
+      pinId: string;
+    };
+    const res = await p.call("/api/auth/plex/link/finish", {
+      method: "POST",
+      cookie,
+      body: JSON.stringify({ pinId: begin.pinId }),
+    });
+    expect(await res.json()).toEqual({ pending: true });
+  });
+
+  test("a Plex account already attached to somebody ELSE is refused", async () => {
+    // Two users sharing one Plex id would make `getUserByPlexId` a coin flip at sign-in.
+    const p = harness({ fetchImpl: plexFetch({ token: "plex-token", accountId: "77" }) });
+    const other = p.auth.createUser({ displayName: "B", role: "user" });
+    p.auth.linkPlex(other.id, "77", "guest");
+    const { user, cookie } = linked(p);
+
+    const begin = (await (await p.call("/api/auth/plex/link/begin", { method: "POST", cookie })).json()) as {
+      pinId: string;
+    };
+    const res = await p.call("/api/auth/plex/link/finish", {
+      method: "POST",
+      cookie,
+      body: JSON.stringify({ pinId: begin.pinId }),
+    });
+    expect(res.status).toBe(409);
+    expect(p.auth.getUser(user.id)?.plexId).toBeNull();
+    // The message must not confirm WHOSE it is -- that is a fact about another account.
+    expect(JSON.stringify(await res.json())).not.toContain(other.id);
+  });
+
+  test("linking over an existing connection is refused rather than silently replacing it", async () => {
+    const p = harness({ fetchImpl: plexFetch({ token: "plex-token", accountId: "88" }) });
+    const { user, cookie } = linked(p);
+    p.auth.linkPlex(user.id, "77", "guest");
+
+    const begin = (await (await p.call("/api/auth/plex/link/begin", { method: "POST", cookie })).json()) as {
+      pinId: string;
+    };
+    const res = await p.call("/api/auth/plex/link/finish", {
+      method: "POST",
+      cookie,
+      body: JSON.stringify({ pinId: begin.pinId }),
+    });
+    expect(res.status).toBe(409);
+    expect(p.auth.getUser(user.id)?.plexId).toBe("77");
+  });
+
+  test("disconnecting works while a passkey remains", async () => {
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const { user, cookie } = linked(p);
+    p.auth.linkPlex(user.id, "77", "guest");
+    p.auth.addCredential({ id: "c1", userId: user.id, publicKey: "pk", counter: 0 });
+
+    const res = await p.call("/api/auth/plex", { method: "DELETE", cookie });
+    expect(res.status).toBe(200);
+    expect(p.auth.getUser(user.id)?.plexId).toBeNull();
+  });
+
+  /*
+    THE SELF-LOCKOUT GUARD, from the other side.
+
+    `DELETE /api/auth/credentials/:id` already refuses to remove a last passkey when there
+    is no Plex account. Without the mirror of that rule here, the same user could simply
+    disconnect Plex instead and lock themselves out by the other door -- and the undo for
+    that is an admin reset.
+  */
+  test("disconnecting is refused when Plex is the only way back in", async () => {
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const { user, cookie } = linked(p);
+    p.auth.linkPlex(user.id, "77", "guest");
+
+    const res = await p.call("/api/auth/plex", { method: "DELETE", cookie });
+    expect(res.status).toBe(409);
+    expect(p.auth.getUser(user.id)?.plexId).toBe("77");
+    // One of the few refusals a signed-in user is given a real reason for, because it is
+    // the only one they can act on -- by adding a passkey first.
+    expect((await res.json()) as { error: string }).toEqual({
+      error: "that is your only way to sign in",
+    });
+  });
+
+  test("disconnecting does not sign you out anywhere", async () => {
+    // Unlinking is a settings change the caller made deliberately, not a compromise.
+    // Ending every session over it would be a punishment rather than a safeguard.
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const { user, cookie } = linked(p);
+    p.auth.linkPlex(user.id, "77", "guest");
+    p.auth.addCredential({ id: "c1", userId: user.id, publicKey: "pk", counter: 0 });
+
+    await p.call("/api/auth/plex", { method: "DELETE", cookie });
+    expect(p.auth.sessionsFor(user.id)).toHaveLength(1);
+    expect((await p.call("/api/auth/me", { cookie })).status).toBe(200);
+  });
+
+  test("disconnecting when nothing is connected is a 404", async () => {
+    const p = harness({ fetchImpl: plexFetch({}) });
+    const { cookie } = linked(p);
+    expect((await p.call("/api/auth/plex", { method: "DELETE", cookie })).status).toBe(404);
+  });
+
+  test("anonymous cannot disconnect anybody", async () => {
+    const p = harness({ fetchImpl: plexFetch({}) });
+    expect((await p.call("/api/auth/plex", { method: "DELETE" })).status).toBe(401);
+  });
+});

@@ -210,6 +210,7 @@ export function publicUser(u: User): {
   displayName: string;
   role: Role;
   plexUsername: string | null;
+  plexConnected: boolean;
   createdAt: string;
   lastSeenAt: string | null;
   disabled: boolean;
@@ -219,6 +220,18 @@ export function publicUser(u: User): {
     displayName: u.displayName,
     role: u.role,
     plexUsername: u.plexUsername,
+    /*
+      Whether a Plex account is attached, as its own field.
+
+      `plexUsername !== null` is NOT the same question and would be wrong: `linkPlex` stores
+      whatever Plex returned, and Plex does not promise a username. A linked account with no
+      username would render as "not connected" beside a Connect button that then 409s.
+
+      The plex ID itself stays out. It is Plex's identifier for a person, this shape is
+      handed to admins listing users as well as to the owner, and nothing in the UI can do
+      anything with it -- so the boolean is the whole of what a caller needs.
+    */
+    plexConnected: u.plexId !== null,
     createdAt: u.createdAt,
     lastSeenAt: u.lastSeenAt,
     disabled: u.disabledAt !== null,

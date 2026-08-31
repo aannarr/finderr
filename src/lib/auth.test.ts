@@ -147,10 +147,22 @@ describe("who may see what", () => {
       displayName: "Ada",
       role: "admin",
       plexUsername: "ada",
+      plexConnected: true,
       createdAt: "2026-08-31T00:00:00.000Z",
       lastSeenAt: null,
       disabled: false,
     });
     expect(Object.hasOwn(p, "plexId")).toBe(false);
+  });
+
+  test("plexConnected is about the ID, never about the username", () => {
+    /*
+      The bug this pins. Plex does not promise a username, so `linkPlex` can store a real
+      plex id beside a null name. Deriving "connected" from the NAME would render that
+      account as unconnected, beside a Connect button that then 409s with "a Plex account is
+      already connected" -- a dead end with no way out but an admin reset.
+    */
+    expect(publicUser({ ...user, plexUsername: null }).plexConnected).toBe(true);
+    expect(publicUser({ ...user, plexId: null, plexUsername: null }).plexConnected).toBe(false);
   });
 });
