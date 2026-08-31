@@ -40,7 +40,7 @@ import { AuthService, withAuth } from "./auth-routes";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
-import { buildingPage, IndexBuild, withIndexGate } from "./index-build";
+import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { LiveIndex } from "./live-index";
 import { RequestWorker } from "./request-worker";
 import { discoveryShelves, facetCoverage, frontPageTitles } from "./shelves";
@@ -1149,7 +1149,7 @@ const server: Bun.Server<undefined> = Bun.serve({
     {
       ready: () => live.ready,
       state: () => indexBuild?.state ?? null,
-      open: ["/api/health", "/api/index-status"],
+      open: INDEX_GATE_PUBLIC_PATHS,
     },
   ) as never,
 

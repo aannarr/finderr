@@ -46,6 +46,7 @@ import {
 import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
+import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
 
 type Handler = (req: Request, server?: unknown) => Response | Promise<Response>;
 type RouteEntry = Handler | Record<string, Handler>;
@@ -202,10 +203,20 @@ export class AuthService {
 
   // --- routes --------------------------------------------------------------
 
-  /** Paths reachable without a session. The allow-list `withAuth` reads. */
+  /**
+   * Paths reachable without a session. The allow-list `withAuth` reads.
+   *
+   * **`INDEX_GATE_PUBLIC_PATHS` is spread in rather than re-typed**, because anything that
+   * answers while there is no INDEX must also answer to a caller with no SESSION: during a
+   * first install there are no users at all, so every visitor is anonymous by construction.
+   * Keeping them as two hand-written lists is exactly how `/api/index-status` ended up
+   * exempt from one guard and refused by the other -- see that constant.
+   *
+   * `/api/health` appears in both lists and that is fine; `withAuth` reads this into a Set.
+   */
   publicPaths(): string[] {
     return [
-      "/api/health",
+      ...INDEX_GATE_PUBLIC_PATHS,
       "/api/auth/state",
       "/api/auth/invite",
       "/api/auth/passkey/login/begin",

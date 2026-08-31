@@ -7,6 +7,7 @@ import { loadConfig } from "../lib/config";
 import type { FetchLike } from "../lib/plex-auth";
 import type { MediaRequest, Store } from "../lib/store";
 import { AuthService, withAuth } from "./auth-routes";
+import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
 
 const API_KEY = "test-system-key-0123456789abcdef";
 
@@ -82,6 +83,9 @@ function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
   const routes = withAuth(
     {
       "/api/health": () => new Response(JSON.stringify({ ok: true })),
+      // Shaped like the real one: on a server that HAS an index it is this constant, which
+      // is what the progress page reads to know it may reload.
+      "/api/index-status": () => new Response(JSON.stringify({ ready: true, build: null })),
       "/api/search": () => new Response(JSON.stringify({ hits: [] })),
       "/api/requests": {
         GET: (req: Request) => {
@@ -166,6 +170,38 @@ describe("the guard closes everything by default", () => {
   test("the sign-in ceremonies stay open", async () => {
     expect((await h.call("/api/auth/state")).status).toBe(200);
     expect((await h.call("/api/auth/passkey/login/begin", { method: "POST" })).status).toBe(200);
+  });
+
+  /*
+    THE TWO GUARDS MUST AGREE, and this is the assertion that was missing.
+
+    `withIndexGate` refuses routes while there is no INDEX; `withAuth` refuses routes to
+    callers with no SESSION. They are different questions with different allow-lists, and
+    `/api/index-status` was exempted from the first and not the second -- so the progress
+    page an anonymous visitor sees during a FIRST INSTALL polled an endpoint that answered
+    401 and never learned the index was ready. On a first install there are no users at all,
+    so every visitor is anonymous by construction: the exact case the feature exists for was
+    the one case it could not serve.
+
+    Asserted as a RELATIONSHIP rather than as a second hand-written list, so a third route
+    opened to the index gate cannot repeat this by being forgotten here.
+  */
+  test("every path the INDEX gate opens is also open to an anonymous caller", () => {
+    const open = INDEX_GATE_PUBLIC_PATHS;
+    const sessionless = new Set(h.service.publicPaths());
+    expect(open.length).toBeGreaterThan(0);
+    for (const path of open) {
+      expect({ path, publiclyReachable: sessionless.has(path) }).toEqual({
+        path,
+        publiclyReachable: true,
+      });
+    }
+  });
+
+  test("/api/index-status answers an anonymous caller, because a first install has no users", async () => {
+    const res = await h.call("/api/index-status");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ready: true, build: null });
   });
 
   test("a signed-in caller passes", async () => {

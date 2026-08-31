@@ -190,6 +190,26 @@ export class IndexBuild {
 }
 
 /**
+ * The only paths that answer while there is no index yet.
+ *
+ * The container probe needs the first and the progress page needs the second; every other
+ * route either reads the index or belongs to a sign-in that has nothing to sign in to yet.
+ *
+ * > [!IMPORTANT] Anything here MUST also be in `AuthService.publicPaths()`
+ * > These are two different guards asking two different questions -- "is there an index?"
+ * > and "is there a session?" -- and a route needs exempting from BOTH or it is unreachable
+ * > in the state it was exempted for. On a FIRST INSTALL there are no users at all: the
+ * > bootstrap invite has not been redeemed, so every visitor is anonymous by construction.
+ * >
+ * > `publicPaths()` spreads this list precisely so the two cannot drift. It is not merely a
+ * > convention: `/api/index-status` was added here and not there, and the progress page
+ * > that is the whole point of the boot-time build polled an endpoint answering 401 and
+ * > never learned its index was ready. Found on a live container, by `curl`, because no
+ * > test covered the pair.
+ */
+export const INDEX_GATE_PUBLIC_PATHS = ["/api/health", "/api/index-status"] as const;
+
+/**
  * Refuse every route that would need an index, for as long as there is not one.
  *
  * > [!IMPORTANT] This wraps OUTSIDE `withAuth`, and the order is the decision
