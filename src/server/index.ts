@@ -36,6 +36,7 @@ import { AuthService, withAuth } from "./auth-routes";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
+import { buildingPage, IndexBuild, withIndexGate } from "./index-build";
 import { LiveIndex } from "./live-index";
 import { RequestWorker } from "./request-worker";
 import { discoveryShelves, facetCoverage, frontPageTitles } from "./shelves";
@@ -52,13 +53,28 @@ const log = (...args: unknown[]) => console.log(`[finderr]`, ...args);
 prepareSqlite(log);
 
 // --- index -----------------------------------------------------------------
-if (!existsSync(p.db)) {
+/*
+  No index yet.
+
+  `index.refreshOnBoot` decides what that means, and until 2026-08-31 it decided nothing at
+  all -- the key was declared, defaulted and mapped from ENV, and no code read it. The boot
+  message below named it as a remedy, so a first-time operator set it, restarted, and
+  watched the identical crash loop. See `./index-build.ts` for why the build is a
+  subprocess and why the server comes up first.
+*/
+const indexMissingAtBoot = !existsSync(p.db);
+if (indexMissingAtBoot && !cfg.index.refreshOnBoot) {
   console.error(
-    `\n[finderr] No title index at ${p.db}.\n` +
+    `\n[finderr] No title index at ${p.db}, and FINDERR_INDEX_REFRESH_ON_BOOT is off.\n` +
       "          Run:  bun src/jobs/build-index.ts\n" +
-      "          (or set FINDERR_INDEX_REFRESH_ON_BOOT=true and restart)\n",
+      "          (or set FINDERR_INDEX_REFRESH_ON_BOOT=true, which builds one on boot)\n",
   );
   process.exit(1);
+}
+if (indexMissingAtBoot) {
+  log(
+    "no title index yet -- building one. The server comes up now and serves a progress page until it is ready.",
+  );
 }
 
 // The engine is held behind `live` rather than in a const, so the daily refresh can swap
@@ -76,11 +92,26 @@ const live = new LiveIndex({
   // leave the server erroring on most requests and lying on the rest, which is worse
   // than either. `rollback()` moves `titles.prev.db` back and the reload retries.
   recover: () => rollback(cfg),
+  // Only ever true when the file is genuinely absent AND we are allowed to build one --
+  // the exit above has already fired otherwise, so this cannot mask a missing index.
+  allowMissing: indexMissingAtBoot,
 });
-{
+if (live.ready) {
   const meta = live.meta();
   log(`index: ${Number(meta.rows ?? 0).toLocaleString()} titles, built ${meta.built_at ?? "?"}`);
 }
+
+/*
+  The boot-time build, or `null` when there was already an index.
+
+  Started here so it runs WHILE the rest of boot happens -- the store, the plugins and the
+  arr mirrors all set themselves up against local SQLite and none of them need the title
+  index. What is adopted, and when, is wired at the bottom of this file beside the daily
+  refresh, because the completion handler wants `warmShelves`.
+*/
+const indexBuild = live.ready
+  ? null
+  : new IndexBuild({ script: `${import.meta.dir}/../jobs/build-index.ts`, log: (m) => log(m) });
 
 // --- state + clients -------------------------------------------------------
 const store = new Store(cfg);
@@ -476,6 +507,20 @@ if (!haveStatic) log(`note: no web build at ${staticDir} -- API only. Run 'bun r
   seven explicit annotations against a guard that cannot be forgotten.
 */
 const appRoutes = {
+  /**
+   * Is there an index to search yet, and if not, how is the build going?
+   *
+   * PUBLIC and deliberately so -- the progress page it feeds is what an anonymous visitor
+   * gets during a first install, before any account exists to sign in with. It discloses
+   * only a phase, a duration and the build job's own newest line; no path, no host, no
+   * counts. Contrast `/api/health`, which is public for liveness and hands the DETAIL
+   * only to an admin.
+   *
+   * On a server with an index this is a constant `{ ready: true, build: null }`, which is
+   * what lets the page reload itself the moment the swap lands.
+   */
+  "/api/index-status": () => json({ ready: live.ready, build: indexBuild?.state ?? null }),
+
   /**
    * Liveness, and optionally the expensive coverage report.
    *
@@ -961,11 +1006,21 @@ const server: Bun.Server<undefined> = Bun.serve({
   // response, a few KB -- so 256 KB is generous headroom, not a constraint anyone hits.
   maxRequestBodySize: 256 * 1024,
 
-  routes: withAuth(
-    { ...appRoutes, ...auth.routes() },
+  // Two wrappers, and the ORDER is deliberate: the index gate is OUTSIDE the auth guard, so
+  // a caller during a first build gets one 503 about the index rather than a 401 about
+  // credentials for a server that has no data yet. See `withIndexGate`.
+  routes: withIndexGate(
+    withAuth(
+      { ...appRoutes, ...auth.routes() },
+      {
+        authService: auth,
+        publicPaths: auth.publicPaths(),
+      },
+    ),
     {
-      authService: auth,
-      publicPaths: auth.publicPaths(),
+      ready: () => live.ready,
+      state: () => indexBuild?.state ?? null,
+      open: ["/api/health", "/api/index-status"],
     },
   ) as never,
 
@@ -987,6 +1042,27 @@ const server: Bun.Server<undefined> = Bun.serve({
     const u = new URL(req.url);
     if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/img/")) {
       return new Response("not found", { status: 404 });
+    }
+    /*
+      No index means neither shell can do anything, so BOTH are replaced by one
+      self-contained progress page -- see `buildingPage`. It is served for every non-asset
+      path rather than only for `/`, because a deep link followed during a first install
+      should explain itself rather than 404.
+
+      An asset request still falls through to the file, so a page cached from before a
+      restart does not lose its stylesheet. There is no app shell to protect here: this
+      state only exists before the first index, and the page names no route.
+    */
+    if (!live.ready && !/\.[a-z0-9]+$/i.test(u.pathname)) {
+      return new Response(buildingPage(), {
+        status: 503,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "10",
+          ...HTML_HEADERS,
+        },
+      });
     }
     if (!haveStatic)
       return new Response("web build missing -- run 'bun run build'", {
@@ -1027,6 +1103,27 @@ const server: Bun.Server<undefined> = Bun.serve({
 });
 
 log(`listening on http://${cfg.host}:${server.port}`);
+
+// --- adopt the boot-time build ---------------------------------------------
+//
+// Wired here rather than beside the spawn because it wants `warmShelves`, and because this
+// reads in the order it happens: the server is already listening by the time any of it runs.
+if (indexBuild) {
+  void indexBuild.exited.then((code) => {
+    // The build gates on volume and on the 42-case canary before `promote()`, so a non-zero
+    // exit means nothing was promoted and there is still no file to open. The state stays
+    // `failed` and the progress page says so; retrying a 235 MB download unasked is not
+    // this process's call to make.
+    if (code !== 0) return;
+
+    const res = live.open();
+    if (!res.ok) return;
+
+    // Same follow-up as the daily refresh: the front page is a function of the index, so
+    // it cannot have been warmed before one existed. Paced, in the background, never awaited.
+    void warmShelves().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
+  });
+}
 
 // --- daily index refresh ---------------------------------------------------
 //
@@ -1078,6 +1175,9 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     log(`${sig} -- shutting down`);
     server.stop();
+    // A build outlives its parent otherwise: it is a detached `bun` writing to the data
+    // directory, and the next boot would start a SECOND one against the same files.
+    indexBuild?.stop();
     live.close();
     store.close();
     process.exit(0);

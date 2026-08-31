@@ -374,3 +374,105 @@ describe("LiveIndex", () => {
     live.close();
   });
 });
+
+/**
+ * The cold start: a holder that exists BEFORE the index does.
+ *
+ * This is the state the boot-time build serves from, and it is the one state in which
+ * `current` is not answerable. The rules below are what let the server listen anyway.
+ */
+describe("LiveIndex with no index yet", () => {
+  test("`allowMissing` constructs against a file that is not there", () => {
+    const path = freshPath("cold");
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+
+    expect(live.ready).toBe(false);
+    // Not an empty result, not a stub engine: an honest throw. Nothing is meant to catch
+    // it -- the route gate refuses first -- so it exists to make a path that forgot the
+    // gate fail loudly rather than quietly return nothing.
+    expect(() => live.current).toThrow(/no title index is open yet/);
+    // The reporting path must not throw even here, because `/api/health` reads it.
+    expect(live.meta()).toEqual({});
+    expect(live.lastReload).toBeNull();
+
+    live.close();
+  });
+
+  test("without `allowMissing` a missing file is still fatal at construction", () => {
+    // Everywhere but the boot-build path, a missing index is a fault. Constructing quietly
+    // into a dead holder would turn it into a server that answers nothing and says nothing.
+    const path = freshPath("cold-strict");
+    expect(() => new LiveIndex({ path, cfg, floor: 0 })).toThrow();
+  });
+
+  test("open() adopts the index once something else has written it", () => {
+    const path = freshPath("adopt");
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+    expect(live.ready).toBe(false);
+
+    // What the build subprocess does, from this process's point of view: the file appears.
+    writeIndex(path, { builtAt: "2026-08-31T00:00:00.000Z", title: "Fresh", tconst: "tt-fresh" });
+
+    const out = live.open();
+    expect(out.ok).toBe(true);
+    expect(out.swapped).toBe(true);
+    expect(out.builtAt).toBe("2026-08-31T00:00:00.000Z");
+    expect(live.ready).toBe(true);
+    expect(live.current.byTconst("tt-fresh")?.title).toBe("Fresh");
+    expect(live.meta().built_at).toBe("2026-08-31T00:00:00.000Z");
+
+    live.close();
+  });
+
+  test("open() on a file that is still not there refuses and stays not-ready", () => {
+    const path = freshPath("adopt-missing");
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+
+    const out = live.open();
+    expect(out.ok).toBe(false);
+    expect(out.swapped).toBe(false);
+    expect(out.reason).toBeString();
+    expect(live.ready).toBe(false);
+    // A refusal is reportable rather than silent -- `/api/health` carries `index.reload`.
+    expect(live.lastReload?.ok).toBe(false);
+
+    live.close();
+  });
+
+  test("open() applies the canary floor, and a refusal leaves nothing open", () => {
+    const path = freshPath("adopt-canary");
+    const live = new LiveIndex({ path, cfg, floor: 1, allowMissing: true });
+    // A one-row index cannot answer 42 canary cases, so floor 1 refuses it. This is the
+    // same bar `reload()` uses -- an index good enough to promote but not good enough to
+    // serve is a state nobody should have to reason about. Written AFTER construction, so
+    // this is the real shape: the holder came up empty and the build left something bad.
+    writeIndex(path, { builtAt: "2026-08-31T00:00:00.000Z", title: "Thin", tconst: "tt-thin" });
+
+    const out = live.open();
+    expect(out.ok).toBe(false);
+    expect(out.canary?.ratio).toBeLessThan(1);
+    expect(live.ready).toBe(false);
+    expect(() => live.current).toThrow();
+
+    live.close();
+  });
+
+  test("close() on a holder that never opened anything is a no-op", () => {
+    // SIGTERM during a first build reaches this. A clean stop must not print a stack trace.
+    const live = new LiveIndex({ path: freshPath("cold-close"), cfg, floor: 0, allowMissing: true });
+    expect(() => live.close()).not.toThrow();
+  });
+
+  test("an existing file is opened normally even with `allowMissing`", () => {
+    // The flag says "tolerate absence", not "start empty". The boot path passes it whenever
+    // the file was missing at the check, and a file appearing in between must still be used.
+    const path = freshPath("cold-present");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "There", tconst: "tt-there" });
+
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+    expect(live.ready).toBe(true);
+    expect(live.current.byTconst("tt-there")?.title).toBe("There");
+
+    live.close();
+  });
+});

@@ -58,6 +58,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { runCanaryOn } from "../lib/canary";
 import type { Config } from "../lib/config";
 import { SearchEngine } from "../lib/search";
@@ -159,6 +160,19 @@ export interface LiveIndexOptions {
    * test can exercise the no-rollback branch.
    */
   recover?: () => void;
+  /**
+   * Start with NO engine, because there is no index file yet.
+   *
+   * The boot-time build path (`./index-build.ts`) needs the server listening before an
+   * index exists, so this holder has to have a state in which it is serving nothing. It is
+   * opt-in rather than inferred from the file being absent: everywhere else, a missing
+   * index is a fault and constructing quietly into a dead holder would hide it.
+   *
+   * While `ready` is false, `current` THROWS. Nothing is expected to catch that -- the
+   * route gate in `./index.ts` refuses those requests before a handler runs, and this
+   * throw is the backstop for a path that forgets to.
+   */
+  allowMissing?: boolean;
 }
 
 /**
@@ -168,7 +182,8 @@ export interface LiveIndexOptions {
  * once at module scope -- that is what makes the swap invisible to them.
  */
 export class LiveIndex {
-  private engine: SearchEngine;
+  /** `null` ONLY before the first successful open on the `allowMissing` path. */
+  private engine: SearchEngine | null;
   private readonly path: string;
   private readonly cfg: Config;
   private readonly log: (msg: string) => void;
@@ -192,13 +207,84 @@ export class LiveIndex {
     this.log = opts.log ?? (() => {});
     this.floor = opts.floor ?? 0.9;
     this.recover = opts.recover;
-    this.engine = new SearchEngine(this.path, this.cfg);
-    this.engine.prepareFuzzy((m) => this.log(m));
+    if (opts.allowMissing && !existsSync(this.path)) {
+      this.engine = null;
+    } else {
+      this.engine = new SearchEngine(this.path, this.cfg);
+      this.engine.prepareFuzzy((m) => this.log(m));
+    }
   }
 
-  /** The engine to serve this request from. Never cache it across an `await`. */
+  /**
+   * The engine to serve this request from. Never cache it across an `await`.
+   *
+   * Throws while `ready` is false, which happens only on the boot-build path before the
+   * first index exists. A handler must never reach this in that state -- the route gate
+   * refuses first -- so the throw is a backstop, not a case to handle.
+   */
   get current(): SearchEngine {
+    if (!this.engine) {
+      throw new Error("no title index is open yet -- the boot-time build has not finished");
+    }
     return this.engine;
+  }
+
+  /** Is there an engine to serve from at all? False only before the first index exists. */
+  get ready(): boolean {
+    return this.engine !== null;
+  }
+
+  /**
+   * Open the index for the FIRST time, once something else has produced the file.
+   *
+   * Deliberately separate from `reload()` rather than a branch inside it. `reload()` is
+   * about a file that was replaced UNDERNEATH an open connection, and every hard-won rule
+   * in it -- `fileMovedUnderUs`, the rollback, the refusal to trust the engine it already
+   * holds -- describes that situation and none of them are true here. There is no outgoing
+   * engine, nothing to roll back to, and a refusal simply leaves us where we already are.
+   *
+   * The canary still runs. The build gated on it before promoting, so this can only fail if
+   * the file changed between the gate and here -- but validating what we are about to serve
+   * costs one pass and is the same bar `reload()` applies.
+   */
+  open(): ReloadOutcome {
+    const t0 = Bun.nanoseconds();
+    const at = new Date().toISOString();
+    const result = this.attempt();
+
+    if (!("engine" in result)) {
+      this.log(`index open REFUSED -- ${result.error}`);
+      const out: ReloadOutcome = {
+        ok: false,
+        swapped: false,
+        at,
+        ms: (Bun.nanoseconds() - t0) / 1e6,
+        reason: result.error,
+        canary: result.canary,
+        builtAt: null,
+        rows: 0,
+      };
+      this.last = out;
+      return out;
+    }
+
+    this.swap(result.engine);
+    const meta = safeMeta(result.engine);
+    const out: ReloadOutcome = {
+      ok: true,
+      swapped: true,
+      at,
+      ms: (Bun.nanoseconds() - t0) / 1e6,
+      canary: result.canary,
+      builtAt: meta.built_at ?? null,
+      rows: Number(meta.rows ?? 0),
+    };
+    this.last = out;
+    this.log(
+      `index opened -- ${out.rows.toLocaleString()} titles, built ${out.builtAt ?? "?"}, ` +
+        `canary ${result.canary?.passed}/${result.canary?.total}, ${out.ms.toFixed(0)}ms.`,
+    );
+    return out;
   }
 
   /** What the last reload attempt did, or `null` if none has run in this process. */
@@ -426,6 +512,8 @@ export class LiveIndex {
     const outgoing = this.engine;
     this.engine = next;
     this.fileMovedUnderUs = false;
+    // `null` on the first open of a boot-time build -- there was never an engine to retire.
+    if (!outgoing) return;
     try {
       outgoing.close();
     } catch {
@@ -442,7 +530,7 @@ export class LiveIndex {
    */
   close(): void {
     try {
-      this.engine.close();
+      this.engine?.close();
     } catch {
       // Already gone, or gone unreachable. Either way there is nothing left to release.
     }
