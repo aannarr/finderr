@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
 import { applyRank, buildRankLayer, SCHEMA } from "./index-builder";
+import { SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-rank-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -131,6 +132,77 @@ describe("applyRank", () => {
     const second = applyRank(db, 25_000);
     expect(second.mean).toBeCloseTo(first.mean, 10);
     expect(rankOf(db, "tt-x")).toBeCloseTo(value ?? 0, 10);
+  });
+});
+
+/**
+ * An index built BEFORE the rank column existed, which is the index every deploy meets.
+ *
+ * A redeploy keeps its data directory, so `titles.db` stays whatever the last refresh
+ * built and the rank column does not appear until the next one. This is not a hypothetical
+ * migration case -- it is the state of the live index for up to a day after this ships.
+ */
+describe("an index built before the rank column", () => {
+  /** The pre-rank schema, verbatim: no `rank` on `title`, no `kind`/`rank` on `title_genre`. */
+  function preRankIndex(): string {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(`
+      create table title (
+        rowid_ integer primary key, tconst text not null unique, kind text not null,
+        title text not null, orig text, year integer, end_year integer, runtime integer,
+        genres text not null default '', votes integer not null default 0,
+        rating real not null default 0, ntitle text not null default '',
+        norig text not null default '', dtitle text not null default ''
+      );
+      create table title_genre (title_rowid integer not null, genre text not null);
+      create table meta (key text primary key, value text not null);
+    `);
+    db.run(
+      "insert into title (tconst, kind, title, votes, rating, genres) values ('tt1','movie','One',9000,8,'Drama')",
+    );
+    db.run("insert into title_genre (title_rowid, genre) values (1, 'Drama')");
+    db.close();
+    return path;
+  }
+
+  test("reports hasRank false rather than throwing at construction", () => {
+    const engine = new SearchEngine(preRankIndex(), loadConfig());
+    try {
+      expect(engine.hasRank).toBe(false);
+      // The rest of the product is unaffected -- the column is additive, like the cast tables.
+      expect(engine.byTconst("tt1")?.title).toBe("One");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a ranked browse degrades to votes instead of `no such column: rank`", () => {
+    // THE BUG THIS EXISTS FOR: the front page calls a ranked browse on every /api/discover,
+    // so an unguarded query would take the whole discover route down for every visitor
+    // until the next nightly refresh.
+    const engine = new SearchEngine(preRankIndex(), loadConfig());
+    try {
+      expect(() => engine.browse({ kind: "movie", sort: "rank", minVotes: 0 })).not.toThrow();
+      expect(engine.browse({ kind: "movie", sort: "rank", minVotes: 0 }).rows).toHaveLength(1);
+      // A genre browse takes the other SQL path -- `title_genre` has no rank column either.
+      expect(() => engine.browse({ genre: "Drama", sort: "rank", minVotes: 0 })).not.toThrow();
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a NEW index reports hasRank true", () => {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(SCHEMA);
+    db.close();
+    const engine = new SearchEngine(path, loadConfig());
+    try {
+      expect(engine.hasRank).toBe(true);
+    } finally {
+      engine.close();
+    }
   });
 });
 

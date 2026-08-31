@@ -189,6 +189,23 @@ export class SearchEngine {
    */
   readonly hasPeople: boolean;
 
+  /**
+   * Whether this index carries the computed `rank` column.
+   *
+   * **The index a deploy meets is almost always the OLD one.** A redeploy keeps its data
+   * directory, so `titles.db` is whatever the last refresh built and the rank column does
+   * not appear until the next one -- which is up to a day later. Without this check the
+   * front page's ranked shelf would throw `no such column: rank` on every `/api/discover`
+   * for that whole window, on the one path every visitor hits.
+   *
+   * Exactly the shape `hasPeople` above was bought with, including the reason it is
+   * answered ONCE from the schema rather than per request: the file is opened read-only and
+   * cannot change under us. And, like that one, it is assigned in the CONSTRUCTOR BODY --
+   * a field initializer runs before the body and would read `this.db` while it is still
+   * undefined.
+   */
+  readonly hasRank: boolean;
+
   constructor(
     dbPath: string,
     private cfg: Config,
@@ -197,6 +214,7 @@ export class SearchEngine {
     this.db.run("pragma temp_store = memory");
     this.db.run("pragma cache_size = -64000"); // 64 MB page cache
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
+    this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
   }
 
   /**
@@ -732,12 +750,31 @@ export class SearchEngine {
     ).map((r) => r.genre);
   }
 
+  /**
+   * Browse, DOWNGRADING a ranked sort on an index that cannot serve one.
+   *
+   * The downgrade lives here rather than in `browseIndex` because that function is pure
+   * policy over a database somebody hands it, and "what can this particular file do" is a
+   * property of the open index. A caller that must not show a votes-ordered list under a
+   * ranked list's NAME asks `hasRank` first -- `discoveryShelves` does exactly that, since
+   * "finderr Top 250" ordered by popularity is a wrong answer wearing a right one's label.
+   * A generic `/browse` grid is happy with the fallback; a named list is not.
+   */
   browse(opts: BrowseOptions): BrowseResult {
-    return browseIndex(this.db, opts);
+    const safe = opts.sort === "rank" && !this.hasRank ? { ...opts, sort: "votes" as const } : opts;
+    return browseIndex(this.db, safe);
   }
 
   private tableExists(name: string): boolean {
     return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
+  }
+
+  /** Does `table` have `column`? Answers false for a table that does not exist at all. */
+  private columnExists(table: string, column: string): boolean {
+    if (!this.tableExists(table)) return false;
+    return (this.db.query(`pragma table_info(${table})`).all() as { name: string }[]).some(
+      (c) => c.name === column,
+    );
   }
 
   /** A person and their filmography. `null` for an unknown id, or an index without people. */

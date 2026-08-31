@@ -37,7 +37,7 @@ export interface DiscoveryShelf {
 export interface ShelfDeps {
   engine: Pick<
     SearchEngine,
-    "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse"
+    "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse" | "hasRank"
   >;
   store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource">;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
@@ -143,13 +143,21 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
 
       NEVER call this IMDb's Top 250. It reproduces IMDb's head almost exactly and will
       not match it, because IMDb's vote filtering is unpublished.
+
+      > [!IMPORTANT] `hasRank` is what keeps the NAME honest across a deploy
+      > A redeploy keeps its data directory, so for up to a day after this ships the live
+      > index has no rank column. `engine.browse` would quietly downgrade to a votes sort
+      > and this shelf would render the most POPULAR films under the heading "finderr Top
+      > 250" -- a wrong list wearing a right one's label, and nothing on screen to say so.
+      > An empty `rows` array drops the shelf entirely (see the filter below), which is the
+      > honest version of the same state: the list is not available yet, so it is not shown.
     */
     {
       id: "top-250",
       title: "finderr Top 250",
       subtitle: "weighted by rating and how many people voted",
       browse: { sort: "rank", kind: "movie" },
-      rows: engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows,
+      rows: engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : [],
     },
     {
       id: "top-movies",

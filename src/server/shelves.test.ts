@@ -46,6 +46,7 @@ function depsWith(
       // precisely so the shelf and the "see all" link behind it cannot order differently,
       // which is why the fake answers in the same shape a real browse does.
       browse: (opts) => ({ rows: [row(`ranked-${opts.kind}`, `ranked ${opts.kind}`, opts.kind)], total: 1 }),
+      hasRank: true,
       ...over,
     } as ShelfDeps["engine"],
     store: {
@@ -80,6 +81,17 @@ describe("discoveryShelves", () => {
       "new-decade",
       "genre-horror",
     ]);
+  });
+
+  test("an index with no rank column drops the Top 250 rather than mislabelling a votes list", () => {
+    // A redeploy keeps its data directory, so the live index has no rank column until the
+    // next nightly refresh. `engine.browse` degrades a ranked sort to votes, which is right
+    // for a generic grid and WRONG under a heading that names a ranked list -- it would put
+    // the most popular films on screen as "finderr Top 250".
+    const shelves = discoveryShelves(depsWith({ hasRank: false }, [], ["owned-1"]));
+    expect(shelves.map((s) => s.id)).not.toContain("top-250");
+    // Everything else on the front page is unaffected.
+    expect(shelves.map((s) => s.id)).toContain("top-movies");
   });
 
   /** A blank row is worse than no row, and the warm loop must not count titles nobody sees. */
