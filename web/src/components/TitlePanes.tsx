@@ -22,7 +22,7 @@
 
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import type { RenderedPane, Title } from "../lib/api";
+import type { EpisodeState, RenderedPane, Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import {
   byBillingOrder,
@@ -99,6 +99,13 @@ export interface TitlePanesProps {
    * the slot vocabulary and `PluginPane.tsx` for what a block draws as.
    */
   panes?: RenderedPane[];
+  /**
+   * Our own Sonarr's per-episode state, for the seasons pane. Ours rather than a
+   * provider's, so it travels beside the facets like `people` and `collectionTitles`.
+   */
+  episodeState?: readonly EpisodeState[];
+  /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
+  onRequestEpisode?: (season: number, episode: number) => void;
 }
 
 /*
@@ -282,6 +289,8 @@ export function TitleLowerPanes({
   collectionTitles,
   relatedTitles,
   panes,
+  episodeState,
+  onRequestEpisode,
 }: TitlePanesProps) {
   const shared = { facets, working };
   const slot = slotFor(panes);
@@ -292,7 +301,13 @@ export function TitleLowerPanes({
         keeps its position when the router swaps one title for another -- without the
         key, opening a second series would land on whatever season the last one was on.
       */}
-      <SeriesPane key={title.tconst} {...shared} variant="panel" />
+      <SeriesPane
+        key={title.tconst}
+        {...shared}
+        variant="panel"
+        episodeState={episodeState}
+        onRequestEpisode={onRequestEpisode}
+      />
       {slot("title.after-seasons")}
 
       <FacetPane

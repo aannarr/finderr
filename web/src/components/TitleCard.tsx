@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { memo, useState } from "react";
 import { posterUrl, prefetchTitle, type Title } from "../lib/api";
-import { shelfDateLabel } from "../lib/facet-panes";
+import { shelfDateLabel, todayUtc } from "../lib/facet-panes";
 import { BrowseChip } from "./BrowseChip";
 
 /**
@@ -19,11 +19,6 @@ const DATE_KIND_LABEL: Record<string, string> = {
   cinemas: "in cinemas",
   digital: "streaming",
 };
-
-/** Today as a plain UTC date, matching how the mirror stores one. */
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 /**
  * The fallback tile's monogram.

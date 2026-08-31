@@ -18,11 +18,15 @@
  */
 
 import { type ReactNode, useState } from "react";
+import type { EpisodeState } from "../lib/api";
 import {
   adjacentSeasonNumber,
   defaultSeasonNumber,
+  type EpisodeStanding,
   episodeLabel,
   episodeSkeletonRows,
+  episodeStanding,
+  episodeStateIndex,
   episodesForSeason,
   formatCalendarDate,
   localImageUrl,
@@ -30,6 +34,7 @@ import {
   paneView,
   seasonAirRange,
   seasonLabel,
+  todayUtc,
 } from "../lib/facet-panes";
 import type { Episode, FacetName, ResolvedFacets, Season } from "../lib/facets";
 import { ToggleChip } from "./Chip";
@@ -41,9 +46,16 @@ export interface SeriesPaneProps {
   working: readonly FacetName[] | undefined;
   /** Layout's call, passed through to the pane chrome -- the title page mounts this as a panel. */
   variant?: PaneVariant;
+  /**
+   * Our own Sonarr's per-episode state. Absent or empty means Sonarr does not hold this
+   * series, and every row then draws exactly as it did before this existed.
+   */
+  episodeState?: readonly EpisodeState[];
+  /** Ask Sonarr for one episode. Absent means the control is not offered at all. */
+  onRequestEpisode?: (season: number, episode: number) => void;
 }
 
-export function SeriesPane({ facets, working, variant }: SeriesPaneProps) {
+export function SeriesPane({ facets, working, variant, episodeState, onRequestEpisode }: SeriesPaneProps) {
   return (
     <FacetPane
       facets={facets}
@@ -52,7 +64,15 @@ export function SeriesPane({ facets, working, variant }: SeriesPaneProps) {
       heading="Seasons"
       variant={variant}
       skeleton={<SeasonBrowserSkeleton />}
-      render={(seasons: Season[]) => <SeasonBrowser seasons={seasons} facets={facets} working={working} />}
+      render={(seasons: Season[]) => (
+        <SeasonBrowser
+          seasons={seasons}
+          facets={facets}
+          working={working}
+          episodeState={episodeState}
+          onRequestEpisode={onRequestEpisode}
+        />
+      )}
     />
   );
 }
@@ -71,10 +91,14 @@ function SeasonBrowser({
   seasons,
   facets,
   working,
+  episodeState,
+  onRequestEpisode,
 }: {
   seasons: Season[];
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
+  episodeState?: readonly EpisodeState[];
+  onRequestEpisode?: (season: number, episode: number) => void;
 }) {
   const ordered = orderSeasons(seasons);
   const [chosen, setChosen] = useState<number | null>(null);
@@ -128,7 +152,15 @@ function SeasonBrowser({
       </div>
 
       {season && <SeasonHeader season={season} />}
-      {season && <SeasonEpisodes season={season} facets={facets} working={working} />}
+      {season && (
+        <SeasonEpisodes
+          season={season}
+          facets={facets}
+          working={working}
+          episodeState={episodeState}
+          onRequestEpisode={onRequestEpisode}
+        />
+      )}
     </>
   );
 }
@@ -176,10 +208,14 @@ function SeasonEpisodes({
   season,
   facets,
   working,
+  episodeState,
+  onRequestEpisode,
 }: {
   season: Season;
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
+  episodeState?: readonly EpisodeState[];
+  onRequestEpisode?: (season: number, episode: number) => void;
 }) {
   const view = paneView(facets, "episodes", working);
   if (view.state === "hidden") return null;
@@ -199,10 +235,20 @@ function SeasonEpisodes({
   const episodes = episodesForSeason(view.data, season.number);
   if (episodes.length === 0) return null;
 
+  // Built once per season rather than per row: `episodeState` is the whole series, and a
+  // find() per row is quadratic on a show with 73 of them.
+  const state = episodeStateIndex(episodeState);
+  const today = todayUtc();
+
   return (
     <EpisodeRows>
       {episodes.map((episode) => (
-        <EpisodeRow key={episode.number} episode={episode} />
+        <EpisodeRow
+          key={episode.number}
+          episode={episode}
+          standing={episodeStanding(state.get(`${episode.season}:${episode.number}`), today)}
+          onRequest={onRequestEpisode}
+        />
       ))}
     </EpisodeRows>
   );
@@ -218,10 +264,21 @@ function EpisodeRows({ children, busy }: { children: ReactNode; busy?: boolean }
 }
 
 /** One row's frame, so a placeholder cannot be a different height from the real thing. */
-const EPISODE_ROW_CLASS = "flex gap-3 border-t border-line py-2.5 first:border-t-0";
+// `group/episode` is NAMED rather than bare: the request button reveals on hover of ITS OWN
+// row, and an unnamed group would be claimed by whichever ancestor is nearest -- on a 73-row
+// season, hovering the list would light up every button in it.
+const EPISODE_ROW_CLASS = "group/episode flex gap-3 border-t border-line py-2.5 first:border-t-0";
 const EPISODE_NUMBER_CLASS = "w-7 shrink-0 text-right text-sm tabular-nums text-muted";
 
-function EpisodeRow({ episode }: { episode: Episode }) {
+function EpisodeRow({
+  episode,
+  standing,
+  onRequest,
+}: {
+  episode: Episode;
+  standing: EpisodeStanding;
+  onRequest?: (season: number, episode: number) => void;
+}) {
   return (
     <li className={EPISODE_ROW_CLASS}>
       <span className={EPISODE_NUMBER_CLASS}>{episode.number}</span>
@@ -242,7 +299,64 @@ function EpisodeRow({ episode }: { episode: Episode }) {
           <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted">{episode.overview}</p>
         )}
       </div>
+      <EpisodeStandingMark
+        standing={standing}
+        onRequest={onRequest && (() => onRequest(episode.season, episode.number))}
+      />
     </li>
+  );
+}
+
+/**
+ * What one row says about whether we hold this episode.
+ *
+ * > [!IMPORTANT] SUBTLE, and it draws NOTHING for the two states that are not news
+ * > aannarr asked for subtle, and the way to be subtle over 73 rows is to say less rather
+ * > than to say it more quietly. `unknown` (Sonarr does not list it, or it has not aired)
+ * > draws nothing at all, and the mark for `owned` is a small dot rather than a word --
+ * > the column reads at a glance as a pattern of what you have, which is the question, and
+ * > a row of the word "Downloaded" would be louder than the episode titles it sits beside.
+ *
+ * The only state with a control is `missing`, and the control is deliberately quiet until
+ * the row is hovered or the button is focused. It is always in the accessibility tree and
+ * always reachable by keyboard -- `opacity` hides it from the eye and from nothing else --
+ * so it is not one of those buttons only a mouse can find.
+ */
+function EpisodeStandingMark({ standing, onRequest }: { standing: EpisodeStanding; onRequest?: () => void }) {
+  if (standing === "unknown") return null;
+
+  if (standing === "owned") {
+    return (
+      <span className="flex w-16 shrink-0 items-center justify-end pt-0.5" title="In your library">
+        <span aria-hidden="true" className="size-1.5 rounded-full bg-emerald-500/80" />
+        <span className="sr-only">In your library</span>
+      </span>
+    );
+  }
+
+  if (standing === "wanted") {
+    return (
+      <span className="flex w-16 shrink-0 items-center justify-end pt-0.5" title="Sonarr is looking for this">
+        <span aria-hidden="true" className="size-1.5 rounded-full border border-muted" />
+        <span className="sr-only">Searching</span>
+      </span>
+    );
+  }
+
+  // `missing`, and no handler -- nothing to offer, so the column stays empty rather than
+  // drawing a disabled control that explains nothing.
+  if (!onRequest) return null;
+
+  return (
+    <span className="flex w-16 shrink-0 items-start justify-end">
+      <button
+        type="button"
+        onClick={onRequest}
+        className="rounded border border-line px-1.5 py-0.5 text-[11px] text-muted opacity-0 transition hover:border-ink hover:text-ink focus-visible:opacity-100 group-hover/episode:opacity-100"
+      >
+        Request
+      </button>
+    </span>
   );
 }
 

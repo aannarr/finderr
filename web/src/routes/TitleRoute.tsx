@@ -19,11 +19,12 @@ import { useKeyAction } from "../components/Kbd";
 import { RequestOptions } from "../components/RequestOptions";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
-import { posterUrl, type RequestOverrides, type Title } from "../lib/api";
+import { postEpisodeRequest, posterUrl, type RequestOverrides, type Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
-import { useTitleDetail } from "../lib/use-title-detail";
+import { useToasts } from "../lib/toasts";
+import { type TitleDetailView, useTitleDetail } from "../lib/use-title-detail";
 
 const KIND_LABEL: Record<string, string> = {
   movie: "Film",
@@ -43,11 +44,22 @@ function runtimeLabel(mins: number): string {
 export function TitleRoute() {
   const { tconst } = useParams({ strict: false }) as { tconst: string };
   const { request, isAdmin } = useApp();
+  const toasts = useToasts();
   const router = useRouter();
   const canGoBack = useCanGoBack();
 
-  const { title, facets, people, collectionTitles, relatedTitles, panes, working, error } =
-    useTitleDetail(tconst);
+  const {
+    title,
+    facets,
+    people,
+    collectionTitles,
+    relatedTitles,
+    panes,
+    working,
+    arrLink,
+    episodeState,
+    error,
+  } = useTitleDetail(tconst);
 
   /*
     Both keys are bound before the early returns below, because hooks must be, and both
@@ -84,6 +96,27 @@ export function TitleRoute() {
     if (!title) return;
     if (choosable) setChoosing(true);
     else void request(title, null, overrides);
+  };
+
+  /*
+    Asking for one episode, which is a different operation from asking for the title.
+
+    It is only offered for a series Sonarr ALREADY holds -- `episodeState` is empty
+    otherwise, so every row is `unknown` and no button is drawn. That is the boundary
+    between this and the Request button above, which refuses a title already in the
+    library. The two do not overlap and neither replaces the other.
+
+    Optimism lives on the server: the mirror is marked monitored the moment Sonarr accepts,
+    and the next poll of this page carries it. So there is no local copy of "I clicked
+    this" here to disagree with what Sonarr actually did.
+  */
+  const requestEpisode = (season: number, episode: number) => {
+    if (!title) return;
+    const label = `S${season}E${episode}`;
+    const id = toasts.push(`Requesting ${title.title} ${label}`);
+    void postEpisodeRequest(title.tconst, season, episode)
+      .then(() => toasts.resolve(id, "success", `Sonarr is looking for ${label}`))
+      .catch((e: Error) => toasts.resolve(id, "error", e.message));
   };
 
   const requestKey = useKeyAction("request", startRequest, canRequest);
@@ -259,6 +292,20 @@ export function TitleRoute() {
             {canRequest && isAdmin && (
               <RequestOptions service={title.service} value={overrides} onChange={setOverrides} />
             )}
+
+            {/*
+              The one link on this page that leaves for a machine rather than for a reader.
+
+              `isAdmin` gates whether it is DRAWN and is not the rule -- the server sends
+              `arrLink: null` to every non-admin, so there is nothing here to hide. Same
+              two-guard shape as `RequestOptions` above, and for the same reason: the cheap
+              client check keeps the layout honest while the server check is the wall.
+
+              It arrives with the detail response rather than at t=0, so it lives here
+              UNDER the request block and never in the header -- nothing arriving late may
+              push the header around, which is the rule this route states about itself.
+            */}
+            {isAdmin && arrLink && <ArrLinkRow link={arrLink} />}
           </div>
 
           {/*
@@ -302,8 +349,35 @@ export function TitleRoute() {
         collectionTitles={collectionTitles}
         relatedTitles={relatedTitles}
         panes={panes}
+        episodeState={episodeState}
+        onRequestEpisode={requestEpisode}
       />
     </>
+  );
+}
+
+/**
+ * "Open in Radarr" / "Open in Sonarr", for an admin.
+ *
+ * Deliberately the quietest thing in the rail: it is a maintenance door, not part of
+ * reading about a title, so it gets `LinksRow`'s treatment rather than a button's. A
+ * reader who is also an admin is still, most of the time, reading.
+ *
+ * `target="_blank"` because the arr is a different application with its own navigation --
+ * following it in place would cost the reader this page. `rel` carries `noreferrer` as
+ * well as `noopener`: finderr's URL names a title somebody asked for, and the arr has no
+ * business being told which page sent an admin to it.
+ */
+function ArrLinkRow({ link }: { link: NonNullable<TitleDetailView["arrLink"]> }) {
+  return (
+    <a
+      href={link.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block text-center text-xs text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink"
+    >
+      Open in {link.label}
+    </a>
   );
 }
 

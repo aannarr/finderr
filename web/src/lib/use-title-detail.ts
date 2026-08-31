@@ -15,7 +15,9 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
+  type ArrLink,
   cachedTitle,
+  type EpisodeState,
   getTitleDetail,
   type RenderedPane,
   subscribeTitleState,
@@ -152,6 +154,18 @@ export interface TitleDetailView {
   working: FacetName[] | undefined;
   /** Which plugin failed and why, for anything that wants to say so out loud. */
   problems: FacetProblem[];
+  /**
+   * Where an ADMIN manages this title in Radarr or Sonarr, or null.
+   *
+   * Null is the server's answer for every non-admin -- the address is never sent -- so an
+   * ordinary reader's page has nothing to hide.
+   */
+  arrLink: ArrLink | null;
+  /**
+   * Our own Sonarr's per-episode state for this series. Undefined until the response
+   * lands, and empty for anything Sonarr does not hold.
+   */
+  episodeState: EpisodeState[] | undefined;
   error: string | null;
 }
 
@@ -219,6 +233,8 @@ export function useTitleDetail(tconst: string): TitleDetailView {
     panes: detail?.panes,
     working: detail?.work.facets,
     problems: detail?.work.problems ?? [],
+    arrLink: detail?.arrLink ?? null,
+    episodeState: detail?.episodeState,
     error,
   };
 }

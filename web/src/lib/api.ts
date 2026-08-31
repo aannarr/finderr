@@ -10,7 +10,9 @@
 // imported rather than re-typed -- the same deal `./facets` documents at length.
 // `import type` is erased under `verbatimModuleSyntax`: no server module reaches the
 // bundle and the browser pays nothing for it.
+import type { ArrLink } from "../../../src/lib/arr-links";
 import type { CollectionSummary } from "../../../src/lib/collections";
+import type { EpisodeState } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
@@ -19,7 +21,7 @@ import type { HiddenByFloor } from "../../../src/lib/search";
 import { isCacheableFacetSet } from "./facet-panes";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
-export type { CollectionSummary, HiddenByFloor, PaneBlock, RenderedPane };
+export type { ArrLink, CollectionSummary, EpisodeState, HiddenByFloor, PaneBlock, RenderedPane };
 
 /**
  * What the upcoming mirror knows about a title, present only on the four upcoming shelves.
@@ -314,6 +316,22 @@ export interface TitleDetail extends Title {
    * addon is welded to our React version. Absent or empty is the ordinary case.
    */
   panes?: RenderedPane[];
+  /**
+   * Where an ADMIN manages this title in Radarr or Sonarr. Null for everybody else.
+   *
+   * The null is the SERVER'S answer, not a rendering choice -- an arr's address describes
+   * the private network finderr fronts, so a non-admin is never sent the string at all.
+   * The component still checks `isAdmin` as well, the way `RequestOptions` does: two cheap
+   * guards, one of which is the actual rule.
+   */
+  arrLink?: ArrLink | null;
+  /**
+   * Our own Sonarr's per-episode state, one entry per episode it lists for this series.
+   *
+   * Absent for a film and EMPTY for a series Sonarr does not hold, which mean the same
+   * thing here -- there is nothing to say about any episode, so nothing is drawn.
+   */
+  episodeState?: EpisodeState[];
 }
 
 export interface Person {
@@ -676,6 +694,27 @@ export async function postRequest(
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `request failed: ${res.status}`);
   return body as { request: MediaRequest };
+}
+
+/**
+ * Ask Sonarr for ONE episode of a series it already holds.
+ *
+ * A separate call from `postRequest` rather than another shape of it, because it is a
+ * different operation on a different subject: `postRequest` ADDS a title Sonarr does not
+ * have, and refuses one it does (409, "already in your library"). This is the case that
+ * begins where that one ends, and it writes no request row -- the server's answer carries
+ * no `MediaRequest` because the episode mirror is the record.
+ */
+export async function postEpisodeRequest(tconst: string, season: number, episode: number): Promise<void> {
+  const res = await fetch("/api/requests/episode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tconst, season, episode }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `episode request failed: ${res.status}`);
+  }
 }
 
 /**

@@ -815,6 +815,53 @@ export function episodeLabel(episode: Episode): string {
   return episode.title?.trim() || `Episode ${episode.number}`;
 }
 
+/** Today as a plain UTC date, matching how every date in this product is stored. */
+export function todayUtc(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Where one episode stands, in the only four states a row can be drawn in.
+ *
+ * - `unknown` -- Sonarr does not list it, so we know nothing and say nothing.
+ * - `owned` -- the file is there.
+ * - `wanted` -- aired, monitored, no file. Sonarr is already looking; asking again adds
+ *   nothing, so the row says so instead of offering a button that repeats a search.
+ * - `missing` -- aired, not monitored, no file. The one state a request button belongs in.
+ *
+ * An episode that has NOT aired is `unknown` whatever else is true of it. It is the state
+ * every future episode of every show is in, and marking a row that cannot exist yet is
+ * noise on the one screen whose job is air dates -- the date is already right there saying
+ * the same thing better.
+ */
+export type EpisodeStanding = "unknown" | "owned" | "wanted" | "missing";
+
+export function episodeStanding(
+  state: { hasFile: boolean; monitored: boolean; airDate: string | null } | undefined,
+  today: string,
+): EpisodeStanding {
+  if (!state) return "unknown";
+  if (state.hasFile) return "owned";
+  // Sonarr's own airDate, not skyhook's, so "has it aired" and "do we have it" cannot come
+  // from two documents that disagree. No date at all reads as not yet aired: a dateless
+  // episode is one nobody can have, and offering to fetch it would be a dead button.
+  if (!state.airDate || state.airDate > today) return "unknown";
+  return state.monitored ? "wanted" : "missing";
+}
+
+/**
+ * Sonarr's episode list as a lookup, keyed on the pair the two sources agree on.
+ *
+ * The key format is built HERE and read HERE, from a list the server sent as two integers
+ * per row -- so unlike `personNameKey` there is no second copy on the server that could
+ * drift out of step with it.
+ */
+export function episodeStateIndex<T extends { season: number; episode: number }>(
+  states: readonly T[] | undefined,
+): Map<string, T> {
+  return new Map((states ?? []).map((s) => [`${s.season}:${s.episode}`, s]));
+}
+
 /** Enough rows that the area does not look broken when a season count is missing. */
 const ASSUMED_EPISODES_PER_SEASON = 6;
 
