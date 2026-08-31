@@ -17,6 +17,7 @@
  * that holds it and `getJson` redacts the query string from anything it reports.
  */
 
+import { AsyncCache } from "../lib/async-cache";
 import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
@@ -60,7 +61,7 @@ export function init(c: PluginContext): PluginExports {
 
   // Scoped to this load rather than to the module, so two registries in one process
   // (which is what the tests are) never see each other's in-flight calls.
-  const inFlight = new Map<string, Promise<number | null>>();
+  const ids = tmdbIdCache(c.kv);
   // One API per load, closed over by both handlers: `c.fetch` is fixed at init now that a
   // handler is handed the entity alone, so there is nothing left to rebuild per call.
   const api = new TmdbApi(c.fetch, apiKey);
@@ -68,7 +69,7 @@ export function init(c: PluginContext): PluginExports {
   return {
     facets: {
       watchProviders: async (entity) => {
-        const tmdbId = await resolveTmdbId(api, c.kv, inFlight, entity);
+        const tmdbId = await resolveTmdbId(api, ids, entity);
         if (tmdbId === null) return null;
         const data = await fetchWatchProviders(api, mediaTypeOf(entity), tmdbId);
         return data === null ? null : { data, freshness: FRESHNESS.watchProviders };
@@ -80,7 +81,7 @@ export function init(c: PluginContext): PluginExports {
         // list and nothing dedupes it -- so the answer for a film is "nothing here", decided
         // before any id is resolved so it costs no call either.
         if (entity.kind !== "series") return null;
-        const tmdbId = await resolveTmdbId(api, c.kv, inFlight, entity);
+        const tmdbId = await resolveTmdbId(api, ids, entity);
         if (tmdbId === null) return null;
         const data = await fetchSeriesKeywords(api, tmdbId);
         return data === null ? null : { data, freshness: FRESHNESS.keywords };
@@ -100,37 +101,38 @@ function mediaTypeOf(entity: FacetEntity): TmdbMediaType {
  * `tconst -> tmdbId` never changes, so it belongs in `c.kv` rather than in the facet cache:
  * a facet expiring must not buy the `/find` call again. Only successes are stored -- a
  * title TMDB has not indexed yet may well be there next month, and a permanently cached
- * "no" would keep it invisible.
+ * "no" would keep it invisible, which is what `save` declining a `null` is for.
  *
- * The in-flight map coalesces the FIRST view, where both providers start in the resolver's
+ * The in-flight half coalesces the FIRST view, where both providers start in the resolver's
  * one synchronous burst and would otherwise each buy the same crosswalk. Every view after
- * that is answered by `kv` without a call at all.
+ * that is answered by `load` without a call at all.
  *
+ * `kv` holds strings, so the two conversions are the whole adapter: a stored id reads back
+ * as a number, and an absent one as `undefined` rather than `null` -- `null` is a real
+ * answer here and `AsyncCache` reserves `undefined` for "nothing stored".
+ */
+function tmdbIdCache(kv: PluginKv): AsyncCache<string, number | null> {
+  const keyOf = (tconst: string) => `tmdb:${tconst}`;
+  return new AsyncCache<string, number | null>({
+    load: (tconst) => {
+      const cached = kv.get(keyOf(tconst));
+      return cached ? Number(cached) : undefined;
+    },
+    save: (tconst, id) => {
+      if (id !== null) kv.set(keyOf(tconst), String(id));
+    },
+  });
+}
+
+/**
  * `servarr-metadata` already resolves this id into the `externalIds` facet, and reading it
  * from there would cost nothing -- but a provider is handed `fetch`, `kv` and `log`, and
  * cannot read another plugin's facet. Crossing that seam is a core change, not a plugin's.
  */
-async function resolveTmdbId(
+function resolveTmdbId(
   api: TmdbApi,
-  kv: PluginKv,
-  inFlight: Map<string, Promise<number | null>>,
+  ids: AsyncCache<string, number | null>,
   entity: FacetEntity,
 ): Promise<number | null> {
-  const key = `tmdb:${entity.tconst}`;
-  const cached = kv.get(key);
-  if (cached) return Number(cached);
-
-  const existing = inFlight.get(entity.tconst);
-  if (existing) return existing;
-
-  const task = api
-    .findByImdbId(entity.tconst, mediaTypeOf(entity))
-    .then((id) => {
-      if (id !== null) kv.set(key, String(id));
-      return id;
-    })
-    .finally(() => inFlight.delete(entity.tconst));
-
-  inFlight.set(entity.tconst, task);
-  return task;
+  return ids.getOrAdd(entity.tconst, (tconst) => api.findByImdbId(tconst, mediaTypeOf(entity)));
 }

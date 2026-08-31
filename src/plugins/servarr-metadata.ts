@@ -21,6 +21,7 @@
  * Never batch-crawl them. Resolve on view and on shelf pre-warm, one click deep.
  */
 
+import { AsyncCache } from "../lib/async-cache";
 import type { FacetEntity, FacetShapes, FreshnessClass } from "../lib/facets";
 import type { FacetProvider, PluginContext, PluginExports, PluginMeta } from "../lib/plugins";
 import {
@@ -76,9 +77,18 @@ const FRESHNESS = {
 type ProvidedFacet = keyof typeof FRESHNESS;
 
 export function init(c: PluginContext): PluginExports {
-  // One shared document per title, scoped to this load rather than to the module, so two
-  // registries in one process (which is what the tests are) never see each other's calls.
-  const inFlight = new Map<string, Promise<Partial<FacetShapes>>>();
+  /*
+    Both caches are scoped to THIS LOAD rather than to the module, so two registries in one
+    process -- which is what the tests are -- never see each other's in-flight calls.
+
+    `collections` used to be a module-level map, which quietly broke that rule for one of
+    the two: a collection fetch started by one registry could be joined by another, and with
+    `fetchImpl` injected per load that means one test's recorded fixture answering another
+    test's call. Nothing had tripped over it, and it is fixed here because moving it into
+    the closure costs one parameter.
+  */
+  const documents = new AsyncCache<string, Partial<FacetShapes>>();
+  const collections = new AsyncCache<number, RadarrCollection | null>();
 
   // Built through a loose record because the key is only known at runtime -- the same
   // shape `FacetResolver.read` uses, and for the same reason. The mapped type is what the
@@ -87,7 +97,7 @@ export function init(c: PluginContext): PluginExports {
 
   for (const facet of Object.keys(FRESHNESS) as ProvidedFacet[]) {
     facets[facet] = async (entity) => {
-      const document = await documentFacets(inFlight, c, entity);
+      const document = await documentFacets(documents, collections, c, entity);
       const data = document[facet];
       // Absent means the upstream document had nothing of that kind, which is a real
       // answer and caches as an empty facet. It is not the same as a failure: a fetch
@@ -108,20 +118,17 @@ export function init(c: PluginContext): PluginExports {
  * settles: this coalesces one burst, and the facet cache -- not a second cache here --
  * is what stops the next view asking at all.
  *
- * The same shape as `ImageCache` and `ArtworkResolver`, deliberately: an in-flight map
- * keyed by the thing being fetched, cleared in `finally`.
+ * In-flight only, no `load`/`save`: a document is facet DATA and belongs in the facet
+ * cache, which is what expires it. `AsyncCache`'s persistent half is for identifiers that
+ * must outlive a facet, which is what `resolveTvdbId` uses `kv` for.
  */
 function documentFacets(
-  inFlight: Map<string, Promise<Partial<FacetShapes>>>,
+  documents: AsyncCache<string, Partial<FacetShapes>>,
+  collections: AsyncCache<number, RadarrCollection | null>,
   ctx: PluginContext,
   entity: FacetEntity,
 ): Promise<Partial<FacetShapes>> {
-  const existing = inFlight.get(entity.tconst);
-  if (existing) return existing;
-
-  const task = fetchDocument(ctx, entity).finally(() => inFlight.delete(entity.tconst));
-  inFlight.set(entity.tconst, task);
-  return task;
+  return documents.getOrAdd(entity.tconst, () => fetchDocument(collections, ctx, entity));
 }
 
 /**
@@ -135,29 +142,19 @@ function documentFacets(
  * `episode` entities never reach here -- the plugin declares `movie` and `series`, and
  * the registry only asks a plugin about the kinds it declared.
  */
-function fetchDocument(ctx: PluginContext, entity: FacetEntity): Promise<Partial<FacetShapes>> {
-  return entity.kind === "series" ? seriesDocument(ctx, entity) : movieDocument(ctx, entity);
+function fetchDocument(
+  collections: AsyncCache<number, RadarrCollection | null>,
+  ctx: PluginContext,
+  entity: FacetEntity,
+): Promise<Partial<FacetShapes>> {
+  return entity.kind === "series" ? seriesDocument(ctx, entity) : movieDocument(collections, ctx, entity);
 }
 
-/**
- * In-flight collection fetches, keyed by COLLECTION rather than by title.
- *
- * Separate from the document map above and keyed differently on purpose: opening The
- * Matrix and then Reloaded asks for the same collection twice, and the four films in a
- * collection warming together would otherwise buy four copies of one document. Keyed by
- * title it would coalesce nothing.
- */
-const collectionsInFlight = new Map<number, Promise<RadarrCollection | null>>();
-
-function collectionOnce(ctx: PluginContext, tmdbId: number): Promise<RadarrCollection | null> {
-  const existing = collectionsInFlight.get(tmdbId);
-  if (existing) return existing;
-  const task = fetchCollection(ctx.fetch, tmdbId).finally(() => collectionsInFlight.delete(tmdbId));
-  collectionsInFlight.set(tmdbId, task);
-  return task;
-}
-
-async function movieDocument(ctx: PluginContext, entity: FacetEntity): Promise<Partial<FacetShapes>> {
+async function movieDocument(
+  collections: AsyncCache<number, RadarrCollection | null>,
+  ctx: PluginContext,
+  entity: FacetEntity,
+): Promise<Partial<FacetShapes>> {
   const movie = await fetchMovie(ctx.fetch, entity.tconst);
   if (!movie) return {};
   const facets = movieFacets(movie);
@@ -174,8 +171,15 @@ async function movieDocument(ctx: PluginContext, entity: FacetEntity): Promise<P
     A failure here must not lose the other twelve facets, so the collection falls back to
     the name-only version the film's own payload already gave us.
   */
+  /*
+    Keyed by COLLECTION rather than by title, and separate from the document cache on
+    purpose: opening The Matrix and then Reloaded asks for the same collection twice, and
+    the four films in a collection warming together would otherwise buy four copies of one
+    document. Keyed by title it would coalesce nothing.
+  */
   if (facets.collection && movie.Collection) {
-    const full = await collectionOnce(ctx, movie.Collection.TmdbId).catch(() => null);
+    const tmdbId = movie.Collection.TmdbId;
+    const full = await collections.getOrAdd(tmdbId, (id) => fetchCollection(ctx.fetch, id)).catch(() => null);
     facets.collection = collectionWithParts(facets.collection, full, entity.tconst);
   }
 
