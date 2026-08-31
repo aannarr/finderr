@@ -196,8 +196,14 @@ export class OutboundTimings {
 
 /**
  * Process-wide, for the same reason the gate is: the interesting question is what THIS
- * finderr is spending on each host, across every plugin that talks to it. A per-plugin
- * tally would hide the case where two addons are queueing behind each other.
+ * finderr is spending on each host, across every CALLER that talks to it. A per-plugin
+ * tally would hide the case where two of them are queueing behind each other.
+ *
+ * "Every caller" is wider than "every plugin", and the difference will surprise a reader
+ * of the report: the upcoming sync builds its own `createPluginFetch` and its boot-time
+ * `/discover` walk lands under `api.themoviedb.org` too. So a call count well above the
+ * number of titles anybody has opened is expected, not a leak. Attribute a host's traffic
+ * with `facets.timing.providers` beside it, which counts only the facet path.
  */
 let processTimings: OutboundTimings | undefined;
 export function outboundTimings(): OutboundTimings {
