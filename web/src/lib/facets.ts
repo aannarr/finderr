@@ -30,6 +30,7 @@ export type {
   FacetShapes,
   FailureReason,
   Keyword,
+  Language,
   Rating,
   RelatedTitle,
   ReleaseDates,

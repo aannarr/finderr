@@ -403,6 +403,27 @@ describe("panes that are one fact", () => {
     expect(html).toContain(">heist</span>");
   });
 
+  /**
+   * The pane aannarr asked for, on the title he asked about: `tt12574330` is a Hindi film
+   * whose synopsis arrives in English, so before this the page said nothing about it.
+   *
+   * Plain text and no chip -- `/browse` cannot filter on language and the index cannot grow
+   * a column for it, so a chip that looks clickable would be a dead end.
+   */
+  test("the language is named in words, and is not a chip", () => {
+    const html = render({ language: { status: "ready", data: [{ code: "hi" }] } });
+
+    expect(html).toContain("Language");
+    expect(html).toContain("Hindi");
+    expect(html).not.toContain(">hi<");
+    expect(html).not.toContain("/browse?language");
+  });
+
+  test("a title nobody stated a language for leaves no pane behind", () => {
+    expect(render({ language: { status: "ready", data: [] } })).not.toContain("Language");
+    expect(render({ language: { status: "empty" } })).not.toContain("Language");
+  });
+
   test("release dates print the windows we have, and only those", () => {
     const html = render({
       releaseDates: { status: "ready", data: { cinema: "2010-07-16", physical: null, digital: null } },

@@ -54,6 +54,20 @@ const MATRIX: FacetEntity = {
   ids: { imdb: "tt0133093" },
 };
 
+/**
+ * A HINDI film with an ENGLISH synopsis -- the one shape that tells the two language facts
+ * apart, and the title aannarr pointed at when he asked for this. Inception cannot prove
+ * either half: its original language IS English, so the bug and the fix agree on it.
+ */
+const BOKSHI: FacetEntity = {
+  ...INCEPTION,
+  tconst: "tt12574330",
+  title: "Bokshi",
+  originalTitle: "Bokshi",
+  year: 2026,
+  ids: { imdb: "tt12574330" },
+};
+
 const GAME_OF_THRONES: FacetEntity = {
   kind: "series",
   tconst: "tt0944947",
@@ -69,6 +83,7 @@ const FIXTURES: Record<string, string> = {
   "https://api.radarr.video/v1/movie/imdb/tt1375666": "radarr-tt1375666.json",
   "https://api.radarr.video/v1/movie/imdb/tt0468569": "radarr-tt0468569.json",
   "https://api.radarr.video/v1/movie/imdb/tt0133093": "radarr-tt0133093.json",
+  "https://api.radarr.video/v1/movie/imdb/tt12574330": "radarr-tt12574330.json",
   "https://api.radarr.video/v1/movie/collection/2344": "radarr-collection-2344.json",
   "https://skyhook.sonarr.tv/v1/tvdb/search/en/?term=imdb:tt0944947": "skyhook-search-tt0944947.json",
   "https://skyhook.sonarr.tv/v1/tvdb/shows/en/121361": "skyhook-121361.json",
@@ -229,6 +244,45 @@ describe("movies, from api.radarr.video", () => {
   });
 
   /**
+   * REGRESSION. `synopsis.language` described the FILM, not the WORDS.
+   *
+   * It was `movie.OriginalLanguage ?? "en"`, which is the language the film was shot in --
+   * so `tt12574330` (Bokshi, Hindi) cached an English paragraph from TMDB under
+   * `language: "hi"`. The two facts are both real and they are not the same fact, which is
+   * exactly what the `language` facet below now exists to carry. Skyhook never had the bug
+   * because it pins the language segment it ASKED for.
+   *
+   * The Dark Knight is the second half of the proof: `OriginalLanguage` is `null` on its
+   * payload, and the old `?? "en"` guessed the right answer for the wrong reason.
+   */
+  test("the synopsis is in the language we were served, never the language of the film", async () => {
+    const hindiFilm = await resolve(BOKSHI);
+
+    // The paragraph itself, so the assertion below is about real English prose rather
+    // than about a string constant agreeing with another string constant.
+    expect(hindiFilm.mine.data("synopsis").text).toContain("her history teacher");
+    expect(hindiFilm.mine.data("synopsis").language).toBe("en");
+    // ... while the FILM is Hindi. Both facts, kept apart.
+    expect(hindiFilm.mine.data("language")).toEqual([{ code: "hi" }]);
+  });
+
+  test("the original language is its own facet, and an unstated one is empty rather than English", async () => {
+    const stated = await resolve(INCEPTION);
+    expect(stated.mine.data("language")).toEqual([{ code: "en" }]);
+
+    // `OriginalLanguage: null` upstream. "We were not told" must not render as "English",
+    // which is what the old `?? "en"` did on this exact payload.
+    //
+    // An explicit `[]` and outcome `ok`, the same shape a series' `trailer` gets: we asked
+    // and this document has no language in it. `empty` would be the absent-key case, which
+    // means something weaker -- nobody contributed at all. Both draw nothing; only one of
+    // them is a fact.
+    const unstated = await resolve(DARK_KNIGHT);
+    expect(unstated.mine.data("language")).toEqual([]);
+    expect(unstated.mine.outcome("language")).toBe("ok");
+  });
+
+  /**
    * The `links` facet carries what no id space can express. IMDb, TMDB and Trakt are built
    * at render time from `externalIds` above, so contributing them here would be a second
    * copy of a fact we already hold -- `Homepage` is the one address with no id behind it,
@@ -368,6 +422,18 @@ describe("series, from skyhook.sonarr.tv", () => {
     }
   });
 
+  /**
+   * The two proxies do not speak the same ISO. Skyhook sends `eng`, Radarr sends `en`, and
+   * a facet that merges as a LIST would carry both as separate languages the day a second
+   * provider answers for one title. The fold happens at the provider boundary, so the code
+   * that reaches the cache is already the one shape.
+   */
+  test("skyhook's three-letter language code is folded to the form Radarr sends", async () => {
+    const { mine } = await resolve(GAME_OF_THRONES);
+
+    expect(mine.data("language")).toEqual([{ code: "en" }]);
+  });
+
   test("the tconst -> tvdbId crosswalk is bought once per series, ever", async () => {
     await resolve(GAME_OF_THRONES);
     const searches = asked.filter((u) => u.includes("/search/"));
@@ -384,7 +450,7 @@ describe("series, from skyhook.sonarr.tv", () => {
 });
 
 describe("what it costs them", () => {
-  test("thirteen facets cost one call, not thirteen", async () => {
+  test("every facet a film has costs ONE call between them, not one each", async () => {
     await resolve(INCEPTION);
 
     expect(asked).toEqual(["https://api.radarr.video/v1/movie/imdb/tt1375666"]);

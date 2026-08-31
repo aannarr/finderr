@@ -14,6 +14,8 @@ import {
   isFacetName,
   isFreshnessClass,
   isValidContribution,
+  languageCode,
+  languageFacet,
   mapFacetImages,
   mergeContributions,
   type Rating,
@@ -29,6 +31,57 @@ describe("entityKindFor", () => {
     // A tvMovie lives in Radarr and has no seasons -- it is a movie to a provider.
     expect(entityKindFor("tvMovie")).toBe("movie");
     expect(entityKindFor("something IMDb invents next year")).toBe("movie");
+  });
+});
+
+describe("languageCode", () => {
+  /**
+   * The reason this function exists: the two keyless proxies answer in different ISOs for
+   * the same language, and a list-merged facet would carry both as separate entries.
+   */
+  test("folds every ISO the two proxies speak onto one code", () => {
+    expect(languageCode("hi")).toBe("hi"); // api.radarr.video, tt12574330
+    expect(languageCode("eng")).toBe("en"); // skyhook.sonarr.tv, tt0944947
+    expect(languageCode("en")).toBe("en");
+    expect(languageCode("kor")).toBe(languageCode("ko"));
+  });
+
+  test("keeps a three-letter code that genuinely has no two-letter form", () => {
+    // `cmn` (Mandarin) and `yue` (Cantonese) are not `zh`, and inventing one would merge
+    // two languages the moment a provider distinguished them.
+    expect(languageCode("cmn")).toBe("cmn");
+    expect(languageCode("yue")).toBe("yue");
+  });
+
+  test("a dialect answers with its language -- the facet is not about regions", () => {
+    expect(languageCode("pt-BR")).toBe("pt");
+    expect(languageCode("es-MX")).toBe("es");
+    expect(languageCode("EN")).toBe("en");
+  });
+
+  test("every shape of non-answer is dropped rather than passed on", () => {
+    // `und` survives canonicalisation and Intl renders it "Unknown language" -- a sentence
+    // about our data wearing the costume of a fact about the film.
+    expect(languageCode("und")).toBeNull();
+    // These throw RangeError out of the canonicaliser rather than returning anything.
+    for (const junk of ["", "   ", "en_US", "1", "!"]) expect(languageCode(junk)).toBeNull();
+    expect(languageCode(null)).toBeNull();
+    expect(languageCode(undefined)).toBeNull();
+  });
+
+  /**
+   * `xx` is syntactically a valid language tag and names no language, so nothing here can
+   * refuse it -- the render layer drops it on the only test that exists, whether anything
+   * can put a name to it. Pinned so the split of responsibility is on the record.
+   */
+  test("a well-formed code that names no language survives, deliberately", () => {
+    expect(languageCode("xx")).toBe("xx");
+  });
+
+  test("languageFacet is the empty list for a non-answer, never a guess", () => {
+    expect(languageFacet("hi")).toEqual([{ code: "hi" }]);
+    expect(languageFacet(null)).toEqual([]);
+    expect(languageFacet("und")).toEqual([]);
   });
 });
 

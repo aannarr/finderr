@@ -5,11 +5,17 @@
  * registration and no account. Seerr uses it for one number, the IMDb score; it returns
  * the entire film, which is most of the "needs a TMDB key" column of the metadata epic.
  *
- * One document in, ten facets out. The types below describe only the fields some facet
+ * One document in, most of the vocabulary out. The types below describe only the fields some facet
  * actually reads -- the payload is 71 KB and typing all of it would be typing a wish.
  */
 
-import type { CastMember, Certification, FacetShapes, Rating } from "../../lib/facets";
+import {
+  type CastMember,
+  type Certification,
+  type FacetShapes,
+  languageFacet,
+  type Rating,
+} from "../../lib/facets";
 import { getJson, type PluginFetch } from "../../lib/plugin-fetch";
 import { calendarDate } from "./upstream";
 
@@ -138,12 +144,28 @@ export function movieFacets(movie: RadarrMovie): Partial<FacetShapes> {
     },
     externalIds: externalIdsOf(movie),
     links: linksOf(movie),
+    // `OriginalLanguage` is ISO 639-1 here and 639-2 on skyhook; `languageFacet` folds both.
+    language: languageFacet(movie.OriginalLanguage),
   };
 
   if (movie.Overview) {
     facets.synopsis = {
       text: movie.Overview,
-      language: movie.OriginalLanguage ?? "en",
+      /*
+        THE LANGUAGE OF THESE WORDS, not of the film -- and it used to be
+        `movie.OriginalLanguage ?? "en"`, which is the film's.
+
+        This endpoint has no language segment and answers in English whatever the film was
+        shot in, so `tt12574330` (Bokshi, Hindi) cached an English paragraph claiming to be
+        Hindi. Nothing read the field yet, which is the only reason it never showed. The
+        film's own language is a real fact and now has its own facet above; conflating the
+        two here was the bug. Skyhook never had it -- it pins the segment it ASKED for, and
+        the comment on its `LANGUAGE` constant says exactly why.
+
+        The `?? "en"` fallback went with it. On `tt0468569` upstream sends
+        `OriginalLanguage: null` and the fallback guessed right for the wrong reason.
+      */
+      language: "en",
       // This proxy is a TMDB mirror -- TMDB ids throughout, artwork on image.tmdb.org --
       // so TMDB, not Radarr, is who wrote the words.
       source: "tmdb",

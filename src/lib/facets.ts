@@ -150,6 +150,25 @@ export interface Keyword {
   name: string;
 }
 
+/**
+ * The language a title was made in.
+ *
+ * A CODE and never a name. "Hindi" is English's word for it, and freezing one reader's
+ * language into every cached row is the thing this avoids: the browser already knows how
+ * to say `hi` in whatever the reader speaks, so the name is made at render time and the
+ * cache stays reader-agnostic. Same reasoning as `Certification.country`, which stores
+ * `US` rather than "United States".
+ *
+ * There is no `spoken` half and no `kind` discriminator. Neither keyless proxy carries the
+ * spoken set -- both hand back the ORIGINAL language and nothing else -- so a field to
+ * tell the two apart would have one possible value today. A provider that can genuinely
+ * distinguish them is the moment to add it.
+ */
+export interface Language {
+  /** Normalised by `languageCode` -- `en`, never `eng`. */
+  code: string;
+}
+
 export interface WatchProviders {
   country: string;
   flatrate: string[];
@@ -227,6 +246,7 @@ export interface FacetShapes {
   collection: Collection;
   related: RelatedTitle[];
   keywords: Keyword[];
+  language: Language[];
   watchProviders: WatchProviders[];
   externalIds: ExternalIds;
   links: ExternalLink[];
@@ -287,6 +307,14 @@ export const FACETS: Record<FacetName, FacetDeclaration> = {
   collection: { entities: ["movie"], merge: "single" },
   related: { entities: MOVIE_AND_SERIES, merge: "list" },
   keywords: { entities: MOVIE_AND_SERIES, merge: "list" },
+  // NOT `immutable`, though the language a film was shot in plainly cannot change -- the
+  // same distinction `collection` draws just above. `immutable` caches the FIRST answer
+  // forever, including an EMPTY one, and the titles most likely to have no language
+  // upstream are the unreleased ones whose records get filled in later. The film that
+  // prompted this facet, `tt12574330`, is a 2026 release; `tt0468569` answers
+  // `OriginalLanguage: null` today. The ladder re-asks those on the young rungs and costs
+  // nothing when it does -- this is cut from a document thirteen other facets already buy.
+  language: { entities: MOVIE_AND_SERIES, merge: "list" },
   watchProviders: { entities: MOVIE_AND_SERIES, merge: "list" },
   externalIds: { entities: ["movie", "series", "episode"], merge: "object", immutable: true },
   // NOT immutable, unlike `externalIds` beside it, and the difference is the point. An id
@@ -298,6 +326,55 @@ export const FACETS: Record<FacetName, FacetDeclaration> = {
 };
 
 export const FACET_NAMES = Object.keys(FACETS) as FacetName[];
+
+// --- language codes --------------------------------------------------------
+
+/**
+ * One normalised language code, or `null` for anything that is not an answer.
+ *
+ * THE TWO KEYLESS PROXIES DISAGREE ABOUT WHICH ISO THEY SPEAK. `api.radarr.video` sends
+ * 639-1 (`hi` for `tt12574330`) and `skyhook.sonarr.tv` sends 639-2 (`eng` for
+ * `tt0944947`), so a facet that merges as a list would carry `en` and `eng` as two
+ * different languages the moment a third provider contributed to a title either one
+ * already answered for. Folding at the PROVIDER boundary is what stops that, which is why
+ * this lives in core beside the shape rather than in one plugin.
+ *
+ * `Intl.getCanonicalLocales` is the fold: it is the platform's own ISO registry, so there
+ * is no table here to fall behind the real one. It keeps 3-letter codes that genuinely
+ * have no 2-letter form (`cmn`, `yue`) rather than inventing one.
+ *
+ * Two shapes of non-answer, and both are dropped rather than passed on:
+ *
+ *   - `und` is ISO's own "undetermined". It survives canonicalisation and `Intl.DisplayNames`
+ *     renders it as "Unknown language", which is a sentence about our data wearing the
+ *     costume of a fact about the film.
+ *   - Anything structurally invalid (`""`, `en_US`, a stray number) throws `RangeError` out
+ *     of the canonicaliser. Same non-answer, arriving as an exception.
+ *
+ * A code that is well-formed but names no language (`xx`, `qqq`) CANNOT be caught here --
+ * `getCanonicalLocales` accepts it because it is syntactically fine. The render layer drops
+ * it instead, on the only test that exists: whether anything can name it. See
+ * `languageName` in `web/src/lib/facet-panes.ts`.
+ */
+export function languageCode(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const [canonical] = Intl.getCanonicalLocales(raw.trim());
+    if (!canonical) return null;
+    // A region or script subtag is about a DIALECT (`pt-BR`), and the question this facet
+    // answers is which language, so the primary subtag is the whole answer.
+    const code = canonical.split("-")[0].toLowerCase();
+    return code === "und" ? null : code;
+  } catch {
+    return null;
+  }
+}
+
+/** The `language` facet for one upstream code -- empty when there is nothing to say. */
+export function languageFacet(raw: string | null | undefined): Language[] {
+  const code = languageCode(raw);
+  return code ? [{ code }] : [];
+}
 
 export function isFacetName(name: string): name is FacetName {
   return Object.hasOwn(FACETS, name);
