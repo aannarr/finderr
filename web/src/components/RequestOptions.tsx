@@ -21,10 +21,15 @@
  * - **It reserves its own height while loading.** It sits under the Request button and above
  *   the reading column, so a list arriving late must not shove the page. Same rule as the
  *   facet panes, applied by hand because this is not facet-driven.
+ * - **The load policy is NOT in the effect** -- `makeArrOptionsLoader`
+ *   (`../lib/arr-options-load.ts`) owns it, and the caution at the top of that file is the
+ *   one thing to read before touching this component. The effect here does two things
+ *   only: start the loader when the panel first opens, and dispose it on unmount.
  */
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { type ArrOptions, getArrOptions, type RequestOverrides } from "../lib/api";
+import { makeArrOptionsLoader, type OptionsState } from "../lib/arr-options-load";
 
 export interface RequestOptionsProps {
   /** Which arr will serve this title. Decides which lists are offered. */
@@ -35,39 +40,29 @@ export interface RequestOptionsProps {
   load?: () => Promise<{ radarr: ArrOptions | null; sonarr: ArrOptions | null }>;
 }
 
-type LoadState =
-  | { phase: "idle" }
-  | { phase: "loading" }
-  | { phase: "ready"; options: ArrOptions | null }
-  | { phase: "error"; message: string };
-
 export function RequestOptions({ service, value, onChange, load }: RequestOptionsProps) {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<LoadState>({ phase: "idle" });
+  const [state, setState] = useState<OptionsState>({ phase: "idle" });
   const fieldId = useId();
 
   const fetcher = load ?? getArrOptions;
 
+  const loader = useMemo(() => makeArrOptionsLoader(fetcher, setState), [fetcher]);
+  // Unmount ONLY. Collapsing the panel or changing a prop must not cancel a call already
+  // in flight -- cancelling on anything narrower than this is the bug the loader exists
+  // to make unrepeatable.
+  useEffect(() => () => loader.dispose(), [loader]);
   useEffect(() => {
-    if (!open || state.phase !== "idle") return;
-    let cancelled = false;
-    setState({ phase: "loading" });
-    fetcher()
-      .then((all) => {
-        if (cancelled) return;
-        setState({ phase: "ready", options: service === "sonarr" ? all.sonarr : all.radarr });
-      })
-      .catch((e: Error) => {
-        if (!cancelled) setState({ phase: "error", message: e.message });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, state.phase, fetcher, service]);
+    if (open) loader.start();
+  }, [open, loader]);
 
   const set = useCallback((patch: RequestOverrides) => onChange({ ...value, ...patch }), [onChange, value]);
 
   const arrName = service === "sonarr" ? "Sonarr" : "Radarr";
+  // Picked at RENDER, not at fetch: one answer carries both arrs, so `service` never needs
+  // to be a dependency of anything asynchronous.
+  const options =
+    state.phase === "ready" ? (service === "sonarr" ? state.options.sonarr : state.options.radarr) : null;
 
   return (
     <details
@@ -89,11 +84,11 @@ export function RequestOptions({ service, value, onChange, load }: RequestOption
           </p>
         )}
 
-        {state.phase === "ready" && state.options === null && (
+        {state.phase === "ready" && options === null && (
           <p className="text-muted">{arrName} is not configured.</p>
         )}
 
-        {state.phase === "ready" && state.options !== null && (
+        {options !== null && (
           <>
             <div>
               {/* `htmlFor`/`id` rather than wrapping the control: a label whose control
@@ -114,7 +109,7 @@ export function RequestOptions({ service, value, onChange, load }: RequestOption
                     the service is configured for", and it must stay reachable after a
                     choice is made. */}
                 <option value="">Service default</option>
-                {state.options.qualityProfiles.map((p) => (
+                {options.qualityProfiles.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
@@ -133,7 +128,7 @@ export function RequestOptions({ service, value, onChange, load }: RequestOption
                 onChange={(e) => set({ rootFolderPath: e.target.value === "" ? null : e.target.value })}
               >
                 <option value="">Service default</option>
-                {state.options.rootFolders.map((f) => (
+                {options.rootFolders.map((f) => (
                   <option key={f.path} value={f.path}>
                     {f.path}
                     {f.freeSpace !== undefined && ` — ${formatBytes(f.freeSpace)} free`}
