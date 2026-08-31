@@ -417,6 +417,26 @@ export class AuthStore {
       .run(counter, isoNow(now), id);
   }
 
+  /**
+   * Give a passkey a name its owner will recognise.
+   *
+   * Scoped to `userId` in the WHERE for the same reason `deleteCredential` is: a credential
+   * id is not a secret, so holding one must never be authority over it. `false` means "not
+   * yours, or no such thing" -- one answer for both, because telling them apart would be
+   * telling a caller that somebody else's credential exists.
+   *
+   * An empty label is stored as NULL rather than as `""`. `AccountRoute` falls back to the
+   * device type when the label is null, so a cleared name reverts to that instead of
+   * rendering a blank row -- two spellings of "no name" would drift.
+   */
+  renameCredential(id: string, userId: string, label: string | null): boolean {
+    const trimmed = label?.trim();
+    const res = this.db
+      .query("update credential set label = ? where id = ? and user_id = ?")
+      .run(trimmed ? trimmed : null, id, userId);
+    return res.changes > 0;
+  }
+
   deleteCredential(id: string, userId: string): boolean {
     const res = this.db.query("delete from credential where id = ? and user_id = ?").run(id, userId);
     return res.changes > 0;

@@ -82,6 +82,87 @@ describe("credentials", () => {
     expect(auth.deleteCredential("c1", b.id)).toBe(false);
     expect(auth.deleteCredential("c1", a.id)).toBe(true);
   });
+
+  test("a credential can only be renamed by its owner", () => {
+    // Same rule as deleting, and it matters for the same reason: a credential id is not a
+    // secret, so holding one must never be authority over it.
+    const a = auth.createUser({ displayName: "A", role: "user" });
+    const b = auth.createUser({ displayName: "B", role: "user" });
+    auth.addCredential({ id: "c1", userId: a.id, publicKey: "pk", counter: 0, label: "Mac" });
+
+    expect(auth.renameCredential("c1", b.id, "stolen")).toBe(false);
+    expect(auth.getCredential("c1")?.label).toBe("Mac");
+    expect(auth.renameCredential("c1", a.id, "work laptop")).toBe(true);
+    expect(auth.getCredential("c1")?.label).toBe("work laptop");
+  });
+
+  test("renaming an id that does not exist is false, not a throw", () => {
+    const a = auth.createUser({ displayName: "A", role: "user" });
+    expect(auth.renameCredential("nope", a.id, "x")).toBe(false);
+  });
+
+  test("an emptied name is stored as NULL, so the row falls back to its device type", () => {
+    // Two spellings of "no name" would drift: the account page renders `label ?? deviceType`,
+    // and an empty string is truthy enough to win that and draw a blank row.
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0, label: "Mac" });
+
+    auth.renameCredential("c1", u.id, "   ");
+    expect(auth.getCredential("c1")?.label).toBeNull();
+
+    auth.renameCredential("c1", u.id, "phone");
+    auth.renameCredential("c1", u.id, null);
+    expect(auth.getCredential("c1")?.label).toBeNull();
+  });
+
+  test("a name is trimmed", () => {
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0 });
+    auth.renameCredential("c1", u.id, "  work laptop  ");
+    expect(auth.getCredential("c1")?.label).toBe("work laptop");
+  });
+});
+
+describe("linking a Plex account to an existing user", () => {
+  test("linkPlex attaches an id and a username", () => {
+    // Declared since the auth work landed and called by nothing until the account page
+    // needed it -- this is the first exercise it has ever had.
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    expect(u.plexId).toBeNull();
+
+    auth.linkPlex(u.id, "plex-123", "ada");
+    const linked = auth.getUser(u.id);
+    expect(linked?.plexId).toBe("plex-123");
+    expect(linked?.plexUsername).toBe("ada");
+    expect(auth.getUserByPlexId("plex-123")?.id).toBe(u.id);
+  });
+
+  test("a Plex account with no username still links, and is still findable by id", () => {
+    // Plex does not promise a username. The account page must not read this as unconnected
+    // -- see `plexConnected` in auth.ts, which is why that field exists.
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.linkPlex(u.id, "plex-456", null);
+    expect(auth.getUser(u.id)?.plexId).toBe("plex-456");
+    expect(auth.getUser(u.id)?.plexUsername).toBeNull();
+    expect(auth.getUserByPlexId("plex-456")?.id).toBe(u.id);
+  });
+
+  test("unlinkPlex clears both halves, so the account is no longer findable by plex id", () => {
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.linkPlex(u.id, "plex-789", "ada");
+    auth.unlinkPlex(u.id);
+    expect(auth.getUser(u.id)?.plexId).toBeNull();
+    expect(auth.getUser(u.id)?.plexUsername).toBeNull();
+    expect(auth.getUserByPlexId("plex-789")).toBeNull();
+  });
+
+  test("re-linking after an unlink works -- the row is not poisoned", () => {
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.linkPlex(u.id, "plex-1", "ada");
+    auth.unlinkPlex(u.id);
+    auth.linkPlex(u.id, "plex-2", "ada2");
+    expect(auth.getUser(u.id)?.plexId).toBe("plex-2");
+  });
 });
 
 describe("invites", () => {

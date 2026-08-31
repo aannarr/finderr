@@ -490,7 +490,185 @@ export class AuthService {
 
       // --- signed in: your own devices ---------------------------------------
 
+      /**
+       * Attach a Plex account to the account you are ALREADY signed in to.
+       *
+       * > [!IMPORTANT] This is not `/api/auth/plex/finish` with a session attached
+       * > That route answers "who is this, and may they in?" -- it is authentication, it is
+       * > public, it is rate limited per IP, and its whole second half is the invite gate
+       * > that decides whether a stranger becomes a user. This one starts from a caller we
+       * > have already identified, so there is no invite to claim, no account to create and
+       * > no sign-in to issue. Folding the two together would put a branch on "is there a
+       * > session?" through the middle of the one ceremony where a mistake creates an
+       * > account for the wrong person.
+       *
+       * The PIN is minted with NO `inviteHash`, which is what makes it useless as a
+       * sign-up: if it were somehow replayed against `/finish`, gate one refuses it.
+       */
+      "/api/auth/plex/link/begin": async (req) => {
+        const p = this.principal(req);
+        if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+        const refused = this.limited(req);
+        if (refused) return refused;
+        if (!this.deps.cfg.plex.enabled) return json({ error: REFUSED }, { status: 404 });
+
+        const clientId = newToken(16);
+        try {
+          const pin = await createPin(this.fetchImpl, {
+            clientId,
+            product: this.deps.cfg.plex.productName,
+          });
+          this.deps.auth.putPin({
+            id: pin.id,
+            clientId,
+            inviteHash: null,
+            expiresAt: isoIn(pin.expiresIn * 1000),
+          });
+          return json({
+            pinId: pin.id,
+            authUrl: plexAuthUrl({
+              clientId,
+              code: pin.code,
+              product: this.deps.cfg.plex.productName,
+              // Back to the account page rather than the login page: the caller never left
+              // being signed in, and landing them on a sign-in screen would read as a
+              // failure of the thing that just succeeded.
+              forwardUrl: `${this.originFor(req)}/account?plex=${encodeURIComponent(pin.id)}`,
+            }),
+          });
+        } catch (err) {
+          return this.refuse(err);
+        }
+      },
+
+      /**
+       * Finish the link, if the user has approved the PIN yet.
+       *
+       * Three refusals, and each one is a different mistake:
+       *
+       * - The caller already has a Plex account attached. Silently replacing it would let
+       *   somebody swap the identity on an account without ever seeing what they replaced.
+       * - That Plex account is already attached to a DIFFERENT finderr user. Two users
+       *   sharing one Plex id would make `getUserByPlexId` a coin flip at every sign-in.
+       * - The account has no access to our Plex server, when we know which server we are.
+       *   Same gate `/finish` applies, and for the same reason.
+       */
+      "/api/auth/plex/link/finish": async (req) => {
+        const p = this.principal(req);
+        if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+        const refused = this.limited(req);
+        if (refused) return refused;
+
+        const b = await body(req);
+        const pinId = str(b.pinId);
+        if (!pinId) return json({ error: REFUSED }, { status: 400 });
+        const pending = this.deps.auth.peekPin(pinId);
+        if (!pending) return json({ error: REFUSED }, { status: 400 });
+
+        try {
+          const plexToken = await pollPin(this.fetchImpl, {
+            id: pinId,
+            clientId: pending.clientId,
+            product: this.deps.cfg.plex.productName,
+          });
+          if (!plexToken) return json({ pending: true });
+
+          const account = await plexAccount(this.fetchImpl, plexToken, this.deps.cfg.plex.productName);
+          this.deps.auth.deletePin(pinId);
+
+          const machineId = this.deps.cfg.plex.machineIdentifier;
+          if (machineId) {
+            const ok = await hasServerAccess(this.fetchImpl, {
+              token: plexToken,
+              product: this.deps.cfg.plex.productName,
+              machineIdentifier: machineId,
+            });
+            if (!ok) {
+              this.deps.log(`auth: plex account ${account.id} has no access to our server`);
+              return json({ error: REFUSED }, { status: 403 });
+            }
+          }
+
+          // Re-read rather than trusting the principal we captured before an await: the
+          // ceremony can take a minute of the user typing a password, and an admin may have
+          // linked or disabled this account in the meantime.
+          const me = this.deps.auth.getUser(p.user.id);
+          if (!me) return json({ error: REFUSED }, { status: 401 });
+          if (me.plexId !== null) {
+            return json({ error: "a Plex account is already connected" }, { status: 409 });
+          }
+
+          const owner = this.deps.auth.getUserByPlexId(account.id);
+          if (owner && owner.id !== me.id) {
+            this.deps.log(`auth: plex account ${account.id} is already linked to ${owner.id}`);
+            // Deliberately vague. "Linked to somebody else" is a fact about another
+            // account, and the caller can do nothing with it but learn it.
+            return json({ error: "that Plex account cannot be connected" }, { status: 409 });
+          }
+
+          this.deps.auth.linkPlex(me.id, account.id, account.username);
+          this.deps.log(`auth: linked plex account to ${me.id}`);
+          return json({ ok: true, plexUsername: account.username });
+        } catch (err) {
+          return this.refuse(err);
+        }
+      },
+
+      "/api/auth/plex": {
+        /**
+         * Disconnect Plex from your account.
+         *
+         * Refused when it is your only way back in -- the mirror of the rule on deleting a
+         * last credential, and the same 409. The two together are the whole self-lockout
+         * guard: a user must always keep at least one of "a passkey" or "a Plex account",
+         * and neither endpoint may be the one that takes the last one away.
+         *
+         * It does NOT end any session. Unlinking is not a compromise, the caller is still
+         * who they were, and signing somebody out of every device for a settings change
+         * they made deliberately would be a punishment rather than a safeguard.
+         */
+        DELETE: (req) => {
+          const p = this.principal(req);
+          if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+          const me = this.deps.auth.getUser(p.user.id);
+          if (!me) return json({ error: REFUSED }, { status: 401 });
+          if (me.plexId === null) return json({ ok: false }, { status: 404 });
+          if (this.deps.auth.credentialsFor(me.id).length === 0) {
+            return json({ error: "that is your only way to sign in" }, { status: 409 });
+          }
+          this.deps.auth.unlinkPlex(me.id);
+          this.deps.log(`auth: unlinked plex account from ${me.id}`);
+          return json({ ok: true });
+        },
+      },
+
       "/api/auth/credentials/:id": {
+        /**
+         * Name a passkey.
+         *
+         * The whole point of the account page is that a lost device can be revoked, and
+         * "passkey · added 3 Aug" beside "passkey · added 11 Aug" is not something anybody
+         * can act on. `registerPasskey` guesses a label from the user agent at creation
+         * time; this is how a wrong guess gets corrected.
+         *
+         * A label is the one piece of user-authored text in this table, so it is capped and
+         * trimmed. The cap is not a security control -- `maxRequestBodySize` is -- it is
+         * what stops one row rendering as a wall of text on everybody's account page.
+         */
+        PATCH: async (req) => {
+          const p = this.principal(req);
+          if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+          const id = (req as Bun.BunRequest<"/api/auth/credentials/:id">).params.id;
+          const b = await body(req);
+          const raw = b.label;
+          if (raw !== null && typeof raw !== "string" && raw !== undefined) {
+            return json({ error: "label must be a string or null" }, { status: 400 });
+          }
+          const label = typeof raw === "string" ? raw.slice(0, 60) : null;
+          const ok = this.deps.auth.renameCredential(decodeURIComponent(id), p.user.id, label);
+          return json({ ok }, { status: ok ? 200 : 404 });
+        },
+
         DELETE: (req) => {
           const p = this.principal(req);
           if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
