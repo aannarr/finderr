@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ceremonyYear, ordinal, prettyCategory } from "./awards-format";
+import { ceremonyYear, isPersonLed, ordinal, prettyCategory } from "./awards-format";
 
 describe("ordinal", () => {
   test("the ordinary endings", () => {
@@ -65,5 +65,40 @@ describe("prettyCategory", () => {
   test("leaves digits and punctuation alone", () => {
     expect(prettyCategory("SHORT SUBJECT (Cartoon)")).toBe("Short Subject (Cartoon)");
     expect(prettyCategory("SOUND RECORDING - 1935")).toBe("Sound Recording - 1935");
+  });
+});
+
+/**
+ * The regression this function exists for.
+ *
+ * Observed on `/awards/oscars/96` before the fix: Best Picture drew eight rows film-first
+ * and two person-first, because `The Holdovers` and `The Zone of Interest` each credited
+ * ONE producer while the other eight credited several. The rule was counting nominees, so
+ * one category read two ways and nothing on screen explained why.
+ */
+describe("isPersonLed", () => {
+  test("acting leads with the person -- they ARE the nomination", () => {
+    expect(isPersonLed("Acting")).toBe(true);
+  });
+
+  test("Best Picture leads with the FILM however many producers are credited", () => {
+    // The whole bug in one assertion: `Production` is the class Best Picture belongs to,
+    // and the answer must not depend on anything about a particular row.
+    expect(isPersonLed("Production")).toBe(false);
+  });
+
+  test("every other class leads with the film", () => {
+    // The source's full vocabulary, measured from the real file. Naming them all is what
+    // makes a future class ADDED upstream visibly unhandled rather than silently person-led.
+    for (const cls of ["Production", "Directing", "Writing", "Music", "Title", "Special", "SciTech"]) {
+      expect(isPersonLed(cls)).toBe(false);
+    }
+  });
+
+  test("an unknown class leads with the film rather than guessing", () => {
+    // A class we have never seen is far more likely to be about a work than about a
+    // person, and the film-led shape degrades better: it still names everybody.
+    expect(isPersonLed("SomethingNew")).toBe(false);
+    expect(isPersonLed("")).toBe(false);
   });
 });

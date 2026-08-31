@@ -110,6 +110,15 @@ export interface NominationView {
   seq: number;
   category: string;
   rawCategory: string;
+  /**
+   * The source's coarse grouping -- `Acting`, `Production`, `Directing`, ...
+   *
+   * On the wire because the CEREMONY PAGE reads it: it decides whether a category's rows
+   * lead with the person or with the film, and that has to be one answer per category
+   * rather than per row. See `isPersonLed` in `web/src/lib/awards-format.ts` for the bug
+   * that made it necessary.
+   */
+  className: string;
   won: boolean;
   films: { title: string; tconst: string | null }[];
   nominees: { name: string; nconst: string | null }[];
@@ -193,6 +202,7 @@ export function toNominationView(n: Nomination): NominationView {
     seq: n.seq,
     category: n.category,
     rawCategory: n.rawCategory,
+    className: n.className,
     won: n.won,
     films: n.films.map((title, i) => ({ title, tconst: n.filmIds[i] ?? null })),
     nominees: n.nominees.map((name, i) => ({ name, nconst: n.nconsts[i] ?? null })),

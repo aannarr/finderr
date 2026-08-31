@@ -480,6 +480,14 @@ export interface NominationView {
   category: string;
   /** The name as it was awarded that year. Shown as a footnote when it differs. */
   rawCategory: string;
+  /**
+   * The source's coarse grouping -- `Acting`, `Production`, `Directing`, ...
+   *
+   * Read by `isPersonLed` to decide whether a category's rows lead with the person or the
+   * film. One answer per CATEGORY: deriving it from a row's own nominee count is the bug
+   * that put `Mark Johnson · The Holdovers` in the middle of a film-first Best Picture.
+   */
+  className: string;
   won: boolean;
   films: { title: string; tconst: string | null }[];
   nominees: { name: string; nconst: string | null }[];

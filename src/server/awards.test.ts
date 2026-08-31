@@ -213,6 +213,33 @@ describe("ceremonyPayload", () => {
     expect(acting?.nominations[0]?.detail).toBe("Some Character");
   });
 
+  /*
+    `className` reaches the browser, and this is the assertion that keeps the ceremony page
+    honest rather than merely typed.
+
+    The page decides person-first vs film-first from this field. If it silently stopped
+    being sent, `isPersonLed(undefined)` is false, EVERY acting category quietly flips to
+    film-first, and nothing throws -- the page still renders, just wrong. That is precisely
+    the failure the original bug was: a layout decision made from the wrong input, invisible
+    unless somebody reads a category block closely.
+  */
+  test("sends the source's class, which is what decides a category's shape", () => {
+    const p = ceremonyPayload(deps(indexOf("tt1")), 98);
+    const acting = p?.groups.find((g) => g.category === "ACTOR IN A LEADING ROLE");
+    const bp = p?.groups.find((g) => g.category === "BEST PICTURE");
+    expect(acting?.nominations[0]?.className).toBe("Acting");
+    expect(bp?.nominations[0]?.className).toBe("Production");
+  });
+
+  test("every row in one category carries the SAME class", () => {
+    // The invariant the fix rests on. Best Picture's ten rows must agree, or the page is
+    // back to reading two ways down one block -- which is the bug, restated as data.
+    const p = ceremonyPayload(deps(indexOf("tt1", "tt2")), 98);
+    for (const g of p?.groups ?? []) {
+      expect(new Set(g.nominations.map((n) => n.className)).size).toBe(1);
+    }
+  });
+
   test("neighbours come from ceremonies that EXIST, never from arithmetic", () => {
     const p = ceremonyPayload(deps(indexOf()), 98);
     // 97 exists and 99 does not, so `next` is null rather than 99.

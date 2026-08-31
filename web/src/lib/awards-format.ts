@@ -43,3 +43,24 @@ export function ceremonyYear(year: string): number | null {
 export function prettyCategory(name: string): string {
   return name.replace(/[A-Za-z][A-Za-z']*/g, (word) => word[0] + word.slice(1).toLowerCase());
 }
+
+/**
+ * Does this category's nomination lead with the PERSON or with the FILM?
+ *
+ * > [!IMPORTANT] Decided per CATEGORY, from the source's own `Class` -- never by counting
+ * > This replaced `nominees.length === 1 && films.length === 1`, which was a bug on screen
+ * > rather than a preference. Best Picture at the 96th rendered eight rows film-first and
+ * > two person-first -- `Mark Johnson · The Holdovers`, `James Wilson · The Zone of
+ * > Interest` -- because those two films happened to credit ONE producer and the other
+ * > eight credited several. The same category read two different ways down one block, and
+ * > the reader had no way to know the difference was arithmetic rather than meaning.
+ *
+ * `Class` is the source's own coarse grouping and it already answers the question: in
+ * `Acting`, the PERSON is the nomination and the film is what it was for. Everywhere else
+ * -- Production, Directing, Writing, Music, Title, Special, SciTech -- the achievement
+ * belongs to the film and the names are who made it. So a category is one shape for all of
+ * its rows, whoever happened to be credited.
+ */
+export function isPersonLed(className: string): boolean {
+  return className === "Acting";
+}

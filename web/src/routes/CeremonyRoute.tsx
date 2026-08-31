@@ -24,7 +24,7 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
-import { ordinal, prettyCategory } from "../lib/awards-format";
+import { isPersonLed, ordinal, prettyCategory } from "../lib/awards-format";
 
 /**
  * How many categories are drawn before the rest go behind a control.
@@ -264,9 +264,10 @@ function NominationLine({
     </>
   );
 
-  // A row that names exactly one person and one film reads best person-first -- that is
-  // every acting category, and a handful of others, without naming any of them.
-  const personLed = n.nominees.length === 1 && n.films.length === 1;
+  // Decided from the CATEGORY's class, so every row in a block reads the same way. It was
+  // `nominees.length === 1 && films.length === 1`, which made Best Picture draw eight rows
+  // film-first and two person-first purely because two of the ten credited one producer.
+  const personLed = isPersonLed(n.className);
 
   return (
     <NominationRow
