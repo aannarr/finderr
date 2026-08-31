@@ -589,7 +589,10 @@ function PosterRow({ titles }: { titles: Title[] }) {
 
 // --- synopsis --------------------------------------------------------------
 
-function SynopsisBody({ synopsis }: { synopsis: Synopsis }) {
+// Exported for the ceremony page's winner hero, which draws the same paragraph and the same
+// attribution under a much larger poster. A second renderer there would be a second answer
+// to "whose summary is this?", and only one of them would get fixed.
+export function SynopsisBody({ synopsis }: { synopsis: Synopsis }) {
   return (
     <>
       <p className="max-w-prose text-sm leading-relaxed text-ink">{synopsis.text}</p>

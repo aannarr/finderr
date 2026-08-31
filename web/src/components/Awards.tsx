@@ -148,17 +148,28 @@ export function NominationRow({
   credit,
   won,
   detail,
+  leading,
   trailing,
 }: {
   subject: ReactNode;
   credit?: ReactNode;
   won: boolean;
   detail?: string | null;
+  /**
+   * Drawn between the winner mark and the text -- a poster, on the screens that want one.
+   *
+   * A SLOT rather than a `poster` prop, and the ceremony page is the only caller filling it
+   * today. A person page already knows whose page it is and lists that person's own films;
+   * a column of posters there is a second, weaker answer to a question the title beside it
+   * already answers. So the row does not decide, the screen does.
+   */
+  leading?: ReactNode;
   trailing?: ReactNode;
 }) {
   return (
     <li className="flex items-start gap-2 py-1.5 text-sm">
       <WinnerMark won={won} />
+      {leading}
       <span className="min-w-0 flex-1">
         <span className={won ? "text-ink" : "text-ink/85"}>{subject}</span>
         {credit && <span className="text-muted"> · {credit}</span>}

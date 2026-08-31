@@ -13,7 +13,9 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AwardFilmLink, Completion, NominationRow, NomineeList } from "../components/Awards";
+import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
+import { SynopsisBody } from "../components/TitlePanes";
 import {
   type CeremonyPage,
   cachedCeremony,
@@ -25,6 +27,8 @@ import {
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { isPersonLed, ordinal, prettyCategory } from "../lib/awards-format";
+import { paneView } from "../lib/facet-panes";
+import { useTitleDetail } from "../lib/use-title-detail";
 
 /**
  * How many categories are drawn before the rest go behind a control.
@@ -93,6 +97,11 @@ export function CeremonyRoute() {
   const groups = expanded ? page.groups : page.groups.slice(0, VISIBLE_CATEGORIES);
   const hidden = page.groups.length - groups.length;
 
+  // The winner, only when we hold a row for it -- everything the hero draws (a poster, a
+  // synopsis, a request button) is keyed on the index row, so without one there is no hero
+  // to build and the header keeps its plain line instead.
+  const bestPictureRow = page.bestPicture?.tconst ? page.titles[page.bestPicture.tconst] : undefined;
+
   return (
     <>
       <header className="mb-6">
@@ -112,7 +121,14 @@ export function CeremonyRoute() {
         </div>
 
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-          {page.bestPicture && (
+          {/*
+            The Best Picture LINE survives even though the hero below says the same thing,
+            and only when the hero cannot: `WinnerHero` needs an indexed row to draw a poster
+            and fetch a synopsis, and about a tenth of nominations name a film we hold no row
+            for. This is the honest fallback for those -- a name, in the header, where it has
+            always been.
+          */}
+          {page.bestPicture && !bestPictureRow && (
             <>
               <span>
                 <span className="text-muted/70">Best Picture </span>
@@ -126,6 +142,8 @@ export function CeremonyRoute() {
 
         <CeremonySteps prev={page.prev} next={page.next} />
       </header>
+
+      {bestPictureRow && <WinnerHero row={bestPictureRow} onRequest={request} />}
 
       {page.groups.map((g) => g.category).length === 0 ? (
         <p className="py-16 text-center text-muted">This ceremony has no recorded categories.</p>
@@ -155,6 +173,73 @@ export function CeremonyRoute() {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * The Best Picture winner, celebrated at the top of its ceremony.
+ *
+ * > [!IMPORTANT] The synopsis is LAZY, and it has to be -- it is a facet, not an index column
+ * > The ceremony payload is local SQLite only, like every render path here, and a synopsis
+ * > comes from a provider. So the hero paints the instant the page does, from the row we
+ * > already hold, and the paragraph arrives behind it. `useTitleDetail` is the owner of that
+ * > policy -- it paints from the client cache, then polls only while the SERVER says a
+ * > provider still owes an answer, and stops the moment nothing is outstanding. Reusing it
+ * > rather than writing a fetch here is what keeps one copy of the stop condition.
+ * >
+ * > This costs the ceremony page ONE title request, for one film, after paint. It is the
+ * > same request the title page would make if the reader clicked through -- and because the
+ * > client cache is shared, clicking through afterwards is then free.
+ *
+ * Nothing here can push the poster around: the image has a reserved aspect box and the
+ * synopsis sits beside it in its own column, so a late paragraph grows downward and the top
+ * of the page never moves.
+ */
+function WinnerHero({ row, onRequest }: { row: Title; onRequest: (t: Title) => void }) {
+  const { facets, working } = useTitleDetail(row.tconst);
+  const synopsis = paneView(facets, "synopsis", working);
+
+  return (
+    <section className="mb-8 rounded-xl border border-line bg-surface p-4 sm:p-5">
+      <div className="flex gap-4 sm:gap-5">
+        <Poster
+          title={row}
+          link
+          eager
+          className="aspect-2/3 w-28 shrink-0 overflow-hidden rounded-lg bg-surface-2 sm:w-40"
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-accent">Best Picture</p>
+          <h3 className="mt-0.5 text-lg font-semibold tracking-tight sm:text-xl">
+            <Link to="/title/$tconst" params={{ tconst: row.tconst }} className="hover:underline">
+              {row.title}
+            </Link>
+            {row.year !== null && <span className="ml-2 text-sm font-normal text-muted">{row.year}</span>}
+          </h3>
+
+          {/*
+            Three states, decided by `paneView` rather than re-invented here: content, a
+            skeleton while a provider still owes us one, and nothing at all when the answer
+            is not coming. Two muted bars rather than a spinner -- the shape of the thing
+            that is arriving, which is what stops the card resizing when it lands.
+          */}
+          <div className="mt-2">
+            {synopsis.state === "content" && synopsis.data && <SynopsisBody synopsis={synopsis.data} />}
+            {synopsis.state === "skeleton" && (
+              <div className="space-y-2" aria-hidden="true">
+                <div className="h-3 w-full max-w-prose rounded bg-surface-2" />
+                <div className="h-3 w-4/5 max-w-prose rounded bg-surface-2" />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-auto pt-3">
+            <RequestAction title={row} onRequest={onRequest} tone="inline" />
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -275,6 +360,25 @@ function NominationLine({
       detail={n.detail}
       subject={personLed ? <NomineeList nominees={n.nominees} /> : films}
       credit={personLed ? films : n.nominees.length > 0 ? <NomineeList nominees={n.nominees} /> : undefined}
+      /*
+        The poster of the film this nomination is FOR -- including in the acting categories,
+        where the row leads with the person. The film is what the poster can show; a
+        headshot would need the `cast` facet for a title we may not have opened, which is a
+        provider call per row on a page of 140 rows.
+
+        `w92` because it renders at 32px: asking for `w342` here would pull roughly ten
+        times the bytes for the same pixels, over a page that draws more posters than any
+        other in the product. The frame is drawn even for a film we do not index, so the
+        column of text stays straight rather than stepping in and out.
+      */
+      leading={
+        <Poster
+          title={row}
+          size="w92"
+          link
+          className="aspect-2/3 w-8 shrink-0 overflow-hidden rounded bg-surface-2"
+        />
+      }
       trailing={row ? <RequestAction title={row} onRequest={onRequest} tone="inline" /> : undefined}
     />
   );

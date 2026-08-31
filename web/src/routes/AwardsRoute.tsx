@@ -14,13 +14,13 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AwardSourceLine, Completion } from "../components/Awards";
+import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
 import {
   type AwardsTimeline,
   type CeremonySummary,
   cachedAwards,
   getAwards,
-  posterUrl,
   subscribeTitleState,
   type Title,
   titleStateVersion,
@@ -229,23 +229,21 @@ function CeremonyRow({
   );
 }
 
-/** The anchor's poster, or the space it would have taken. */
+/**
+ * The anchor's poster, or the space it would have taken.
+ *
+ * The frame is drawn either way, so a ceremony whose winner we do not index does not reflow
+ * the rows above and below it -- `Poster` guarantees that for every caller now, which is
+ * most of why it exists. This wrapper survives only to name the timeline's own size.
+ */
 function AnchorPoster({ row, title }: { row: Title | undefined; title: string | null }) {
-  const poster = row ? posterUrl(row, "w185") : null;
-
-  // The frame is drawn either way, so a ceremony whose winner we do not index does not
-  // reflow the rows above and below it. Same reasoning as `TitleCard`'s permanent tile.
-  const frame = "aspect-2/3 w-16 shrink-0 overflow-hidden rounded-md bg-surface-2 sm:w-20";
-  if (!poster || !row) return <div className={frame} aria-hidden="true" />;
-
   return (
-    <Link
-      to="/title/$tconst"
-      params={{ tconst: row.tconst }}
-      className={frame}
-      aria-label={title ?? undefined}
-    >
-      <img src={poster} alt="" loading="lazy" decoding="async" className="size-full object-cover" />
-    </Link>
+    <Poster
+      title={row}
+      size="w185"
+      link
+      alt={title ?? undefined}
+      className="aspect-2/3 w-16 shrink-0 overflow-hidden rounded-md bg-surface-2 sm:w-20"
+    />
   );
 }

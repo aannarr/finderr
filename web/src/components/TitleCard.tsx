@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import { memo, useState } from "react";
-import { posterUrl, prefetchTitle, type Title } from "../lib/api";
+import { memo } from "react";
+import { prefetchTitle, type Title } from "../lib/api";
 import { shelfDateLabel, todayUtc } from "../lib/facet-panes";
 import { BrowseChip } from "./BrowseChip";
+import { Poster } from "./Poster";
 import { RequestAction } from "./RequestAction";
 
 /**
@@ -21,30 +22,8 @@ const DATE_KIND_LABEL: Record<string, string> = {
   digital: "streaming",
 };
 
-/**
- * The fallback tile's monogram.
- *
- * Posters resolve through the arr metadata proxies, but not every title has one --
- * the long tail of the IMDb index is full of things nobody has ever made art for.
- * The tile is the permanent background, not a loading state, so those cards look
- * deliberate rather than broken.
- */
-function initials(t: string): string {
-  return t
-    .replace(/^(the|a|an) /i, "")
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase();
-}
-
-/** Deterministic hue per title so the grid is varied but stable across renders. */
-function hue(tconst: string): number {
-  let h = 0;
-  for (let i = 0; i < tconst.length; i++) h = (h * 31 + tconst.charCodeAt(i)) % 360;
-  return h;
-}
+// `initials` and `hue` moved to `./Poster` with the drawing they belong to. They were
+// only ever the fallback tile's business, and the tile is that component's job now.
 
 const KIND_LABEL: Record<string, string> = {
   movie: "Film",
@@ -67,42 +46,18 @@ export const TitleCard = memo(function TitleCard({
   // episode airing tonight may already have been grabbed, which is exactly worth showing.
   const aired = up ? up.date <= today : false;
 
-  const poster = posterUrl(t);
-  // The tile is not a "loading" state -- it is the permanent background. The poster
-  // fades in over it, so a title with no artwork simply keeps the tile and a slow
-  // fetch never shows a hole.
-  const [posterFailed, setPosterFailed] = useState(false);
-  const [posterLoaded, setPosterLoaded] = useState(false);
-
   return (
     // h-full so the card fills its grid row or shelf slot -- without it a card with a
     // one-line title is shorter than its neighbours and the Request buttons sit at
     // different heights across the row.
     <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface">
-      <div
-        className="relative flex aspect-2/3 shrink-0 items-center justify-center"
-        style={{
-          background: `linear-gradient(155deg, oklch(0.32 0.07 ${hue(t.tconst)}), oklch(0.20 0.03 ${hue(t.tconst)}))`,
-        }}
-      >
-        <span className="text-3xl font-bold tracking-tight text-white/25 select-none">
-          {initials(t.title)}
-        </span>
-
-        {poster && !posterFailed && (
-          <img
-            src={poster}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setPosterLoaded(true)}
-            onError={() => setPosterFailed(true)}
-            className={[
-              "absolute inset-0 size-full object-cover transition-opacity duration-300",
-              posterLoaded ? "opacity-100" : "opacity-0",
-            ].join(" ")}
-          />
-        )}
+      {/*
+        The badges sit INSIDE the poster's frame, so this stays a positioned box of its own
+        rather than being folded into `<Poster>`. The component owns the artwork and its
+        fallback; what is overlaid on top is the card's business and no other screen's.
+      */}
+      <div className="relative aspect-2/3 shrink-0">
+        <Poster title={t} fallback="tile" className="absolute inset-0 size-full overflow-hidden" />
 
         <span className="absolute top-2 left-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white/80">
           {KIND_LABEL[t.kind] ?? t.kind}

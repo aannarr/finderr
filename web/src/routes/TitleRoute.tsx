@@ -16,10 +16,11 @@ import { Link, useCanGoBack, useParams, useRouter } from "@tanstack/react-router
 import { useState } from "react";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
+import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
-import { postEpisodeRequest, posterUrl, type RequestOverrides, type Title } from "../lib/api";
+import { postEpisodeRequest, type RequestOverrides, type Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
@@ -140,7 +141,6 @@ export function TitleRoute() {
   // 80% ready is a lie about what we know.
   if (!title) return null;
 
-  const poster = posterUrl(title);
   const genres = title.genres ? title.genres.split(",").filter(Boolean) : [];
 
   return (
@@ -174,7 +174,14 @@ export function TitleRoute() {
       */}
       <article className="sm:grid sm:grid-cols-[16rem_minmax(0,1fr)] sm:items-start sm:gap-8">
         <aside className="hidden sm:sticky sm:top-4 sm:block">
-          <Poster poster={poster} />
+          {/* `eager`: the largest thing above the fold, and the one poster in the product
+              where deferring the fetch is visibly worse than paying for it. */}
+          <Poster
+            title={title}
+            fallback="label"
+            eager
+            className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
+          />
           <TitleFactsCard facets={facets} working={working} className="mt-4" />
         </aside>
 
@@ -187,7 +194,11 @@ export function TitleRoute() {
           */}
           <div className="flex gap-4">
             <div className="w-24 shrink-0 sm:hidden">
-              <Poster poster={poster} />
+              <Poster
+                title={title}
+                fallback="label"
+                className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
+              />
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -388,18 +399,10 @@ function ArrLinkRow({ link }: { link: NonNullable<TitleDetailView["arrLink"]> })
  * rail, mobile thumbnail), so a restyle cannot drift them apart. The mount decides the
  * width; this only fills it.
  */
-function Poster({ poster }: { poster: string | null }) {
-  if (poster) {
-    return (
-      <img src={poster} alt="" className="w-full rounded-xl border border-line bg-surface object-cover" />
-    );
-  }
-  return (
-    <div className="flex aspect-2/3 w-full items-center justify-center rounded-xl border border-line bg-surface text-xs text-muted">
-      No artwork
-    </div>
-  );
-}
+// The private `Poster` that used to live here is gone -- `../components/Poster` is the one
+// owner now, and this page passes `fallback="label"` to keep the "No artwork" box it always
+// had. It also passes `eager`: this is the largest thing above the fold on the page, and
+// deferring it is the single case where lazy loading is visibly worse.
 
 /**
  * The action for a title Plex already holds: play it.
