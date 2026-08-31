@@ -218,6 +218,36 @@ describe("sonarrUpcomingRows", () => {
     expect(rows.map((r) => [r.date, r.detail])).toEqual([["2026-08-30", "S1E4"]]);
   });
 
+  /**
+   * aannarr, 2026-08-31: Last Week Tonight sat on "Airing soon" with an episode from 23
+   * August. Two faults met -- a seven-day look-back was long enough to hold a whole
+   * broadcast cycle, and Sonarr had returned a row OUTSIDE the window that was asked for
+   * (it filters on airDateUtc, so the answer spills a day past each end). The window is
+   * enforced here now rather than trusted from the request.
+   */
+  test("an episode older than the look-back is refused even when Sonarr sends it", () => {
+    const stale: SonarrCalendarEntry[] = [
+      { series: { imdbId: "tt1" }, airDate: "2026-08-23", seasonNumber: 13, episodeNumber: 22 },
+    ];
+    expect(sonarrUpcomingRows(stale, TODAY)).toEqual([]);
+  });
+
+  test("an episode beyond the future horizon is refused too", () => {
+    const far: SonarrCalendarEntry[] = [
+      { series: { imdbId: "tt1" }, airDate: "2026-09-30", seasonNumber: 1, episodeNumber: 1 },
+    ];
+    expect(sonarrUpcomingRows(far, TODAY)).toEqual([]);
+  });
+
+  /** Four days back, fourteen ahead. Both edges are inclusive. */
+  test("the window edges themselves are kept", () => {
+    const edges: SonarrCalendarEntry[] = [
+      { series: { imdbId: "tt-back" }, airDate: "2026-08-27", seasonNumber: 1, episodeNumber: 1 },
+      { series: { imdbId: "tt-fwd" }, airDate: "2026-09-14", seasonNumber: 1, episodeNumber: 1 },
+    ];
+    expect(sonarrUpcomingRows(edges, TODAY).map((r) => r.tconst)).toEqual(["tt-back", "tt-fwd"]);
+  });
+
   /** A tie goes to the earlier date, so today beats tomorrow and nothing is skipped over. */
   test("equidistant episodes break toward the earlier one", () => {
     const tie: SonarrCalendarEntry[] = [

@@ -210,36 +210,54 @@ export const TitleCard = memo(function TitleCard({
             </span>
           )}
           {/*
-            THE DATE REPLACES THE VOTE COUNT, it does not sit beside it.
+            THE VOTE COUNT IS DROPPED ON AN UPCOMING CARD, not shown beside the date.
 
             An upcoming title has few votes or none -- that is the whole reason the old
             shelf could not rank these and had to be replaced by a dated mirror. Printing
             "2k" next to a release date spends the line's remaining width on the one number
             here that is guaranteed to be meaningless.
           */}
-          {up ? (
+          {!up && t.votes > 0 && (
             <>
               <span aria-hidden="true">·</span>
-              <span className="font-medium text-ink">{shelfDateLabel(up.date, today)}</span>
-              {DATE_KIND_LABEL[up.dateKind] && (
-                <span className="text-muted/80">{DATE_KIND_LABEL[up.dateKind]}</span>
-              )}
+              <span className="tabular-nums">
+                {t.votes >= 1_000_000
+                  ? `${(t.votes / 1e6).toFixed(1)}M`
+                  : t.votes >= 1000
+                    ? `${Math.round(t.votes / 1000)}k`
+                    : t.votes}
+              </span>
             </>
-          ) : (
-            t.votes > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="tabular-nums">
-                  {t.votes >= 1_000_000
-                    ? `${(t.votes / 1e6).toFixed(1)}M`
-                    : t.votes >= 1000
-                      ? `${Math.round(t.votes / 1000)}k`
-                      : t.votes}
-                </span>
-              </>
-            )
           )}
         </div>
+
+        {/*
+          The date gets its OWN line, and never wraps.
+
+          It shared the year's line until aannarr caught "Wed," and "Sep 2" broken across
+          two lines on the live shelf: `year · Wed, Sep 2 · streaming` is four elements in
+          a card about 150px wide and the flex row had nowhere to put them. A date split
+          mid-phrase is harder to read than one given its own line, so the break moves to
+          where it was always going to happen and the date is `nowrap` on the near side.
+
+          `truncate` sits on the KIND, not the date: if something has to be lost at a
+          narrow width it should be the word "streaming", never which day it lands.
+        */}
+        {up && (
+          <p className="flex items-baseline gap-1.5 text-xs">
+            <span className="shrink-0 font-medium whitespace-nowrap text-ink">
+              {shelfDateLabel(up.date, today)}
+            </span>
+            {DATE_KIND_LABEL[up.dateKind] && (
+              <>
+                <span aria-hidden="true" className="shrink-0 text-muted">
+                  ·
+                </span>
+                <span className="truncate text-muted">{DATE_KIND_LABEL[up.dateKind]}</span>
+              </>
+            )}
+          </p>
+        )}
 
         {/*
           The episode line: which one, and whether we HOLD it.

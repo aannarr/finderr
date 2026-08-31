@@ -44,11 +44,13 @@ export const SONARR_WINDOW_DAYS = 14;
  * the shelf becomes "S2E9 aired Tuesday and you do NOT have it" rather than a list of
  * dates nobody can act on.
  *
- * Seven days because that is one broadcast cycle: a weekly show always has exactly one
- * aired episode in range, so the shelf shows the current state of every series rather
- * than a backlog.
+ * FOUR days, aannarr 2026-08-31, after Last Week Tonight showed on "Airing soon" with an
+ * episode from 23 August -- eight days old and plainly not soon. A week was too generous:
+ * it is long enough to hold a whole broadcast cycle, so a weekly show that has not aired
+ * yet this week still surfaces last week's episode. Four days keeps "the one that just
+ * aired" and drops "the one from last week".
  */
-export const SONARR_LOOKBACK_DAYS = 7;
+export const SONARR_LOOKBACK_DAYS = 4;
 
 /** How many TMDB pages per region per kind. One page is 20 titles, which fills a shelf. */
 export const TMDB_PAGES = 1;
@@ -164,12 +166,33 @@ export function radarrUpcomingRows(entries: RadarrCalendarEntry[], today: string
  * next -- so the collapse keeps the EARLIEST episode and labels it. Doing it here rather
  * than in the shelf query is what keeps every shelf a plain ordered select.
  */
-export function sonarrUpcomingRows(entries: SonarrCalendarEntry[], today: string): UpcomingRow[] {
+export function sonarrUpcomingRows(
+  entries: SonarrCalendarEntry[],
+  today: string,
+  window: { back?: number; ahead?: number } = {},
+): UpcomingRow[] {
+  /*
+    THE WINDOW IS ENFORCED HERE, because Sonarr does not honour the one we asked for.
+
+    Measured 2026-08-31: `?start=2026-08-24` came back carrying episodes dated 2026-08-23.
+    Sonarr filters on `airDateUtc` while the entries report a local `airDate`, so the
+    answer spills a day past both ends of the request. That is how Last Week Tonight put
+    an episode from EIGHT days ago on a shelf with a four-day look-back -- the request was
+    right and the answer simply ignored it.
+
+    So the request bounds are a hint to the server and this is the actual rule. Anything
+    that filters on a date must re-check it on the way in.
+  */
+  const back = window.back ?? SONARR_LOOKBACK_DAYS;
+  const ahead = window.ahead ?? SONARR_WINDOW_DAYS;
+
   const rows: UpcomingRow[] = [];
   for (const e of entries) {
     const tconst = e.series?.imdbId?.trim();
     const date = toCalendarDate(e.airDate);
     if (!tconst || !date) continue;
+    const offset = daysBetween(today, date);
+    if (offset < -back || offset > ahead) continue;
     rows.push({
       tconst,
       kind: "series",
