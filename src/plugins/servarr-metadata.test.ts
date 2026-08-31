@@ -447,6 +447,21 @@ describe("series, from skyhook.sonarr.tv", () => {
     expect(asked.filter((u) => u.includes("/search/"))).toHaveLength(0);
     expect(asked).toEqual(["https://skyhook.sonarr.tv/v1/tvdb/shows/en/121361"]);
   });
+
+  /**
+   * A call we never make is the politeness that matters most on Servarr's own
+   * infrastructure. Core now hands the TVDB id down on `entity.ids` for most series, so
+   * even the FIRST view of one costs a single call.
+   */
+  test("a tvdb id core already holds skips the search on the very first view", async () => {
+    const { mine } = await resolve({ ...GAME_OF_THRONES, ids: { imdb: "tt0944947", tvdb: 121361 } });
+
+    expect(asked).toEqual(["https://skyhook.sonarr.tv/v1/tvdb/shows/en/121361"]);
+    expect(mine.data("seasons").length).toBeGreaterThan(0);
+    // Not copied into kv: the crosswalk is rebuilt with the index, and a copy here would
+    // outlive a correction to it with nothing able to revise it.
+    expect(store.getKv(`plugin:servarr-metadata:tvdb:${GAME_OF_THRONES.tconst}`)).toBeNull();
+  });
 });
 
 describe("what it costs them", () => {

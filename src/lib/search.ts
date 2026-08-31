@@ -22,6 +22,7 @@
 
 import { Database } from "bun:sqlite";
 import type { Config } from "./config";
+import { type TitleIds, titleIds } from "./crosswalk";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import { nconstsByNameForTitle, type PersonCreditsOptions, type PersonPage, personPage } from "./people";
 import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
@@ -206,6 +207,18 @@ export class SearchEngine {
    */
   readonly hasRank: boolean;
 
+  /**
+   * Whether this index carries the bulk-loaded id crosswalk.
+   *
+   * The third of these guards, for the third additive stage, and the reason is the one
+   * `hasPeople` states at length: the index a deploy meets is the one the LAST refresh
+   * built, so `title_ids` is missing for up to a day after this ships. Without the check
+   * every title page would throw `no such table: title_ids` in exactly that window.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasIds: boolean;
+
   constructor(
     dbPath: string,
     private cfg: Config,
@@ -215,6 +228,18 @@ export class SearchEngine {
     this.db.run("pragma cache_size = -64000"); // 64 MB page cache
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
+    this.hasIds = this.tableExists("title_ids");
+  }
+
+  /**
+   * The external ids we already hold for a title, from the bulk crosswalk.
+   *
+   * `{}` for an index built before the crosswalk existed, and `{}` for a title the
+   * crosswalk does not cover -- the caller cannot tell those apart and does not need to,
+   * because the answer to both is the same: let the provider look it up as it always did.
+   */
+  idsFor(tconst: string): TitleIds {
+    return this.hasIds ? titleIds(this.db, tconst) : {};
   }
 
   /**

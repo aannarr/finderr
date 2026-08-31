@@ -9,8 +9,9 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { type Config, paths } from "./config";
+import { CROSSWALK_FILE, CROSSWALK_SCHEMA, loadCrosswalk, parseCrosswalkCsv } from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
 import { despace, normalizeStripped } from "./normalize";
 import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
@@ -24,6 +25,8 @@ export interface BuildStats {
   creditRows: number;
   /** Distinct people named by those credits. */
   people: number;
+  /** Titles carrying a bulk-loaded TMDB or TVDB id. 0 when the crosswalk was unavailable. */
+  idRows: number;
   bytes: number;
   ms: number;
 }
@@ -95,7 +98,7 @@ create table title_principal (
   -- The role as IMDb records it, already unwrapped from its JSON array form.
   characters   text
 );
-`;
+${CROSSWALK_SCHEMA}`;
 
 /**
  * Derive `title_genre` from the comma-separated `title.genres` column.
@@ -329,6 +332,7 @@ export async function buildIndex(
   buildVocabulary(db, cfg, log);
 
   const cast = await castStage(db, cfg, dumpDir, log);
+  const idRows = crosswalkStage(db, dumpDir, log);
 
   log("building secondary indexes ...");
   db.run("create index ix_votes on title(votes desc)");
@@ -356,6 +360,7 @@ export async function buildIndex(
   setMeta.run("credit_rows", String(cast.creditRows));
   setMeta.run("people", String(cast.people));
   setMeta.run("cast_min_votes", String(cfg.index.castMinVotes));
+  setMeta.run("id_rows", String(idRows));
   // How the lists were ranked, so a list page can say it rather than restate a constant
   // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
   setMeta.run("rank_prior_votes", String(prior.c));
@@ -377,9 +382,38 @@ export async function buildIndex(
     genreRows,
     creditRows: cast.creditRows,
     people: cast.people,
+    idRows,
     bytes,
     ms,
   };
+}
+
+/**
+ * Bulk-load the `tconst -> tmdb/tvdb` crosswalk, so no render path ever buys one.
+ *
+ * ADDITIVE AND OPTIONAL, exactly like the cast stage above and for the same reason: a
+ * build box that cannot reach the source must still produce a promotable index. A missing
+ * crosswalk costs nothing but the calls we were making anyway -- both providers still
+ * resolve their own ids and park them in `kv`, which is what they did before this existed.
+ * `title_ids` is simply empty and every lookup misses.
+ *
+ * **READS THE DISK AND NEVER THE NETWORK**, which is the same division the IMDb dumps
+ * already follow: `src/jobs/build-index.ts` downloads, this builds. A build stage that
+ * fetched would make every index test that runs it reach the internet, and the cast tests
+ * caught exactly that.
+ */
+function crosswalkStage(db: Database, dumpDir: string, log: (m: string) => void): number {
+  const path = `${dumpDir}/${CROSSWALK_FILE}`;
+  if (!existsSync(path)) {
+    log("no id crosswalk on disk -- providers will resolve their own ids, as before");
+    return 0;
+  }
+
+  log("loading the id crosswalk ...");
+  const rows = parseCrosswalkCsv(readFileSync(path, "utf8"));
+  const kept = loadCrosswalk(db, rows);
+  log(`  ${kept.toLocaleString()} of our titles carry an id (${rows.length.toLocaleString()} in the source)`);
+  return kept;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,8 +22,7 @@ import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
 import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
-import { fetchSeriesKeywords } from "./tmdb/keywords";
-import { fetchWatchProviders } from "./tmdb/watch-providers";
+import { fetchDocument, type TmdbDocument } from "./tmdb/document";
 
 export const meta = {
   id: "tmdb",
@@ -59,19 +58,25 @@ export function init(c: PluginContext): PluginExports {
     return { facets: {} };
   }
 
-  // Scoped to this load rather than to the module, so two registries in one process
+  // Both scoped to this load rather than to the module, so two registries in one process
   // (which is what the tests are) never see each other's in-flight calls.
   const ids = tmdbIdCache(c.kv);
+  const documents = new AsyncCache<string, TmdbDocument>();
   // One API per load, closed over by both handlers: `c.fetch` is fixed at init now that a
   // handler is handed the entity alone, so there is nothing left to rebuild per call.
   const api = new TmdbApi(c.fetch, apiKey);
 
+  /** The id, then the one document. Both halves coalesce across a title's burst. */
+  async function documentFor(entity: FacetEntity): Promise<TmdbDocument | null> {
+    const tmdbId = await resolveTmdbId(api, ids, entity);
+    if (tmdbId === null) return null;
+    return documents.getOrAdd(entity.tconst, () => fetchDocument(api, entity, tmdbId));
+  }
+
   return {
     facets: {
       watchProviders: async (entity) => {
-        const tmdbId = await resolveTmdbId(api, ids, entity);
-        if (tmdbId === null) return null;
-        const data = await fetchWatchProviders(api, mediaTypeOf(entity), tmdbId);
+        const data = (await documentFor(entity))?.watchProviders ?? null;
         return data === null ? null : { data, freshness: FRESHNESS.watchProviders };
       },
 
@@ -81,9 +86,7 @@ export function init(c: PluginContext): PluginExports {
         // list and nothing dedupes it -- so the answer for a film is "nothing here", decided
         // before any id is resolved so it costs no call either.
         if (entity.kind !== "series") return null;
-        const tmdbId = await resolveTmdbId(api, ids, entity);
-        if (tmdbId === null) return null;
-        const data = await fetchSeriesKeywords(api, tmdbId);
+        const data = (await documentFor(entity))?.keywords ?? null;
         return data === null ? null : { data, freshness: FRESHNESS.keywords };
       },
     },
@@ -125,14 +128,26 @@ function tmdbIdCache(kv: PluginKv): AsyncCache<string, number | null> {
 }
 
 /**
- * `servarr-metadata` already resolves this id into the `externalIds` facet, and reading it
- * from there would cost nothing -- but a provider is handed `fetch`, `kv` and `log`, and
- * cannot read another plugin's facet. Crossing that seam is a core change, not a plugin's.
+ * The id, from the cheapest place that has it.
+ *
+ * THREE SOURCES, IN COST ORDER, and the first is new. `entity.ids` is core telling a
+ * provider what it already knows -- the field was declared for exactly this and stood
+ * empty until the index grew a bulk crosswalk -- so for most titles this costs one local
+ * SQLite lookup the server has already done and no call at all. `c.kv` is what an earlier
+ * view of this title bought. `/find` is the fallback, unchanged, and still the only path
+ * for a title Wikidata has never heard of.
+ *
+ * `servarr-metadata` also resolves this id into the `externalIds` facet, and reading it
+ * from THERE would still cost nothing -- but a provider is handed `fetch`, `kv` and `log`,
+ * and cannot read another plugin's facet. `entity.ids` is not that seam being crossed: it
+ * is core's own answer, handed to every provider on equal terms.
  */
 function resolveTmdbId(
   api: TmdbApi,
   ids: AsyncCache<string, number | null>,
   entity: FacetEntity,
 ): Promise<number | null> {
+  const known = entity.ids.tmdb;
+  if (typeof known === "number") return Promise.resolve(known);
   return ids.getOrAdd(entity.tconst, (tconst) => api.findByImdbId(tconst, mediaTypeOf(entity)));
 }

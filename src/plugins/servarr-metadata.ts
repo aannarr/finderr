@@ -205,9 +205,20 @@ async function movieDocument(
   return facets;
 }
 
-/** Two calls the first time a series is seen, one every time after -- see `resolveTvdbId`. */
+/**
+ * One call when core already knows the TVDB id, two the first time it does not.
+ *
+ * `entity.ids.tvdb` comes from the index crosswalk and covers most series; `resolveTvdbId`
+ * falls back to skyhook's own search for the rest and remembers it. See `resolveTvdbId`.
+ */
 async function seriesDocument(ctx: PluginContext, entity: FacetEntity): Promise<Partial<FacetShapes>> {
-  const tvdbId = await resolveTvdbId(ctx.fetch, ctx.kv, entity.tconst);
+  const known = entity.ids.tvdb;
+  const tvdbId = await resolveTvdbId(
+    ctx.fetch,
+    ctx.kv,
+    entity.tconst,
+    typeof known === "number" ? known : undefined,
+  );
   if (tvdbId === null) return {};
   const show = await fetchShow(ctx.fetch, tvdbId);
   return show ? seriesFacets(show) : {};

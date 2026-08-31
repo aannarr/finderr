@@ -11,14 +11,18 @@
  */
 
 import type { Keyword } from "../../lib/facets";
-import type { TmdbApi } from "../../lib/tmdb-api";
 
 interface TmdbKeyword {
   id?: number | null;
   name?: string | null;
 }
 
-interface TmdbTvKeywordResponse {
+/**
+ * The block as it arrives, which is now only ever nested under a `keywords` key from
+ * `append_to_response` -- the dedicated `/tv/{id}/keywords` endpoint is no longer called,
+ * because asking for it alongside the detail costs no extra round trip. See `./document`.
+ */
+export interface TmdbTvKeywordResponse {
   results?: TmdbKeyword[] | null;
 }
 
@@ -28,8 +32,7 @@ interface TmdbTvKeywordResponse {
  * A show TMDB knows and nobody has tagged comes back as an empty array, which is a real
  * answer and caches as an empty facet.
  */
-export async function fetchSeriesKeywords(api: TmdbApi, tmdbId: number): Promise<Keyword[] | null> {
-  const res = await api.get<TmdbTvKeywordResponse>(`/tv/${tmdbId}/keywords`);
+export function parseSeriesKeywords(res: TmdbTvKeywordResponse | null | undefined): Keyword[] | null {
   if (!res) return null;
   return (res.results ?? []).flatMap(toKeyword);
 }

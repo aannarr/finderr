@@ -465,7 +465,17 @@ function serviceFor(kind: string): "radarr" | "sonarr" {
   return entityKindFor(kind) === "series" ? "sonarr" : "radarr";
 }
 
-/** An index row as the thing a facet provider is asked about. Costs no query. */
+/**
+ * An index row as the thing a facet provider is asked about.
+ *
+ * `ids` is the field that was declared for this from the start and stood empty but for the
+ * tconst until the crosswalk landed: **external ids we already hold**. A provider handed
+ * `ids.tmdb` skips its own `/find`, which was the first link in two of the three chains a
+ * cold title used to walk. One indexed primary-key lookup against a table already open,
+ * and `idsFor` answers `{}` rather than throwing on an index built before it existed.
+ *
+ * `live.current` is read HERE rather than being closed over, per the retired-engine rule.
+ */
 function entityFor(row: TitleRow): FacetEntity {
   return {
     kind: entityKindFor(row.kind),
@@ -474,7 +484,7 @@ function entityFor(row: TitleRow): FacetEntity {
     originalTitle: row.orig,
     year: row.year,
     runtime: row.runtime,
-    ids: { imdb: row.tconst },
+    ids: { imdb: row.tconst, ...live.current.idsFor(row.tconst) },
   };
 }
 

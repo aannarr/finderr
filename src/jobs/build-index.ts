@@ -10,6 +10,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { loadConfig, paths } from "../lib/config";
+import { CROSSWALK_FILE, fetchCrosswalk } from "../lib/crosswalk";
 import { DumpStateStore, fetchDump, SchemaDriftError } from "../lib/dumps";
 import { buildIndex, gateVolume, promote } from "../lib/index-builder";
 import { prepareSqlite } from "../lib/spellfix";
@@ -60,6 +61,16 @@ async function main(): Promise<number> {
         log(`${dump}: unchanged upstream (304), skipped`);
       }
     }
+
+    /*
+      The id crosswalk is a dump like the four above, and is fetched like one.
+
+      It does NOT set `anyChanged`: a fresher crosswalk is not a reason to spend six
+      minutes rebuilding an index whose titles have not moved. It rides along with the
+      next build that happens for its own reasons, which for a week-long cache window is
+      every build.
+    */
+    await fetchCrosswalk(`${p.dumps}/${CROSSWALK_FILE}`, { log });
   } else {
     anyChanged = true;
     log("--no-fetch: building from the dumps already on disk");

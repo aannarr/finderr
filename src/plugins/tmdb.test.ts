@@ -2,10 +2,13 @@
  * The tmdb plugin, driven the way `GET /api/title/:tconst` drives it.
  *
  * Nothing here touches the network. `fetchImpl` is injected and serves TMDB responses
- * recorded live on 2026-08-31 into `tmdb/fixtures/`, keyed by the v3 path so a fixture is
- * exactly what that path returns. The two `watch/providers` documents are trimmed to four
- * countries -- the real ones carry 112 and 138, which is a lot of repetition to keep in
- * git; every country kept is byte-for-byte what TMDB sent.
+ * recorded live into `tmdb/fixtures/`, keyed by the v3 path so a fixture is exactly what
+ * that path returns. The `watch/providers` documents are trimmed to four countries -- the
+ * real ones carry 112 and 138, which is a lot of repetition to keep in git; every country
+ * kept is byte-for-byte what TMDB sent, and COUNTRIES are the only thing trimmed. The
+ * series fixture is the whole appended detail document, most of which nothing reads, and
+ * that is deliberate: a fixture pruned to the fields today's code happens to touch stops
+ * being evidence of what the endpoint returns.
  *
  * NO FIXTURE MAY CONTAIN THE API KEY. TMDB takes it as a query parameter, so it rides in
  * the URL rather than the body; the recorder asserted its absence on the way in and
@@ -75,8 +78,10 @@ const FIXTURES: Record<string, string> = {
   "/3/find/tt0000000": "find-tt0000000",
   "/3/movie/27205/watch/providers": "movie-27205-watch-providers",
   "/3/movie/160/watch/providers": "movie-160-watch-providers",
-  "/3/tv/1399/watch/providers": "tv-1399-watch-providers",
-  "/3/tv/1399/keywords": "tv-1399-keywords",
+  // A SERIES asks once and gets both blocks appended, which is why there is no
+  // `/3/tv/1399/keywords` entry any more -- see `tmdb/document.ts`. Keyed on the PATHNAME,
+  // so `?append_to_response=...` does not need spelling out here.
+  "/3/tv/1399": "tv-1399-append",
 };
 
 describe("the tmdb plugin, driven as the API route drives it", () => {
@@ -215,6 +220,41 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     await resolve(GAME_OF_THRONES);
     // The facet cache answers the facets; `kv` answers the id. Nothing is asked twice.
     expect(tmdbCalls()).toEqual([]);
+  });
+
+  /**
+   * The whole point of the index crosswalk: `/find` was the first link in this plugin's
+   * chain on every cold title, and it answers a question a local table already knows.
+   */
+  test("an id core already holds skips /find entirely", async () => {
+    const { mine } = await resolve({ ...GAME_OF_THRONES, ids: { imdb: "tt0944947", tmdb: 1399 } });
+
+    expect(tmdbCalls().some((url) => url.includes("/find/"))).toBe(false);
+    expect(mine.outcome("watchProviders")).toBe("ok");
+    // And it is NOT copied into kv: the crosswalk is rebuilt with the index, so a copy here
+    // would outlive a correction to it and could never be revised.
+    expect(store.getKv(`plugin:tmdb:tmdb:${GAME_OF_THRONES.tconst}`)).toBeNull();
+  });
+
+  /**
+   * Three serial calls to ONE host used to cost three round trips plus two 250 ms pacer
+   * gaps. With the id local and the two blocks appended, a cold series costs one call.
+   */
+  test("a cold series with a known id costs exactly one TMDB call for both facets", async () => {
+    await resolve({ ...GAME_OF_THRONES, ids: { imdb: "tt0944947", tmdb: 1399 } });
+    expect(tmdbCalls()).toHaveLength(1);
+    expect(new URL(tmdbCalls()[0] ?? "").searchParams.get("append_to_response")).toBe(
+      "keywords,watch/providers",
+    );
+  });
+
+  test("a film does not drag the whole detail document along for one facet", async () => {
+    // Only `watchProviders` asks anything for a film, so appending would buy the movie
+    // document for nothing. One call either way; the narrower endpoint is the cheaper one.
+    await resolve({ ...INCEPTION, ids: { imdb: "tt1375666", tmdb: 27205 } });
+    expect(tmdbCalls()).toEqual([
+      `https://${TMDB_HOST}/3/movie/27205/watch/providers?api_key=${FAKE_API_KEY}`,
+    ]);
   });
 
   test("a title TMDB has never heard of resolves empty, not failed", async () => {

@@ -37,7 +37,12 @@ interface TmdbCountryOffers {
   buy?: TmdbOffer[] | null;
 }
 
-interface TmdbWatchProviderResponse {
+/**
+ * Exported because it arrives two ways: on its own from `/{media}/{id}/watch/providers`,
+ * and nested under a `watch/providers` key when a series asks for it through
+ * `append_to_response`. Same body either way, so the same parser reads both.
+ */
+export interface TmdbWatchProviderResponse {
   results?: Record<string, TmdbCountryOffers> | null;
 }
 
@@ -70,7 +75,13 @@ export async function fetchWatchProviders(
   media: TmdbMediaType,
   tmdbId: number,
 ): Promise<WatchProviders[] | null> {
-  const res = await api.get<TmdbWatchProviderResponse>(`/${media}/${tmdbId}/watch/providers`);
+  return parseWatchProviders(await api.get<TmdbWatchProviderResponse>(`/${media}/${tmdbId}/watch/providers`));
+}
+
+/** The parse half, so an appended `watch/providers` block reads through the same rules. */
+export function parseWatchProviders(
+  res: TmdbWatchProviderResponse | null | undefined,
+): WatchProviders[] | null {
   if (!res) return null;
   return countriesOf(res.results ?? {});
 }

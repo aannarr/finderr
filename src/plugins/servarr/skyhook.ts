@@ -88,7 +88,19 @@ export async function resolveTvdbId(
   fetch: PluginFetch,
   kv: PluginKv,
   tconst: string,
+  /**
+   * The id core already holds for this title, from the index crosswalk.
+   *
+   * When it is here the search call never happens, which takes a whole round trip off the
+   * first view of most series -- and skyhook is Servarr's own infrastructure, so a call we
+   * do not make is the politeness that matters most. It is NOT written to `kv`: the
+   * crosswalk is rebuilt with the index and re-reading it costs a local lookup, whereas a
+   * copy in `kv` would outlive a correction to it and could never be revised.
+   */
+  known?: number,
 ): Promise<number | null> {
+  if (typeof known === "number") return known;
+
   const key = `tvdb:${tconst}`;
   const cached = kv.get(key);
   if (cached) return Number(cached);
