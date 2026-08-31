@@ -1,7 +1,29 @@
 import { Link } from "@tanstack/react-router";
 import { memo, useState } from "react";
 import { posterUrl, prefetchTitle, type Title } from "../lib/api";
+import { shelfDateLabel } from "../lib/facet-panes";
 import { BrowseChip } from "./BrowseChip";
+
+/**
+ * What KIND of date this is, spelt for a reader.
+ *
+ * Without it "Releasing soon" showed The Golden Child (1986) with no hint that what
+ * releases on 2 September is a STREAMING edition of a forty-year-old film, and the card
+ * read as a bug. `airDate` maps to nothing because the shelf it appears on already says
+ * "Airing", and repeating it in every row is noise.
+ *
+ * There is no `physical` entry because a disc date is never tracked -- see
+ * `radarrUpcomingRows`. Two kinds remain and both answer "when can I watch this".
+ */
+const DATE_KIND_LABEL: Record<string, string> = {
+  cinemas: "in cinemas",
+  digital: "streaming",
+};
+
+/** Today as a plain UTC date, matching how the mirror stores one. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /**
  * The fallback tile's monogram.
@@ -44,6 +66,11 @@ export const TitleCard = memo(function TitleCard({
 }) {
   const requested = t.requestStatus !== null;
   const owned = t.inLibrary;
+  const up = t.upcoming;
+  const today = todayUtc();
+  // `hasFile` only means something once the episode exists. Today counts as aired: an
+  // episode airing tonight may already have been grabbed, which is exactly worth showing.
+  const aired = up ? up.date <= today : false;
 
   const poster = posterUrl(t);
   // The tile is not a "loading" state -- it is the permanent background. The poster
@@ -182,19 +209,61 @@ export const TitleCard = memo(function TitleCard({
               <BrowseChip filters={{ year: t.year, kind: t.kind }} label={String(t.year)} tone="inline" />
             </span>
           )}
-          {t.votes > 0 && (
+          {/*
+            THE DATE REPLACES THE VOTE COUNT, it does not sit beside it.
+
+            An upcoming title has few votes or none -- that is the whole reason the old
+            shelf could not rank these and had to be replaced by a dated mirror. Printing
+            "2k" next to a release date spends the line's remaining width on the one number
+            here that is guaranteed to be meaningless.
+          */}
+          {up ? (
             <>
               <span aria-hidden="true">·</span>
-              <span className="tabular-nums">
-                {t.votes >= 1_000_000
-                  ? `${(t.votes / 1e6).toFixed(1)}M`
-                  : t.votes >= 1000
-                    ? `${Math.round(t.votes / 1000)}k`
-                    : t.votes}
-              </span>
+              <span className="font-medium text-ink">{shelfDateLabel(up.date, today)}</span>
+              {DATE_KIND_LABEL[up.dateKind] && (
+                <span className="text-muted/80">{DATE_KIND_LABEL[up.dateKind]}</span>
+              )}
             </>
+          ) : (
+            t.votes > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">
+                  {t.votes >= 1_000_000
+                    ? `${(t.votes / 1e6).toFixed(1)}M`
+                    : t.votes >= 1000
+                      ? `${Math.round(t.votes / 1000)}k`
+                      : t.votes}
+                </span>
+              </>
+            )
           )}
         </div>
+
+        {/*
+          The episode line: which one, and whether we HOLD it.
+
+          "Do I have that episode" is the question this shelf was built to answer, and it
+          is only answerable once the episode has aired -- `hasFile` on something airing
+          next Tuesday is false for everybody. So the badge is drawn only for an episode
+          that is already out, and a future one shows the episode without a verdict.
+        */}
+        {up?.detail && (
+          <p className="flex items-baseline gap-1.5 text-xs">
+            <span className="shrink-0 font-medium text-muted">{up.detail}</span>
+            {up.episodeTitle && (
+              <span className="line-clamp-1 text-muted/70 italic" title={up.episodeTitle}>
+                {up.episodeTitle}
+              </span>
+            )}
+          </p>
+        )}
+        {up?.detail && aired && up.hasFile !== null && (
+          <p className={["text-xs font-medium", up.hasFile ? "text-muted" : "text-warn"].join(" ")}>
+            {up.hasFile ? "Episode downloaded" : "Episode not downloaded"}
+          </p>
+        )}
 
         {/* The original title is often the one a non-English speaker searched for. */}
         {t.orig && t.orig !== t.title && (

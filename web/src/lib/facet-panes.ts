@@ -451,6 +451,53 @@ export function formatCalendarDate(value: string, locales?: string | string[]): 
   return new Intl.DateTimeFormat(locales, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(ms));
 }
 
+/**
+ * `Tue, Aug 24` -- a date on a SHELF CARD, which rounds differently from a date in a pane.
+ *
+ * A sibling of `formatCalendarDate` rather than a replacement, and it lives beside it so
+ * date formatting still has one owner in one file. The two differ because the questions
+ * differ: a release date in a pane is a historical fact and wants its YEAR; a card on
+ * "Airing soon" is always inside about three weeks, where the year is noise and the
+ * WEEKDAY is the thing a reader actually wants -- "is that tonight, or next weekend?".
+ *
+ * UTC like its sibling, because the mirror stores a plain `YYYY-MM-DD` with no time in
+ * it; parsing that in local time shifts the day backwards for anyone west of Greenwich
+ * and would print the wrong weekday for half the planet.
+ */
+export function formatShelfDate(value: string, locales?: string | string[]): string {
+  const ms = ISO_DATE.test(value.trim()) ? Date.parse(value.trim()) : Number.NaN;
+  if (Number.isNaN(ms)) return value;
+  return new Intl.DateTimeFormat(locales, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(ms));
+}
+
+/**
+ * What a card says about a date: `Tonight`, `Tomorrow`, or `Tue, Aug 24`.
+ *
+ * The two relative words earn their place because they are what makes the shelf scannable
+ * -- "Tonight" is read at a glance and `Tue, Aug 24` has to be worked out against today.
+ * Anything further out gets the absolute date, because "in 9 days" is harder to act on
+ * than a weekday you can find on a calendar.
+ *
+ * Yesterday is deliberately NOT special-cased into a word. A past episode is unusual on a
+ * shelf called "Airing soon" and the date should look different enough to notice.
+ */
+export function shelfDateLabel(date: string, today: string, locales?: string | string[]): string {
+  if (date === today) return "Tonight";
+  if (date === addDays(today, 1)) return "Tomorrow";
+  return formatShelfDate(date, locales);
+}
+
+function addDays(date: string, days: number): string {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(ms)) return date;
+  return new Date(ms + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 // --- trailers --------------------------------------------------------------
 
 export interface TrailerLink {

@@ -66,13 +66,42 @@ function recentlyAdded(deps: ShelfDeps, limit: number): TitleRow[] {
  * allowed to answer null, because the mirror and the index are refreshed on different
  * timers and an index swap can retire a row between them.
  */
-function fromUpcoming(deps: ShelfDeps, source: UpcomingSource, limit: number): TitleRow[] {
-  const out: TitleRow[] = [];
+function fromUpcoming(deps: ShelfDeps, source: UpcomingSource, limit: number): UpcomingTitleRow[] {
+  const out: UpcomingTitleRow[] = [];
   for (const row of deps.store.upcomingBySource(source, limit)) {
     const title = deps.engine.byTconst(row.tconst);
-    if (title) out.push(title);
+    if (!title) continue;
+    /*
+      The mirror's facts ride ON the row rather than in a parallel map.
+
+      `decorate()` in the server entry spreads each row, so anything attached here reaches
+      the browser with no change to the discover payload's shape and no second lookup
+      keyed on tconst that could fall out of step with the rows beside it. A card that has
+      no `upcoming` key simply draws as it always did.
+    */
+    out.push({
+      ...title,
+      upcoming: {
+        date: row.date,
+        dateKind: row.date_kind,
+        detail: row.detail,
+        episodeTitle: row.episode_title,
+        hasFile: row.has_file === null ? null : row.has_file === 1,
+      },
+    });
   }
   return out;
+}
+
+/** An index row plus what the upcoming mirror knows about it. */
+export interface UpcomingTitleRow extends TitleRow {
+  upcoming: {
+    date: string;
+    dateKind: string;
+    detail: string | null;
+    episodeTitle: string | null;
+    hasFile: boolean | null;
+  };
 }
 
 /**

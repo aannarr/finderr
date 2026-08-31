@@ -21,6 +21,24 @@ import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
 export type { CollectionSummary, HiddenByFloor, PaneBlock, RenderedPane };
 
+/**
+ * What the upcoming mirror knows about a title, present only on the four upcoming shelves.
+ *
+ * Absent everywhere else, so a card that never asked about dates draws exactly as before.
+ */
+export interface UpcomingInfo {
+  /** Plain `YYYY-MM-DD`. Rendered by `shelfDateLabel`, never parsed in local time. */
+  date: string;
+  /** `cinemas` | `digital` | `physical` | `airDate` -- WHICH date this is. */
+  dateKind: string;
+  /** `S2E9`, or null for a film. */
+  detail: string | null;
+  /** The episode's own name, or null for a film. */
+  episodeTitle: string | null;
+  /** Do we hold THIS episode? null when the source cannot say (films, TMDB). */
+  hasFile: boolean | null;
+}
+
 export interface Title {
   tconst: string;
   title: string;
@@ -36,6 +54,8 @@ export interface Title {
   hasFile: boolean;
   progress: number | null;
   requestStatus: string | null;
+  /** Set only on the upcoming shelves. See `UpcomingInfo`. */
+  upcoming?: UpcomingInfo;
   service: "radarr" | "sonarr";
   /** Path on OUR proxy, or null when the title is known to have no artwork. */
   posterUrl: string | null;

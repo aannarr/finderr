@@ -161,6 +161,17 @@ export interface UpcomingRow {
   date_kind: "cinemas" | "digital" | "physical" | "airDate";
   /** Free text the shelf may show beside the date, e.g. "S2E9". Null when there is none. */
   detail: string | null;
+  /** The episode's own name. Series only; null everywhere else. */
+  episode_title: string | null;
+  /**
+   * Do we hold THIS episode? 1 yes, 0 no, null the source cannot say.
+   *
+   * Only meaningful once the episode has aired -- a future episode is `0` because nobody
+   * has it yet, not because anything is wrong. `airedAlready` on the client is what
+   * decides whether to draw it, and the Sonarr window looks backwards so that there is
+   * something to draw.
+   */
+  has_file: number | null;
 }
 
 /** Who claimed it. One writer each, and each replaces only its own rows. */
@@ -236,16 +247,26 @@ create table if not exists plex_item (
 -- Sonarr's calendar is episode-shaped and this table is title-shaped, so the collapse to
 -- one row per series happens at SYNC time and detail carries the episode (S2E9); doing
 -- it there keeps every shelf query a plain ordered select.
+-- has_file answers "do I have THAT episode", and it is the reason the Sonarr window looks
+-- BACKWARDS as well as forwards. Sonarr puts hasFile on every calendar entry at no extra
+-- cost, but for a purely future episode it is false by definition and carries no
+-- information -- it only says something once the episode has aired or is airing today.
+-- NULL means the source does not answer the question at all (Radarr, TMDB).
 create table if not exists upcoming (
-  tconst    text not null,
-  kind      text not null,
-  source    text not null,
-  date      text not null,
-  date_kind text not null,
-  detail    text,
-  synced_at text not null,
+  tconst        text not null,
+  kind          text not null,
+  source        text not null,
+  date          text not null,
+  date_kind     text not null,
+  detail        text,
+  episode_title text,
+  has_file      integer,
+  synced_at     text not null,
   primary key (tconst, source)
 );
+-- episode_title and has_file are in ADDED_COLUMNS as well as here: this block only runs on
+-- a database that has never seen the table, and finderr was already deployed with the
+-- narrower shape before these two existed.
 
 create index if not exists ix_upcoming_source_date on upcoming(source, date);
 
@@ -330,6 +351,16 @@ create table if not exists facet_image (
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: "artwork", column: "studio", ddl: "alter table artwork add column studio text" },
+  // The episode's own name ("And the Toy Phone"), and whether we HOLD that episode.
+  // Both ride free on Sonarr's calendar entry. A row written before these existed reads
+  // back null, which renders as a card with a date and no episode line -- the previous
+  // behaviour, and the next sync fills it in within a minute either way.
+  {
+    table: "upcoming",
+    column: "episode_title",
+    ddl: "alter table upcoming add column episode_title text",
+  },
+  { table: "upcoming", column: "has_file", ddl: "alter table upcoming add column has_file integer" },
   // When the arr first acquired the title. NOT the same as `updated_at`, which the
   // 60s mirror rewrites on every row every time -- useless for "recently added".
   { table: "library", column: "added_at", ddl: "alter table library add column added_at text" },
@@ -569,15 +600,26 @@ export class Store {
   replaceUpcoming(source: UpcomingSource, rows: UpcomingRow[]): number {
     const now = new Date().toISOString();
     const ins = this.db.prepare(
-      "insert or replace into upcoming (tconst, kind, source, date, date_kind, detail, synced_at) " +
-        "values (?,?,?,?,?,?,?)",
+      "insert or replace into upcoming " +
+        "(tconst, kind, source, date, date_kind, detail, episode_title, has_file, synced_at) " +
+        "values (?,?,?,?,?,?,?,?,?)",
     );
     this.db.run("begin");
     try {
       this.db.run("delete from upcoming where source = ?", [source]);
       for (const r of rows) {
         if (!r.tconst || !r.date) continue;
-        ins.run(r.tconst, r.kind, source, r.date, r.date_kind, r.detail ?? null, now);
+        ins.run(
+          r.tconst,
+          r.kind,
+          source,
+          r.date,
+          r.date_kind,
+          r.detail ?? null,
+          r.episode_title ?? null,
+          r.has_file ?? null,
+          now,
+        );
       }
       this.db.run("commit");
     } catch (err) {
@@ -598,8 +640,8 @@ export class Store {
   upcomingBySource(source: UpcomingSource, limit = 30): UpcomingRow[] {
     return this.db
       .query(
-        "select tconst, kind, source, date, date_kind, detail from upcoming " +
-          "where source = ? order by date asc limit ?",
+        "select tconst, kind, source, date, date_kind, detail, episode_title, has_file " +
+          "from upcoming where source = ? order by date asc limit ?",
       )
       .all(source, limit) as UpcomingRow[];
   }

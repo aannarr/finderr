@@ -59,6 +59,8 @@ export interface RadarrCalendarEntry {
   inCinemas?: string | null;
   digitalRelease?: string | null;
   physicalRelease?: string | null;
+  /** Already on disk. A held film is dropped from the shelf -- see `radarrUpcomingRows`. */
+  hasFile?: boolean;
 }
 
 /** One entry from Sonarr's calendar. `series` arrives only with `includeSeries=true`. */
@@ -66,6 +68,14 @@ export interface SonarrCalendarEntry {
   airDate?: string | null;
   seasonNumber?: number;
   episodeNumber?: number;
+  /** The EPISODE's own name, e.g. "And the Toy Phone" -- not the series title. */
+  title?: string;
+  /**
+   * Do we hold THIS episode? Present on every entry at no extra cost, and the reason the
+   * Sonarr window looks backwards -- it says nothing about an episode that has not aired.
+   */
+  hasFile?: boolean;
+  monitored?: boolean;
   series?: { title?: string; imdbId?: string };
 }
 

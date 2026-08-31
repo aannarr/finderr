@@ -10,6 +10,7 @@ import {
   externalHref,
   formatCalendarDate,
   formatRatingValue,
+  formatShelfDate,
   formatVotes,
   groupCrewByJob,
   hasPendingFacet,
@@ -28,6 +29,7 @@ import {
   STREAMING_MARKS,
   seasonAirRange,
   seasonLabel,
+  shelfDateLabel,
   sourceName,
   streamingLogo,
   titleLinks,
@@ -353,6 +355,36 @@ describe("release dates", () => {
 
   test("shows an unparseable provider string as it came", () => {
     expect(formatCalendarDate("sometime in 2010")).toBe("sometime in 2010");
+  });
+});
+
+describe("shelf dates", () => {
+  /** The shape aannarr asked for: weekday, month, day. No year -- a shelf is weeks deep. */
+  test("a shelf date carries the weekday and drops the year", () => {
+    expect(formatShelfDate("2026-08-24", "en-US")).toBe("Mon, Aug 24");
+  });
+
+  test("UTC, so the weekday does not slide for readers west of Greenwich", () => {
+    // Parsed as local time this is Sunday evening in the Americas, and would print "Sun".
+    expect(formatShelfDate("2026-08-24", "en-US")).toContain("Mon");
+  });
+
+  test("today and tomorrow read as words, because that is what a glance wants", () => {
+    expect(shelfDateLabel("2026-08-31", "2026-08-31", "en-US")).toBe("Tonight");
+    expect(shelfDateLabel("2026-09-01", "2026-08-31", "en-US")).toBe("Tomorrow");
+  });
+
+  test("anything further out gets the absolute date", () => {
+    expect(shelfDateLabel("2026-09-02", "2026-08-31", "en-US")).toBe("Wed, Sep 2");
+  });
+
+  /**
+   * A past date is NOT softened into "Yesterday". On a shelf about what is coming, an
+   * episode that already aired is the exception worth noticing, and a plain date looks
+   * different enough to catch the eye.
+   */
+  test("a date already past prints plainly rather than as a word", () => {
+    expect(shelfDateLabel("2026-08-29", "2026-08-31", "en-US")).toBe("Sat, Aug 29");
   });
 });
 

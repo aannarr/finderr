@@ -34,6 +34,22 @@ import type { TmdbApi } from "./tmdb-api";
 export const RADARR_WINDOW_DAYS = 90;
 export const SONARR_WINDOW_DAYS = 14;
 
+/**
+ * How far BACK the Sonarr window reaches, and the whole reason it reaches back at all.
+ *
+ * "Do I have that episode?" is the question this shelf exists to answer, and Sonarr's
+ * `hasFile` answers it for free on every calendar entry -- but for an episode that has not
+ * aired yet it is `false` by definition and says nothing. It only carries information once
+ * the episode is out. So the window includes the recent past, and the most useful row on
+ * the shelf becomes "S2E9 aired Tuesday and you do NOT have it" rather than a list of
+ * dates nobody can act on.
+ *
+ * Seven days because that is one broadcast cycle: a weekly show always has exactly one
+ * aired episode in range, so the shelf shows the current state of every series rather
+ * than a backlog.
+ */
+export const SONARR_LOOKBACK_DAYS = 7;
+
 /** How many TMDB pages per region per kind. One page is 20 titles, which fills a shelf. */
 export const TMDB_PAGES = 1;
 
@@ -44,10 +60,16 @@ export function toCalendarDate(value: string | null | undefined): string | null 
   return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
 }
 
-/** `today` and `today + days`, as the plain dates both arrs expect. */
-export function calendarWindow(days: number, now: Date): { start: string; end: string } {
+/** `today - back` to `today + days`, as the plain dates both arrs expect. */
+export function calendarWindow(days: number, now: Date, back = 0): { start: string; end: string } {
+  const start = new Date(now.getTime() - back * 86_400_000);
   const end = new Date(now.getTime() + days * 86_400_000);
-  return { start: now.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+
+/** Whole days between two plain dates, signed: negative is in the past. */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
 /**
@@ -85,16 +107,51 @@ export function radarrUpcomingRows(entries: RadarrCalendarEntry[], today: string
   for (const e of entries) {
     const tconst = e.imdbId?.trim();
     if (!tconst) continue;
+    /*
+      A FILM WE ALREADY HOLD IS NOT RELEASING SOON, WHATEVER THE CALENDAR SAYS.
+
+      aannarr caught this on the live shelf 2026-08-31: Supergirl and In the Grey were both
+      on "Releasing soon" while sitting on disk. Radarr lists them because their PHYSICAL
+      (disc) date falls in the window -- cinemas and digital are months past -- so the shelf
+      was announcing a Blu-ray to somebody who already has the film. Two of five cards were
+      noise.
+
+      `hasFile` is the same fact the card already draws as "In library", so keeping these
+      rows would have the shelf contradict the badge printed on it.
+    */
+    if (e.hasFile) continue;
+    /*
+      CINEMAS AND DIGITAL ONLY. THE DISC DATE IS NOT TRACKED.
+
+      aannarr, 2026-08-31: track the cinema release, and the air date or streaming date for
+      a series -- not the physical one. A disc pressing is not an event a reader of this
+      shelf can act on, and it was the direct cause of the two worst rows on the live
+      shelf: Supergirl and In the Grey both appeared MONTHS after they were watchable,
+      purely because a Blu-ray was dated inside the window.
+
+      `physicalRelease` is therefore read from Radarr and deliberately dropped. Both of the
+      remaining kinds answer "when can I watch this": in cinemas, or at home.
+    */
     const when = soonestFutureDate(
       [
         ["cinemas", e.inCinemas],
         ["digital", e.digitalRelease],
-        ["physical", e.physicalRelease],
       ],
       today,
     );
     if (!when) continue;
-    rows.push({ tconst, kind: "movie", source: "radarr", detail: null, ...when });
+    // A film has no episode, and Radarr's calendar says nothing about whether the file
+    // has landed -- `library.has_file` already answers that for a title, and the card
+    // draws it as "In library". Null here means "not a question this source answers".
+    rows.push({
+      tconst,
+      kind: "movie",
+      source: "radarr",
+      detail: null,
+      episode_title: null,
+      has_file: null,
+      ...when,
+    });
   }
   return dedupeSoonest(rows);
 }
@@ -111,12 +168,50 @@ export function sonarrUpcomingRows(entries: SonarrCalendarEntry[], today: string
   const rows: UpcomingRow[] = [];
   for (const e of entries) {
     const tconst = e.series?.imdbId?.trim();
-    if (!tconst) continue;
-    const when = soonestFutureDate([["airDate", e.airDate]], today);
-    if (!when) continue;
-    rows.push({ tconst, kind: "series", source: "sonarr", detail: episodeLabel(e), ...when });
+    const date = toCalendarDate(e.airDate);
+    if (!tconst || !date) continue;
+    rows.push({
+      tconst,
+      kind: "series",
+      source: "sonarr",
+      date,
+      date_kind: "airDate",
+      detail: episodeLabel(e),
+      episode_title: e.title?.trim() || null,
+      // Sonarr always answers, so an absent field is "no" rather than "unknown".
+      has_file: e.hasFile ? 1 : 0,
+    });
   }
-  return dedupeSoonest(rows);
+  return oneNearestNow(rows, today);
+}
+
+/**
+ * One row per series: the episode CLOSEST TO NOW, past or future.
+ *
+ * Not "the next one to air", which is what this did while the window was future-only.
+ * With a look-back the interesting row for a weekly show is usually the one that aired
+ * two days ago and did NOT land -- picking the next one instead would show a date a week
+ * out and a `has_file: 0` that means nothing, which is the shelf answering a question
+ * nobody asked.
+ *
+ * Distance rather than "prefer the most recent aired": a show that finished its season
+ * six days ago and returns tomorrow should say tomorrow. Ties go to the EARLIER date, so
+ * an episode airing today beats one airing tomorrow and the shelf never skips over
+ * something that has already happened.
+ */
+function oneNearestNow(rows: UpcomingRow[], today: string): UpcomingRow[] {
+  const best = new Map<string, UpcomingRow>();
+  for (const row of rows) {
+    const seen = best.get(row.tconst);
+    if (!seen) {
+      best.set(row.tconst, row);
+      continue;
+    }
+    const a = Math.abs(daysBetween(today, row.date));
+    const b = Math.abs(daysBetween(today, seen.date));
+    if (a < b || (a === b && row.date < seen.date)) best.set(row.tconst, row);
+  }
+  return [...best.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /** `S2E9`, or null when Sonarr sent an entry without numbers on it. */
@@ -183,7 +278,7 @@ export async function syncArrCalendars(
   }
 
   if (clients.sonarr) {
-    const w = calendarWindow(SONARR_WINDOW_DAYS, now);
+    const w = calendarWindow(SONARR_WINDOW_DAYS, now, SONARR_LOOKBACK_DAYS);
     const entries = (await clients.sonarr.calendar(w.start, w.end)) ?? [];
     const rows = renderable(sonarrUpcomingRows(entries, today), deps.hasRow);
     out.push({ source: "sonarr", rows: deps.store.replaceUpcoming("sonarr", rows) });
@@ -236,6 +331,9 @@ export async function syncTmdbUpcoming(
             date,
             date_kind: media === "tv" ? "airDate" : "cinemas",
             detail: null,
+            // TMDB is a discovery source: it answers what exists, never what we hold.
+            episode_title: null,
+            has_file: null,
           });
         }
       }
