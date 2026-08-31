@@ -586,7 +586,9 @@ export interface BrowseResponse {
  * Deduped and cached by the exact filter+offset, so paging back and forth costs
  * nothing and returning to a browse view is instant.
  */
-export type BrowseOpts = { limit?: number; offset?: number; minVotes?: number };
+export type BrowseSort = "votes" | "rank";
+
+export type BrowseOpts = { limit?: number; offset?: number; minVotes?: number; sort?: BrowseSort };
 
 /**
  * The canonical query string for a browse, and therefore its cache key.
@@ -608,6 +610,10 @@ function browseQuery(filters: Filters, opts: BrowseOpts): string {
   // part of the cache key though -- the "show all" escape hatch re-runs the same filter
   // with the floor lifted, and must not be handed back the floored rows.
   if (opts.minVotes !== undefined) params.set("minVotes", String(opts.minVotes));
+  // Unlike `minVotes`, the sort IS in the address bar -- `?sort=rank` is which LIST you are
+  // looking at rather than a threshold somebody has to keep meaningful, and a list is a
+  // destination worth sending to someone. It rides here too because it changes the rows.
+  if (opts.sort !== undefined) params.set("sort", opts.sort);
   params.sort();
   return params.toString();
 }

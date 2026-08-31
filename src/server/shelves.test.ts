@@ -42,6 +42,10 @@ function depsWith(
       topGenres: () => ["Horror"],
       topRatedInGenre: (genre) => [row(`genre-${genre}`)],
       byTconst: (id) => (added.includes(id) || upcomingIds.has(id) ? row(id) : null),
+      // The Top 250 shelf. It goes through `browse` rather than a bespoke engine method
+      // precisely so the shelf and the "see all" link behind it cannot order differently,
+      // which is why the fake answers in the same shape a real browse does.
+      browse: (opts) => ({ rows: [row(`ranked-${opts.kind}`, `ranked ${opts.kind}`, opts.kind)], total: 1 }),
       ...over,
     } as ShelfDeps["engine"],
     store: {
@@ -66,6 +70,7 @@ describe("discoveryShelves", () => {
     const ids = discoveryShelves(depsWith({}, [], ["owned-1"])).map((s) => s.id);
     expect(ids).toEqual([
       "recently-added",
+      "top-250",
       "top-movies",
       "top-series",
       "airing-soon-series",

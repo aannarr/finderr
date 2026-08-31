@@ -41,6 +41,23 @@ function summariseSent(t: Title, seasons?: readonly number[] | null): string {
 }
 
 /**
+ * The top-level destinations, beside the wordmark.
+ *
+ * > [!IMPORTANT] THIS ARRAY IS THE EXTENSION POINT -- add a line, do not rewrite it
+ * > A section that earns a place in the bar adds ONE `{ to, label }` here and nothing
+ * > else. It is a table rather than hand-written JSX for exactly that reason: two people
+ * > adding a link at once is a one-line merge instead of a conflict in markup.
+ *
+ * **A link only goes in once its route resolves.** A nav entry pointing at a 404 is the
+ * dead end this product refuses to draw, and it is worse in the chrome than anywhere else
+ * because it is on every screen.
+ *
+ * `Admin` and the account link are deliberately NOT here: those are conditional on who is
+ * signed in and they live on the right, away from the sections everyone shares.
+ */
+const NAV_LINKS: { to: string; label: string }[] = [{ to: "/lists", label: "Lists" }];
+
+/**
  * The magnifier, inline rather than from an icon set.
  *
  * One glyph, eleven lines, no dependency and no sprite to keep in sync. `currentColor` is
@@ -249,6 +266,30 @@ export function RootLayout() {
             <Link to="/" search={{}} className="text-lg font-semibold tracking-tight">
               finderr
             </Link>
+            {/*
+              The section links. `aria-current="page"` rather than a colour alone -- the
+              underline is what a sighted reader sees and the attribute is what everyone
+              else gets, and one of those without the other is half a signal.
+
+              Matched with `startsWith` so a page BELOW a section still marks its parent:
+              `/lists` stays lit on a list's own sub-page. An exact match would unlight the
+              bar the moment somebody navigated one step in, which reads as having left.
+            */}
+            <nav className="flex items-baseline gap-3 text-xs text-muted">
+              {NAV_LINKS.map((link) => {
+                const current = pathname === link.to || pathname.startsWith(`${link.to}/`);
+                return (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    aria-current={current ? "page" : undefined}
+                    className={current ? "text-ink underline underline-offset-4" : "hover:text-ink"}
+                  >
+                    {link.label}
+                  </Link>
+                );
+              })}
+            </nav>
             {pendingCount > 0 && (
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
                 {pendingCount} queued

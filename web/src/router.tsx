@@ -17,6 +17,7 @@ import { AccountRoute } from "./routes/AccountRoute";
 import { AdminRoute } from "./routes/AdminRoute";
 import { BrowseRoute } from "./routes/BrowseRoute";
 import { CollectionRoute } from "./routes/CollectionRoute";
+import { ListsRoute } from "./routes/ListsRoute";
 import { PersonRoute } from "./routes/PersonRoute";
 import { RootLayout } from "./routes/RootLayout";
 import { SearchRoute } from "./routes/SearchRoute";
@@ -88,6 +89,19 @@ const collectionRoute = createRoute({
 });
 
 /**
+ * `/lists` -- the index of every list finderr can show.
+ *
+ * A route of its own rather than a query string, because "what lists exist" is a question
+ * with a stable answer and a name in the nav. It takes NO search params: every list it
+ * points at is a `/browse` URL, so this page has no state to share.
+ */
+const listsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/lists",
+  component: ListsRoute,
+});
+
+/**
  * `/account` -- your own devices and sessions.
  *
  * In THIS bundle rather than the sign-in one, because managing a passkey is something a
@@ -119,6 +133,7 @@ const routeTree = rootRoute.addChildren([
   titleRoute,
   personRoute,
   collectionRoute,
+  listsRoute,
   accountRoute,
   adminRoute,
 ]);

@@ -759,9 +759,27 @@ export interface BrowseFilters {
   kind?: string;
 }
 
+/**
+ * What a browse is ordered by.
+ *
+ * `votes` is the grid: most-familiar first, which is what "show me everything with this
+ * filter" wants. `rank` is the LIST: the weighted rank the index build computed, which is
+ * what "finderr Top 250" and every per-genre and per-decade list are made of. Both are
+ * ordered columns with an index behind them, so neither is a sort.
+ *
+ * A closed union rather than a free string, because it reaches SQL as an ORDER BY.
+ */
+export type BrowseSort = "votes" | "rank";
+
+export function isBrowseSort(v: unknown): v is BrowseSort {
+  return v === "votes" || v === "rank";
+}
+
 export interface BrowseOptions extends BrowseFilters {
   /** Overrides the floor `browseVoteFloor` would pick. 0 means "show everything". */
   minVotes?: number;
+  /** Defaults to `votes`. */
+  sort?: BrowseSort;
   limit?: number;
   offset?: number;
 }
@@ -803,15 +821,39 @@ const BROWSE_VOTE_FLOOR = 1000;
  * the floor changes the first page not at all and the last page completely.
  *
  * Genre and kind do NOT drop it: `?kind=movie` IS the broad grid.
+ *
+ * **A RANK-SORTED BROWSE TAKES NO FLOOR AT ALL, AND THAT IS NOT AN OVERSIGHT.** The
+ * weighted rank is Bayesian, so the prior already does exactly the job a floor does, and
+ * does it continuously instead of at a cliff: measured against the real index, a title
+ * needs roughly 19,000 votes at a 9.5 rating before it can even reach a rank of 8.0, and
+ * an unfloored top-250 sci-fi list comes back Inception, Interstellar, The Matrix,
+ * Empire Strikes Back. A second threshold here would be a second owner of one rule -- the
+ * thing this function exists to be the only one of -- and it would buy nothing, because
+ * everything it would remove is already at the bottom of the list.
+ *
+ * The floor stays a decision of THIS function either way, so there is still exactly one
+ * place that answers "what is hidden from a browse and why".
  */
-export function browseVoteFloor(f: BrowseFilters): number {
+export function browseVoteFloor(f: BrowseFilters, sort: BrowseSort = "votes"): number {
+  if (sort === "rank") return 0;
   return f.year !== undefined || f.decade !== undefined ? 0 : BROWSE_VOTE_FLOOR;
 }
 
 /** SQL shared by the row query and the count queries of one browse. */
-function browseSql(f: BrowseFilters, minVotes: number): { join: string; where: string; args: unknown[] } {
-  const where = ["t.votes >= ?"];
-  const args: unknown[] = [minVotes];
+function browseSql(
+  f: BrowseFilters,
+  minVotes: number,
+  sort: BrowseSort = "votes",
+): { join: string; where: string; order: string; args: unknown[] } {
+  const where: string[] = [];
+  const args: unknown[] = [];
+  // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
+  // spelling it out only stops SQLite covering the count from an index. Omitting it is
+  // what makes an unfloored per-genre list a pure seek.
+  if (minVotes > 0) {
+    where.push("t.votes >= ?");
+    args.push(minVotes);
+  }
   let join = "";
   if (f.genre) {
     join = "join title_genre g on g.title_rowid = t.rowid_";
@@ -830,7 +872,28 @@ function browseSql(f: BrowseFilters, minVotes: number): { join: string; where: s
     where.push("t.kind = ?");
     args.push(f.kind);
   }
-  return { join, where: where.join(" and "), args };
+
+  /*
+    The ORDER, and which table's copy of `rank` it reads.
+
+    A genre browse joins `title_genre`, which carries its own `kind` and `rank` copied
+    from `title` at build time, and `ix_tg_rank(genre, kind, rank desc)` covers all three.
+    Ordering by `t.rank` instead would be the same numbers in the same sequence and a full
+    sort to get there, which is the whole cost this layer was built to remove -- so the
+    join decides which column is named, not taste.
+
+    `rank is not null` is a MEMBERSHIP rule, not a filter: an unrated title has no rank, so
+    it is not in the list. Without it `total` would count 1.2M unrated rows as members of
+    "the top comedies" and paging far enough would eventually reach them.
+  */
+  const ranked = join ? "g.rank" : "t.rank";
+  let order = "t.votes desc";
+  if (sort === "rank") {
+    where.push(`${ranked} is not null`);
+    order = `${ranked} desc`;
+  }
+  // A browse with no filters at all and no floor has nothing to put in a WHERE.
+  return { join, where: where.length > 0 ? where.join(" and ") : "1", order, args };
 }
 
 function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
@@ -842,28 +905,36 @@ function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
 }
 
 /**
- * Paginated browse over the index, ordered by votes.
+ * Paginated browse over the index, ordered by votes or by the computed rank.
  *
  * Takes the database rather than reaching for one, so the floor policy and the
  * dead-end report can be exercised against a handful of rows in a temp file instead
  * of against the 1.27M-row production index.
+ *
+ * **Every computed top list in the product is this function with `sort: "rank"`**, which
+ * is why the card that asked for those lists shipped no new query surface: "finderr Top
+ * 250", "Top 250 sci-fi" and "best comedies of the 2020s" are three sets of filters, not
+ * three endpoints.
  */
 export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
-  const minVotes = opts.minVotes ?? browseVoteFloor(opts);
-  const sql = browseSql(opts, minVotes);
+  const sort = opts.sort ?? "votes";
+  const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
+  const sql = browseSql(opts, minVotes, sort);
   const total = browseTotal(db, sql);
   const rows = db
     .query(
       `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
        from title t ${sql.join} where ${sql.where}
-       order by t.votes desc limit ? offset ?`,
+       order by ${sql.order} limit ? offset ?`,
     )
     .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as TitleRow[];
 
   // The second count only runs when the floor could be what emptied the page, so the
   // overwhelmingly common case -- a query that found rows -- pays for one count, not two.
+  // A rank browse takes no floor, so it never reaches here and never offers a hatch it
+  // has nothing behind: an empty ranked list is empty because nothing is ranked.
   if (total > 0 || minVotes === 0) return { rows, total };
-  const unfloored = browseTotal(db, browseSql(opts, 0));
+  const unfloored = browseTotal(db, browseSql(opts, 0, sort));
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }
 

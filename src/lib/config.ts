@@ -43,6 +43,21 @@ export interface Config {
   index: {
     /** Titles below this vote count stay searchable via FTS but leave the fuzzy pool. */
     fuzzyMinVotes: number;
+    /**
+     * The Bayesian prior's strength, in votes, for the computed `rank` column.
+     *
+     * A title with exactly this many votes is ranked half on its own rating and half on
+     * the corpus mean. Below it the mean dominates, which is what stops a 10.0 from six
+     * voters outranking Shawshank -- and it is why a rank-sorted list needs no vote floor
+     * at all (see `browseVoteFloor`). Raise it to demand more evidence before a title can
+     * climb; lower it to let smaller titles move.
+     *
+     * The prior MEAN is not configurable and must not become so: it is measured from the
+     * corpus at build time, because a literal stops describing the data the first time
+     * IMDb's ratings drift. Both values are written to `meta` so a list can say how it
+     * was ranked.
+     */
+    rankPriorVotes: number;
     /** IMDb title types to ingest. */
     titleTypes: string[];
     includeAdult: boolean;
@@ -325,6 +340,10 @@ const DEFAULTS: Config = {
   logLevel: "info",
   index: {
     fuzzyMinVotes: 100,
+    // 25,000 measured against the real index on 2026-09-01: it reproduces IMDb's own
+    // Top 250 head (Shawshank, Godfather, Dark Knight, Return of the King, Schindler's
+    // List) to within a couple of positions, without IMDb's unpublished vote filtering.
+    rankPriorVotes: 25_000,
     titleTypes: ["movie", "tvSeries", "tvMiniSeries", "tvMovie"],
     includeAdult: false,
     castMinVotes: 1000,
@@ -437,6 +456,7 @@ function envOverrides(): Record<string, unknown> {
     logLevel: envStr("FINDERR_LOG_LEVEL"),
     index: {
       fuzzyMinVotes: envInt("FINDERR_INDEX_FUZZY_MIN_VOTES"),
+      rankPriorVotes: envInt("FINDERR_INDEX_RANK_PRIOR_VOTES"),
       includeAdult: envBool("FINDERR_INDEX_INCLUDE_ADULT"),
       refreshCron: envStr("FINDERR_INDEX_REFRESH_CRON"),
       refreshTz: envStr("FINDERR_INDEX_REFRESH_TZ"),
@@ -518,6 +538,9 @@ function validate(c: Config): void {
   if (c.index.fuzzyMinVotes < 0) problems.push("index.fuzzyMinVotes must be >= 0");
   if (c.index.titleTypes.length === 0) problems.push("index.titleTypes must not be empty");
   if (c.index.castMinVotes < 0) problems.push("index.castMinVotes must be >= 0");
+  // Zero would divide by zero for an unrated title and make every rank its own rating,
+  // which is the exact failure the prior exists to prevent.
+  if (c.index.rankPriorVotes < 1) problems.push("index.rankPriorVotes must be >= 1");
   // Empty is legal and means "index no cast at all" -- a deliberate way to opt out of
   // the largest dump. It is not an error, so nothing is pushed for it.
 

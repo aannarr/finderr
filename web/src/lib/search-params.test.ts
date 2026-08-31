@@ -89,6 +89,16 @@ describe("validateSearch", () => {
   test("ignores params it does not know about", () => {
     expect(validateSearch({ q: "fargo", utm_source: "somewhere" })).toEqual({ q: "fargo" });
   });
+
+  test("`sort=rank` survives; anything else is dropped rather than passed on", () => {
+    // It reaches the server as an ORDER BY, so the closed union is enforced at the door on
+    // both sides. `sort=votes` is dropped ON PURPOSE and is not a bug: absent already means
+    // votes-ordered, and two spellings of one page are two cache entries.
+    expect(validateSearch({ genre: "Horror", sort: "rank" })).toEqual({ genre: "Horror", sort: "rank" });
+    expect(validateSearch({ sort: "votes" })).toEqual({});
+    expect(validateSearch({ sort: "rating; drop table title" })).toEqual({});
+    expect(validateSearch({ sort: 7 })).toEqual({});
+  });
 });
 
 describe("decadeOf", () => {
@@ -135,6 +145,13 @@ describe("filtersOf", () => {
     expect(filtersOf({ q: "fargo", genre: "Drama", role: "actor,actress" })).toEqual({
       genre: "Drama",
     });
+  });
+
+  test("`sort` is not a filter either, and must not ride into the filter object", () => {
+    // It selects no rows, it orders them. `BrowseRoute` passes it as a fetch OPTION beside
+    // `minVotes` and names it in the request identity itself; letting it through here would
+    // send `/api/browse?sort=...` a key the server reads as a filter.
+    expect(filtersOf({ genre: "Horror", sort: "rank" })).toEqual({ genre: "Horror" });
   });
 });
 
