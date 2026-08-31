@@ -210,11 +210,74 @@ describe("library mirror", () => {
   test("services are mirrored independently", () => {
     store.replaceLibrary("radarr", [{ imdb_id: "tt1", arr_id: 1, has_file: 1, monitored: 1, progress: 1 }]);
     store.replaceLibrary("sonarr", [{ imdb_id: "tt2", arr_id: 2, has_file: 1, monitored: 1, progress: 0.5 }]);
-    expect(store.libraryCount()).toEqual({ radarr: 1, sonarr: 1 });
+    expect(store.libraryCount()).toEqual({ radarr: 1, sonarr: 1, episodes: 0 });
 
     // Re-syncing one service must not wipe the other.
     store.replaceLibrary("radarr", []);
-    expect(store.libraryCount()).toEqual({ radarr: 0, sonarr: 1 });
+    expect(store.libraryCount()).toEqual({ radarr: 0, sonarr: 1, episodes: 0 });
+  });
+
+  test("title_slug is mirrored as sent, and absent when the arr did not send one", () => {
+    store.replaceLibrary("radarr", [
+      // Radarr 6.x puts the tmdbId in titleSlug; Sonarr puts a word slug. Neither is
+      // derivable from anything else we hold, which is the whole reason for the column.
+      { imdb_id: "tt1", arr_id: 1, has_file: 1, monitored: 1, progress: 1, title_slug: "700391" },
+    ]);
+    store.replaceLibrary("sonarr", [
+      { imdb_id: "tt2", arr_id: 2, has_file: 1, monitored: 1, progress: 1, title_slug: "preacher" },
+      { imdb_id: "tt3", arr_id: 3, has_file: 0, monitored: 1, progress: 0 },
+    ]);
+
+    const lib = store.libraryMap();
+    expect(lib.get("tt1")?.title_slug).toBe("700391");
+    expect(lib.get("tt2")?.title_slug).toBe("preacher");
+    expect(lib.get("tt3")?.title_slug).toBeNull();
+  });
+});
+
+describe("episode mirror", () => {
+  test("replace is scoped to ONE series -- another series keeps its rows", () => {
+    store.replaceEpisodes("tt1", [
+      { season: 1, episode: 1, arr_episode_id: 11, has_file: 1, monitored: 1, air_date: "2025-05-28" },
+      { season: 1, episode: 2, arr_episode_id: 12, has_file: 0, monitored: 1, air_date: "2025-05-28" },
+    ]);
+    store.replaceEpisodes("tt2", [
+      { season: 1, episode: 1, arr_episode_id: 21, has_file: 0, monitored: 0, air_date: null },
+    ]);
+
+    // A failed walk for tt1 must not be able to empty tt2, which is why the swap is
+    // per-series rather than wholesale.
+    expect(store.replaceEpisodes("tt1", [])).toBe(0);
+    expect(store.episodeMap("tt2").size).toBe(1);
+  });
+
+  test("an episode Sonarr stopped listing stops claiming we hold it", () => {
+    store.replaceEpisodes("tt1", [
+      { season: 1, episode: 1, arr_episode_id: 11, has_file: 1, monitored: 1, air_date: "2025-05-28" },
+      { season: 1, episode: 2, arr_episode_id: 12, has_file: 1, monitored: 1, air_date: "2025-06-04" },
+    ]);
+    store.replaceEpisodes("tt1", [
+      { season: 1, episode: 1, arr_episode_id: 11, has_file: 1, monitored: 1, air_date: "2025-05-28" },
+    ]);
+    expect(store.getEpisode("tt1", 1, 2)).toBeNull();
+    expect(store.getEpisode("tt1", 1, 1)?.has_file).toBe(1);
+  });
+
+  test("markEpisodesMonitored touches only the named episodes of the named series", () => {
+    store.replaceEpisodes("tt1", [
+      { season: 1, episode: 1, arr_episode_id: 11, has_file: 0, monitored: 0, air_date: "2025-05-28" },
+      { season: 1, episode: 2, arr_episode_id: 12, has_file: 0, monitored: 0, air_date: "2025-06-04" },
+    ]);
+    store.replaceEpisodes("tt2", [
+      { season: 1, episode: 1, arr_episode_id: 21, has_file: 0, monitored: 0, air_date: null },
+    ]);
+
+    store.markEpisodesMonitored("tt1", [11]);
+    expect(store.getEpisode("tt1", 1, 1)?.monitored).toBe(1);
+    expect(store.getEpisode("tt1", 1, 2)?.monitored).toBe(0);
+    // The id space is Sonarr's and is global, so the series has to be part of the WHERE
+    // or one show's request could re-monitor another's episode.
+    expect(store.getEpisode("tt2", 1, 1)?.monitored).toBe(0);
   });
 });
 

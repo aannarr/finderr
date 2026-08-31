@@ -15,10 +15,12 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { RadarrClient, SonarrClient } from "../lib/arr";
+import { arrLink } from "../lib/arr-links";
 import { isoIn, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
+import type { EpisodeState } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { entityKindFor, type FacetEntity } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
@@ -482,6 +484,24 @@ function decorate<T extends TitleRow>(rows: T[]) {
 }
 
 /**
+ * Our Sonarr's per-episode state for one series.
+ *
+ * Read straight out of the mirror, so this is local SQLite like every other render-path
+ * read. The shape and the reason it is a list rather than a keyed object are stated once,
+ * in `src/lib/episodes.ts`.
+ */
+function episodeStateFor(tconst: string): EpisodeState[] {
+  return [...store.episodeMap(tconst).values()].map((e) => ({
+    season: e.season,
+    episode: e.episode,
+    arrEpisodeId: e.arr_episode_id,
+    hasFile: e.has_file === 1,
+    monitored: e.monitored === 1,
+    airDate: e.air_date,
+  }));
+}
+
+/**
  * The index rows for a resolved `collection` facet's members, in the collection's order.
  *
  * Local lookups only -- the tconsts already arrived with the facet, so this is the render
@@ -741,6 +761,30 @@ const appRoutes = {
       {
         ...decorate([row])[0],
         facets: cached,
+        /*
+            WHERE AN ADMIN GOES TO MANAGE THIS TITLE, and null for everybody else.
+
+            Stripped on the SERVER rather than hidden in the component, exactly as
+            `requested_by` is: an arr's address describes the private network finderr
+            fronts, and a component that declines to draw a link still ships the string.
+            `arrLink` (`src/lib/arr-links.ts`) is the single owner of the rule -- it is
+            also the only place in this product that deliberately sends a browser an
+            upstream URL, which is why it takes the role rather than being handed one.
+          */
+        arrLink: arrLink(cfg, store.libraryMap().get(row.tconst), auth.principal(req)?.role ?? null),
+        /*
+            OUR SONARR'S per-episode state, one entry per episode it lists.
+
+            Beside the facets rather than inside them, the same reasoning `people` follows:
+            the `episodes` facet is skyhook's answer to "what exists", and this is our own
+            Sonarr answering "which of those do we hold, and may one be asked for". The
+            shape, and why it is a list keyed on two integers rather than a string, are
+            stated once in `src/lib/episodes.ts`.
+
+            An EMPTY array means Sonarr does not hold this series, which is a real answer
+            and renders as no marks at all rather than as a row of crosses.
+          */
+        episodeState: episodeStateFor(row.tconst),
         /*
             IS ANYONE STILL WORKING ON THIS TITLE, AND WHAT HAS ALREADY GONE WRONG.
 
@@ -1018,6 +1062,56 @@ const appRoutes = {
       // Echoed back through the same strip: the asker sees their own request, but the
       // response shape must not depend on who is reading it in one place and not another.
       return json({ request: visibleRequest(request, asker?.role ?? null) }, { status: 202 });
+    },
+  },
+
+  /**
+   * Ask for ONE episode of a series Sonarr already holds.
+   *
+   * > [!IMPORTANT] ADDITIONAL to the series and season request, never a replacement
+   * > aannarr, 2026-08-31, in as many words. `/api/requests` still adds a series and still
+   * > takes a season selection; this is the third grain, and it is the only one that
+   * > applies to a series ALREADY in the library -- which is precisely the case the other
+   * > two refuse (`already in your library`, 409).
+   *
+   * It writes no `request` row. The record of "did we ask for this, and did it arrive" is
+   * the episode mirror, which reports `monitored` and then `hasFile` from Sonarr itself; a
+   * second record would give one fact two owners. See the `Job` type in
+   * `./request-worker.ts` for the whole of that reasoning.
+   *
+   * Every refusal here is a fact about OUR mirror rather than about Sonarr, so none of them
+   * costs a network call and none needs sanitising.
+   */
+  "/api/requests/episode": {
+    POST: async (req: Request) => {
+      if (!sonarr) return bad("Sonarr is not configured", 503);
+
+      let body: { tconst?: string; season?: unknown; episode?: unknown };
+      try {
+        body = (await req.json()) as typeof body;
+      } catch {
+        return bad("body must be JSON");
+      }
+      const { tconst, season, episode } = body;
+      if (!tconst) return bad("tconst is required");
+      if (!Number.isInteger(season) || !Number.isInteger(episode)) {
+        return bad("season and episode must be integers");
+      }
+
+      const entry = store.libraryMap().get(tconst);
+      // The series has to be in Sonarr before one of its episodes can be. Refusing rather
+      // than adding it: adding a series is a different, heavier operation with a season
+      // selection of its own, and the button for it is on the same page.
+      if (entry?.service !== "sonarr") {
+        return bad("request the series first -- Sonarr does not hold it yet", 409);
+      }
+
+      const known = store.getEpisode(tconst, season as number, episode as number);
+      if (!known) return bad("Sonarr does not list that episode", 404);
+      if (known.has_file === 1) return bad("you already have that episode", 409);
+
+      worker.enqueueEpisodes(tconst, [known.arr_episode_id]);
+      return json({ queued: { tconst, season, episode } }, { status: 202 });
     },
   },
 

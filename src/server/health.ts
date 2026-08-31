@@ -54,7 +54,13 @@ export interface HealthReload {
 export interface HealthDeps {
   /** `reload` is a plain value read off the holder -- no work, same as every other field. */
   index: { rows: number; builtAt: string | null; reload: HealthReload | null };
-  library: { radarr: number; sonarr: number };
+  /**
+   * `episodes` is the per-episode Sonarr mirror, and zero beside a non-zero `sonarr` is
+   * the field worth reading: it means the series walk ran and every episode fetch failed,
+   * which renders as a series page with no owned marks and no episode request buttons --
+   * indistinguishable from "you own nothing" unless you look here.
+   */
+  library: { radarr: number; sonarr: number; episodes: number };
   /**
    * The Plex mirror: how many titles carry a play link, and which server they point at.
    *

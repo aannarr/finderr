@@ -24,8 +24,27 @@ export interface WorkerDeps {
   log: (...args: unknown[]) => void;
 }
 
+/**
+ * One unit of work.
+ *
+ * > [!IMPORTANT] An EPISODE job is not a `request` row, and that is deliberate
+ * > A title request is a durable record with a status a reader polls -- it can sit
+ * > "searching" for a day and age out to `no_release`. Asking for one episode of a series
+ * > Sonarr ALREADY holds is a different animal: two immediate calls (monitor, then search)
+ * > against a series that is already in the library, with no add and no metadata refresh.
+ * >
+ * > Its outcome is already recorded somewhere honest -- the episode mirror, which reports
+ * > `monitored` and then `hasFile` from Sonarr itself on the next sync. Writing a second
+ * > record of the same fact would give "do we have this episode" two owners that can
+ * > disagree, which is exactly the bug `plex_item` exists to avoid on the title side.
+ * >
+ * > It shares the QUEUE with title requests, because the reason for the queue is the arr's
+ * > load and not the record: firing a burst of searches is how a seedbox gets suspended.
+ */
+type Job = { kind: "title"; tconst: string } | { kind: "episode"; tconst: string; episodeIds: number[] };
+
 export class RequestWorker {
-  private queue: string[] = [];
+  private queue: Job[] = [];
   private running = false;
   private processed = 0;
   private failed = 0;
@@ -39,7 +58,22 @@ export class RequestWorker {
   }
 
   enqueue(tconst: string): void {
-    if (!this.queue.includes(tconst)) this.queue.push(tconst);
+    if (!this.queue.some((j) => j.kind === "title" && j.tconst === tconst)) {
+      this.queue.push({ kind: "title", tconst });
+    }
+    void this.drain();
+  }
+
+  /**
+   * Ask Sonarr for specific episodes of a series it already holds.
+   *
+   * The ids are SONARR'S, resolved by the caller out of the episode mirror -- this worker
+   * never translates a season and number, because Sonarr's monitor and search endpoints do
+   * not take one.
+   */
+  enqueueEpisodes(tconst: string, episodeIds: readonly number[]): void {
+    if (episodeIds.length === 0) return;
+    this.queue.push({ kind: "episode", tconst, episodeIds: [...episodeIds] });
     void this.drain();
   }
 
@@ -64,9 +98,10 @@ export class RequestWorker {
     this.running = true;
     try {
       while (this.queue.length > 0) {
-        const tconst = this.queue.shift();
-        if (!tconst) break;
-        await this.process(tconst);
+        const job = this.queue.shift();
+        if (!job) break;
+        if (job.kind === "title") await this.process(job.tconst);
+        else await this.processEpisodes(job.tconst, job.episodeIds);
         // Breathe between adds.
         await Bun.sleep(400);
       }
@@ -137,6 +172,42 @@ export class RequestWorker {
       });
       this.failed++;
       log(`request FAILED "${req.title}": ${e.message}`);
+    }
+  }
+
+  /**
+   * Monitor, then search. Both halves, in that order, and neither is optional.
+   *
+   * > [!WARNING] Sonarr will not search an UNMONITORED episode, and it does not say so
+   * > `EpisodeSearch` against an unmonitored episode is accepted -- HTTP 201, a real
+   * > command id -- and then quietly finds nothing. So monitoring is not preparation for
+   * > the search, it is half of the request, and a failure to monitor must stop the search
+   * > rather than let it run and look like a title with no releases.
+   *
+   * The mirror is updated optimistically the moment Sonarr accepts, so the row a reader is
+   * looking at stops offering a button they have already pressed. It is not a second source
+   * of truth: the next library sync overwrites it with whatever Sonarr actually says.
+   */
+  private async processEpisodes(tconst: string, episodeIds: number[]): Promise<void> {
+    const { store, sonarr, log } = this.deps;
+    if (!sonarr) {
+      this.failed++;
+      log(`episode request FAILED ${tconst}: Sonarr is not configured`);
+      return;
+    }
+    try {
+      await sonarr.monitorEpisodes(episodeIds, true);
+      await sonarr.searchEpisodes(episodeIds);
+      store.markEpisodesMonitored(tconst, episodeIds);
+      this.processed++;
+      log(`request: asked Sonarr to find ${episodeIds.length} episode(s) of ${tconst}`);
+    } catch (err) {
+      this.failed++;
+      // Sanitised for the same reason a title request's error is: an arr's message quotes
+      // its response body, which carries root folder paths. Only the log sees the detail --
+      // and unlike a title request there is no row to write a safe message onto, because
+      // the mirror is the record and it reports what Sonarr says rather than what we asked.
+      log(`episode request FAILED ${tconst}: ${(err as Error).message}`);
     }
   }
 

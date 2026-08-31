@@ -15,7 +15,7 @@ import { type HealthDeps, healthPayload } from "./health";
 function deps(onCoverage: () => void): HealthDeps {
   return {
     index: { rows: 1_275_341, builtAt: "2026-08-30T06:26:27.095Z", reload: null },
-    library: { radarr: 1371, sonarr: 596 },
+    library: { radarr: 1371, sonarr: 596, episodes: 24_812 },
     plex: { items: 1730, machineId: "0123456789abcdef0123456789abcdef01234567" },
     upcoming: { radarr: 42, sonarr: 27, tmdbMovie: 19, tmdbSeries: 16 },
     services: { radarr: true, sonarr: true },
@@ -87,7 +87,7 @@ describe("healthPayload", () => {
         builtAt: "2026-08-30T06:26:27.095Z",
         reload: null,
       });
-      expect(out.library).toEqual({ radarr: 1371, sonarr: 596 });
+      expect(out.library).toEqual({ radarr: 1371, sonarr: 596, episodes: 24_812 });
       // Counts, not probes -- these are always safe to serve on a 30s poll.
       expect((out.facets as Record<string, unknown>).rows).toBe(4321);
       expect((out.facets as Record<string, unknown>).images).toBe(87);

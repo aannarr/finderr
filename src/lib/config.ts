@@ -17,6 +17,20 @@ export interface ArrService {
   /** Radarr: root folder for movies. Sonarr: root folder for series. */
   rootFolder?: string;
   qualityProfileId?: number;
+  /**
+   * The address an ADMIN'S BROWSER should use to reach this arr, if it differs from `url`.
+   *
+   * `url` is how the SERVER reaches it, which is routinely a private address on the same
+   * network as the container. finderr itself is internet-facing, so handing that string to
+   * a browser is both unreachable from outside and a description of the network behind us
+   * -- the rule stated in `decorate()` (`src/server/index.ts`). This is the one deliberate
+   * exception, and it is an exception because the operator has to WRITE IT DOWN: nothing is
+   * derived, nothing is guessed, and leaving it unset means the admin link is simply the
+   * server's own `url`, which is correct for a LAN-only instance and wrong for a public one.
+   *
+   * Only ever sent to an admin -- see `arrLink()` in `src/lib/arr-links.ts`.
+   */
+  publicUrl?: string;
 }
 
 export interface Config {
@@ -380,9 +394,12 @@ function arrFromEnv(prefix: "RADARR" | "SONARR"): Partial<ArrService> | undefine
   const url = envStr(`FINDERR_${prefix}_URL`);
   const apiKey = envStr(`FINDERR_${prefix}_API_KEY`);
   const rootFolder = envStr(`FINDERR_${prefix}_ROOT_FOLDER`);
+  const publicUrl = envStr(`FINDERR_${prefix}_PUBLIC_URL`);
   const qualityProfileId = envInt(`FINDERR_${prefix}_QUALITY_PROFILE_ID`);
-  if (!url && !apiKey && !rootFolder && qualityProfileId === undefined) return undefined;
-  return { url, apiKey, rootFolder, qualityProfileId } as Partial<ArrService>;
+  if (!url && !apiKey && !rootFolder && !publicUrl && qualityProfileId === undefined) {
+    return undefined;
+  }
+  return { url, apiKey, rootFolder, publicUrl, qualityProfileId } as Partial<ArrService>;
 }
 
 function envOverrides(): Record<string, unknown> {

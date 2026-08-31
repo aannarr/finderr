@@ -6,7 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { RadarrClient, SonarrClient } from "./arr";
+import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
 import { AUTH_SCHEMA } from "./auth-store";
 import type { Config } from "./config";
 import { paths } from "./config";
@@ -148,6 +148,28 @@ export interface LibraryEntry {
   monitored: number;
   /** Series only: 0..1 */
   progress: number | null;
+  /**
+   * The arr's own URL segment for this title, exactly as the arr reports it.
+   *
+   * Mirrored and never derived -- Radarr 6.x fills `titleSlug` with the tmdbId while
+   * Sonarr fills it with a word slug, so no rule computes both. Null for a row written
+   * before this column existed; the next full sync fills it.
+   */
+  title_slug: string | null;
+  updated_at: string;
+}
+
+/** What Sonarr knows about ONE episode of one series we mirror. */
+export interface EpisodeEntry {
+  imdb_id: string;
+  season: number;
+  episode: number;
+  /** Sonarr's own episode id -- the only handle its monitor and search endpoints take. */
+  arr_episode_id: number;
+  has_file: number;
+  monitored: number;
+  /** YYYY-MM-DD, or null for an episode Sonarr has no date for. */
+  air_date: string | null;
   updated_at: string;
 }
 
@@ -178,17 +200,53 @@ export interface UpcomingRow {
 export type UpcomingSource = "radarr" | "sonarr" | "tmdb-movie" | "tmdb-series";
 
 const SCHEMA = `
+-- title_slug is the arr's OWN url segment for the title, mirrored rather than derived.
+-- Radarr and Sonarr both route their detail page as /movie/:titleSlug and /series/:titleSlug,
+-- but the two fill that field differently -- Radarr 6.x puts the tmdbId there ("700391")
+-- while Sonarr puts a word slug ("preacher"), both verified against the live servers on
+-- 2026-08-31. So there is nothing to compute from an id we already hold, and a guess would
+-- be right for one service and wrong for the other. It rides free on the records the
+-- library sync already fetches. NULL on a row mirrored before this column existed.
 create table if not exists library (
-  imdb_id    text not null,
-  service    text not null,
-  arr_id     integer not null,
-  has_file   integer not null default 0,
-  monitored  integer not null default 0,
-  progress   real,
-  updated_at text not null,
+  imdb_id     text not null,
+  service     text not null,
+  arr_id      integer not null,
+  has_file    integer not null default 0,
+  monitored   integer not null default 0,
+  progress    real,
+  title_slug  text,
+  updated_at  text not null,
   primary key (imdb_id, service)
 );
 create index if not exists ix_library_service on library(service);
+
+-- Sonarr's per-EPISODE state, keyed by OUR id plus the season/episode numbers.
+--
+-- NOTE: no backticks anywhere in this comment either. SCHEMA is a template literal.
+--
+-- The episodes a reader sees come from skyhook (the episodes facet), which knows what
+-- exists and nothing about what we hold. Sonarr knows what we hold and speaks its own
+-- seriesId. The two agree on exactly one thing -- the (season, episode) pair -- so that is
+-- the join, and this table is what makes it answerable without a network call on the
+-- render path.
+--
+-- Separate from library for the same reason plex_item is: library is one row per TITLE
+-- and this is one row per episode, and no amount of columns makes those one table.
+--
+-- arr_episode_id is Sonarr's own integer and is the ONLY thing that can be handed back to
+-- it when monitoring or searching a single episode -- neither operation takes a season and
+-- episode number.
+create table if not exists episode (
+  imdb_id        text not null,
+  season         integer not null,
+  episode        integer not null,
+  arr_episode_id integer not null,
+  has_file       integer not null default 0,
+  monitored      integer not null default 0,
+  air_date       text,
+  updated_at     text not null,
+  primary key (imdb_id, season, episode)
+);
 
 create table if not exists request (
   id         integer primary key autoincrement,
@@ -364,6 +422,14 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // When the arr first acquired the title. NOT the same as `updated_at`, which the
   // 60s mirror rewrites on every row every time -- useless for "recently added".
   { table: "library", column: "added_at", ddl: "alter table library add column added_at text" },
+  // The arr's own URL segment for the title. Null on every row mirrored before this
+  // existed, which costs an admin the "Open in ..." link on that title for up to one
+  // library refresh -- the next full sync writes it.
+  {
+    table: "library",
+    column: "title_slug",
+    ddl: "alter table library add column title_slug text",
+  },
   // Comma-joined season numbers, null = "all". Every request written before this column
   // existed reads back as null, which is the pre-existing behaviour spelt out.
   { table: "request", column: "seasons", ddl: "alter table request add column seasons text" },
@@ -479,18 +545,31 @@ export class Store {
    */
   replaceLibrary(
     service: "radarr" | "sonarr",
-    rows: (Omit<LibraryEntry, "service" | "updated_at"> & { added_at?: string | null })[],
+    rows: (Omit<LibraryEntry, "service" | "updated_at" | "title_slug"> & {
+      added_at?: string | null;
+      title_slug?: string | null;
+    })[],
   ): number {
     const now = new Date().toISOString();
     const ins = this.db.prepare(
-      "insert or replace into library (imdb_id, service, arr_id, has_file, monitored, progress, updated_at, added_at) values (?,?,?,?,?,?,?,?)",
+      "insert or replace into library (imdb_id, service, arr_id, has_file, monitored, progress, updated_at, added_at, title_slug) values (?,?,?,?,?,?,?,?,?)",
     );
     this.db.run("begin");
     try {
       this.db.run("delete from library where service = ?", [service]);
       for (const r of rows) {
         if (!r.imdb_id) continue; // no IMDb id = we can never match it to the index
-        ins.run(r.imdb_id, service, r.arr_id, r.has_file, r.monitored, r.progress, now, r.added_at ?? null);
+        ins.run(
+          r.imdb_id,
+          service,
+          r.arr_id,
+          r.has_file,
+          r.monitored,
+          r.progress,
+          now,
+          r.added_at ?? null,
+          r.title_slug ?? null,
+        );
       }
       this.db.run("commit");
     } catch (err) {
@@ -525,10 +604,79 @@ export class Store {
     return new Map(rows.map((r) => [r.imdb_id, r]));
   }
 
-  libraryCount(): { radarr: number; sonarr: number } {
+  libraryCount(): { radarr: number; sonarr: number; episodes: number } {
     const q = (s: string) =>
       (this.db.query("select count(*) c from library where service = ?").get(s) as { c: number }).c;
-    return { radarr: q("radarr"), sonarr: q("sonarr") };
+    return { radarr: q("radarr"), sonarr: q("sonarr"), episodes: this.episodeCount() };
+  }
+
+  // --- episode mirror ------------------------------------------------------
+
+  /**
+   * Replace the episode mirror for ONE series.
+   *
+   * Per series rather than wholesale, because the walk is per series: Sonarr answers
+   * `/episode?seriesId=` and nothing asks it for every episode it holds. So a series whose
+   * fetch failed keeps the rows it had instead of being emptied by somebody else's success
+   * -- the same rule the Plex mirror follows, applied one series at a time.
+   *
+   * A full swap WITHIN the series is still right: an episode Sonarr no longer lists (a
+   * renumbered special, a removed entry) must stop claiming we hold it.
+   */
+  replaceEpisodes(imdbId: string, rows: Omit<EpisodeEntry, "imdb_id" | "updated_at">[]): number {
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      "insert or replace into episode (imdb_id, season, episode, arr_episode_id, has_file, monitored, air_date, updated_at) values (?,?,?,?,?,?,?,?)",
+    );
+    this.db.run("begin");
+    try {
+      this.db.run("delete from episode where imdb_id = ?", [imdbId]);
+      for (const r of rows) {
+        ins.run(imdbId, r.season, r.episode, r.arr_episode_id, r.has_file, r.monitored, r.air_date, now);
+      }
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+    return (this.db.query("select count(*) c from episode where imdb_id = ?").get(imdbId) as { c: number }).c;
+  }
+
+  /** Every episode we mirror for one series, keyed `"<season>:<episode>"`. */
+  episodeMap(imdbId: string): Map<string, EpisodeEntry> {
+    const rows = this.db.query("select * from episode where imdb_id = ?").all(imdbId) as EpisodeEntry[];
+    return new Map(rows.map((r) => [`${r.season}:${r.episode}`, r]));
+  }
+
+  /** One episode, or null when Sonarr has never listed it for us. */
+  getEpisode(imdbId: string, season: number, episode: number): EpisodeEntry | null {
+    return (
+      (this.db
+        .query("select * from episode where imdb_id = ? and season = ? and episode = ?")
+        .get(imdbId, season, episode) as EpisodeEntry | undefined) ?? null
+    );
+  }
+
+  /**
+   * Mark episodes monitored in the mirror, right after Sonarr accepted the same change.
+   *
+   * OPTIMISTIC and short-lived: it stops the row a reader is looking at offering a button
+   * they have already pressed. The next library sync overwrites it with Sonarr's own
+   * answer, which is why this is not a second source of truth -- it is the same truth,
+   * sixty seconds early.
+   */
+  markEpisodesMonitored(imdbId: string, arrEpisodeIds: readonly number[]): number {
+    if (arrEpisodeIds.length === 0) return 0;
+    const placeholders = arrEpisodeIds.map(() => "?").join(",");
+    this.db.run(
+      `update episode set monitored = 1, updated_at = ? where imdb_id = ? and arr_episode_id in (${placeholders})`,
+      [new Date().toISOString(), imdbId, ...arrEpisodeIds],
+    );
+    return arrEpisodeIds.length;
+  }
+
+  episodeCount(): number {
+    return (this.db.query("select count(*) c from episode").get() as { c: number }).c;
   }
 
   // --- plex mirror ---------------------------------------------------------
@@ -1082,9 +1230,9 @@ export async function syncLibrary(
   store: Store,
   clients: { radarr?: RadarrClient; sonarr?: SonarrClient },
   log: (m: string) => void = () => {},
-): Promise<{ radarr?: number; sonarr?: number; errors: string[] }> {
+): Promise<{ radarr?: number; sonarr?: number; episodes?: number; errors: string[] }> {
   const errors: string[] = [];
-  const out: { radarr?: number; sonarr?: number; errors: string[] } = {
+  const out: { radarr?: number; sonarr?: number; episodes?: number; errors: string[] } = {
     errors,
   };
 
@@ -1100,6 +1248,7 @@ export async function syncLibrary(
           monitored: m.monitored ? 1 : 0,
           progress: m.hasFile ? 1 : 0,
           added_at: addedFrom(m),
+          title_slug: m.titleSlug ?? null,
         })),
       );
       // Every owned title already carries its artwork AND its studio in the same
@@ -1130,6 +1279,7 @@ export async function syncLibrary(
           monitored: s.monitored ? 1 : 0,
           progress: s.statistics ? s.statistics.percentOfEpisodes / 100 : null,
           added_at: addedFrom(s),
+          title_slug: s.titleSlug ?? null,
         })),
       );
       const seeded = store.seedArtwork(
@@ -1140,10 +1290,68 @@ export async function syncLibrary(
         })),
       );
       log(`library: ${out.sonarr} series mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
+
+      const eps = await syncEpisodes(store, clients.sonarr, series, log);
+      out.episodes = eps.episodes;
+      errors.push(...eps.errors);
     } catch (err) {
       errors.push(`sonarr: ${(err as Error).message}`);
     }
   }
 
   return out;
+}
+
+/**
+ * Mirror Sonarr's per-EPISODE state for every series we hold.
+ *
+ * > [!IMPORTANT] One call PER SERIES, and that is the whole cost model
+ * > Sonarr has no "every episode you hold" endpoint -- `/episode` requires a `seriesId` --
+ * > so this is N calls against a LAN service we already talk to on this timer, not a crawl
+ * > of somebody else's infrastructure. The one-click-deep rule that governs the Servarr
+ * > metadata proxies does not apply: this is the operator's own Sonarr, answering about
+ * > the operator's own library.
+ *
+ * Serial rather than parallel, deliberately. There is no deadline on a background mirror,
+ * and a burst of hundreds of concurrent requests is how a mirror that runs every minute
+ * becomes the reason Sonarr is slow.
+ *
+ * A series whose fetch fails is SKIPPED and keeps the rows it already had. The failure is
+ * collected rather than thrown, for the same reason `syncLibrary` splits Radarr from
+ * Sonarr: one bad series must not cost us the other four hundred.
+ */
+export async function syncEpisodes(
+  store: Store,
+  sonarr: SonarrClient,
+  series: readonly SonarrSeries[],
+  log: (m: string) => void = () => {},
+): Promise<{ episodes: number; series: number; errors: string[] }> {
+  const errors: string[] = [];
+  let episodes = 0;
+  let walked = 0;
+
+  for (const s of series) {
+    const imdbId = s.imdbId;
+    if (!imdbId) continue; // no IMDb id = nothing on our side to key it to
+    try {
+      const rows = (await sonarr.episodes(s.id)) ?? [];
+      episodes += store.replaceEpisodes(
+        imdbId,
+        rows.map((e) => ({
+          season: e.seasonNumber,
+          episode: e.episodeNumber,
+          arr_episode_id: e.id,
+          has_file: e.hasFile ? 1 : 0,
+          monitored: e.monitored ? 1 : 0,
+          air_date: e.airDate ?? null,
+        })),
+      );
+      walked += 1;
+    } catch (err) {
+      errors.push(`sonarr episodes ${imdbId}: ${(err as Error).message}`);
+    }
+  }
+
+  log(`library: ${episodes} episodes mirrored across ${walked} series`);
+  return { episodes, series: walked, errors };
 }

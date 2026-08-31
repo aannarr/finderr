@@ -29,6 +29,13 @@ export interface RadarrMovie {
   hasFile: boolean;
   monitored: boolean;
   sizeOnDisk?: number;
+  /**
+   * The segment Radarr's own UI routes on -- `/movie/:titleSlug`.
+   *
+   * Radarr 6.x fills this with the tmdbId as a string ("700391"), which is NOT what the
+   * name suggests and NOT what Sonarr does. Mirror it; never build it.
+   */
+  titleSlug?: string;
 }
 
 export interface SonarrSeries {
@@ -38,11 +45,25 @@ export interface SonarrSeries {
   tvdbId: number;
   imdbId?: string;
   monitored: boolean;
+  /** The segment Sonarr's UI routes on -- `/series/:titleSlug`, e.g. "preacher". */
+  titleSlug?: string;
   statistics?: {
     episodeFileCount: number;
     episodeCount: number;
     percentOfEpisodes: number;
   };
+}
+
+/** One episode as Sonarr's `/episode?seriesId=` lists it. */
+export interface SonarrEpisode {
+  id: number;
+  seriesId: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title?: string;
+  airDate?: string | null;
+  hasFile?: boolean;
+  monitored?: boolean;
 }
 
 /**
@@ -178,6 +199,9 @@ export class ArrClient {
   }
   post<T>(path: string, body: unknown) {
     return this.request<T>("POST", path, { body });
+  }
+  put<T>(path: string, body: unknown) {
+    return this.request<T>("PUT", path, { body });
   }
   del<T>(path: string, query?: Record<string, string | number | undefined>) {
     return this.request<T>("DELETE", path, { query });
@@ -316,6 +340,30 @@ export class SonarrClient extends ArrClient {
    */
   calendar(start: string, end: string) {
     return this.get<SonarrCalendarEntry[]>("/calendar", { start, end, includeSeries: "true" });
+  }
+
+  /** Every episode Sonarr lists for one series, aired or not. */
+  episodes(seriesId: number) {
+    return this.get<SonarrEpisode[]>("/episode", { seriesId });
+  }
+
+  /**
+   * Monitor or unmonitor a set of episodes.
+   *
+   * Sonarr will not search for an unmonitored episode -- it accepts the command and finds
+   * nothing -- so this is not optional decoration before a search, it is half of it.
+   * The endpoint takes episode IDS only; there is no season/number form.
+   */
+  monitorEpisodes(episodeIds: readonly number[], monitored = true) {
+    return this.put<unknown>("/episode/monitor", { episodeIds: [...episodeIds], monitored });
+  }
+
+  /** Ask Sonarr to go looking for these episodes right now. */
+  searchEpisodes(episodeIds: readonly number[]) {
+    return this.post<{ id: number }>("/command", {
+      name: "EpisodeSearch",
+      episodeIds: [...episodeIds],
+    });
   }
 
   /** Sonarr keys on tvdbId, so an IMDb id has to go through its lookup first. */

@@ -39,12 +39,19 @@ services:
       FINDERR_RADARR_API_KEY: ${RADARR_API_KEY:?set RADARR_API_KEY in .env}
       FINDERR_RADARR_ROOT_FOLDER: ${RADARR_ROOT_FOLDER:-/media/movies}
       FINDERR_RADARR_QUALITY_PROFILE_ID: ${RADARR_QUALITY_PROFILE_ID:-4} # 4 = HD-1080p
+      # Where an ADMIN'S BROWSER should reach Radarr, when that is not where the server
+      # reaches it. Empty by default, which means "same as the URL above" -- correct for a
+      # LAN-only instance. Set it to the reverse-proxied name once finderr is public, or the
+      # "Open in Radarr" link is an address no outside browser can resolve. Admin-only, and
+      # never sent to anybody else.
+      FINDERR_RADARR_PUBLIC_URL: ${RADARR_PUBLIC_URL:-}
 
       # --- Sonarr
       FINDERR_SONARR_URL: ${SONARR_URL:-http://sonarr:8989}
       FINDERR_SONARR_API_KEY: ${SONARR_API_KEY:?set SONARR_API_KEY in .env}
       FINDERR_SONARR_ROOT_FOLDER: ${SONARR_ROOT_FOLDER:-/media/tv}
       FINDERR_SONARR_QUALITY_PROFILE_ID: ${SONARR_QUALITY_PROFILE_ID:-4}
+      FINDERR_SONARR_PUBLIC_URL: ${SONARR_PUBLIC_URL:-}
 
       # --- TMDB. OPTIONAL, unlike the two above: every facet that ships today is
       # served keyless through the Servarr proxies, and the app must still boot for
