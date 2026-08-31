@@ -64,6 +64,19 @@ export interface HealthDeps {
    * successful sync has happened at all, and no link can be built without it.
    */
   plex: { items: number; machineId: string | null };
+  /**
+   * The upcoming mirror, one count per SOURCE, because they fail independently.
+   *
+   * A total would hide the failure worth seeing: each writer replaces only its own rows,
+   * so Sonarr being unreachable empties one shelf while the other three stay full, and a
+   * single number cannot say which. Read a zero beside a configured service as "the walk
+   * ran and matched nothing", the same way `plex.items: 0` reads.
+   *
+   * `tmdbMovie`/`tmdbSeries` at zero is the ORDINARY case for a checkout with no TMDB key
+   * -- the sync returns before calling anything, exactly like the `tmdb` plugin going dark.
+   * Both at zero WITH a key set is the one to look into.
+   */
+  upcoming: { radarr: number; sonarr: number; tmdbMovie: number; tmdbSeries: number };
   services: { radarr: boolean; sonarr: boolean };
   /**
    * Identity, as three counts and a boolean -- no names, no ids, no tokens.
@@ -130,6 +143,7 @@ export function healthPayload(
     index: deps.index,
     library: deps.library,
     plex: deps.plex,
+    upcoming: deps.upcoming,
     // Resource use, with the CEILING beside the usage -- a byte count on its own cannot
     // be triaged, and `atLimit` rising is the clearest sign the heap has outgrown the
     // container. `gcSeconds` is cumulative CPU spent collecting; compare two samples to

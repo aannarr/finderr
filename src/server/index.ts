@@ -613,6 +613,12 @@ const appRoutes = {
           },
           library: store.libraryCount(),
           plex: { items: store.plexCount(), machineId: store.plexMachineIdentifier() },
+          upcoming: {
+            radarr: store.upcomingCount("radarr"),
+            sonarr: store.upcomingCount("sonarr"),
+            tmdbMovie: store.upcomingCount("tmdb-movie"),
+            tmdbSeries: store.upcomingCount("tmdb-series"),
+          },
           services: { radarr: !!radarr, sonarr: !!sonarr },
           auth: {
             users: authStore.userCount(),
