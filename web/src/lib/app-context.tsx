@@ -8,7 +8,7 @@
  */
 
 import { createContext, use } from "react";
-import type { Title } from "./api";
+import type { RequestOverrides, Title } from "./api";
 
 export interface AppActions {
   /**
@@ -17,10 +17,23 @@ export interface AppActions {
    * `seasons` is optional and only the title route ever passes it -- a grid card has no
    * room to choose and correctly means "all". Omitting it is not a lesser request: it is
    * the one every caller made before the selector existed.
+   *
+   * `overrides` is the same shape one layer further: ADMIN-ONLY, only the title route's
+   * request panel ever passes it, and the server REFUSES a non-admin who sends any of it.
+   * A caller with nothing to say omits it, which every grid card does.
    */
-  request: (t: Title, seasons?: readonly number[] | null) => Promise<void>;
+  request: (t: Title, seasons?: readonly number[] | null, overrides?: RequestOverrides) => Promise<void>;
   /** How many requests are still in flight, for the header badge. */
   pendingCount: number;
+  /**
+   * Is the signed-in reader an admin?
+   *
+   * Here rather than fetched per component: `RootLayout` already holds `me` for the header
+   * links, and a second `/api/me` per panel would be the same fact bought twice. It gates
+   * DISPLAY only -- the server is what enforces the rule, and a client flag flipped in
+   * devtools buys a 403 and nothing else.
+   */
+  isAdmin: boolean;
 }
 
 const AppContext = createContext<AppActions | null>(null);

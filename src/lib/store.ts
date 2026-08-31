@@ -62,6 +62,48 @@ export interface MediaRequest {
    * which is the single owner of that rule.
    */
   requested_by: string | null;
+  /**
+   * Quality profile the arr should use, or null for the service default.
+   *
+   * ADMIN-CHOSEN, and null is the ordinary case. An ordinary user's request carries null
+   * in all three of these and behaves exactly as every request did before the columns
+   * existed -- `RadarrClient.add` and `SonarrClient.add` already fall back to
+   * `svc.qualityProfileId` when the field is absent, so there is no second default here to
+   * drift from the configured one.
+   */
+  quality_profile_id: number | null;
+  /** Root folder the arr should file this under, or null for the service default. */
+  root_folder_path: string | null;
+  /**
+   * Whether the arr should start searching immediately, or null for the default (yes).
+   *
+   * SQLite has no boolean, so this is 0/1/null and `searchOnAddOf` is the one place that
+   * reads it back. Null and 1 mean the same thing to the arr; they are kept apart because
+   * "nobody chose" and "somebody chose yes" are different facts about the request.
+   */
+  search_on_add: number | null;
+}
+
+/**
+ * The three overrides an admin may attach to a request, in the API's vocabulary.
+ *
+ * Named because it travels through four layers -- request body, store, row, arr client --
+ * and a bare inline object at each would be four places to add the fourth override.
+ */
+export interface RequestOverrides {
+  qualityProfileId?: number | null;
+  rootFolderPath?: string | null;
+  searchOnAdd?: boolean | null;
+}
+
+/**
+ * `search_on_add` as the arr clients want it: a boolean, or undefined for "unset".
+ *
+ * The one owner of the 0/1/null reading. `undefined` rather than `true` for the null case
+ * so the client's own `?? true` default stays the single definition of what unset means.
+ */
+export function searchOnAddOf(row: Pick<MediaRequest, "search_on_add">): boolean | undefined {
+  return row.search_on_add === null ? undefined : row.search_on_add !== 0;
 }
 
 /**
@@ -276,6 +318,33 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     > a second path that selects it straight into a response.
   */
   { table: "request", column: "requested_by", ddl: "alter table request add column requested_by text" },
+  /*
+    Per-request arr settings, chosen by an ADMIN and null for everybody else.
+
+    Three columns rather than one JSON blob: each is a scalar the arr clients already take
+    as a named argument, and a blob would need parsing, validating and a shape version at
+    every read. Null everywhere is the pre-existing behaviour spelt out -- every request
+    written before these columns reads back as "use the service default", which is what it
+    did.
+
+    `search_on_add` is integer because SQLite has no boolean. `searchOnAddOf` is the only
+    thing that reads it back into one.
+  */
+  {
+    table: "request",
+    column: "quality_profile_id",
+    ddl: "alter table request add column quality_profile_id integer",
+  },
+  {
+    table: "request",
+    column: "root_folder_path",
+    ddl: "alter table request add column root_folder_path text",
+  },
+  {
+    table: "request",
+    column: "search_on_add",
+    ddl: "alter table request add column search_on_add integer",
+  },
 ];
 
 export class Store {
@@ -451,20 +520,53 @@ export class Store {
     seasons?: readonly number[] | null;
     /** Who asked. Null only for a request the system makes on nobody's behalf. */
     requestedBy?: string | null;
+    /**
+     * Arr settings for this one request. ADMIN-ONLY -- the route is what enforces that,
+     * because "who may choose" is an authorisation question and this layer has no
+     * principal. Absent for every ordinary request, which is the overwhelming majority.
+     */
+    overrides?: RequestOverrides;
   }): MediaRequest {
     const now = new Date().toISOString();
     const seasons = encodeSeasons(r.seasons);
-    // The conflict arm rewrites `seasons` too: re-requesting a title after changing the
-    // selection has to move it, or the reader's second choice is silently discarded and
-    // the row keeps the first one forever.
-    //
-    // It deliberately does NOT rewrite `requested_by`. The first asker keeps the credit:
-    // a second person clicking Request on a title already queued has changed nothing about
-    // who wanted it, and overwriting would let anybody erase the attribution by re-asking.
+    const o = r.overrides ?? {};
+    const searchOnAdd = o.searchOnAdd === null || o.searchOnAdd === undefined ? null : o.searchOnAdd ? 1 : 0;
+    /*
+      The conflict arm rewrites `seasons` and all three overrides: re-requesting a title
+      after changing the selection has to move it, or the second choice is silently
+      discarded and the row keeps the first one forever. The overrides follow the same rule
+      for the same reason -- an admin re-requesting with a different profile means it.
+
+      It deliberately does NOT rewrite `requested_by`. The first asker keeps the credit: a
+      second person clicking Request on a title already queued has changed nothing about who
+      wanted it, and overwriting would let anybody erase the attribution by re-asking.
+
+      The asymmetry is not an inconsistency. `requested_by` records something that ALREADY
+      HAPPENED and cannot be un-happened; the others are instructions for work not yet done,
+      and the newest instruction is the one to follow.
+    */
     this.db.run(
-      "insert into request (tconst,title,year,kind,service,status,seasons,requested_by,created_at,updated_at) values (?,?,?,?,?,?,?,?,?,?) " +
-        "on conflict(tconst) do update set updated_at=excluded.updated_at, seasons=excluded.seasons",
-      [r.tconst, r.title, r.year, r.kind, r.service, "queued", seasons, r.requestedBy ?? null, now, now],
+      "insert into request (tconst,title,year,kind,service,status,seasons,requested_by," +
+        "quality_profile_id,root_folder_path,search_on_add,created_at,updated_at) " +
+        "values (?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+        "on conflict(tconst) do update set updated_at=excluded.updated_at, seasons=excluded.seasons, " +
+        "quality_profile_id=excluded.quality_profile_id, root_folder_path=excluded.root_folder_path, " +
+        "search_on_add=excluded.search_on_add",
+      [
+        r.tconst,
+        r.title,
+        r.year,
+        r.kind,
+        r.service,
+        "queued",
+        seasons,
+        r.requestedBy ?? null,
+        o.qualityProfileId ?? null,
+        o.rootFolderPath ?? null,
+        searchOnAdd,
+        now,
+        now,
+      ],
     );
     return this.getRequest(r.tconst) as MediaRequest;
   }

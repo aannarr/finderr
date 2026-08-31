@@ -16,9 +16,10 @@ import { Link, useCanGoBack, useParams, useRouter } from "@tanstack/react-router
 import { useState } from "react";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
+import { RequestOptions } from "../components/RequestOptions";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
-import { posterUrl, type Title } from "../lib/api";
+import { posterUrl, type RequestOverrides, type Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
@@ -41,7 +42,7 @@ function runtimeLabel(mins: number): string {
 
 export function TitleRoute() {
   const { tconst } = useParams({ strict: false }) as { tconst: string };
-  const { request } = useApp();
+  const { request, isAdmin } = useApp();
   const router = useRouter();
   const canGoBack = useCanGoBack();
 
@@ -68,10 +69,21 @@ export function TitleRoute() {
   const choosable = Boolean(seasons && seasons.length > 0);
   const [choosing, setChoosing] = useState(false);
 
+  /*
+    Arr settings for this one request, ADMIN ONLY.
+
+    Held here rather than inside `RequestOptions` because the Request button is what sends
+    them and the button is not inside the panel -- the panel sits under it. An empty object
+    is the resting state and is what every non-admin sends, because `postRequest` omits an
+    unset field entirely rather than sending null (see `requestBody`), and the server
+    REFUSES a non-admin who sends any of the three.
+  */
+  const [overrides, setOverrides] = useState<RequestOverrides>({});
+
   const startRequest = () => {
     if (!title) return;
     if (choosable) setChoosing(true);
-    else void request(title);
+    else void request(title, null, overrides);
   };
 
   const requestKey = useKeyAction("request", startRequest, canRequest);
@@ -238,6 +250,15 @@ export function TitleRoute() {
                 {requestKey.hint}
               </button>
             )}
+
+            {/*
+              Under the button and never inside the header block: it loads its lists on
+              first open, so it is one more thing that arrives late, and the header rule
+              exists precisely so nothing arriving late can shove the page.
+            */}
+            {canRequest && isAdmin && (
+              <RequestOptions service={title.service} value={overrides} onChange={setOverrides} />
+            )}
           </div>
 
           {/*
@@ -268,7 +289,7 @@ export function TitleRoute() {
           onCancel={() => setChoosing(false)}
           onConfirm={(chosen) => {
             setChoosing(false);
-            void request(title, chosen);
+            void request(title, chosen, overrides);
           }}
         />
       )}

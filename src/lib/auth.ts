@@ -170,17 +170,38 @@ export function isExpired(expiresAt: string, now: Date = new Date()): boolean {
  * > on the system. Attribution is stripped on the SERVER, in one function, and a test
  * > pins it.
  *
+ * **`root_folder_path` is stripped for the same reason and it is not merely tidiness.** It
+ * is an absolute path on the server's filesystem, which is the same class of fact as a
+ * hostname: not a credential, and not something an ordinary user should be handed either.
+ * `quality_profile_id` and `search_on_add` go with it because all three are one decision an
+ * admin made, and a row that shows two thirds of it invites somebody to add the third back.
+ *
  * It returns a new object rather than deleting in place, so a caller cannot accidentally
  * hand the same row to two audiences and have the second one mutated.
  */
-export function visibleRequest<T extends { requested_by?: string | null }>(
+export function visibleRequest<
+  T extends {
+    requested_by?: string | null;
+    quality_profile_id?: number | null;
+    root_folder_path?: string | null;
+    search_on_add?: number | null;
+  },
+>(
   row: T,
   role: Role | null,
-): Omit<T, "requested_by"> & { requested_by?: string | null } {
+): Omit<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add"> &
+  Partial<Pick<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add">> {
   // Destructured out by NAME rather than deleted from a copy: a spread that forgets one
   // field is exactly how this leaks, and the compiler can see this shape.
-  const { requested_by, ...rest } = row;
-  return role === "admin" ? { ...rest, requested_by: requested_by ?? null } : rest;
+  const { requested_by, quality_profile_id, root_folder_path, search_on_add, ...rest } = row;
+  if (role !== "admin") return rest;
+  return {
+    ...rest,
+    requested_by: (requested_by ?? null) as T["requested_by"],
+    quality_profile_id: (quality_profile_id ?? null) as T["quality_profile_id"],
+    root_folder_path: (root_folder_path ?? null) as T["root_folder_path"],
+    search_on_add: (search_on_add ?? null) as T["search_on_add"],
+  };
 }
 
 /** The public shape of a user. Same rule: nothing here is a secret, so nothing leaks. */

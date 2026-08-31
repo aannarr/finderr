@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { loadConfig } from "./config";
-import { posterFrom, Store, studioFrom } from "./store";
+import { posterFrom, Store, searchOnAddOf, studioFrom } from "./store";
 
 let dir: string;
 let store: Store;
@@ -402,6 +402,73 @@ describe("request seasons", () => {
   test("re-requesting with no selection clears a previous one back to 'all'", () => {
     store.createRequest({ ...series, seasons: [1] });
     expect(store.createRequest(series).seasons).toBeNull();
+  });
+});
+
+describe("request arr overrides", () => {
+  const film = {
+    tconst: "tt0111161",
+    title: "The Shawshank Redemption",
+    year: 1994,
+    kind: "movie",
+    service: "radarr" as const,
+  };
+
+  test("an ordinary request stores null in all three -- the pre-existing behaviour", () => {
+    const r = store.createRequest(film);
+    expect(r.quality_profile_id).toBeNull();
+    expect(r.root_folder_path).toBeNull();
+    expect(r.search_on_add).toBeNull();
+    // Null is what the worker turns into "field absent", which is what makes both arr
+    // clients fall through to the configured service default.
+    expect(searchOnAddOf(r)).toBeUndefined();
+  });
+
+  test("all three round-trip", () => {
+    const r = store.createRequest({
+      ...film,
+      overrides: { qualityProfileId: 7, rootFolderPath: "/media/movies-4k", searchOnAdd: false },
+    });
+    expect(r.quality_profile_id).toBe(7);
+    expect(r.root_folder_path).toBe("/media/movies-4k");
+    expect(searchOnAddOf(r)).toBe(false);
+  });
+
+  test("searchOnAdd true and unset are stored apart, though the arr treats them alike", () => {
+    // "Nobody chose" and "somebody chose yes" are different facts about the request, and
+    // only the first may be re-decided by a config change later.
+    expect(store.createRequest({ ...film, overrides: { searchOnAdd: true } }).search_on_add).toBe(1);
+    expect(store.createRequest({ ...film, overrides: {} }).search_on_add).toBeNull();
+  });
+
+  /**
+   * Same shape as the seasons bug above and the same fix: `createRequest` upserts on
+   * `tconst`, so an admin re-requesting with a different profile hits the conflict arm. An
+   * arm that does not rewrite these accepts the change, returns 202, and downloads at the
+   * old profile.
+   */
+  test("re-requesting with different overrides moves the stored ones", () => {
+    store.createRequest({ ...film, overrides: { qualityProfileId: 4, rootFolderPath: "/media/movies" } });
+    const second = store.createRequest({
+      ...film,
+      overrides: { qualityProfileId: 7, rootFolderPath: "/media/movies-4k" },
+    });
+    expect(second.quality_profile_id).toBe(7);
+    expect(second.root_folder_path).toBe("/media/movies-4k");
+  });
+
+  test("re-requesting with none clears previous overrides back to the service default", () => {
+    store.createRequest({ ...film, overrides: { qualityProfileId: 7 } });
+    expect(store.createRequest(film).quality_profile_id).toBeNull();
+  });
+
+  test("but re-requesting never rewrites requested_by -- the first asker keeps the credit", () => {
+    // The asymmetry with the overrides above is deliberate: attribution records something
+    // that already happened, an override is an instruction for work not yet done.
+    store.createRequest({ ...film, requestedBy: "u1" });
+    const second = store.createRequest({ ...film, requestedBy: "u2", overrides: { qualityProfileId: 7 } });
+    expect(second.requested_by).toBe("u1");
+    expect(second.quality_profile_id).toBe(7);
   });
 });
 

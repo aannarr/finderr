@@ -26,6 +26,7 @@ import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
 import { loadPlugins } from "../lib/plugins";
+import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import type { TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
@@ -902,6 +903,24 @@ const appRoutes = {
       const parsed = parseSeasonsInput(body.seasons);
       if ("error" in parsed) return bad(parsed.error);
 
+      /*
+        Per-request arr settings are ADMIN-ONLY -- aannarr, 2026-08-31.
+
+        Quality profile and root folder decide what gets downloaded and onto which disk, so
+        they are a library-management decision rather than a request. An ordinary user asks
+        for a title; an admin decides how it arrives.
+
+        A non-admin who sends them is REFUSED rather than ignored. Silently dropping the
+        fields would leave a client believing a 4K profile had been honoured while the
+        service default quietly downloaded something else, and "we did what you asked"
+        being false is worse than "you may not ask that".
+      */
+      const overrides = parseRequestOverrides(body);
+      if ("error" in overrides) return bad(overrides.error);
+      if (hasOverrides(overrides.overrides) && auth.principal(req)?.role !== "admin") {
+        return bad("only an admin may choose a quality profile or root folder", 403);
+      }
+
       const row = live.current.byTconst(body.tconst);
       if (!row) return bad("unknown title", 404);
 
@@ -927,12 +946,62 @@ const appRoutes = {
         // Null when the system key made the request: an agent is not a person and owns
         // nothing. Attribution is a fact about a human or it is absent.
         requestedBy: asker?.user?.id ?? null,
+        overrides: overrides.overrides,
       });
       worker.enqueue(row.tconst);
       // Echoed back through the same strip: the asker sees their own request, but the
       // response shape must not depend on who is reading it in one place and not another.
       return json({ request: visibleRequest(request, asker?.role ?? null) }, { status: 202 });
     },
+  },
+
+  /**
+   * The quality profiles and root folders each configured arr offers. ADMIN ONLY.
+   *
+   * > [!IMPORTANT] ONE route for all four lists, and it is the only network call on any
+   * > route in this file
+   * > The card asked for four endpoints. Four would mean four round trips to draw one small
+   * > panel, and the client needs all of them at once or none of them -- a profile picker
+   * > with no folder picker is half a form. So it is one call returning one object.
+   * >
+   * > It also breaks the governing rule of this file -- the render path touches nothing but
+   * > local SQLite -- and that is why it lives HERE rather than being folded into
+   * > `/api/title/:tconst`. Nothing renders on it: the title page draws in full without it,
+   * > and only an admin opening the request panel pays for it. Putting these fields on the
+   * > title payload would have made every reader wait on Radarr for a control they cannot
+   * > see.
+   *
+   * A service that is not configured, or that will not answer, contributes `null` rather
+   * than failing the whole call -- an admin with a dead Sonarr should still be able to
+   * choose a Radarr profile.
+   */
+  "/api/arr/options": async (req: Request) => {
+    const refused = auth.requireAdmin(req);
+    if (refused) return refused;
+
+    // `allSettled` rather than `all`: one arr being down must not take the other's lists
+    // with it, and both are separately optional in config to begin with.
+    const ask = async <T>(fn: (() => Promise<T | null>) | undefined): Promise<T | null> => {
+      if (!fn) return null;
+      try {
+        return await fn();
+      } catch (err) {
+        log(`arr options: ${(err as Error).message}`);
+        return null;
+      }
+    };
+
+    const [radarrProfiles, radarrFolders, sonarrProfiles, sonarrFolders] = await Promise.all([
+      ask(radarr && (() => radarr.qualityProfiles())),
+      ask(radarr && (() => radarr.rootFolders())),
+      ask(sonarr && (() => sonarr.qualityProfiles())),
+      ask(sonarr && (() => sonarr.rootFolders())),
+    ]);
+
+    return json({
+      radarr: radarr ? { qualityProfiles: radarrProfiles ?? [], rootFolders: radarrFolders ?? [] } : null,
+      sonarr: sonarr ? { qualityProfiles: sonarrProfiles ?? [], rootFolders: sonarrFolders ?? [] } : null,
+    });
   },
 
   "/api/requests/:tconst/retry": {

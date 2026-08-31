@@ -98,11 +98,35 @@ describe("who may see what", () => {
       tconst: "tt0111161",
       title: "The Shawshank Redemption",
     });
+    // An admin gets every admin-only key, normalised to null when the row carried none.
+    // The client can therefore read `row.root_folder_path` without checking it exists.
     expect(visibleRequest(row, "admin")).toEqual({
       tconst: "tt0111161",
       title: "The Shawshank Redemption",
       requested_by: "u9",
+      quality_profile_id: null,
+      root_folder_path: null,
+      search_on_add: null,
     });
+  });
+
+  test("the arr overrides are admin-only too -- a root folder is a filesystem path", () => {
+    // Not a credential, but the same class of fact as a hostname: an ordinary user has no
+    // business being handed the server's directory layout by the request log.
+    const row = {
+      tconst: "tt0111161",
+      title: "The Shawshank Redemption",
+      requested_by: "u9",
+      quality_profile_id: 7,
+      root_folder_path: "/media/movies-4k",
+      search_on_add: 0,
+    };
+
+    expect(visibleRequest(row, "user")).toEqual({
+      tconst: "tt0111161",
+      title: "The Shawshank Redemption",
+    });
+    expect(visibleRequest(row, "admin")).toEqual(row);
   });
 
   test("the key is GONE for a user, not merely null", () => {

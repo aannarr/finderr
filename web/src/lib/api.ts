@@ -97,6 +97,46 @@ export interface MediaRequest {
   updated_at: string;
   /** Comma-joined season numbers, or null for "all". Series only. */
   seasons: string | null;
+  /**
+   * The arr settings an admin chose for this request, ABSENT for everybody else.
+   *
+   * Optional in the type because the server strips them for a non-admin -- see
+   * `visibleRequest` in `src/lib/auth.ts`. A component reading these must therefore treat
+   * `undefined` as "not my business to know" rather than as "the default was used".
+   */
+  quality_profile_id?: number | null;
+  root_folder_path?: string | null;
+  search_on_add?: number | null;
+}
+
+/** One selectable quality profile, as an arr reports it. */
+export interface ArrQualityProfile {
+  id: number;
+  name: string;
+}
+
+/** One selectable root folder, as an arr reports it. */
+export interface ArrRootFolder {
+  path: string;
+  freeSpace?: number;
+}
+
+/** What one arr offers. `null` for a service that is not configured at all. */
+export interface ArrOptions {
+  qualityProfiles: ArrQualityProfile[];
+  rootFolders: ArrRootFolder[];
+}
+
+/**
+ * The three arr settings an admin may attach to one request.
+ *
+ * Every field optional and every field meaning "use the service default" when absent, so
+ * an empty object is a valid and common value -- it is what `RequestOptions` starts at.
+ */
+export interface RequestOverrides {
+  qualityProfileId?: number | null;
+  rootFolderPath?: string | null;
+  searchOnAdd?: boolean | null;
 }
 
 export interface Filters {
@@ -597,19 +637,63 @@ export async function getRequests(): Promise<{
  * `seasons` is omitted from the body entirely when absent, never sent as null -- the
  * server reads "the key is not there" as "the reader never chose" and applies Sonarr's
  * own policy, which is what a film and an unopened selector both want.
+ *
+ * `overrides` follows the same rule and for a stronger reason: the server REFUSES a
+ * non-admin who sends any of the three, so a key that is present but null would turn every
+ * ordinary user's request into a 403. `requestBody` is what guarantees an untouched control
+ * sends nothing at all.
  */
 export async function postRequest(
   tconst: string,
   seasons?: readonly number[] | null,
+  overrides?: RequestOverrides,
 ): Promise<{ request: MediaRequest }> {
   const res = await fetch("/api/requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(seasons && seasons.length > 0 ? { tconst, seasons } : { tconst }),
+    body: JSON.stringify(requestBody(tconst, seasons, overrides)),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `request failed: ${res.status}`);
   return body as { request: MediaRequest };
+}
+
+/**
+ * The POST body, with every unchosen field ABSENT rather than null.
+ *
+ * Exported for its tests: the rule it encodes is invisible from the outside and expensive
+ * to get wrong, because sending `qualityProfileId: null` reads to the server as "this
+ * caller tried to choose" and earns an ordinary user a 403 on a request they made by
+ * clicking one button.
+ */
+export function requestBody(
+  tconst: string,
+  seasons?: readonly number[] | null,
+  overrides?: RequestOverrides,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { tconst };
+  if (seasons && seasons.length > 0) body.seasons = seasons;
+  // `!= null` on purpose -- it is the one place a loose comparison says exactly the right
+  // thing, catching both null and undefined while letting `false` and `0` through.
+  if (overrides?.qualityProfileId != null) body.qualityProfileId = overrides.qualityProfileId;
+  if (overrides?.rootFolderPath != null) body.rootFolderPath = overrides.rootFolderPath;
+  if (overrides?.searchOnAdd != null) body.searchOnAdd = overrides.searchOnAdd;
+  return body;
+}
+
+/**
+ * The quality profiles and root folders each arr offers. ADMIN ONLY -- an ordinary user
+ * gets 404, which is the same shape `/api/admin/*` uses and is not an error worth showing.
+ *
+ * One call rather than four: the panel needs every list at once or none of them.
+ */
+export async function getArrOptions(): Promise<{
+  radarr: ArrOptions | null;
+  sonarr: ArrOptions | null;
+}> {
+  const res = await fetch("/api/arr/options");
+  if (!res.ok) throw new Error(`arr options failed: ${res.status}`);
+  return res.json();
 }
 
 export async function retryRequest(tconst: string): Promise<void> {

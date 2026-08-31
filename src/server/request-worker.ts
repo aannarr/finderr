@@ -15,6 +15,7 @@ import type { RadarrClient, SonarrClient } from "../lib/arr";
 import { ArrError, safeArrMessage } from "../lib/arr";
 import { decodeSeasons } from "../lib/seasons";
 import type { Store } from "../lib/store";
+import { searchOnAddOf } from "../lib/store";
 
 export interface WorkerDeps {
   store: Store;
@@ -81,9 +82,18 @@ export class RequestWorker {
     if (req.status !== "queued") return;
 
     try {
+      // Null for every ordinary request, which is what makes this a no-op for them: both
+      // clients fall back to the configured service default when a field is absent, so
+      // there is no second default here that could drift from the first.
+      const overrides = {
+        qualityProfileId: req.quality_profile_id ?? undefined,
+        rootFolderPath: req.root_folder_path ?? undefined,
+        searchOnAdd: searchOnAddOf(req),
+      };
+
       if (req.service === "radarr") {
         if (!radarr) throw new Error("Radarr is not configured");
-        const movie = await radarr.add({ imdbId: tconst });
+        const movie = await radarr.add({ imdbId: tconst, ...overrides });
         store.updateRequest(tconst, {
           status: "sent",
           arr_id: movie.id,
@@ -94,7 +104,11 @@ export class RequestWorker {
         if (!sonarr) throw new Error("Sonarr is not configured");
         // decodeSeasons returns null for a request made before the selector existed, and
         // null is exactly what `add` wants for "all" -- no branch needed here.
-        const series = await sonarr.add({ imdbId: tconst, seasons: decodeSeasons(req.seasons) });
+        const series = await sonarr.add({
+          imdbId: tconst,
+          seasons: decodeSeasons(req.seasons),
+          ...overrides,
+        });
         store.updateRequest(tconst, {
           status: "sent",
           arr_id: series.id,

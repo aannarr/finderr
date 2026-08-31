@@ -11,7 +11,14 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useKeyAction } from "../components/Kbd";
-import { getRequests, patchTitleState, postRequest, retryRequest, type Title } from "../lib/api";
+import {
+  getRequests,
+  patchTitleState,
+  postRequest,
+  type RequestOverrides,
+  retryRequest,
+  type Title,
+} from "../lib/api";
 import { AppProvider } from "../lib/app-context";
 import { getAuthState, type PublicUser } from "../lib/auth-api";
 import type { SearchParams } from "../lib/search-params";
@@ -101,7 +108,7 @@ export function RootLayout() {
 
   /** Fire and forget. The user keeps searching; the toast reports the outcome. */
   const request = useCallback(
-    async (t: Title, seasons?: readonly number[] | null) => {
+    async (t: Title, seasons?: readonly number[] | null, overrides?: RequestOverrides) => {
       const id = toasts.push(`Requesting ${t.title}`);
       // Optimistic: mark it immediately so the card updates without a round trip.
       // patchTitleState writes through the shared caches, so every view showing this
@@ -109,15 +116,16 @@ export function RootLayout() {
       patchTitleState(t.tconst, { requestStatus: "queued" });
 
       try {
-        await postRequest(t.tconst, seasons);
+        await postRequest(t.tconst, seasons, overrides);
         toasts.resolve(id, "success", summariseSent(t, seasons));
       } catch (e) {
         patchTitleState(t.tconst, { requestStatus: null });
-        // The retry carries the SAME selection. Retrying into "all seasons" would
-        // quietly download more than the reader asked for, on the one path where they
-        // are least likely to be watching.
+        // The retry carries the SAME selection AND the same overrides. Retrying into "all
+        // seasons" would quietly download more than the reader asked for, and retrying into
+        // the default quality profile would quietly download something other than what an
+        // admin chose -- both on the one path where they are least likely to be watching.
         toasts.resolve(id, "error", (e as Error).message, () => {
-          void retryRequest(t.tconst).then(() => request(t, seasons));
+          void retryRequest(t.tconst).then(() => request(t, seasons, overrides));
         });
       }
     },
@@ -140,7 +148,7 @@ export function RootLayout() {
   );
 
   return (
-    <AppProvider value={{ request, pendingCount }}>
+    <AppProvider value={{ request, pendingCount, isAdmin: me?.role === "admin" }}>
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
         <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
           <div className="flex items-baseline gap-3">
