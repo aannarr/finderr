@@ -11,7 +11,9 @@
  * server: the entry is boot, timers and routes, and shelf membership is none of those.
  *
  * Every row is a query over the local index and costs ZERO external calls, which is why
- * finderr can offer shelves Seerr structurally cannot, like "hidden gems".
+ * finderr can offer shelves Seerr structurally cannot -- "hidden gems" is the example, and
+ * `SearchEngine.hiddenGems` is still there, but aannarr took it off the front page on
+ * 2026-08-31. Putting it back is one entry in the list below.
  */
 
 import { decadeOf, type SearchEngine, type TitleRow } from "../lib/search";
@@ -35,7 +37,7 @@ export interface DiscoveryShelf {
 export interface ShelfDeps {
   engine: Pick<
     SearchEngine,
-    "topRated" | "hiddenGems" | "anticipated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst"
+    "topRated" | "anticipated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst"
   >;
   store: Pick<Store, "libraryMap" | "recentlyAddedIds">;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
@@ -82,12 +84,6 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       title: "Highly rated, not in your library",
       browse: { kind: "movie" },
       rows: engine.topRated({ kind: "movie", limit: 30, excludeTconsts: owned }),
-    },
-    {
-      id: "hidden-gems",
-      title: "Hidden gems",
-      subtitle: "loved by the few who found them",
-      rows: engine.hiddenGems({ limit: 30 }).filter((t) => !owned.has(t.tconst)),
     },
     {
       id: "top-series",

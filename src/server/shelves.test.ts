@@ -28,7 +28,6 @@ function depsWith(
   return {
     engine: {
       topRated: (opts = {}) => [row(`top-${opts.kind}`, `top ${opts.kind}`, opts.kind ?? "movie")],
-      hiddenGems: () => [row("gem")],
       anticipated: () => [row("soon")],
       newThisDecade: () => [row("decade")],
       topGenres: () => ["Horror"],
@@ -50,7 +49,6 @@ describe("discoveryShelves", () => {
     expect(ids).toEqual([
       "recently-added",
       "top-movies",
-      "hidden-gems",
       "top-series",
       "coming-soon",
       "new-decade",
@@ -60,15 +58,32 @@ describe("discoveryShelves", () => {
 
   /** A blank row is worse than no row, and the warm loop must not count titles nobody sees. */
   test("a shelf that came back empty is dropped rather than rendered", () => {
-    const shelves = discoveryShelves(depsWith({ hiddenGems: () => [] }));
-    expect(shelves.map((s) => s.id)).not.toContain("hidden-gems");
+    const shelves = discoveryShelves(depsWith({ anticipated: () => [] }));
+    expect(shelves.map((s) => s.id)).not.toContain("coming-soon");
     // With no library mirror there is nothing recently added either.
     expect(shelves.map((s) => s.id)).not.toContain("recently-added");
   });
 
-  test("titles already in the library are kept off the discovery shelves", () => {
-    const shelves = discoveryShelves(depsWith({ hiddenGems: () => [row("gem")] }, ["gem"]));
-    expect(shelves.map((s) => s.id)).not.toContain("hidden-gems");
+  /**
+   * Exclusion is the ENGINE's job on every discovery shelf, so what this file owes is the
+   * wiring: the library mirror's keys reach the query as `excludeTconsts`. Asserting on the
+   * returned rows instead would only prove the fake engine ignored the option it was handed.
+   */
+  test("what the library already holds is handed to the engine as an exclusion", () => {
+    const seen: (Set<string> | undefined)[] = [];
+    discoveryShelves(
+      depsWith(
+        {
+          topRated: (opts = {}) => {
+            seen.push(opts.excludeTconsts);
+            return [row(`top-${opts.kind}`)];
+          },
+        },
+        ["owned-1"],
+      ),
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    for (const excluded of seen) expect([...(excluded ?? [])]).toEqual(["owned-1"]);
   });
 
   test("recently-added is read out of the mirror, in the mirror's order", () => {
