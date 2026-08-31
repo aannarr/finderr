@@ -14,10 +14,12 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
+import { awardSourceMeta, importAwards } from "../jobs/import-awards";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { isoIn, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
+import { OSCARS, personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import type { EpisodeState } from "../lib/episodes";
@@ -39,6 +41,7 @@ import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbUpcoming } from "../lib/upcoming";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
+import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
@@ -381,6 +384,37 @@ async function refreshTmdbUpcoming(): Promise<void> {
 setTimeout(() => void refreshTmdbUpcoming().then(warmShelves), 8_000);
 setInterval(() => void refreshTmdbUpcoming().then(warmShelves), 6 * 60 * 60 * 1000);
 
+/**
+ * Import the award nominations, in-process and never on a request path.
+ *
+ * ONCE at boot if there is nothing stored, then daily. It is not on the six-hourly loop
+ * above because the data genuinely changes once a year: the Academy announces in March and
+ * `oscar_data` catches up within weeks. A daily check costs one conditional-ish 2.2 MB read
+ * of somebody's public repo, which is polite; six-hourly would be four times that for no
+ * new fact.
+ *
+ * Failures are logged and swallowed. A finderr with no nominations is a finderr whose
+ * awards page is empty, which is the same shape as a keyless `tmdb` plugin going dark -- it
+ * must never be the reason the server does not come up.
+ */
+async function refreshAwards(): Promise<void> {
+  try {
+    const meta = await importAwards(store);
+    log(`awards: ${meta.rows.toLocaleString()} nominations from ${meta.sha?.slice(0, 10) ?? "main"}`);
+  } catch (err) {
+    log(`awards import failed -- ${(err as Error).message}`);
+  }
+}
+
+// Only on a cold store. A redeploy keeps its data directory, so re-importing on every boot
+// would download 2.2 MB to write rows that are already there -- and a container that
+// restarts in a loop would do it every time.
+if (store.awardCount(OSCARS) === 0) {
+  log("awards: nothing stored -- importing");
+  setTimeout(() => void refreshAwards(), 12_000);
+}
+setInterval(() => void refreshAwards(), 24 * 60 * 60 * 1000);
+
 // --- helpers ---------------------------------------------------------------
 
 const json = (data: unknown, init: ResponseInit = {}) =>
@@ -580,6 +614,24 @@ function liveCollectionRows(contentId?: string) {
  */
 const shelfCoverage = () => facetCoverage(shelvesOf(), (row) => facets.isWarm(entityFor(row)));
 
+/**
+ * What the award handlers read, resolved at the moment of use.
+ *
+ * `live.current` is read INSIDE the function rather than captured, for the reason stated
+ * at length in `live-index.ts`: an engine held across a promote either throws a disk I/O
+ * error or, under load, silently serves yesterday's row.
+ *
+ * The provenance is read from `kv` on every call. It is one indexed lookup against a row
+ * that changes once a year, and caching it in a module const is exactly how the awards
+ * page would go on naming last year's commit after an import.
+ */
+const awardsDeps = (): AwardsDeps => ({
+  store,
+  engine: live.current,
+  decorate,
+  source: awardSourceMeta(store),
+});
+
 const staticDir = `${import.meta.dir}/../../web/dist`;
 const haveStatic = existsSync(staticDir);
 if (!haveStatic) log(`note: no web build at ${staticDir} -- API only. Run 'bun run build'.`);
@@ -647,6 +699,14 @@ const appRoutes = {
             tmdbMovie: store.upcomingCount("tmdb-movie"),
             tmdbSeries: store.upcomingCount("tmdb-series"),
           },
+          awards: (() => {
+            const meta = awardSourceMeta(store);
+            return {
+              rows: store.awardCount(OSCARS),
+              sha: meta?.sha ?? null,
+              importedAt: meta?.importedAt ?? null,
+            };
+          })(),
           services: { radarr: !!radarr, sonarr: !!sonarr },
           auth: {
             users: authStore.userCount(),
@@ -851,6 +911,20 @@ const appRoutes = {
             An empty array is the ordinary case: no plugin in the tree declares a pane.
           */
         panes: renderPanes(plugins.panes(), cached, log),
+        /*
+            THIS FILM'S AWARD RECORD, and it is NOT a facet.
+
+            A facet is a plugin's answer fetched from somebody else's server and cached with
+            a freshness class; this is a dataset we imported wholesale on a yearly timer and
+            hold in our own tables. It is therefore always ready at t=0 -- there is no
+            provider to owe it an answer, no `pending` state and nothing for `paneView` to
+            decide -- which is exactly the situation `LinksRow` is in, and it is drawn the
+            same way.
+
+            `null` for the overwhelming majority of titles, which the pane renders as
+            nothing at all.
+          */
+        awards: titleAwards(store, row.tconst, OSCARS),
       },
       // Shorter than the 300s the local-only version used: this response now carries
       // facets that fill in behind it, and a stale cache would hide them.
@@ -967,9 +1041,60 @@ const appRoutes = {
     if (!page) return bad("unknown person", 404);
 
     return json(
-      { ...page, credits: decorate(page.credits) },
+      {
+        ...page,
+        credits: decorate(page.credits),
+        /*
+            THEIR AWARD RECORD, from our own tables and joined on the nconst.
+
+            Beside the credits rather than inside them, the same shape `people` follows on
+            the title payload: a credit is our INDEX saying they worked on a film, and this
+            is a mirrored dataset saying the Academy nominated them. Merging the two would
+            make a credit row mean two different things.
+
+            `null` when they have none, which is nearly everybody -- so the person page
+            draws nothing at all rather than "0 nominations". One indexed lookup.
+          */
+        awards: personAwards(store, req.params.nconst, OSCARS),
+      },
       { headers: { "Cache-Control": "private, max-age=300" } },
     );
+  },
+
+  /**
+   * Every Academy Award ceremony, newest first.
+   *
+   * Local SQLite the whole way down, like every other render-path handler: the nominations
+   * were imported by a job on a yearly clock and this only reads them, joins the anchor
+   * films against the live index and counts ownership against the library mirror.
+   *
+   * A checkout that has never run the import gets `ceremonies: []` and a null `source`,
+   * which the page renders as "no awards imported yet" rather than as an error -- the
+   * import is optional in exactly the way the cast tables are.
+   */
+  "/api/awards/oscars": () =>
+    json(
+      timelinePayload(awardsDeps()),
+      // Long, because the underlying rows change once a year. The ownership counts ride on
+      // the same response and move faster than that -- but they move on a library sync, and
+      // a private 10-minute window on a page nobody watches for library changes is the
+      // right trade. `private` because the counts are about THIS instance's library.
+      { headers: { "Cache-Control": "private, max-age=600" } },
+    ),
+
+  /**
+   * One ceremony, every category, winner first.
+   *
+   * The parameter is the CEREMONY NUMBER, never the year: `Year` is `1927/28` for the first
+   * six and is a label rather than a key. A non-numeric or unknown ceremony is a 404, which
+   * is the same answer `/api/collection/:id` gives for an id we hold nothing under.
+   */
+  "/api/awards/oscars/:ceremony": (req: Bun.BunRequest<"/api/awards/oscars/:ceremony">) => {
+    const ceremony = Number.parseInt(req.params.ceremony, 10);
+    if (!Number.isFinite(ceremony)) return bad("unknown ceremony", 404);
+    const page = ceremonyPayload(awardsDeps(), ceremony);
+    if (!page) return bad("unknown ceremony", 404);
+    return json(page, { headers: { "Cache-Control": "private, max-age=600" } });
   },
 
   /**

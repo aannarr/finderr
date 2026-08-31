@@ -83,6 +83,17 @@ export interface HealthDeps {
    * Both at zero WITH a key set is the one to look into.
    */
   upcoming: { radarr: number; sonarr: number; tmdbMovie: number; tmdbSeries: number };
+  /**
+   * The award mirror: how many nominations are stored, and which commit they came from.
+   *
+   * `rows: 0` is the field worth reading -- the import is optional and runs on its own
+   * daily timer, so zero means either that a cold store has not reached its first import
+   * yet (about twelve seconds after boot) or that the import has been failing, and the log
+   * says which. `sha: null` beside a non-zero `rows` means the rows were parsed from `main`
+   * without GitHub's commits API answering, so we cannot name what we read -- honest, and
+   * the reason the field exists rather than a bare date.
+   */
+  awards: { rows: number; sha: string | null; importedAt: string | null };
   services: { radarr: boolean; sonarr: boolean };
   /**
    * Identity, as three counts and a boolean -- no names, no ids, no tokens.
@@ -150,6 +161,7 @@ export function healthPayload(
     library: deps.library,
     plex: deps.plex,
     upcoming: deps.upcoming,
+    awards: deps.awards,
     // Resource use, with the CEILING beside the usage -- a byte count on its own cannot
     // be triaged, and `atLimit` rising is the clearest sign the heap has outgrown the
     // container. `gcSeconds` is cumulative CPU spent collecting; compare two samples to

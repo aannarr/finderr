@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite";
 import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
 import { AUTH_SCHEMA } from "./auth-store";
+import type { Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
 import type { PlexItem } from "./plex";
@@ -411,6 +412,74 @@ create table if not exists facet_image (
   url     text not null,
   seen_at text not null
 );
+
+-- One award nomination, mirrored from a published dataset on its own timer.
+--
+-- NOTE: no backticks anywhere in this comment. SCHEMA is a template literal.
+--
+-- IN THE APP DB rather than in the index, and that is the decision worth knowing. The
+-- index is rebuilt from the IMDb dumps and swapped in place every night, so anything
+-- stored there has to be re-derived by the builder or it disappears at 09:00. Nominations
+-- are mirrored external state on a yearly clock, exactly like upcoming and plex_item, so
+-- they live where the other mirrors live and survive every rebuild.
+--
+-- THE KEY IS (award, ceremony, seq), not the (award, ceremony, category, id) the card
+-- proposed. Measured against the real file: 528 rows carry neither a FilmId nor a
+-- NomineeId -- honorary and special awards, several per ceremony -- so an id cannot be
+-- part of a total key. seq is the row's position within its ceremony in SOURCE order,
+-- which also gives the category listing a stable tiebreak that is not alphabetical.
+--
+-- films/film_ids and nominees/nconsts are pipe-joined PARALLEL strings, mirroring how the
+-- source carries them. A pair rather than a join table because the printed name is wanted
+-- whether or not there is an id behind it: about 1,281 of 12,137 rows carry no FilmId at
+-- all and render as plain text. The two lookup tables below are the indexed reverse edge.
+create table if not exists award_nomination (
+  award        text not null,
+  ceremony     integer not null,
+  seq          integer not null,
+  year         text not null,
+  class        text not null,
+  category     text not null,
+  raw_category text not null,
+  films        text not null,
+  film_ids     text not null,
+  nominees     text not null,
+  nconsts      text not null,
+  won          integer not null default 0,
+  detail       text,
+  note         text,
+  primary key (award, ceremony, seq)
+);
+create index if not exists ix_award_ceremony on award_nomination(award, ceremony);
+create index if not exists ix_award_category on award_nomination(award, category);
+
+-- The reverse edges: which nominations name this title, and which name this person.
+--
+-- Separate tables rather than a LIKE over the joined strings, because both are read on a
+-- render path -- the title pane and the person page -- and a LIKE '%tt0068646%' is a scan
+-- of every nomination we hold. They also handle the multi-id rows honestly: 18 nominations
+-- name two or three films at once (one 1928 acting nomination covers three), and a joined
+-- string cannot be indexed on either of them.
+--
+-- Only ids we can actually use land here. The source mixes COMPANY ids (co0007143) into
+-- NomineeIds beside the people, and a company is not a person page -- see isPersonId.
+create table if not exists award_film (
+  award    text not null,
+  ceremony integer not null,
+  seq      integer not null,
+  tconst   text not null,
+  primary key (award, ceremony, seq, tconst)
+);
+create index if not exists ix_award_film_tconst on award_film(tconst);
+
+create table if not exists award_nominee (
+  award    text not null,
+  ceremony integer not null,
+  seq      integer not null,
+  nconst   text not null,
+  primary key (award, ceremony, seq, nconst)
+);
+create index if not exists ix_award_nominee_nconst on award_nominee(nconst);
 `;
 
 /**
@@ -1217,6 +1286,268 @@ export class Store {
   facetImageCount(): number {
     return (this.db.query("select count(*) c from facet_image").get() as { c: number }).c;
   }
+
+  // --- awards --------------------------------------------------------------
+
+  /**
+   * Replace every nomination for one award, in a single transaction.
+   *
+   * A full swap for the same reason `replaceLibrary` is one: `oscar_data` CORRECTS old
+   * ceremonies as well as adding new ones, so a row that upstream deleted or re-keyed has
+   * to disappear here too, and an upsert can only ever add. The swap is atomic, so a
+   * reader during an import sees the old set or the new one and never half of either.
+   *
+   * The two edge tables are rebuilt from the same rows rather than being written by their
+   * own caller: they are an INDEX of this data, and one writer is what stops them drifting
+   * from the nominations they point at.
+   */
+  replaceAwards(award: string, rows: readonly Nomination[]): number {
+    const ins = this.db.prepare(
+      "insert or replace into award_nomination " +
+        "(award, ceremony, seq, year, class, category, raw_category, films, film_ids, nominees, nconsts, won, detail, note) " +
+        "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    );
+    const insFilm = this.db.prepare(
+      "insert or replace into award_film (award, ceremony, seq, tconst) values (?,?,?,?)",
+    );
+    const insNominee = this.db.prepare(
+      "insert or replace into award_nominee (award, ceremony, seq, nconst) values (?,?,?,?)",
+    );
+
+    return this.db.transaction(() => {
+      this.db.run("delete from award_nomination where award = ?", [award]);
+      this.db.run("delete from award_film where award = ?", [award]);
+      this.db.run("delete from award_nominee where award = ?", [award]);
+      for (const r of rows) {
+        ins.run(
+          award,
+          r.ceremony,
+          r.seq,
+          r.year,
+          r.className,
+          r.category,
+          r.rawCategory,
+          r.films.join("|"),
+          // The nulls survive as EMPTY entries so the two lists stay positionally aligned
+          // on the way back out. Dropping them here would slide every later id onto the
+          // wrong title, which is the one failure this shape exists to prevent.
+          r.filmIds.map((id) => id ?? "").join("|"),
+          r.nominees.join("|"),
+          r.nconsts.map((id) => id ?? "").join("|"),
+          r.won ? 1 : 0,
+          r.detail,
+          r.note,
+        );
+        // A Set because one nomination can legitimately name the same id twice; the
+        // primary key would refuse the second write, and `insert or replace` would make
+        // it silent rather than correct.
+        for (const t of new Set(r.filmIds.filter((id): id is string => id !== null))) {
+          insFilm.run(award, r.ceremony, r.seq, t);
+        }
+        for (const n of new Set(r.nconsts.filter((id): id is string => id !== null))) {
+          insNominee.run(award, r.ceremony, r.seq, n);
+        }
+      }
+      return rows.length;
+    })();
+  }
+
+  /** Every nomination of one ceremony, in source order. The ceremony page groups them. */
+  awardCeremonyRows(award: string, ceremony: number): Nomination[] {
+    return (
+      this.db
+        .query("select * from award_nomination where award = ? and ceremony = ? order by seq")
+        .all(award, ceremony) as AwardRow[]
+    ).map(toNomination);
+  }
+
+  /** Every nomination naming this title, newest ceremony first. */
+  awardRowsForTitle(award: string, tconst: string): Nomination[] {
+    return (
+      this.db
+        .query(
+          "select n.* from award_film f join award_nomination n " +
+            "on n.award = f.award and n.ceremony = f.ceremony and n.seq = f.seq " +
+            "where f.award = ? and f.tconst = ? order by n.ceremony desc, n.seq",
+        )
+        .all(award, tconst) as AwardRow[]
+    ).map(toNomination);
+  }
+
+  /** Every nomination naming this person, newest ceremony first. */
+  awardRowsForPerson(award: string, nconst: string): Nomination[] {
+    return (
+      this.db
+        .query(
+          "select n.* from award_nominee p join award_nomination n " +
+            "on n.award = p.award and n.ceremony = p.ceremony and n.seq = p.seq " +
+            "where p.award = ? and p.nconst = ? order by n.ceremony desc, n.seq",
+        )
+        .all(award, nconst) as AwardRow[]
+    ).map(toNomination);
+  }
+
+  /**
+   * Per-ceremony counts, plus how many of that year's films we hold.
+   *
+   * ONE query for the whole timeline rather than 98 -- the page draws every ceremony, so a
+   * per-row query is 98 round trips for a screen that is one `select` wide. The ownership
+   * count joins the library mirror in SQL for the same reason: it is the same database, so
+   * pulling every film id into JS to count them would be the join done worse.
+   *
+   * `distinct` on the film id, because a film nominated in nine categories is one film.
+   */
+  awardCeremonyCounts(award: string): {
+    ceremony: number;
+    year: string;
+    nominations: number;
+    wins: number;
+    categories: number;
+    films: number;
+    filmsOwned: number;
+  }[] {
+    const counts = this.db
+      .query(
+        "select ceremony, max(year) as year, count(*) as nominations, " +
+          "sum(won) as wins, count(distinct category) as categories " +
+          "from award_nomination where award = ? group by ceremony order by ceremony desc",
+      )
+      .all(award) as {
+      ceremony: number;
+      year: string;
+      nominations: number;
+      wins: number;
+      categories: number;
+    }[];
+
+    const films = new Map<number, { films: number; filmsOwned: number }>();
+    for (const r of this.db
+      .query(
+        "select f.ceremony as ceremony, count(distinct f.tconst) as films, " +
+          "count(distinct case when l.imdb_id is not null then f.tconst end) as owned " +
+          "from award_film f left join library l on l.imdb_id = f.tconst " +
+          "where f.award = ? group by f.ceremony",
+      )
+      .all(award) as { ceremony: number; films: number; owned: number }[]) {
+      films.set(r.ceremony, { films: r.films, filmsOwned: r.owned });
+    }
+
+    return counts.map((c) => ({
+      ...c,
+      // `sum` over an empty group is null in SQLite, and a ceremony with no wins recorded
+      // is a real state for the current year before the awards are given.
+      wins: c.wins ?? 0,
+      films: films.get(c.ceremony)?.films ?? 0,
+      filmsOwned: films.get(c.ceremony)?.filmsOwned ?? 0,
+    }));
+  }
+
+  /**
+   * The winner of one category per ceremony, as the timeline's anchor.
+   *
+   * Takes the category NAME rather than hardcoding Best Picture: the anchor is a render
+   * decision and belongs to the caller, and `UNIQUE AND ARTISTIC PICTURE` exists as a
+   * second top prize at the first ceremony, so "the" top category is not a fact this
+   * table can assert on its own.
+   */
+  awardCategoryWinners(award: string, category: string): Nomination[] {
+    return (
+      this.db
+        .query(
+          "select * from award_nomination where award = ? and category = ? and won = 1 " +
+            "order by ceremony desc, seq",
+        )
+        .all(award, category) as AwardRow[]
+    ).map(toNomination);
+  }
+
+  /** Every nomination a given ceremony's given film took, for the "also won" line. */
+  awardRowsForFilmAtCeremony(award: string, ceremony: number, tconst: string): Nomination[] {
+    return (
+      this.db
+        .query(
+          "select n.* from award_film f join award_nomination n " +
+            "on n.award = f.award and n.ceremony = f.ceremony and n.seq = f.seq " +
+            "where f.award = ? and f.ceremony = ? and f.tconst = ? order by n.seq",
+        )
+        .all(award, ceremony, tconst) as AwardRow[]
+    ).map(toNomination);
+  }
+
+  /**
+   * How many of a set of tconsts the library holds. One query, whatever the size.
+   *
+   * The completion counts are the one thing Seerr structurally cannot answer, and they are
+   * answerable here only because the nominations and the library mirror are in the same
+   * file. Chunked because SQLite caps a statement at 32,766 bound parameters by default and
+   * a full-award count is 5,264 distinct films -- under the cap today, and this is what
+   * stops that being a fact anybody has to remember.
+   */
+  ownedCount(tconsts: readonly string[]): number {
+    let owned = 0;
+    for (let i = 0; i < tconsts.length; i += 500) {
+      const chunk = tconsts.slice(i, i + 500);
+      const q = this.db.query(
+        `select count(distinct imdb_id) c from library where imdb_id in (${chunk.map(() => "?").join(",")})`,
+      );
+      owned += (q.get(...(chunk as never[])) as { c: number }).c;
+    }
+    return owned;
+  }
+
+  awardCount(award: string): number {
+    return (
+      this.db.query("select count(*) c from award_nomination where award = ?").get(award) as { c: number }
+    ).c;
+  }
+}
+
+/** The stored shape, which is the domain shape with the two id lists joined. */
+interface AwardRow {
+  award: string;
+  ceremony: number;
+  seq: number;
+  year: string;
+  class: string;
+  category: string;
+  raw_category: string;
+  films: string;
+  film_ids: string;
+  nominees: string;
+  nconsts: string;
+  won: number;
+  detail: string | null;
+  note: string | null;
+}
+
+/**
+ * Split a stored parallel id list back into positions.
+ *
+ * An empty entry means "no id at this position", which is the ordinary case, so `""` maps
+ * to `null` rather than being filtered out -- filtering would misalign every later entry
+ * with its name.
+ */
+function splitIds(raw: string): (string | null)[] {
+  return raw === "" ? [] : raw.split("|").map((id) => (id === "" ? null : id));
+}
+
+function toNomination(r: AwardRow): Nomination {
+  return {
+    award: r.award,
+    ceremony: r.ceremony,
+    seq: r.seq,
+    year: r.year,
+    className: r.class,
+    category: r.category,
+    rawCategory: r.raw_category,
+    films: r.films === "" ? [] : r.films.split("|"),
+    filmIds: splitIds(r.film_ids),
+    nominees: r.nominees === "" ? [] : r.nominees.split("|"),
+    nconsts: splitIds(r.nconsts),
+    won: r.won === 1,
+    detail: r.detail,
+    note: r.note,
+  };
 }
 
 /**
