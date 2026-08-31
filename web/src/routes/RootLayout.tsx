@@ -10,6 +10,7 @@
 
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useKeyAction } from "../components/Kbd";
 import {
   getRequests,
@@ -21,6 +22,7 @@ import {
 } from "../lib/api";
 import { AppProvider } from "../lib/app-context";
 import { getAuthState, type PublicUser } from "../lib/auth-api";
+import { type HeaderState, INITIAL_HEADER_STATE, nextHeaderState } from "../lib/header-scroll";
 import type { SearchParams } from "../lib/search-params";
 import { summariseSeasons } from "../lib/season-select";
 import { useToasts } from "../lib/toasts";
@@ -36,6 +38,29 @@ function summariseSent(t: Title, seasons?: readonly number[] | null): string {
   const where = t.service === "sonarr" ? "Sonarr" : "Radarr";
   if (!seasons || seasons.length === 0) return `${t.title} sent to ${where}`;
   return `${t.title} — ${summariseSeasons(seasons)} sent to ${where}`;
+}
+
+/**
+ * The magnifier, inline rather than from an icon set.
+ *
+ * One glyph, eleven lines, no dependency and no sprite to keep in sync. `currentColor` is
+ * what lets the surrounding hover rule light it up without a second colour written down.
+ */
+function SearchGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
 }
 
 export function RootLayout() {
@@ -65,11 +90,6 @@ export function RootLayout() {
    * Always live: the box is on every screen. It is also the one binding whose glyph must
    * go away while it is being typed into -- see the hint below.
    */
-  const searchKey = useKeyAction("focusSearch", () => {
-    searchBox.current?.focus();
-    searchBox.current?.select();
-  });
-
   // The query shown in the box is whatever the URL says, so a back/forward step or a
   // pasted link repopulates it with no extra state to keep in sync.
   const search = useRouterState({
@@ -78,6 +98,80 @@ export function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const onSearchRoute = pathname === "/";
   const query = onSearchRoute ? (search.q ?? "") : "";
+
+  /*
+    The sticky header's search box collapses to a button on the way down the page.
+
+    `collapsed` is the only thing that renders, so it is the only thing in state. The
+    scroll ANCHOR lives in a ref beside it: `nextHeaderState` re-anchors roughly every step
+    while a scroll is in progress, and putting that in state would re-render the whole shell
+    every twelve pixels of a flick in order to draw the identical DOM.
+
+    The policy itself is in `../lib/header-scroll.ts` and is a pure function tested with no
+    DOM -- same split as `pollWhileWorking` and for the same reason.
+  */
+  const [collapsed, setCollapsed] = useState(false);
+  const headerState = useRef<HeaderState>(INITIAL_HEADER_STATE);
+  const searchFocused = useRef(false);
+
+  /** Open the box and re-anchor here, so the next scroll is measured from this point. */
+  const expand = useCallback(() => {
+    headerState.current = { collapsed: false, anchorY: Math.max(0, window.scrollY) };
+    setCollapsed(false);
+  }, []);
+
+  /**
+   * Open the box and put the caret in it, from `/` or from the collapsed button.
+   *
+   * > [!IMPORTANT] `flushSync` is required here, and it is not a performance hack
+   * > The collapsed wrapper is `inert`, and `inert` blocks PROGRAMMATIC focus as firmly as
+   * > it blocks tabbing -- that is the whole point of it. React batches state, so a plain
+   * > `expand()` followed by `.focus()` would call focus while the DOM still carries the
+   * > attribute, and the caret would silently go nowhere. Flushing the expansion first is
+   * > what makes `/` a single atomic action instead of a race.
+   * >
+   * > This runs in an event handler, never during render, which is where `flushSync` is
+   * > sanctioned rather than warned about.
+   */
+  const focusSearch = useCallback(() => {
+    flushSync(expand);
+    searchBox.current?.focus();
+    searchBox.current?.select();
+  }, [expand]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const next = nextHeaderState(headerState.current, {
+        y: window.scrollY,
+        // A reader with a query on screen is mid-task even when the caret is elsewhere,
+        // so a query pins the box open as firmly as focus does.
+        pinned: searchFocused.current || query.length > 0,
+      });
+      if (next === headerState.current) return;
+      headerState.current = next;
+      setCollapsed(next.collapsed);
+    };
+
+    // `passive` because this listener never calls `preventDefault`; without it the browser
+    // must wait for it before scrolling, which is the classic way a scroll handler becomes
+    // the jank it was added to remove.
+    window.addEventListener("scroll", onScroll, { passive: true });
+    // Run once on mount: a route change can restore a scroll position without firing an
+    // event, and the header would otherwise sit expanded halfway down a page.
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [query]);
+
+  /**
+   * `/` puts the caret back in the box from anywhere, selecting what is already there so
+   * the next keystroke starts a new query rather than appending to the old one.
+   *
+   * Always live: the box is on every screen. It is also the one binding whose glyph must
+   * go away while it is being typed into -- see the hint below.
+   */
+  // The input is never UNMOUNTED while collapsed -- only sized to nothing -- so the ref is
+  // live either way and `/` stays one atomic action. See `focusSearch`.
+  const searchKey = useKeyAction("focusSearch", focusSearch);
 
   /**
    * Poll the request queue while anything is in flight.
@@ -161,6 +255,21 @@ export function RootLayout() {
               </span>
             )}
             <span className="ml-auto flex items-baseline gap-3 text-xs text-muted">
+              {/*
+                The collapsed box's stand-in, in the row that never collapses. It is a real
+                button rather than an icon-shaped div, so it is tabbable and reads as
+                "Search" -- the whole point is that the affordance survives the collapse.
+              */}
+              {collapsed && (
+                <button
+                  type="button"
+                  onClick={focusSearch}
+                  aria-label="Search titles"
+                  className="-my-1 rounded-lg px-2 py-1 text-muted transition-colors hover:text-ink"
+                >
+                  <SearchGlyph />
+                </button>
+              )}
               {me?.role === "admin" && (
                 <Link to="/admin" className="hover:text-ink">
                   Admin
@@ -179,24 +288,53 @@ export function RootLayout() {
             into -- `useKeyAction` withdraws it, because `/` is a character once the caret
             is here. No CSS focus rule: the same withdrawal serves every other glyph in
             the app, and a second one here would be a second owner of the rule.
+
+            > [!IMPORTANT] The input is SIZED to nothing when collapsed, never unmounted
+            > `/` has to expand and focus in one handler, and an unmounted input has no
+            > element to focus -- which would make the binding a two-step dance with a
+            > render in the middle. Animating a wrapper is also the only way to get a
+            > transition at all; there is nothing to tween between "present" and "absent".
+            >
+            > `inert` is what keeps that honest. A zero-height input is still in the tab
+            > order and still announced, so a keyboard or screen-reader user would land in
+            > a control nobody can see. `inert` removes it from both, and `expand()` runs
+            > before any focus we ask for ourselves.
           */}
-          <div className="relative mt-3">
-            <input
-              ref={searchBox}
-              // Search IS the product, so the caret belongs here the moment the app loads.
-              autoFocus
-              type="search"
-              value={query}
-              onChange={(e) => onQueryChange(e.target.value)}
-              placeholder="Search anything -- spelling optional"
-              aria-label="Search titles"
-              {...searchKey.props}
-              className="w-full rounded-xl border border-line bg-surface px-4 py-3 pr-10 text-base outline-none
+          <div
+            inert={collapsed || undefined}
+            className={`grid transition-all duration-200 ease-out motion-reduce:transition-none ${
+              collapsed ? "mt-0 grid-rows-[0fr] opacity-0" : "mt-3 grid-rows-[1fr] opacity-100"
+            }`}
+          >
+            {/* `grid-rows-[0fr]` -> `[1fr]` is the one way to transition to auto height
+                without measuring anything in JS. The inner div owns the overflow. */}
+            <div className="relative overflow-hidden">
+              <input
+                ref={searchBox}
+                // Search IS the product, so the caret belongs here the moment the app loads.
+                autoFocus
+                type="search"
+                value={query}
+                onChange={(e) => onQueryChange(e.target.value)}
+                onFocus={() => {
+                  searchFocused.current = true;
+                  expand();
+                }}
+                onBlur={() => {
+                  // Only clears the pin. It deliberately does NOT collapse: a box vanishing
+                  // the instant the caret leaves it would swallow a click aimed just below.
+                  searchFocused.current = false;
+                }}
+                placeholder="Search anything -- spelling optional"
+                aria-label="Search titles"
+                {...searchKey.props}
+                className="w-full rounded-xl border border-line bg-surface px-4 py-3 pr-10 text-base outline-none
                          placeholder:text-muted focus:border-accent/60"
-            />
-            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-              {searchKey.hint}
-            </span>
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                {searchKey.hint}
+              </span>
+            </div>
           </div>
         </header>
 
