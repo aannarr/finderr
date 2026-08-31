@@ -13,7 +13,7 @@
  *   - `keywords` for a SERIES. `api.radarr.video` already returns them for a film.
  *
  * THE KEY IS A SECRET AND TMDB TAKES IT AS A QUERY PARAMETER. It is never logged, never
- * put in an error and never written into a fixture; `./tmdb/api.ts` is the only module
+ * put in an error and never written into a fixture; `src/lib/tmdb-api.ts` is the only module
  * that holds it and `getJson` redacts the query string from anything it reports.
  */
 
@@ -21,7 +21,7 @@ import { AsyncCache } from "../lib/async-cache";
 import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
-import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "./tmdb/api";
+import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
 import { fetchSeriesKeywords } from "./tmdb/keywords";
 import { fetchWatchProviders } from "./tmdb/watch-providers";
 

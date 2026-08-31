@@ -13,7 +13,7 @@
  */
 
 import type { WatchProviders } from "../../lib/facets";
-import type { TmdbApi, TmdbMediaType } from "./api";
+import type { TmdbApi, TmdbMediaType } from "../../lib/tmdb-api";
 
 /** One service as TMDB names it. `display_priority` is the order it already arrives in. */
 interface TmdbOffer {

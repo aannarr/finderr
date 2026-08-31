@@ -25,6 +25,7 @@ import { rollback } from "../lib/index-builder";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
+import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
@@ -32,6 +33,8 @@ import type { TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
+import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
+import { syncArrCalendars, syncTmdbUpcoming } from "../lib/upcoming";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
@@ -224,6 +227,17 @@ if (!plex) {
   log("plex: no FINDERR_PLEX_URL/FINDERR_PLEX_TOKEN -- play links are off");
 }
 
+/**
+ * Whether our own index can draw a card for a title.
+ *
+ * The upcoming mirror stores only titles this returns true for -- see `upcoming.ts`. It
+ * reads `live.current` at the moment of use rather than closing over an engine, because a
+ * handle held across an index promote is unusable (see `live-index.ts`).
+ */
+function indexHasRow(tconst: string): boolean {
+  return live.current.byTconst(tconst) !== null;
+}
+
 // Mirror the arr libraries on a timer so "do we have it?" is a local lookup.
 async function refreshLibrary(): Promise<void> {
   const res = await syncLibrary(store, { radarr, sonarr }, log);
@@ -233,6 +247,22 @@ async function refreshLibrary(): Promise<void> {
   // ratingKey is stable, so stale beats absent for the one thing this feeds.
   const mirrored = await syncPlex(store, plex, log);
   if (mirrored.error) log(`library sync error -- ${mirrored.error}`);
+
+  /*
+    The arr calendars ride here too, and for the third time the same reason: they are the
+    same fact going stale on the same clock. It is free -- both arrs are on the LAN and
+    both already answer with the IMDb id, so there is no crosswalk and no third party.
+
+    Caught rather than thrown, and caught PER SOURCE inside `syncArrCalendars`, because an
+    upcoming shelf failing must not take the library mirror down with it.
+  */
+  try {
+    for (const r of await syncArrCalendars({ store, hasRow: indexHasRow, log }, { radarr, sonarr })) {
+      log(`upcoming: ${r.rows} from ${r.source}`);
+    }
+  } catch (err) {
+    log(`upcoming sync error -- ${(err as Error).message}`);
+  }
 }
 void refreshLibrary();
 setInterval(() => void refreshLibrary(), cfg.libraryRefreshSeconds * 1000);
@@ -305,11 +335,41 @@ async function warmShelves(): Promise<void> {
   );
 }
 
+/*
+  TMDB's upcoming lists, on a SLOW timer and deliberately not the library one.
+
+  Six-hourly rather than every libraryRefreshSeconds because the answer barely moves -- a
+  film's release date changes a handful of times in its life -- and because unlike the arr
+  calendars this one costs a third party. It runs BEFORE `warmShelves` in the same tick so
+  the titles it adds are warmed on this pass rather than waiting six hours for the next.
+
+  No key means no shelf, quietly, the same way the `tmdb` plugin goes dark: two rows fewer
+  and nothing else changes.
+*/
+async function refreshTmdbUpcoming(): Promise<void> {
+  if (!cfg.tmdb.apiKey) return;
+  const api = new TmdbApi(
+    createPluginFetch({
+      pluginId: "upcoming-sync",
+      hosts: [TMDB_HOST],
+      pacer: new HostPacer(DEFAULT_OUTBOUND_POLICY.minIntervalMsPerHost),
+    }),
+    cfg.tmdb.apiKey,
+  );
+  try {
+    const res = await syncTmdbUpcoming({ store, hasRow: indexHasRow, log }, api, cfg.regions);
+    for (const r of res) log(`upcoming: ${r.rows} from ${r.source}`);
+  } catch (err) {
+    // safeUrl already stripped the key from anything getJson reports; nothing here adds a URL.
+    log(`upcoming sync error -- ${(err as Error).message}`);
+  }
+}
+
 // Give the library mirror a moment to land first: "recently added" is read straight
 // out of it, and owned titles are excluded from every other shelf -- so warming
 // before it lands both misses a shelf and pays for posters we then filter out.
-setTimeout(() => void warmShelves(), 8_000);
-setInterval(() => void warmShelves(), 6 * 60 * 60 * 1000);
+setTimeout(() => void refreshTmdbUpcoming().then(warmShelves), 8_000);
+setInterval(() => void refreshTmdbUpcoming().then(warmShelves), 6 * 60 * 60 * 1000);
 
 // --- helpers ---------------------------------------------------------------
 

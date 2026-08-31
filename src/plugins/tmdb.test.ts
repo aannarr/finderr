@@ -21,7 +21,7 @@ import type { FacetEntity, FacetName, FacetShapes } from "../lib/facets";
 import { getJson, type PluginFetch, safeUrl } from "../lib/plugin-fetch";
 import { BUILTIN_PLUGINS_DIR, loadPlugins } from "../lib/plugins";
 import { Store } from "../lib/store";
-import { TMDB_HOST } from "./tmdb/api";
+import { TMDB_HOST } from "../lib/tmdb-api";
 
 const PLUGIN_ID = "tmdb";
 

@@ -45,6 +45,30 @@ export interface SonarrSeries {
   };
 }
 
+/**
+ * One entry from Radarr's calendar.
+ *
+ * All three dates are optional AND any of them may be in the past: Radarr lists a film
+ * whose PHYSICAL release falls in the window even though it was in cinemas years ago.
+ * Measured 2026-08-31 against the live server -- "The Golden Child" came back with
+ * `inCinemas` in 1986 and `digitalRelease` next week.
+ */
+export interface RadarrCalendarEntry {
+  title?: string;
+  imdbId?: string;
+  inCinemas?: string | null;
+  digitalRelease?: string | null;
+  physicalRelease?: string | null;
+}
+
+/** One entry from Sonarr's calendar. `series` arrives only with `includeSeries=true`. */
+export interface SonarrCalendarEntry {
+  airDate?: string | null;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  series?: { title?: string; imdbId?: string };
+}
+
 export interface QueueItem {
   id: number;
   title: string;
@@ -180,6 +204,18 @@ export class RadarrClient extends ArrClient {
     return this.get<RadarrMovie[]>("/movie");
   }
 
+  /**
+   * Films in the library with a release date inside the window.
+   *
+   * Radarr answers with `imdbId` on every entry, which is the id everything else here is
+   * keyed on, so the upcoming mirror needs no crosswalk at all. Three dates ride along
+   * (`inCinemas`, `digitalRelease`, `physicalRelease`) and any of them may be in the
+   * past -- see `soonestFutureDate` in `upcoming.ts` for which one a row is about.
+   */
+  calendar(start: string, end: string) {
+    return this.get<RadarrCalendarEntry[]>("/calendar", { start, end });
+  }
+
   /** Resolve an IMDb id through Radarr's own metadata proxy -- no TMDB key needed. */
   async lookupByImdb(imdbId: string): Promise<Record<string, unknown> | null> {
     const res = await this.get<Record<string, unknown>[]>("/movie/lookup", {
@@ -256,6 +292,20 @@ export class SonarrClient extends ArrClient {
 
   series() {
     return this.get<SonarrSeries[]>("/series");
+  }
+
+  /**
+   * Episodes airing inside the window, each carrying its series.
+   *
+   * `includeSeries=true` is what makes this usable: without it an entry names only a
+   * `seriesId`, which is Sonarr's own integer and not something any other table here
+   * knows. With it, `series.imdbId` arrives on every row and no crosswalk is needed.
+   *
+   * The answer is EPISODE-shaped while the mirror is title-shaped, so the collapse to one
+   * row per series happens in `upcoming.ts` rather than here -- this stays a plain read.
+   */
+  calendar(start: string, end: string) {
+    return this.get<SonarrCalendarEntry[]>("/calendar", { start, end, includeSeries: "true" });
   }
 
   /** Sonarr keys on tvdbId, so an IMDb id has to go through its lookup first. */

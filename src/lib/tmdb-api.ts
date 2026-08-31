@@ -7,11 +7,12 @@
  * `src/lib/plugin-fetch.ts` strips the query from anything it reports, and `TmdbApi` never
  * hands a built URL back to a caller.
  *
- * These files are NOT plugins. The loader globs `*.ts` in `src/plugins/` and `Bun.Glob`'s
- * `*` does not cross a `/`, so a module in this subdirectory is never load-attempted.
+ * It lived at `src/plugins/tmdb/api.ts` until the upcoming sync became a second caller.
+ * Core must not import out of `src/plugins/`, and two copies of the key-handling above is
+ * exactly the duplication that rots, so it moved down here and the plugin imports it.
  */
 
-import { getJson, type PluginFetch } from "../../lib/plugin-fetch";
+import { getJson, type PluginFetch } from "./plugin-fetch";
 
 export const TMDB_HOST = "api.themoviedb.org";
 
@@ -71,4 +72,60 @@ export class TmdbApi {
     const results = media === "tv" ? found?.tv_results : found?.movie_results;
     return results?.[0]?.id ?? null;
   }
+
+  /**
+   * The IMDb id for a TMDB id -- `findByImdbId` run backwards.
+   *
+   * The upcoming sync needs this direction: `/discover` answers in TMDB ids and every
+   * other table in this product is keyed on a `tconst`. Null is a real and common answer
+   * rather than an error -- measured 2026-08-31, four of twenty upcoming series and two
+   * of forty-one upcoming films have no IMDb id at TMDB at all, mostly Chinese and Korean
+   * titles. Those are dropped rather than guessed at.
+   */
+  async imdbIdOf(tmdbId: number, media: TmdbMediaType): Promise<string | null> {
+    const ids = await this.get<{ imdb_id?: string | null }>(`/${media}/${tmdbId}/external_ids`);
+    const imdb = ids?.imdb_id?.trim();
+    return imdb?.startsWith("tt") ? imdb : null;
+  }
+
+  /**
+   * One page of what has not come out yet in one region, most popular first.
+   *
+   * POPULARITY IS THE ONLY USABLE RANKING HERE, and that is the reason this call exists
+   * rather than a query over our own index: the IMDb dumps carry `numVotes`, and an
+   * unreleased title has none. Measured 2026-08-31, every indexed title dated 2027 or
+   * later had exactly zero votes, so ordering our own corpus by votes is arbitrary for
+   * precisely the titles this shelf is about.
+   *
+   * Asking TMDB for date-ascending instead is not the shortcut it looks like: it returns
+   * whatever obscure thing is released tomorrow. Popularity chooses WHICH titles to
+   * fetch; the shelf then shows them soonest-first. The two orderings do different jobs.
+   */
+  discoverUpcoming(
+    media: TmdbMediaType,
+    opts: { region: string; after: string; page?: number },
+  ): Promise<TmdbDiscoverPage | null> {
+    // The date field is named for the media type; there is no shared alias.
+    const gte = media === "tv" ? "first_air_date.gte" : "primary_release_date.gte";
+    return this.get<TmdbDiscoverPage>(`/discover/${media}`, {
+      [gte]: opts.after,
+      sort_by: "popularity.desc",
+      region: opts.region,
+      page: String(opts.page ?? 1),
+    });
+  }
+}
+
+/** `/discover` narrowed to the fields the upcoming sync reads. */
+export interface TmdbDiscoverPage {
+  results?: TmdbDiscoverResult[] | null;
+}
+
+export interface TmdbDiscoverResult {
+  id: number;
+  /** Films carry `title`/`release_date`, series carry `name`/`first_air_date`. */
+  title?: string | null;
+  name?: string | null;
+  release_date?: string | null;
+  first_air_date?: string | null;
 }

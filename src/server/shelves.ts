@@ -17,7 +17,7 @@
  */
 
 import { decadeOf, type SearchEngine, type TitleRow } from "../lib/search";
-import type { Store } from "../lib/store";
+import type { Store, UpcomingSource } from "../lib/store";
 
 /** A row of the front page: what to call it, where its "see all" points, and its titles. */
 export interface DiscoveryShelf {
@@ -35,11 +35,8 @@ export interface DiscoveryShelf {
  * the shelf rules are checked without an index, a database or a network.
  */
 export interface ShelfDeps {
-  engine: Pick<
-    SearchEngine,
-    "topRated" | "anticipated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst"
-  >;
-  store: Pick<Store, "libraryMap" | "recentlyAddedIds">;
+  engine: Pick<SearchEngine, "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst">;
+  store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource">;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
   now?: () => number;
 }
@@ -56,6 +53,24 @@ function recentlyAdded(deps: ShelfDeps, limit: number): TitleRow[] {
   for (const id of deps.store.recentlyAddedIds(limit)) {
     const row = deps.engine.byTconst(id);
     if (row) out.push(row);
+  }
+  return out;
+}
+
+/**
+ * One shelf out of the `upcoming` mirror, as index rows.
+ *
+ * The mirror holds a tconst and a date; the index holds everything a card draws. The
+ * table is already ordered soonest-first and the sync already dropped anything the index
+ * cannot draw, so this is a lookup and not a second filter -- but `byTconst` is still
+ * allowed to answer null, because the mirror and the index are refreshed on different
+ * timers and an index swap can retire a row between them.
+ */
+function fromUpcoming(deps: ShelfDeps, source: UpcomingSource, limit: number): TitleRow[] {
+  const out: TitleRow[] = [];
+  for (const row of deps.store.upcomingBySource(source, limit)) {
+    const title = deps.engine.byTconst(row.tconst);
+    if (title) out.push(title);
   }
   return out;
 }
@@ -91,11 +106,44 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       browse: { kind: "tvSeries" },
       rows: engine.topRated({ kind: "tvSeries", minVotes: 20_000, limit: 30, excludeTconsts: owned }),
     },
+    /*
+      THE FOUR UPCOMING SHELVES SPLIT TWICE, AND BOTH SPLITS CARRY MEANING.
+
+      Across: the first two are what this library ALREADY follows, from the arrs' own
+      calendars. The last two are discovery, from TMDB, with owned titles excluded. Merging
+      them would produce one row where "you asked for this" and "you have never heard of
+      this" sit side by side wearing the same chrome.
+
+      Down: movies and series are separate rows because they arrive from different
+      endpoints on different windows and read differently -- an episode airs this week, a
+      film is dated months out. One mixed row sorted by date would interleave them.
+
+      All four are ordered soonest-first by the store. There is deliberately no popularity
+      ordering here: for the TMDB rows popularity already chose WHICH titles were fetched,
+      and re-using it as the display order would bury next week's release under a blockbuster
+      dated next year.
+    */
     {
-      id: "coming-soon",
-      title: "Coming soon",
-      subtitle: "this year and later, soonest first",
-      rows: engine.anticipated(30),
+      id: "airing-soon-series",
+      title: "Airing soon",
+      subtitle: "next episodes of series you follow",
+      rows: fromUpcoming(deps, "sonarr", 30),
+    },
+    {
+      id: "airing-soon-movies",
+      title: "Releasing soon",
+      subtitle: "films in your library with a date",
+      rows: fromUpcoming(deps, "radarr", 30),
+    },
+    {
+      id: "coming-soon-movies",
+      title: "Coming soon: Movies",
+      rows: fromUpcoming(deps, "tmdb-movie", 30).filter((t) => !owned.has(t.tconst)),
+    },
+    {
+      id: "coming-soon-series",
+      title: "Coming soon: Series",
+      rows: fromUpcoming(deps, "tmdb-series", 30).filter((t) => !owned.has(t.tconst)),
     },
     {
       id: "new-decade",

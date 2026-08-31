@@ -629,24 +629,27 @@ export class SearchEngine {
     return out.slice(0, opts.limit ?? 40);
   }
 
-  /**
-   * Coming up: titles dated this year or later, ordered by how much attention they
-   * already have. Note the window starts at the CURRENT year, not next -- an
-   * unreleased film accrues votes slowly, so a `year >= nextYear` window is almost
-   * always empty and useless as a discovery row.
-   */
-  anticipated(limit = 40): TitleRow[] {
-    const thisYear = new Date().getFullYear();
-    return this.db
-      .query(
-        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
-         from title
-         where year >= ?
-         order by year asc, votes desc
-         limit ?`,
-      )
-      .all(thisYear, limit) as TitleRow[];
-  }
+  /*
+    THERE IS NO `anticipated()` HERE ANY MORE, AND THERE CANNOT HONESTLY BE ONE.
+
+    It was `where year >= thisYear order by year asc, votes desc`, and on 2026-08-31 every
+    one of the five titles it put at the top of "Coming soon" had been in cinemas for
+    months -- Project Hail Mary (released 2026-03-15), The Odyssey (2026-07-15),
+    Spider-Man: Brand New Day (2026-07-29), Backrooms (2026-05-27), Michael (2026-04-22).
+
+    Not a tuning problem, a structural one, and both halves are worth knowing before
+    anybody writes this query again:
+
+      1. `title.basics` carries `startYear` and nothing finer, so "this year" cannot
+         distinguish January from December. There is no date column to add.
+      2. `votes desc` ranks the most-released titles first BY CONSTRUCTION -- a vote count
+         measures how long a title has been out. And past the current year the signal is
+         gone entirely: every indexed title dated 2027 or later carries exactly zero votes,
+         so the ordering is arbitrary for precisely the titles the shelf is about.
+
+    Upcoming is served from the `upcoming` mirror instead, filled from the arr calendars
+    and TMDB by `src/lib/upcoming.ts`. See `discoveryShelves` for the four rows.
+  */
 
   /**
    * Hidden gems: rated highly by the people who found them, but few people found them.

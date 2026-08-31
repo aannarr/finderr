@@ -151,6 +151,21 @@ export interface LibraryEntry {
   updated_at: string;
 }
 
+/** One title that is landing soon, as one source claims it. See the `upcoming` table. */
+export interface UpcomingRow {
+  tconst: string;
+  kind: string;
+  source: UpcomingSource;
+  /** YYYY-MM-DD. The soonest date this source knows for this title. */
+  date: string;
+  date_kind: "cinemas" | "digital" | "physical" | "airDate";
+  /** Free text the shelf may show beside the date, e.g. "S2E9". Null when there is none. */
+  detail: string | null;
+}
+
+/** Who claimed it. One writer each, and each replaces only its own rows. */
+export type UpcomingSource = "radarr" | "sonarr" | "tmdb-movie" | "tmdb-series";
+
 const SCHEMA = `
 create table if not exists library (
   imdb_id    text not null,
@@ -204,6 +219,35 @@ create table if not exists plex_item (
   rating_key text not null,
   updated_at text not null
 );
+
+-- What is landing soon, from every source that knows a real DATE.
+--
+-- The IMDb dumps carry a release YEAR and nothing finer, which is why the shelf this
+-- replaces could not tell a film released in March from one arriving in December and
+-- filled itself with titles that were already out. A date has to come from outside the
+-- corpus, so it is mirrored here on a timer and the render path stays local SQLite.
+--
+-- Keyed (tconst, source) so the same title may be known to two sources without either
+-- overwriting the other -- a film can sit in Radarr's calendar AND in TMDB's upcoming
+-- list, and those are two different claims with two different dates.
+--
+-- The date column is whichever date this row is ABOUT and date_kind says which kind it
+-- is, so a row explains itself rather than needing a per-source lookup at render time.
+-- Sonarr's calendar is episode-shaped and this table is title-shaped, so the collapse to
+-- one row per series happens at SYNC time and detail carries the episode (S2E9); doing
+-- it there keeps every shelf query a plain ordered select.
+create table if not exists upcoming (
+  tconst    text not null,
+  kind      text not null,
+  source    text not null,
+  date      text not null,
+  date_kind text not null,
+  detail    text,
+  synced_at text not null,
+  primary key (tconst, source)
+);
+
+create index if not exists ix_upcoming_source_date on upcoming(source, date);
 
 -- Poster URLs, keyed by IMDb id.
 --
@@ -506,6 +550,65 @@ export class Store {
 
   plexCount(): number {
     return (this.db.query("select count(*) c from plex_item").get() as { c: number }).c;
+  }
+
+  // --- upcoming mirror -----------------------------------------------------
+
+  /**
+   * Replace one SOURCE's rows, leaving every other source's standing.
+   *
+   * Scoped rather than a whole-table swap because the three writers fail independently:
+   * Sonarr being unreachable must not empty the shelf TMDB filled an hour ago. Within a
+   * source it is still a full swap, for `replacePlexItems`'s reason -- a film that slipped
+   * out of Radarr's 90-day window has to leave the shelf, and a swap is the only way to
+   * see a disappearance without a second round trip.
+   *
+   * The caller is what protects a good mirror from a bad sync: a walk that threw must not
+   * reach here at all, or an upstream blip empties a working shelf.
+   */
+  replaceUpcoming(source: UpcomingSource, rows: UpcomingRow[]): number {
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      "insert or replace into upcoming (tconst, kind, source, date, date_kind, detail, synced_at) " +
+        "values (?,?,?,?,?,?,?)",
+    );
+    this.db.run("begin");
+    try {
+      this.db.run("delete from upcoming where source = ?", [source]);
+      for (const r of rows) {
+        if (!r.tconst || !r.date) continue;
+        ins.run(r.tconst, r.kind, source, r.date, r.date_kind, r.detail ?? null, now);
+      }
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+    this.setKv(`upcoming_synced_${source}`, now);
+    return this.upcomingCount(source);
+  }
+
+  /**
+   * One source's rows, soonest first.
+   *
+   * Date ascending is the display order for every shelf built on this table: it is what
+   * "coming soon" means, and it is the one ordering that works for all three sources.
+   * TMDB's popularity decides which titles get FETCHED and never how they are shown.
+   */
+  upcomingBySource(source: UpcomingSource, limit = 30): UpcomingRow[] {
+    return this.db
+      .query(
+        "select tconst, kind, source, date, date_kind, detail from upcoming " +
+          "where source = ? order by date asc limit ?",
+      )
+      .all(source, limit) as UpcomingRow[];
+  }
+
+  upcomingCount(source?: UpcomingSource): number {
+    const row = source
+      ? this.db.query("select count(*) c from upcoming where source = ?").get(source)
+      : this.db.query("select count(*) c from upcoming").get();
+    return (row as { c: number }).c;
   }
 
   // --- requests ------------------------------------------------------------

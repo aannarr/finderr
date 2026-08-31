@@ -20,24 +20,42 @@ function row(tconst: string, title = tconst, kind = "movie"): TitleRow {
  * Every source answers with something identifiable, so a shelf's contents say which
  * query produced them. Overridden per test for the case under examination.
  */
+/** One row per source, so a shelf's contents say which source produced them. */
+const UPCOMING: Record<string, string[]> = {
+  radarr: ["up-radarr"],
+  sonarr: ["up-sonarr"],
+  "tmdb-movie": ["up-tmdb-movie"],
+  "tmdb-series": ["up-tmdb-series"],
+};
+
 function depsWith(
   over: Partial<ShelfDeps["engine"]> = {},
   owned: string[] = [],
   added: string[] = [],
+  upcoming: Record<string, string[]> = UPCOMING,
 ): ShelfDeps {
+  const upcomingIds = new Set(Object.values(upcoming).flat());
   return {
     engine: {
       topRated: (opts = {}) => [row(`top-${opts.kind}`, `top ${opts.kind}`, opts.kind ?? "movie")],
-      anticipated: () => [row("soon")],
       newThisDecade: () => [row("decade")],
       topGenres: () => ["Horror"],
       topRatedInGenre: (genre) => [row(`genre-${genre}`)],
-      byTconst: (id) => (added.includes(id) ? row(id) : null),
+      byTconst: (id) => (added.includes(id) || upcomingIds.has(id) ? row(id) : null),
       ...over,
     } as ShelfDeps["engine"],
     store: {
       libraryMap: () => new Map(owned.map((id) => [id, {}])),
       recentlyAddedIds: () => added,
+      upcomingBySource: (source: string) =>
+        (upcoming[source] ?? []).map((tconst) => ({
+          tconst,
+          kind: "movie",
+          source,
+          date: "2026-09-01",
+          date_kind: "cinemas",
+          detail: null,
+        })),
     } as unknown as ShelfDeps["store"],
     now: () => Date.parse("2026-06-15T00:00:00Z"),
   };
@@ -50,7 +68,10 @@ describe("discoveryShelves", () => {
       "recently-added",
       "top-movies",
       "top-series",
-      "coming-soon",
+      "airing-soon-series",
+      "airing-soon-movies",
+      "coming-soon-movies",
+      "coming-soon-series",
       "new-decade",
       "genre-horror",
     ]);
@@ -58,10 +79,36 @@ describe("discoveryShelves", () => {
 
   /** A blank row is worse than no row, and the warm loop must not count titles nobody sees. */
   test("a shelf that came back empty is dropped rather than rendered", () => {
-    const shelves = discoveryShelves(depsWith({ anticipated: () => [] }));
-    expect(shelves.map((s) => s.id)).not.toContain("coming-soon");
+    const shelves = discoveryShelves(depsWith({}, [], [], {}));
+    for (const id of ["airing-soon-series", "airing-soon-movies", "coming-soon-movies"]) {
+      expect(shelves.map((s) => s.id)).not.toContain(id);
+    }
     // With no library mirror there is nothing recently added either.
     expect(shelves.map((s) => s.id)).not.toContain("recently-added");
+  });
+
+  /**
+   * The two discovery rows are for things you have NOT asked for. The two "yours" rows
+   * above them deliberately do not filter -- a film in your Radarr IS in your library, and
+   * excluding owned titles there would empty the shelf it is named for.
+   */
+  test("owned titles leave the TMDB rows and stay on the arr rows", () => {
+    const owned = ["up-tmdb-movie", "up-tmdb-series", "up-radarr", "up-sonarr"];
+    const ids = discoveryShelves(depsWith({}, owned)).map((s) => s.id);
+    expect(ids).not.toContain("coming-soon-movies");
+    expect(ids).not.toContain("coming-soon-series");
+    expect(ids).toContain("airing-soon-movies");
+    expect(ids).toContain("airing-soon-series");
+  });
+
+  /** Each row reads its OWN source, so a Sonarr outage cannot fill the films shelf. */
+  test("each upcoming shelf is fed by exactly one source", () => {
+    const shelves = discoveryShelves(depsWith());
+    const rowsOf = (id: string) => shelves.find((s) => s.id === id)?.rows.map((r) => r.tconst);
+    expect(rowsOf("airing-soon-series")).toEqual(["up-sonarr"]);
+    expect(rowsOf("airing-soon-movies")).toEqual(["up-radarr"]);
+    expect(rowsOf("coming-soon-movies")).toEqual(["up-tmdb-movie"]);
+    expect(rowsOf("coming-soon-series")).toEqual(["up-tmdb-series"]);
   });
 
   /**

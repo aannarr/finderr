@@ -92,6 +92,21 @@ export interface Config {
   radarr?: ArrService;
   sonarr?: ArrService;
 
+  /**
+   * Which countries this instance is FOR, most important first.
+   *
+   * A UNION and never an intersection: a title released in any listed region is upcoming
+   * here. TMDB's discover endpoint scopes release dates by one country per call, so the
+   * upcoming sync asks once per region and merges, and a title both regions return is
+   * one row rather than two.
+   *
+   * A list from the start even though the default is a single country, so adding a second
+   * one is an env edit rather than a type change. Measured 2026-08-31: US and SE together
+   * returned 41 distinct upcoming films and differed by two of them, so the second region
+   * earns far more on "Where to watch" than it does here.
+   */
+  regions: string[];
+
   tmdb: {
     apiKey?: string;
     imageBase: string;
@@ -291,6 +306,7 @@ const DEFAULTS: Config = {
     refreshTz: "UTC",
     refreshOnBoot: true,
   },
+  regions: ["US"],
   tmdb: {
     imageBase: "https://image.tmdb.org/t/p",
     cacheImages: true,
@@ -394,6 +410,11 @@ function envOverrides(): Record<string, unknown> {
     },
     radarr: arrFromEnv("RADARR"),
     sonarr: arrFromEnv("SONARR"),
+    // Upper-cased on the way in: TMDB takes ISO 3166-1 alpha-2 and rejects "us".
+    regions: envStr("FINDERR_REGIONS")
+      ?.split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
     tmdb: {
       apiKey: envStr("FINDERR_TMDB_API_KEY"),
       imageBase: envStr("FINDERR_TMDB_IMAGE_BASE"),

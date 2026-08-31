@@ -11,7 +11,7 @@
  */
 
 import type { Keyword } from "../../lib/facets";
-import type { TmdbApi } from "./api";
+import type { TmdbApi } from "../../lib/tmdb-api";
 
 interface TmdbKeyword {
   id?: number | null;
