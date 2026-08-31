@@ -47,6 +47,33 @@ body {
   display: none;
 }
 
+/* iOS Safari ZOOMS THE WHOLE PAGE when a text field under 16px takes focus, and it
+   never zooms back out -- the reader is left on a viewport they have to pinch out of,
+   mid-search. It is a hard-coded rule in the browser: no meta tag, no CSS property and
+   no `user-scalable=no` turns it off (that one is ignored on iOS and would break pinch
+   zoom for everybody if it worked). 16px is the entire fix.
+
+   THIS RULE IS DELIBERATELY UNLAYERED. Tailwind ships its utilities in `@layer
+   utilities`, and unlayered CSS beats every layer in the cascade, so a `text-sm` on the
+   element cannot reintroduce the zoom. Written as one rule rather than as `text-base
+   sm:text-sm` on each control on purpose: the failure mode is the input somebody adds
+   next month, and a per-element fix does not cover one that does not exist yet.
+
+   Scoped to `pointer: coarse` so desktop keeps its smaller controls -- the zoom is a
+   touch-device behaviour and there is nothing to fix where a mouse is the primary
+   pointer. Checkboxes and radios are excluded: they carry no text to zoom toward.
+
+   Nothing in the tree is currently ABOVE 16px, so a flat value loses no size today. A
+   control that ever wants to be larger needs its own rule here, because CSS has no way
+   to express "at least this big" for a font size. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
