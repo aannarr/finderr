@@ -42,6 +42,8 @@ function deps(onCoverage: () => void): HealthDeps {
           waitPaceMs: 1250,
         },
       },
+      requests: { "GET /api/browse": { n: 4, totalMs: 6100, maxMs: 3657, p50Ms: 900, p95Ms: 3657 } },
+      slow: [{ at: 1_700_000_000_000, label: "GET /api/browse", ms: 3657, detail: "?genre=Comedy" }],
     },
     runtime: {
       uptimeSeconds: 62,
@@ -140,8 +142,37 @@ describe("healthPayload", () => {
     expect(out).toEqual({ ok: true });
     // Named individually rather than by key count, so adding a field to the detailed
     // payload cannot quietly start leaking it.
-    for (const k of ["plex", "library", "index", "runtime", "auth", "services", "plugins", "facets"])
+    for (const k of [
+      "plex",
+      "library",
+      "index",
+      "runtime",
+      "auth",
+      "services",
+      "plugins",
+      "facets",
+      "timings",
+    ])
       expect(out[k]).toBeUndefined();
+  });
+
+  /*
+    `timings.slow` carries the QUERY STRING of every slow request, which is our own
+    vocabulary and exactly what makes the entry worth keeping -- and it is also the closest
+    this payload comes to describing what real people asked for. It is detailed-only for the
+    same reason plex.machineId is.
+  */
+  test("timings sit at the top level and carry all four halves", () => {
+    const out = healthPayload(
+      deps(() => {}),
+      { coverage: false, detailed: true },
+    );
+
+    const timings = out.timings as Record<string, unknown>;
+    expect(Object.keys(timings).sort()).toEqual(["outbound", "providers", "requests", "slow"]);
+    // It used to live under `facets.timing`, which was wrong the moment a route's latency
+    // joined it -- a route is not a fact about the facet cache.
+    expect((out.facets as Record<string, unknown>).timing).toBeUndefined();
   });
 
   /*

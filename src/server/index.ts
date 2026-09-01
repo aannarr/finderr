@@ -35,8 +35,10 @@ import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
+import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
+import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
@@ -49,6 +51,7 @@ import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
+import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
   type DiscoveryShelf,
@@ -230,6 +233,16 @@ const plugins = await loadPlugins({
 });
 const facets = new FacetResolver({ store, registry: plugins, log });
 log(`plugins: ${plugins.list().length} loaded`);
+
+/*
+  How long every request took, and which of them were slow enough to keep the arguments of.
+
+  Two objects because they answer two questions -- see `src/lib/slow-log.ts`. Both are
+  in-memory and bounded, so they cost nothing to keep and nothing to read; `/api/health`
+  serves both to an admin under `timings`. `withTiming` wraps the whole route table below.
+*/
+const requestTimings = new Timings();
+const slowRequests = new SlowLog();
 
 /*
   Sweep the contributions the loaded plugins have superseded.
@@ -906,7 +919,12 @@ const appRoutes = {
           facetRows: store.facetCacheCount(),
           facetImages: store.facetImageCount(),
           facetRowsPruned,
-          timings: { providers: facets.timingReport(), outbound: outboundTimings().report() },
+          timings: {
+            providers: facets.timingReport(),
+            outbound: outboundTimings().report(),
+            requests: requestTimings.report(),
+            slow: slowRequests.recent(),
+          },
           runtime: {
             uptimeSeconds: Math.round(rt.uptimeSeconds),
             rss: rt.rss,
@@ -1565,21 +1583,31 @@ const server: Bun.Server<undefined> = Bun.serve({
   // response, a few KB -- so 256 KB is generous headroom, not a constraint anyone hits.
   maxRequestBodySize: 256 * 1024,
 
-  // Two wrappers, and the ORDER is deliberate: the index gate is OUTSIDE the auth guard, so
-  // a caller during a first build gets one 503 about the index rather than a 401 about
-  // credentials for a server that has no data yet. See `withIndexGate`.
-  routes: withIndexGate(
-    withAuth(
-      { ...appRoutes, ...auth.routes() },
+  // Three wrappers, and the ORDER is deliberate. The index gate is OUTSIDE the auth guard,
+  // so a caller during a first build gets one 503 about the index rather than a 401 about
+  // credentials for a server that has no data yet (see `withIndexGate`) -- and the TIMER is
+  // outside both, so what it records is the whole request as the client experienced it,
+  // including a refusal. A 401 that takes two seconds is a fact worth having.
+  routes: withTiming(
+    withIndexGate(
+      withAuth(
+        { ...appRoutes, ...auth.routes() },
+        {
+          authService: auth,
+          publicPaths: auth.publicPaths(),
+        },
+      ),
       {
-        authService: auth,
-        publicPaths: auth.publicPaths(),
+        ready: () => live.ready,
+        state: () => indexBuild?.state ?? null,
+        open: INDEX_GATE_PUBLIC_PATHS,
       },
     ),
     {
-      ready: () => live.ready,
-      state: () => indexBuild?.state ?? null,
-      open: INDEX_GATE_PUBLIC_PATHS,
+      timings: requestTimings,
+      slow: slowRequests,
+      thresholdMs: cfg.slowRequestMs > 0 ? cfg.slowRequestMs : Number.POSITIVE_INFINITY,
+      log,
     },
   ) as never,
 

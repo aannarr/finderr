@@ -158,15 +158,25 @@ export interface HealthDeps {
    */
   facetRowsPruned: number;
   /**
-   * Where a cold title's second actually goes: what each provider took, and what each
-   * upstream host took underneath it.
+   * Where the time actually goes, at all three layers: what each ROUTE took, what each
+   * provider took inside it, and what each upstream HOST took underneath that -- plus the
+   * individual requests slow enough to have kept their arguments.
    *
-   * A plain value rather than a thunk, unlike `coverage`: both sides are in-memory tallies
+   * `requests` and `slow` are two questions and neither answers the other. A distribution
+   * says `/api/browse` is p95 3.6s; it cannot say which browse, and on this API
+   * `?genre=Comedy` and `?kind=series` differ by 400x. See `src/lib/slow-log.ts`.
+   *
+   * A plain value rather than a thunk, unlike `coverage`: every side is an in-memory tally
    * over a bounded window, so reading them asks nobody anything and costs a sort of at most
    * a few hundred numbers. The rule this endpoint already states -- asking a question must
    * not do the work -- is what separates the two.
    */
-  timings: { providers: Record<string, unknown>; outbound: Record<string, unknown> };
+  timings: {
+    providers: Record<string, unknown>;
+    outbound: Record<string, unknown>;
+    requests: Record<string, unknown>;
+    slow: unknown[];
+  };
   runtime: HealthRuntime;
   /**
    * The expensive one. A THUNK, not a value: it runs every shelf query plus a facet
@@ -213,6 +223,11 @@ export function healthPayload(
     // container. `gcSeconds` is cumulative CPU spent collecting; compare two samples to
     // get the share, which is what the periodic log line prints.
     runtime: deps.runtime,
+    // TOP LEVEL, and it used to be `facets.timing`. It moved when `requests` and `slow`
+    // joined it: a route's latency is not a fact about the facet cache, and nesting it
+    // there would have made the one key a reader goes looking for on a slow page the
+    // hardest one to find. Nothing consumed the old key.
+    timings: deps.timings,
     services: deps.services,
     auth: deps.auth,
     queue: deps.queue,
@@ -226,7 +241,6 @@ export function healthPayload(
       rows: deps.facetRows,
       images: deps.facetImages,
       pruned: deps.facetRowsPruned,
-      timing: deps.timings,
       ...(opts.coverage ? { coverage: deps.coverage() } : {}),
     },
   };

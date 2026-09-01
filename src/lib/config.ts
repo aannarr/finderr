@@ -396,6 +396,18 @@ export interface Config {
   resourceLogSeconds: number;
 
   /**
+   * A request at or over this many milliseconds is logged and kept in the slow log.
+   * Zero disables both.
+   *
+   * 500 ms by default, and that is a threshold rather than a target. Every render path in
+   * this product reads local SQLite and nothing else, so anything past half a second is a
+   * query doing more work than it should -- which is exactly what it caught on the day it
+   * shipped. Set it lower to profile, never higher to quieten it: a raised threshold is a
+   * slow page nobody is told about.
+   */
+  slowRequestMs: number;
+
+  /**
    * Where facet provider plugins are loaded from. Empty means the built-in directory
    * that ships with the source (`src/plugins`), which is the normal case -- this exists
    * so a container can mount a directory of plugins without a rebuild.
@@ -484,6 +496,7 @@ const DEFAULTS: Config = {
   episodeRefreshSeconds: 21_600,
   episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
+  slowRequestMs: 500,
   pluginsDir: "",
   pluginModules: [],
 };
@@ -608,6 +621,7 @@ function envOverrides(): Record<string, unknown> {
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),
     episodeRefreshBatch: envInt("FINDERR_EPISODE_REFRESH_BATCH"),
     resourceLogSeconds: envInt("FINDERR_RESOURCE_LOG_SECONDS"),
+    slowRequestMs: envInt("FINDERR_SLOW_REQUEST_MS"),
     pluginsDir: envStr("FINDERR_PLUGINS_DIR"),
     pluginModules: envStr("FINDERR_PLUGIN_MODULES")
       ?.split(",")

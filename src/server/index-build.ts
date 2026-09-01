@@ -25,6 +25,8 @@
  * it reports, and it resolves. Adopting the finished index is `LiveIndex.open()`'s job.
  */
 
+import { wrapRoutes } from "./route-wrap";
+
 /** Where a boot-time build has got to. `phase` is the only thing a client needs to branch on. */
 export interface IndexBuildState {
   /**
@@ -229,38 +231,17 @@ export function withIndexGate<T extends Record<string, unknown>>(
 ): T {
   const open = new Set(opts.open);
 
-  // Variadic inside, generic outside -- the same shape as `withAuth`, and for the same
-  // reason: a `Record<string, Handler>` parameter would erase Bun's `req.params` inference
-  // for every route in the table.
-  const wrap =
-    (path: string, handler: (...args: never[]) => unknown) =>
-    (...args: unknown[]): unknown => {
-      if (open.has(path) || opts.ready()) {
-        return (handler as (...a: unknown[]) => unknown)(...args);
-      }
-      return Response.json(
-        { error: "the title index is still being built", build: opts.state() },
-        { status: 503, headers: { "Retry-After": "10" } },
-      );
-    };
-
-  const out: Record<string, unknown> = {};
-  for (const [path, entry] of Object.entries(routes)) {
-    if (typeof entry === "function") {
-      out[path] = wrap(path, entry as (...args: never[]) => unknown);
-      continue;
+  // `wrapRoutes` owns the variadic-inside/generic-outside shape and the three kinds of
+  // table entry; this only decides what happens to one handler.
+  return wrapRoutes(routes, (path, handler) => (...args: unknown[]) => {
+    if (open.has(path) || opts.ready()) {
+      return (handler as (...a: unknown[]) => unknown)(...args);
     }
-    if (entry && typeof entry === "object") {
-      const methods: Record<string, unknown> = {};
-      for (const [method, handler] of Object.entries(entry as Record<string, unknown>)) {
-        methods[method] = wrap(path, handler as (...args: never[]) => unknown);
-      }
-      out[path] = methods;
-      continue;
-    }
-    out[path] = entry;
-  }
-  return out as T;
+    return Response.json(
+      { error: "the title index is still being built", build: opts.state() },
+      { status: 503, headers: { "Retry-After": "10" } },
+    );
+  });
 }
 
 /**

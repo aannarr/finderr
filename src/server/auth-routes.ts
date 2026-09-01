@@ -48,6 +48,7 @@ import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
+import { wrapRoutes } from "./route-wrap";
 
 type Handler = (req: Request, server?: unknown) => Response | Promise<Response>;
 type RouteEntry = Handler | Record<string, Handler>;
@@ -1019,40 +1020,18 @@ export function withAuth<T extends Record<string, unknown>>(
 ): T {
   const open = new Set(opts.publicPaths);
   /*
-    The wrapper is variadic and untyped INSIDE, and the function is generic OUTSIDE.
-
-    That combination is what lets a guarded table stay exactly as typed as the one that
-    went in -- Bun infers `req.params` from each path literal, and a `Record<string,
-    Handler>` parameter would erase that for every route in the table. The arguments are
-    passed straight through, so nothing here can change what a handler receives.
+    `wrapRoutes` owns the variadic-inside/generic-outside shape this discovered, and the
+    three kinds of table entry. That combination is what lets a guarded table stay exactly
+    as typed as the one that went in -- Bun infers `req.params` from each path literal, and
+    a `Record<string, Handler>` parameter would erase that for every route in the table. The
+    arguments are passed straight through, so nothing here can change what a handler
+    receives.
   */
-  const wrap =
-    (path: string, handler: (...args: never[]) => unknown) =>
-    (...args: unknown[]): unknown => {
-      const req = args[0] as Request;
-      if (open.has(path) || opts.authService.principal(req)) {
-        return (handler as (...a: unknown[]) => unknown)(...args);
-      }
-      return json({ error: "not signed in" }, { status: 401 });
-    };
-
-  const out: Record<string, unknown> = {};
-  for (const [path, entry] of Object.entries(routes)) {
-    if (typeof entry === "function") {
-      out[path] = wrap(path, entry as (...args: never[]) => unknown);
-      continue;
+  return wrapRoutes(routes, (path, handler) => (...args: unknown[]) => {
+    const req = args[0] as Request;
+    if (open.has(path) || opts.authService.principal(req)) {
+      return (handler as (...a: unknown[]) => unknown)(...args);
     }
-    if (entry && typeof entry === "object") {
-      const methods: Record<string, unknown> = {};
-      for (const [method, handler] of Object.entries(entry as Record<string, unknown>)) {
-        methods[method] = wrap(path, handler as (...args: never[]) => unknown);
-      }
-      out[path] = methods;
-      continue;
-    }
-    // A static Response or anything else Bun accepts as a route value: pass it through
-    // rather than guessing at it. Nothing in this tree uses one today.
-    out[path] = entry;
-  }
-  return out as T;
+    return json({ error: "not signed in" }, { status: 401 });
+  });
 }
