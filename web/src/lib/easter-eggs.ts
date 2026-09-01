@@ -89,8 +89,28 @@ const STAR_WARS: ReadonlySet<string> = new Set([
   "tt30825738", // The Mandalorian and Grogu (2026)
 ]);
 
-/** The view-transition type the stylesheet keys the wipe off. */
-export const WIPE_TYPE = "wipe";
+/**
+ * The class the stylesheet keys the wipe off, set on `<html>`.
+ *
+ * > [!CAUTION] A CLASS, not a view-transition TYPE, and the difference is the whole
+ * > difference between this working and not working
+ * > `types` is the obvious mechanism and it silently does nothing on a browser that has
+ * > view transitions but not view-transition *types*. `router-core` reads the value it
+ * > gets from `types` ONLY inside a `CSS.supports("selector(:active-view-transition-type(a))")`
+ * > branch; where that is false it calls `document.startViewTransition(fn)` with no types
+ * > at all. Two things follow, and both were live bugs:
+ * >
+ * > 1. `:active-view-transition-type(wipe)` never matches, so the wipe does not run.
+ * > 2. Returning `false` to mean "do not animate" is never consulted either, so EVERY
+ * >    ordinary navigation gets the browser's default cross-fade -- the exact opposite of
+ * >    the zero-transition rule this app is built on.
+ * >
+ * > Keying off a class we set ourselves needs only `startViewTransition` to exist, which is
+ * > the thing actually being feature-detected. The stylesheet also neutralises the root
+ * > animation whenever the class is ABSENT, so a transition started on a types-less browser
+ * > is instant rather than a stray fade.
+ */
+export const WIPE_CLASS = "fdr-wipe";
 
 /** How often the joke may fire, at most. Long enough to stay a surprise. */
 export const WIPE_COOLDOWN_MS = 3 * 60 * 1000;

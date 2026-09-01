@@ -18,7 +18,7 @@ import {
   prefersReducedMotion,
   shouldWipe,
   tconstOfPath,
-  WIPE_TYPE,
+  WIPE_CLASS,
 } from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
@@ -204,7 +204,24 @@ export const router = createRouter({
    * a type from this function.
    */
   defaultViewTransition: {
+    /*
+      `types` is used as a per-navigation HOOK, not as the mechanism.
+
+      The return value is deliberately not relied on: `router-core` only reads it inside a
+      `CSS.supports("selector(:active-view-transition-type(a))")` branch, so on a browser
+      with view transitions but not types -- Safari, at the time of writing -- both the
+      `false` and the `["wipe"]` answers are discarded and `startViewTransition(fn)` runs
+      bare. What IS reliable is that this function is called exactly once per navigation,
+      before the transition starts, which is all the joke needs.
+
+      So the class on `<html>` carries the decision and the stylesheet neutralises the root
+      animation whenever it is absent. That makes an ordinary navigation instant on every
+      browser, including the ones that ignore the `false` below.
+    */
     types: ({ toLocation }) => {
+      const root = document.documentElement;
+      root.classList.remove(WIPE_CLASS);
+
       const reducedMotion = prefersReducedMotion();
       if (reducedMotion) return false;
 
@@ -215,7 +232,8 @@ export const router = createRouter({
       */
       if (shouldWipe(tconstOfPath(toLocation.pathname), { reducedMotion })) {
         markWipeShown();
-        return [WIPE_TYPE];
+        root.classList.add(WIPE_CLASS);
+        return [WIPE_CLASS];
       }
 
       // Every instant navigation is one the joke may follow: the gag only lands against a

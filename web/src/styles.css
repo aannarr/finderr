@@ -179,7 +179,7 @@ input[type="search"]::-webkit-search-results-decoration {
    --------------------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {
-  :root:active-view-transition-type(wipe) {
+  :root.fdr-wipe {
     /* No element-level suppression is needed here any more. It used to name
        the poster and the header to keep them out of the wipe; both lost their
        `view-transition-name` when the ordinary transitions went, so `root` is
@@ -226,4 +226,17 @@ input[type="search"]::-webkit-search-results-decoration {
    every keystroke. A wipe is not that, and lasts 600ms. */
 :root:active-view-transition .card-grid {
   content-visibility: visible;
+}
+
+/* A transition that is NOT the joke does nothing at all.
+
+   Belt to the `return false` in router.tsx's braces. That return is ignored on
+   any browser that has view transitions but not view-transition TYPES, where
+   `router-core` calls `startViewTransition(fn)` regardless -- which would give
+   every ordinary navigation the browser's default cross-fade, the exact
+   opposite of this app's rule. Killing the root animation unless the wipe class
+   is present makes that stray transition instant instead. */
+:root:not(.fdr-wipe)::view-transition-old(root),
+:root:not(.fdr-wipe)::view-transition-new(root) {
+  animation: none;
 }
