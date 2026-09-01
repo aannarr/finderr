@@ -186,13 +186,6 @@ input[type="search"]::-webkit-search-results-decoration {
        now the only group that exists and there is nothing left to exclude. */
     &::view-transition-old(root) {
       animation: fdr-wipe-out 600ms linear both;
-      /* STATIC, so they are set once here rather than repeated in both
-         keyframes. `no-repeat` is not a detail: the default is `repeat`, so a
-         mask wider than the element TILES instead of sweeping, and the wipe
-         renders as a stationary pattern. Only `mask-position` animates. */
-      mask-image: linear-gradient(to right, black 0 40%, transparent 60% 100%);
-      mask-size: 400% 100%;
-      mask-repeat: no-repeat;
     }
 
     /* The new page is revealed BY the old one leaving, so it holds still
@@ -204,34 +197,37 @@ input[type="search"]::-webkit-search-results-decoration {
   }
 }
 
-/* Left to right, with a soft leading edge -- a hard `inset()` cut reads as a
-   dropped frame rather than a sweep.
+/* The old page is cut away left to right. `inset(top right bottom left)`, so
+   growing the LEFT inset from 0 to 100% retracts the visible region rightwards
+   and the new page is revealed behind it.
 
-   > [!IMPORTANT] THE GEOMETRY IS THE WHOLE THING, and the first version animated
-   > from opaque to opaque
-   > `mask-position` on an oversized mask is a WINDOW onto it, and the arithmetic
-   > is easy to get backwards. At `mask-size: 400%`, `mask-position: 0%` shows
-   > the mask's leftmost quarter and `100%` shows its rightmost quarter -- so the
-   > left quarter must be fully BLACK (page visible, the start) and the right
-   > quarter fully TRANSPARENT (page gone, the end). The ramp sits between them,
-   > at 40%-60%, which is inside neither quarter: that is what makes both ends
-   * clean rather than starting half-faded.
+   > [!CAUTION] `clip-path`, NOT `mask-image`. Two earlier versions used a mask
+   > and neither ever drew a pixel.
+   > `::view-transition-old()` is a snapshot composited in its own layer, closer
+   > to a replaced element than to a normal box. `clip-path` is the property the
+   > published view-transition effects all use and is explicitly supported on
+   > these pseudo-elements; masking is not reliably applied to them, and the
+   > failure is silent -- `getComputedStyle` on the pseudo happily reported
+   > `mask-position` interpolating 0% -> 50% -> 99.83% across the full 600ms
+   > while nothing whatsoever appeared on screen.
    >
-   > The first attempt used a 200% mask whose gradient was transparent for only
-   > its first 6%. At 200% each end shows a HALF, so the "transparent" end was
-   > still ~88% black: a 600ms animation between two states that looked
-   > identical. It ran perfectly -- `getAnimations()` reported it running on
-   > `::view-transition-old(root)` for the full 600ms -- and was invisible. An
-   > animation being live is not evidence that it does anything.
+   > THAT IS THE LESSON WORTH KEEPING: on a view-transition pseudo, neither
+   > `getAnimations()` reporting an animation "running" nor a computed style
+   > showing correct interpolation is evidence that anything renders. Both were
+   > true here, twice, for an effect nobody could see. CDP screenshots are no
+   > help either -- they return byte-identical frames through a whole
+   > transition, because the layer these pseudos composite in is not captured.
+   > The only instrument that settles it is a human looking at a device.
    >
-   > 400% rather than 200% for exactly that reason: it buys a solid quarter at
-   > each end, so neither endpoint can catch part of the ramp. */
+   > A hard edge is also correct rather than a concession: the wipe this imitates
+   > IS a hard vertical edge. The earlier soft-gradient version was solving a
+   > problem the effect does not have. */
 @keyframes fdr-wipe-out {
   from {
-    mask-position: 0% 0;
+    clip-path: inset(0 0 0 0);
   }
   to {
-    mask-position: 100% 0;
+    clip-path: inset(0 0 0 100%);
   }
 }
 
