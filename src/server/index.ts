@@ -669,7 +669,30 @@ const awardsDeps = (): AwardsDeps => ({
 });
 
 const staticDir = `${import.meta.dir}/../../web/dist`;
-const haveStatic = existsSync(staticDir);
+
+/**
+ * Is there a built web UI to serve?
+ *
+ * > [!IMPORTANT] Latched TRUE, re-checked while false. It must not be a boot-time snapshot.
+ * > It was `const haveStatic = existsSync(staticDir)` evaluated once at module load, and in
+ * > development that is a trap with no recovery: `vite build` sets `emptyOutDir`, so it
+ * > DELETES `web/dist` before writing the new one. A server that happens to start inside
+ * > that window -- and `bun --watch` restarts on any source edit, so the window is hit
+ * > often -- latches `false` forever and answers 503 "web build missing" to every request
+ * > from then on, with a fully built `web/dist` sitting on disk beside it. The only cure
+ * > was a restart nobody knew they needed, because the page says the build is missing and
+ * > the build is right there.
+ *
+ * Latching on success is what keeps this free in production: the container always has the
+ * directory, so the `existsSync` runs once and never again. The syscall is only paid on the
+ * path that is already answering an error.
+ */
+let haveStatic = existsSync(staticDir);
+const webBuildPresent = (): boolean => {
+  if (haveStatic) return true;
+  haveStatic = existsSync(staticDir);
+  return haveStatic;
+};
 if (!haveStatic) log(`note: no web build at ${staticDir} -- API only. Run 'bun run build'.`);
 
 // --- routes ----------------------------------------------------------------
@@ -1473,7 +1496,7 @@ const server: Bun.Server<undefined> = Bun.serve({
         },
       });
     }
-    if (!haveStatic)
+    if (!webBuildPresent())
       return new Response("web build missing -- run 'bun run build'", {
         status: 503,
       });
