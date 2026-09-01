@@ -15,10 +15,12 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import {
   markWipeShown,
   noteOrdinaryNavigation,
+  pickWipeVariant,
   prefersReducedMotion,
   shouldWipe,
   tconstOfPath,
   WIPE_CLASS,
+  WIPE_VARIANTS,
 } from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
@@ -220,24 +222,32 @@ export const router = createRouter({
     */
     types: ({ toLocation }) => {
       const root = document.documentElement;
-      root.classList.remove(WIPE_CLASS);
+      root.classList.remove(WIPE_CLASS, ...WIPE_VARIANTS);
 
+      /*
+        Reduced motion is back and was never the problem.
+
+        It was the last suspect standing in a long hunt and it was innocent: the device
+        reported `prefers-reduced-motion: false` the whole time. The real cause was paint
+        ORDER -- `::view-transition-new` sits above `::view-transition-old` by default, so
+        every mask and clip on the outgoing page was working perfectly underneath a fully
+        opaque incoming page. The `z-index` pair in `styles.css` is the fix.
+
+        Honouring the setting is not optional for the largest motion in the product, so it
+        gates first, as it always did.
+      */
       const reducedMotion = prefersReducedMotion();
       if (reducedMotion) return false;
 
-      /*
-        `markWipeShown` is called here rather than inside `shouldWipe` because this is the
-        moment the transition is actually handed to the browser. Stamping the cooldown from
-        the question would burn the joke on a navigation nobody watched.
-      */
       if (shouldWipe(tconstOfPath(toLocation.pathname), { reducedMotion })) {
         markWipeShown();
-        root.classList.add(WIPE_CLASS);
+        // Base class carries the shared timing and paint order; the variant carries only
+        // its own geometry. Rolled per firing, so the joke stays a small surprise the
+        // second and third time rather than becoming a thing you have seen.
+        root.classList.add(WIPE_CLASS, pickWipeVariant());
         return [WIPE_CLASS];
       }
 
-      // Every instant navigation is one the joke may follow: the gag only lands against a
-      // baseline the reader has already felt. See `noteOrdinaryNavigation`.
       noteOrdinaryNavigation();
       return false;
     },

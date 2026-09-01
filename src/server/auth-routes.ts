@@ -306,14 +306,14 @@ export class AuthService {
             plex: this.deps.cfg.plex.enabled && !!this.deps.cfg.plex.token,
           });
         }
-        // `devLogin` is omitted rather than sent as `false`, so the ordinary payload is
-        // byte-identical to what it was before this existed and a stale client cannot read
-        // a missing key as anything but "no".
-        return json({
-          authenticated: true,
-          user: publicUser(p.user),
-          ...(p.kind === "dev" ? { devLogin: true } : {}),
-        });
+        /*
+          No `devLogin` field. It briefly existed so the app could draw a banner saying
+          authentication was off; aannarr removed the banner (2026-09-01, "no need for it
+          ever") and the field went with it rather than lingering as a fact nobody reads.
+          `auth.devLoginAs` in `/api/health` is the one place the mode is reported, and it
+          is read by whoever is asking the question rather than by whoever already knows.
+        */
+        return json({ authenticated: true, user: publicUser(p.user) });
       },
 
       "/api/auth/me": (req) => {

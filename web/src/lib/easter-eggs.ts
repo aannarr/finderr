@@ -112,6 +112,37 @@ const STAR_WARS: ReadonlySet<string> = new Set([
  */
 export const WIPE_CLASS = "fdr-wipe";
 
+/**
+ * The variants, one class each. A random one is chosen per firing.
+ *
+ * Star Wars does not have "a" wipe -- the films use a whole vocabulary of optical
+ * transitions, and the horizontal one is just the famous member of the family. Picking at
+ * random is what stops the joke becoming a thing you have seen; the second and third time
+ * it fires it is still slightly a surprise.
+ *
+ * They are CLASSES rather than a parameter, so the whole vocabulary lives in the
+ * stylesheet: adding one is a name here and a block there, with no TypeScript change and
+ * nothing to keep in sync. The base `fdr-wipe` class carries everything shared -- timing,
+ * paint order, `mask-repeat` -- so a variant only ever declares its own geometry.
+ */
+export const WIPE_VARIANTS = [
+  "fdr-wipe-l", // left to right, the classic
+  "fdr-wipe-r", // right to left
+  "fdr-wipe-d", // top to bottom
+  "fdr-wipe-iris", // a closing circle
+] as const;
+
+/**
+ * One variant, at random.
+ *
+ * `rand` is injectable so the tests can pin the mapping without being flaky, which is the
+ * only reason this is a function rather than an inline `Math.random()`.
+ */
+export function pickWipeVariant(rand: () => number = Math.random): string {
+  const i = Math.min(WIPE_VARIANTS.length - 1, Math.floor(rand() * WIPE_VARIANTS.length));
+  return WIPE_VARIANTS[i] as string;
+}
+
 /** How often the joke may fire, at most. Long enough to stay a surprise. */
 export const WIPE_COOLDOWN_MS = 3 * 60 * 1000;
 
@@ -191,6 +222,7 @@ export function shouldWipe(tconst: string | null, opts: WipeOptions = {}): boole
   // No exception for a joke. Somebody who has asked for less motion has asked for less
   // motion, and this is the single most motion there is in the product.
   if (opts.reducedMotion) return false;
+
   if (!store()?.getItem(SEEN_KEY)) return false;
   const now = opts.now ?? Date.now();
   return now - readNumber(LAST_KEY) >= WIPE_COOLDOWN_MS;

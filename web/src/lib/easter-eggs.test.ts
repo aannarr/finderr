@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   markWipeShown,
   noteOrdinaryNavigation,
+  pickWipeVariant,
   shouldWipe,
   tconstOfPath,
   WIPE_COOLDOWN_MS,
+  WIPE_VARIANTS,
 } from "./easter-eggs";
 
 /**
@@ -96,6 +98,24 @@ describe("shouldWipe", () => {
     // does by a wide margin -- this is only a constraint on the fake one.
     expect(shouldWipe(ANDOR, { now: 1_000_000 })).toBe(true);
     expect(shouldWipe(ANDOR, { now: 1_000_000 })).toBe(true);
+  });
+});
+
+describe("pickWipeVariant", () => {
+  test("maps the whole 0..1 range onto the variants, evenly and in order", () => {
+    // The midpoint of each bucket, so the assertion does not sit on a boundary.
+    const n = WIPE_VARIANTS.length;
+    for (let i = 0; i < n; i++) {
+      expect(pickWipeVariant(() => (i + 0.5) / n)).toBe(WIPE_VARIANTS[i] as string);
+    }
+  });
+
+  test("1 does not fall off the end", () => {
+    // `Math.random()` is documented as [0,1), so this should be unreachable -- but the
+    // clamp costs nothing and an out-of-range index would return undefined and add the
+    // string "undefined" as a class, which fails silently by simply not animating.
+    expect(pickWipeVariant(() => 1)).toBe(WIPE_VARIANTS[WIPE_VARIANTS.length - 1] as string);
+    expect(pickWipeVariant(() => 0)).toBe(WIPE_VARIANTS[0] as string);
   });
 });
 
