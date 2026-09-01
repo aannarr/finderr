@@ -66,16 +66,29 @@ pulls out of the text is used to score, never to filter, so a year you misrememb
 demotes the result instead of returning nothing.
 
 Browse and discovery are local too: chips for genre, decade, year and kind. The front
-page is a stack of shelves -- recently added, top films, top series, hidden gems, coming
-soon, this decade, one row per genre -- and every one of them is an index query. Every
-view has a URL. Back steps through your refinements and any result set is a link you can
-send someone.
+page is a stack of shelves -- recently added, the finderr Top 250, top films, series worth
+starting, airing soon, releasing soon, coming soon, this decade, one row per genre -- and
+every one of them is an index query. Every view has a URL. Back steps through your
+refinements and any result set is a link you can send someone.
+
+Ranking a "best of" list is a build-time job, not a `ORDER BY rating`. The index build
+writes a weighted `rank` column: a Bayesian average that pulls a title's own rating toward
+the corpus mean in proportion to how few people voted, so a 10.0 from six voters does not
+outrank *The Shawshank Redemption*. `/lists` is the catalogue that falls out of it -- a Top
+250, a per-genre and a per-decade list, each of them a plain browse with `sort=rank` behind
+it, so adding one costs a row in a table and no new query.
+
+Every Academy Award nomination since 1929 is in the index too, from
+[oscar_data](https://github.com/DLu/oscar_data). `/awards/oscars` is a timeline of every
+ceremony, each year is its own page, and a title or a person that was ever nominated
+carries its wins and nominations on its page. It is a local table like everything else:
+imported on a daily timer, read off disk, and it costs no API call at render.
 
 The title page paints at once and fills in behind itself: synopsis, ratings from IMDb,
 TMDB, Metacritic, Trakt and Rotten Tomatoes (critics and audience), a trailer link, cast
 with headshots, crew, named seasons with air dates per episode, collection, more like
-this, certification, release dates, keywords, and a "Where to watch" row for your own
-country. Nothing on it waits for a provider.
+this, certification, release dates, keywords, Oscar wins and nominations, and a "Where to
+watch" row for your own country. Nothing on it waits for a provider.
 
 Person and collection pages come from the local index too. Cast and crew names are links,
 a filmography is one click, and the reverse index is built from IMDb's `title.principals`
@@ -83,15 +96,19 @@ dump, so it costs no API call at all.
 
 Requests return immediately. The POST answers `202`, a background worker adds the title
 to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
-before anything is queued. Retry is a button.
+before anything is queued. Retry is a button. There are three grains: a whole title, a
+season selection, and -- for a series Sonarr already holds -- a single episode, which is
+the case the other two refuse. An admin can also override the quality profile and root
+folder for one request without touching the defaults.
 
 With a Plex token, a title you already own gets a Play button that deep-links into the
 Plex app or web player, instead of a line of text saying you have it.
 
 Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
 table. The first boot prints an invite link for the first admin; admins mint invites,
-manage users and roles, and can reset anyone's access. An anonymous visitor gets a bare
-login page and nothing else.
+manage users and roles, and can reset anyone's access. Everybody gets an account page to
+name their passkeys, add another one, and connect or disconnect their Plex login. An
+anonymous visitor gets a bare login page and nothing else.
 
 Metadata comes from addons, not from core. Three ship in the box: the Servarr metadata
 proxies (keyless), Rotten Tomatoes' public index (the audience score, keyless), and TMDB
@@ -226,6 +243,7 @@ bun install
 cp .env.example .env               # arr keys, optional TMDB and Plex, auth
 bun run logos:import               # studio / network / rating marks, ~12 MB, optional
 bun run index:build                # downloads the dumps, builds, gates, promotes
+bun run awards:import              # every Oscar nomination, 2.2 MB -- optional, see below
 bun run build                      # the web UI
 bun start                          # http://localhost:7979
 ```
@@ -234,6 +252,12 @@ bun start                          # http://localhost:7979
 [Kometa](https://github.com/Kometa-Team/Kometa/) commit into `web/public/logos/`. They
 belong to their trademark holders and are not tracked here. Skip the step and every badge
 prints its name instead. The Docker build runs it for you.
+
+`awards:import` is optional in the same way `index:build` is: the server imports the
+nominations itself twelve seconds after a cold boot and re-checks daily, so you only run
+it by hand to fill the awards pages before the first check, or with `--file oscars.tsv`
+on a machine with no route to GitHub. A failed import is logged and swallowed -- the
+awards pages come up empty and nothing else changes.
 
 `bun run dev` gives you hot reload (API on 7979, Vite on 7980). The repo's own
 `docker-compose.yml` builds the image locally and reads the unprefixed names in `.env`;
@@ -293,6 +317,7 @@ rebuild.
 | `FINDERR_INDEX_TITLE_TYPES` | `movie,tvSeries,tvMiniSeries,tvMovie` | IMDb title types to ingest |
 | `FINDERR_INDEX_INCLUDE_ADULT` | `false` | |
 | `FINDERR_INDEX_FUZZY_MIN_VOTES` | `100` | Below this a title is full-text only; above it typos find it too |
+| `FINDERR_INDEX_RANK_PRIOR_VOTES` | `25000` | How much evidence a title needs before its own rating outweighs the corpus mean in the `rank` column. Raise it to demand more votes before something can climb a Top 250; lower it to let smaller titles move |
 | `FINDERR_INDEX_CAST_MIN_VOTES` | `1000` | Cast and crew are indexed for titles above this. `0` indexes everybody and the build takes tens of minutes |
 | `FINDERR_INDEX_CAST_CATEGORIES` | ten IMDb job categories | Which credits earn a row. Empty = no cast tables, no person pages |
 | `FINDERR_INDEX_CAST_REFRESH_DAYS` | `7` | How often the 100M-row `title.principals` dump is re-scanned. Other builds carry the cast tables forward in seconds |
@@ -306,8 +331,10 @@ rebuild.
 
 `/api/health` answers `{"ok":true}` to anyone, which is all the container probe needs.
 With the admin key (or an admin session) it reports index rows and build time, the last
-in-place swap and its canary score, library and Plex mirror counts, addon coverage of the
-front page, user and session counts, and memory.
+in-place swap and its canary score, library, Plex and upcoming mirror counts, the award
+import (row count and the commit it was parsed from), addon coverage of the front page,
+per-provider and per-host timings saying where a cold title's second actually went, user
+and session counts, and memory.
 
 ## How search works
 
@@ -381,6 +408,15 @@ results: a tokenizer change, or IMDb re-scoring its votes. Only running real que
 catches that, and the same suite validates the new file in the running process before the
 engine swaps to it. A refused swap shows up in `/api/health` as `index.reload.ok: false`.
 
+The build also pulls a fifth file that is not IMDb's: an id crosswalk, `tconst` to TMDB
+and TheTVDB id, queried in bulk out of Wikidata through
+[QLever](https://qlever.cs.uni-freiburg.de/). It covers 95% of films and 92% of series at
+the vote floor, and rather more of the ones anybody looks up. What it buys is a round trip
+off every cold title page: `api.themoviedb.org/3/find/tt…` was the single most expensive
+call in the whole facet chain and it answers a question a 12 MB download already knows.
+The tail it misses is looked up live exactly as before, so partial coverage costs nothing
+but the calls it saves. A fresher crosswalk on its own does not trigger a rebuild.
+
 ```bash
 bun run index:build -- --dry-run     # build and gate, do not promote
 bun run index:build -- --no-fetch    # rebuild from dumps already on disk
@@ -389,9 +425,10 @@ bun run index:build -- --force       # ignore ETags
 
 ## How metadata works
 
-Core knows nothing about cast, ratings or seasons. It declares a facet vocabulary (fifteen
-fact types an addon can provide: `synopsis`, `ratings`, `cast`, `seasons`,
-`watchProviders`, ...) and an addon fills them in. The resolver caches every contribution
+Core knows nothing about cast, ratings or seasons. It declares a facet vocabulary -- the
+fact types an addon may provide, `synopsis`, `ratings`, `cast`, `seasons`,
+`watchProviders` and a dozen more, all listed in [ADDONS.md](ADDONS.md) -- and an addon
+fills them in. The resolver caches every contribution
 in SQLite with a freshness class that scales with the title's age, so a 2010 film's cast is
 fetched once and a series airing this week re-checks its episode list every twelve hours.
 A page never waits. It paints from local data and polls until the server says nothing is
@@ -425,15 +462,20 @@ bearer key.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/health` | `{"ok":true}` anonymously; the full payload to an admin |
+| `GET` | `/api/index-status` | public. What the boot build is doing, for the progress page |
 | `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered |
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
-| `GET` | `/api/browse?genre=&decade=&year=&kind=&offset=` | paginated, votes-ordered |
+| `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
 | `GET` | `/api/discover` | the front-page shelves, pure index queries |
-| `GET` | `/api/person/:nconst` | filmography |
+| `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
+| `GET` | `/api/awards/oscars` | the ceremony timeline and its provenance |
+| `GET` | `/api/awards/oscars/:ceremony` | one year, categories in their canonical order |
 | `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side |
-| `POST` | `/api/requests` `{tconst, seasons?}` | returns `202`, queued in the background |
+| `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
+| `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |
 | `POST` | `/api/requests/:tconst/retry` | |
+| `GET` | `/api/arr/options` | admin. The quality profiles and root folders each arr offers |
 | `POST` | `/api/library/sync` | admin. Walk Radarr, Sonarr and Plex now |
 | `GET` | `/api/admin/invites`, `/users`, `/requests` | admin. Mint, list, revoke, reset |
 | `GET` | `/img/t/:tconst` | poster by IMDb id, disk-cached, never hotlinked |
@@ -460,11 +502,13 @@ Every line here is a real limitation. It is not a roadmap.
 - No request cancel or delete from the UI. A request that reached the arr is undone in
   the arr. There is also no "my requests" page for a normal user; you get a toast and an
   in-flight badge, and the full log lives on the admin screen.
-- A series already in Sonarr cannot be extended. Season picking works when a series is
-  first requested; asking again for a show the library mirror already knows answers
-  `409 already in your library`, and the worker only ever calls *add*. Adding seasons to a
-  partially-monitored show is done in Sonarr for now. Episode-level requests do not exist
-  at all.
+- A series already in Sonarr cannot be extended by the season. Season picking works when a
+  series is first requested; asking again for a show the library mirror already knows
+  answers `409 already in your library`, and the worker only ever calls *add*. Adding a
+  whole season to a partially-monitored show is done in Sonarr for now. Single episodes are
+  the exception and do work: an episode of a series Sonarr already holds is one button, and
+  it is tracked by the episode mirror rather than by a request row, so it does not appear in
+  the request log.
 - A request that finds nothing goes `no_release` on its own after a day and nine
   reconcile passes, rather than showing "Processing" forever. You can retry it.
 - No per-addon configuration. An addon needing an API key reads `process.env` itself.
@@ -501,9 +545,9 @@ Every line here is a real limitation. It is not a roadmap.
   the same arr lookup, which runs lazily, so an unowned title seen for the first time has
   no badge until its poster has been fetched. Owned titles are seeded by the library sync
   and have badges immediately.
-- Posters depend on the arrs being reachable. The IMDb-to-TMDB crosswalk runs through
-  Radarr and Sonarr's lookup endpoints; a title neither can resolve gets a typographic
-  tile.
+- Posters depend on the arrs being reachable. The bulk crosswalk carries an id, not an
+  image: the poster itself still comes from Radarr and Sonarr's lookup endpoints, and a
+  title neither can resolve gets a typographic tile.
 - Plex must have matched the item with the modern agent. finderr finds a title in Plex by
   the `imdb://` guid the new agent writes. A library scanned by a legacy agent
   (`com.plexapp.agents.*`) matches nothing, and `/api/health` shows `plex.items: 0` beside
@@ -554,6 +598,7 @@ mature one, and it does plenty finderr does not:
 | 4K / second instance | yes | no |
 | Issue reporting | yes | no |
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
+| Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination |
 | Extensibility | none | addons: facets and panes |
 | Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
 
@@ -599,6 +644,11 @@ people and is not covered by that licence:
   Servarr team for Radarr and Sonarr clients. finderr is a third party on them and behaves
   like one.
 - Rotten Tomatoes' public search index supplies the audience score.
+- The Academy Award nominations come from
+  [oscar_data](https://github.com/DLu/oscar_data) by DLu, BSD-2-Clause. finderr records the
+  commit it parsed and says so on the awards page.
+- The id crosswalk is [Wikidata](https://www.wikidata.org/) (CC0), queried through
+  [QLever](https://qlever.cs.uni-freiburg.de/) at the University of Freiburg (Apache-2.0).
 - The logo set is fetched at build time from [Kometa](https://github.com/Kometa-Team/Kometa/)
   (MIT). The marks themselves remain their trademark holders' property and are used for
   identification only.
@@ -608,8 +658,8 @@ people and is not covered by that licence:
   [Jellyseerr](https://github.com/Fallenbagel/jellyseerr/)'s `Media.ts`, because Plex
   documents neither of them.
 
-finderr is not affiliated with IMDb, TMDB, JustWatch, Rotten Tomatoes, Plex, the Servarr
-team or Kometa. I wrote it from scratch, loosely around the shape of Seerr, with the search
+finderr is not affiliated with IMDb, TMDB, JustWatch, Rotten Tomatoes, Plex, Wikidata, the
+Academy of Motion Picture Arts and Sciences, the Servarr team or Kometa. I wrote it from scratch, loosely around the shape of Seerr, with the search
 moved off the network.
 
 --\
