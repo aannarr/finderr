@@ -128,8 +128,8 @@ export interface HealthDeps {
     admins: number;
     sessions: number;
     apiKey: boolean;
-    /** `auth.devLoginAs`. Non-null means THE LOGIN WALL IS OPEN -- see that config field. */
-    devLoginAs: string | null;
+    /** `auth.noAuth`. TRUE means THE LOGIN WALL IS OPEN -- see that config field. */
+    noAuth: boolean;
   };
   queue: unknown;
   artwork: unknown;

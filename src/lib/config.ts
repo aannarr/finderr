@@ -308,7 +308,7 @@ export interface Config {
     /** Requests per minute per IP on /api/search, which is genuinely CPU-bound. */
     searchRatePerMinute: number;
     /**
-     * Sign EVERY caller in as this admin, by display name. There is no login wall while it is set.
+     * `FINDERR_NO_AUTH=1` -- run with no login wall at all. Off by default.
      *
      * > [!CAUTION] THIS REMOVES AUTHENTICATION ENTIRELY. Anyone who can reach the port is an admin.
      * > There is deliberately NO guard rail on it -- no forced loopback bind, no refusal to
@@ -326,18 +326,20 @@ export interface Config {
      * > to whoever finds the port. It is announced at boot, in `/api/health` and in a banner
      * > across the top of every page, and those three are the entire defence.
      *
-     * **It is a NAME rather than a boolean, and that is what keeps development honest.** A
-     * synthetic anonymous principal would make this mode stop exercising what actually ships:
-     * `requested_by` would be null here and populated in production, so `visibleRequest`
-     * stripping, the admin request log and every role-gated surface would never render while
-     * somebody worked. Naming a user means the account is REAL -- looked up by display name,
-     * created as an admin on first boot if missing -- so every path downstream of
-     * `principal()` sees an ordinary user and no code has a branch for this mode.
-     * `the_user` is a fine value if you have no better idea.
+     * **ONE FLAG AND ONE CONSTANT, and no name-override env.** aannarr's shape, and it
+     * replaced a `FINDERR_DEV_LOGIN_AS` that took a display NAME -- which was never asked
+     * for and is gone. A flag you have to feed a value to is a flag you have to look up:
+     * the whole point of this is that a dev server comes up working at short notice, and
+     * "which name did we use last time" is exactly the friction it exists to remove.
      *
-     * Unset is the default and changes nothing at all.
+     * The account is still REAL rather than a synthetic anonymous principal, because that
+     * is what keeps the mode honest: `requested_by` would be null here and populated in
+     * production, so `visibleRequest` stripping, the admin request log and every role-gated
+     * surface would never render while somebody worked. It is found or created under
+     * `NO_AUTH_USER` (`the_user`), so every path downstream of `principal()` sees an
+     * ordinary admin and no code carries a branch for this mode.
      */
-    devLoginAs?: string;
+    noAuth: boolean;
   };
 
   /** Mirror the arr libraries locally so "do we have it?" never hits the network. */
@@ -457,6 +459,8 @@ const DEFAULTS: Config = {
     trustProxy: false,
     authRatePerMinute: 20,
     searchRatePerMinute: 120,
+    // The login wall is ON unless an operator turns it off, and it is never off by accident.
+    noAuth: false,
   },
   libraryRefreshSeconds: 60,
   episodeRefreshSeconds: 21_600,
@@ -579,7 +583,7 @@ function envOverrides(): Record<string, unknown> {
       adminApiKey: envStr("FINDERR_ADMIN_API_KEY"),
       authRatePerMinute: envInt("FINDERR_AUTH_RATE_PER_MINUTE"),
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
-      devLoginAs: envStr("FINDERR_DEV_LOGIN_AS"),
+      noAuth: envBool("FINDERR_NO_AUTH"),
     },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),

@@ -161,7 +161,7 @@ const devUser = auth.ensureDevUser();
 if (devUser) {
   log("");
   log("  ##########################################################");
-  log("  #  AUTHENTICATION IS OFF -- FINDERR_DEV_LOGIN_AS IS SET  #");
+  log("  #  AUTHENTICATION IS OFF -- FINDERR_NO_AUTH IS SET  #");
   log("  ##########################################################");
   log(
     `  every request is signed in as ${JSON.stringify(devUser.displayName)} (${devUser.role}) -- no login wall`,
@@ -833,7 +833,7 @@ const appRoutes = {
             // looking at. Null is the ordinary case and every deployment. This block is
             // admin-only, so it discloses the account name to nobody who could not already
             // list every user.
-            devLoginAs: cfg.auth.devLoginAs ?? null,
+            noAuth: cfg.auth.noAuth,
           },
           queue: worker.stats(),
           artwork: artwork.stats(),

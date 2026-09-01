@@ -30,22 +30,54 @@
  * > reading the keyboard. That is what "mode" has to mean to be worth having.
  */
 
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { jumpLabelAt, jumpLabelFor } from "../lib/jump-keys";
 import { HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 
+/**
+ * The registry half: how a card joins, and what it is called. IDENTITY NEVER CHANGES.
+ *
+ * > [!CAUTION] SPLITTING THIS FROM THE STATE IS THE FIX. Merging them back breaks the feature.
+ * > It was ONE context carrying `register`, `labelOf`, `version` and `active` together.
+ * > That object is rebuilt on every provider render, and `useJumpKey`'s CALLBACK REF listed
+ * > it in a dependency array -- so the ref got a new identity every time `version` or
+ * > `active` moved. React answers a changed callback ref by invoking the old one with
+ * > `null` and the new one with the element, so **every card unregistered and re-registered
+ * > on every state change.** `visible` was emptied synchronously while the
+ * > IntersectionObserver only refills it a frame later, so at the exact instant the mode
+ * > opened the label map was empty: `⌘/` gave a mode with no badges and no working keys.
+ * > It also churns -- each re-register calls `reassign`, which bumps `version`, which
+ * > re-runs every ref again.
+ * >
+ * > The rule that falls out: **anything a REF depends on must be stable for the lifetime of
+ * > the provider; anything that drives RENDERING must be somewhere else.** Hence two
+ * > contexts. Measured against a live page, not reasoned about after the fact.
+ */
 interface JumpRegistry {
   /** Register a card's element; returns the unsubscribe. */
   register: (el: HTMLElement) => () => void;
   /** The label for this element right now, or null: not visible, or past the alphabet. */
   labelOf: (el: HTMLElement | null) => string | null;
+}
+
+/** The rendering half: everything that is allowed to change on any frame. */
+interface JumpState {
   /**
    * Bumped whenever the assignment changes.
    *
-   * Its only job is to make the CONTEXT VALUE change when nothing else in it did, so
-   * every card re-renders and re-reads `labelOf`. The labels live in a ref rather than in
-   * state because they are keyed on elements and read imperatively; without this counter
-   * a reassignment would be invisible to React.
+   * Its only job is to make this value change when nothing else in it did, so every card
+   * re-renders and re-reads `labelOf`. The labels live in a ref rather than in state
+   * because they are keyed on ELEMENTS and read imperatively; without this counter a
+   * reassignment would be invisible to React.
    */
   version: number;
   /** Is navigation mode open? The badges follow this and nothing else. */
@@ -60,6 +92,16 @@ interface JumpRegistry {
  * has to maintain a list of routes to skip.
  */
 const JumpContext = createContext<JumpRegistry | null>(null);
+const JumpStateContext = createContext<JumpState>({ version: 0, active: false });
+
+/**
+ * How far the page must move before a scroll counts as leaving the mode.
+ *
+ * Blurring the search box on entry un-pins the sticky header, and that reflow emits its
+ * own `scroll` event -- a few pixels, in the same tick the mode opened. Anything below
+ * this is the page settling; anything above it is the reader going somewhere else.
+ */
+const SCROLL_CLOSE_PX = 24;
 
 /**
  * Scope for a set of jumpable cards. Mounted ONCE, in `RootLayout`.
@@ -87,6 +129,8 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
   // close over the first `false` forever, or the listener would re-subscribe per toggle.
   const isActive = useRef(false);
   isActive.current = active;
+  /** Where the page was when the mode opened, so a reflow is not mistaken for a scroll. */
+  const openedAtY = useRef(0);
 
   /**
    * Recompute the assignment from what is visible, in document order.
@@ -170,6 +214,9 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
         a mode if the text field is still collecting characters underneath it.
       */
       (document.activeElement as HTMLElement | null)?.blur?.();
+      // Recorded BEFORE the blur settles, so the reflow it causes is measured against
+      // where the page was when the reader asked. See `onScroll` below.
+      openedAtY.current = window.scrollY;
       setActive(true);
     };
 
@@ -228,21 +275,44 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
     // Anything that moves the page invalidates the labels a reader is looking at, so the
     // mode closes rather than pointing at cards that have scrolled away. A badge that
     // outlives the reader's attention is chrome they did not ask for and cannot dismiss.
+    /*
+      A SCROLL CLOSES THE MODE ONLY IF THE PAGE ACTUALLY MOVED, and the threshold is not
+      belt-and-braces. Opening BLURS the search box, which un-pins the sticky header and
+      lets it collapse -- that reflow emits a `scroll` event of its own, so a bare
+      `close` on scroll shut the mode in the same tick it opened, every time. The reader
+      saw nothing happen at all.
+
+      Comparing against the scroll position AT OPEN separates "the page settled by a pixel
+      because I blurred something" from "the reader scrolled away from the cards they were
+      labelling", which is the only case worth closing for.
+    */
+    const onScroll = () => {
+      if (!isActive.current) return;
+      if (Math.abs(window.scrollY - openedAtY.current) > SCROLL_CLOSE_PX) close();
+    };
     window.addEventListener("blur", close);
-    window.addEventListener("scroll", close, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pointerdown", close);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("blur", close);
-      window.removeEventListener("scroll", close);
+      window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pointerdown", close);
     };
   }, []);
 
   const labelOf = useCallback((el: HTMLElement | null) => (el ? (labels.current.get(el) ?? null) : null), []);
 
+  // Memoised on the two STABLE callbacks, so this object is built once and the cards'
+  // callback refs never change identity. See the caution on `JumpRegistry`.
+  const registry = useMemo<JumpRegistry>(() => ({ register, labelOf }), [register, labelOf]);
+  // Free to change every frame; only rendering reads it.
+  const state = useMemo<JumpState>(() => ({ version, active }), [version, active]);
+
   return (
-    <JumpContext.Provider value={{ register, labelOf, version, active }}>{children}</JumpContext.Provider>
+    <JumpContext.Provider value={registry}>
+      <JumpStateContext.Provider value={state}>{children}</JumpStateContext.Provider>
+    </JumpContext.Provider>
   );
 }
 
@@ -258,18 +328,23 @@ export function useJumpKey(): {
   label: string | null;
   active: boolean;
 } {
-  const ctx = useContext(JumpContext);
+  const registry = useContext(JumpContext);
+  const { active } = useContext(JumpStateContext);
   const node = useRef<HTMLElement | null>(null);
   const cleanup = useRef<(() => void) | null>(null);
 
   /*
-    NO SUBSCRIPTION AND NO FORCED RE-RENDER: the context IS the subscription.
+    NO SUBSCRIPTION AND NO FORCED RE-RENDER: the STATE context is the subscription.
 
-    `JumpKeysProvider` publishes a fresh value whenever `version` or `active` moves, and a
-    context update re-renders every consumer -- `memo` does not stop it, which is the one
+    A context update re-renders every consumer -- `memo` does not stop it, which is the one
     thing worth knowing here, because `TitleCard` is memoised and its props do not change
-    when its number does. So reading `labelOf` during render is enough, and the `version`
-    field's whole job is to make the value change when only the label map did.
+    when its number does. So reading `labelOf` during render is enough, and `version`'s
+    whole job is to make that value change when only the label map did.
+
+    THE REF DEPENDS ON THE REGISTRY ALONE, which never changes identity. Depending on
+    anything that moves per frame makes React tear down and re-create every registration on
+    every state change, which empties `visible` at the exact moment the badges are wanted.
+    That was the bug; see the caution on `JumpRegistry`.
   */
   const ref = useCallback(
     (el: HTMLElement | null) => {
@@ -277,13 +352,13 @@ export function useJumpKey(): {
       cleanup.current?.();
       cleanup.current = null;
       node.current = el;
-      if (ctx && el) cleanup.current = ctx.register(el);
+      if (registry && el) cleanup.current = registry.register(el);
     },
-    [ctx],
+    [registry],
   );
   useEffect(() => () => cleanup.current?.(), []);
 
-  return { ref, label: ctx?.labelOf(node.current) ?? null, active: ctx?.active ?? false };
+  return { ref, label: registry?.labelOf(node.current) ?? null, active };
 }
 
 /**

@@ -68,6 +68,14 @@ function json(body: unknown, init: ResponseInit = {}): Response {
  */
 const REFUSED = "that did not work";
 
+/**
+ * Who everybody is while `FINDERR_NO_AUTH` is set. A CONSTANT, deliberately not an env.
+ *
+ * aannarr, 2026-09-01: "one flag, one constant" -- a mode whose job is that a dev server
+ * comes up working at short notice must not also ask you which name you used last time.
+ */
+export const NO_AUTH_USER = "the_user";
+
 async function body(req: Request): Promise<Record<string, unknown>> {
   try {
     const v = await req.json();
@@ -166,30 +174,31 @@ export class AuthService {
    * one.
    */
   private devPrincipal(): Principal | null {
-    const name = this.deps.cfg.auth.devLoginAs;
-    if (!name) return null;
+    if (!this.deps.cfg.auth.noAuth) return null;
     const user = this.ensureDevUser();
     if (!user || user.disabledAt !== null) return null;
     return { kind: "dev", user, role: user.role };
   }
 
   /**
-   * Find or create the account named by `auth.devLoginAs`. Null when the flag is unset.
+   * Find or create the `NO_AUTH_USER` account. Null unless `FINDERR_NO_AUTH` is set.
    *
-   * Public because the boot banner reports the account it will be signing people in as, and
-   * a banner naming an account that did not exist yet would be a second owner of "who is the
-   * dev user". Matching is on the display name, trimmed and case-insensitive -- it is typed
-   * into a shell by a human, so `aannarr` and `aannarr` cannot be two accounts.
+   * ONE CONSTANT, no env to feed it -- see `auth.noAuth` in config.ts for why the name is
+   * not configurable. Public because the boot banner reports the account it will be signing
+   * people in as, and a banner naming an account that did not exist yet would be a second
+   * owner of "who is the no-auth user".
+   *
+   * Matching is on the display name, trimmed and case-insensitive, so an account somebody
+   * already made by hand under that name is ADOPTED rather than duplicated.
    */
   ensureDevUser(): User | null {
-    const name = this.deps.cfg.auth.devLoginAs?.trim();
-    if (!name) return null;
+    if (!this.deps.cfg.auth.noAuth) return null;
     if (this.devUserId) return this.deps.auth.getUser(this.devUserId);
 
-    const key = name.toLowerCase();
+    const key = NO_AUTH_USER.toLowerCase();
     const existing = this.deps.auth.listUsers().find((u) => u.displayName.trim().toLowerCase() === key);
-    const user = existing ?? this.deps.auth.createUser({ displayName: name, role: "admin" });
-    if (!existing) this.deps.log(`dev login: created admin account ${JSON.stringify(name)}`);
+    const user = existing ?? this.deps.auth.createUser({ displayName: NO_AUTH_USER, role: "admin" });
+    if (!existing) this.deps.log(`no-auth: created admin account ${JSON.stringify(NO_AUTH_USER)}`);
     this.devUserId = user.id;
     return user;
   }
@@ -310,7 +319,7 @@ export class AuthService {
           No `devLogin` field. It briefly existed so the app could draw a banner saying
           authentication was off; aannarr removed the banner (2026-09-01, "no need for it
           ever") and the field went with it rather than lingering as a fact nobody reads.
-          `auth.devLoginAs` in `/api/health` is the one place the mode is reported, and it
+          `auth.noAuth` in `/api/health` is the one place the mode is reported, and it
           is read by whoever is asking the question rather than by whoever already knows.
         */
         return json({ authenticated: true, user: publicUser(p.user) });

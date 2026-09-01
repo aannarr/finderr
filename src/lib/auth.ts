@@ -99,7 +99,7 @@ export interface Principal {
   /**
    * How this caller was identified.
    *
-   * `dev` is the development-only login (`auth.devLoginAs`), and it is a distinct kind rather
+   * `dev` is the development-only login (`auth.noAuth`), and it is a distinct kind rather
    * than a forged `session` so that anything inspecting a principal can tell a real sign-in
    * from a bypassed one. It still carries a real `user`, so every consumer that only cares
    * about WHO is calling needs no branch for it.

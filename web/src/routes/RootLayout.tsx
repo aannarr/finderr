@@ -292,12 +292,12 @@ export function RootLayout() {
       {/*
         NO BANNER. aannarr, 2026-09-01: "REMOVE THIS HEADER FULL .. no need for it ever".
 
-        It used to draw an orange strip on every page whenever `FINDERR_DEV_LOGIN_AS` was
+        It used to draw an orange strip on every page whenever `FINDERR_NO_AUTH` was
         set. The reasoning was that a screenshot of a login-less finderr is otherwise
         indistinguishable from a screenshot of a locked one -- but the operator who turned
         the flag on is the same person reading the strip on every screen, so it spends
         permanent screen space telling them something they chose. The boot banner and
-        `auth.devLoginAs` in `/api/health` remain, and both are read by whoever is asking
+        `auth.noAuth` in `/api/health` remain, and both are read by whoever is asking
         the question rather than by whoever already knows the answer.
       */}
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
