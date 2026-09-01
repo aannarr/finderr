@@ -398,6 +398,40 @@ describe("LiveIndex with no index yet", () => {
     live.close();
   });
 
+  /**
+   * The bug this pins, measured in Docker on 2026-09-01 against `main` AND the branch.
+   *
+   * A container with no `titles.db` exited 1 within seconds of boot, every time, and under
+   * `restart: always` that is a crash loop. `ResourceMonitor`'s callback reads
+   * `live.current.poolStats()` on a timer, and `/api/health` reads it on every request --
+   * both while the boot build is still running and `current` throws by design. So the
+   * progress page and `refreshOnBoot` were unreachable: nothing survived long enough to
+   * serve them. The comment in `.claude/CLAUDE.md` saying the cold-boot path had never been
+   * run live turned out to be the only thing keeping this hidden.
+   *
+   * The holder answers it, not each call site: it is the one thing that knows whether there
+   * is an engine, and there were two call sites making the same wrong assumption.
+   */
+  test("poolStats() is null rather than a throw while there is no engine", () => {
+    const path = freshPath("cold-pool");
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+
+    expect(live.poolStats()).toBeNull();
+
+    live.close();
+  });
+
+  test("poolStats() reports once an index has been adopted", () => {
+    const path = freshPath("cold-pool-adopt");
+    const live = new LiveIndex({ path, cfg, floor: 0, allowMissing: true });
+    writeIndex(path, { builtAt: "2026-09-01T00:00:00.000Z", title: "One", tconst: "tt1" });
+
+    expect(live.open().ok).toBe(true);
+    expect(typeof live.poolStats()).toBe("string");
+
+    live.close();
+  });
+
   test("without `allowMissing` a missing file is still fatal at construction", () => {
     // Everywhere but the boot-build path, a missing index is a fault. Constructing quietly
     // into a dead holder would turn it into a server that answers nothing and says nothing.

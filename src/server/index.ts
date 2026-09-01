@@ -298,7 +298,10 @@ worker.start();
  * "thrashing", and it is invisible in process-wide CPU because JSC marks on its own
  * threads.
  */
-const resources = new ResourceMonitor(log, () => live.current.poolStats());
+// `live.poolStats()`, never `live.current.poolStats()`: this runs on a timer that starts
+// before the boot-time build has produced an index, and `current` throws until it has.
+// That threw on the first tick and killed the process -- see the caution on `poolStats`.
+const resources = new ResourceMonitor(log, () => live.poolStats() ?? "");
 resources.start(cfg.resourceLogSeconds * 1000);
 
 /** The front page, as `./shelves` defines it, against this process's index and mirror. */
@@ -772,7 +775,10 @@ const appRoutes = {
               : null,
             cpuSeconds: Math.round(rt.cpu.totalSeconds),
             gcSeconds: rt.cpu.gcSeconds === null ? null : Math.round(rt.cpu.gcSeconds),
-            fuzzy: live.current.poolStats(),
+            // Through the holder, because this payload is built for EVERY health request
+            // including the anonymous one, and the container probes it while the boot-time
+            // build is still running. `current` throws then -- see `LiveIndex.poolStats`.
+            fuzzy: live.poolStats(),
           },
           // Passed as a thunk, never a value -- see health.ts.
           coverage: shelfCoverage,

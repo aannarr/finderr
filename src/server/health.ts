@@ -30,7 +30,14 @@ export interface HealthRuntime {
   } | null;
   cpuSeconds: number;
   gcSeconds: number | null;
-  fuzzy: string;
+  /**
+   * The fuzzy pool's report, or `null` while there is no index open to ask.
+   *
+   * Nullable because health answers during the boot-time build, before any engine exists.
+   * It was `string`, which is what let the call site reach through `live.current` and throw
+   * on every probe of a first install -- see `LiveIndex.poolStats`.
+   */
+  fuzzy: string | null;
 }
 
 /**
