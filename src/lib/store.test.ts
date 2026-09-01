@@ -453,9 +453,36 @@ describe("pruning superseded facet contributions", () => {
       outcome: "failed",
       data: null,
     });
+    // A replacement for EACH, because a superseded row is only dead once something has
+    // actually replaced it -- see the test below.
     store.putFacetContribution(row("servarr-metadata", "live"));
+    store.putFacetContribution(row("servarr-metadata", "live", "tt0068646"));
 
     expect(store.pruneFacetContributions(new Map([["servarr-metadata", "live"]]))).toBe(2);
+  });
+
+  /**
+   * The rule that makes a superseded row a FALLBACK rather than litter.
+   *
+   * A plugin's `config_version` is a hash of its whole source tree, so editing a log line
+   * supersedes every row it ever wrote. Deleting them on the spot is what emptied the live
+   * cache from 5,379 rows to 3,495 at one restart on 2026-09-01 and had the warm loop
+   * re-buy the lot from third parties. The row stays readable until its provider answers
+   * again -- see `isUsableContribution` -- so this must not delete it before then.
+   */
+  test("a superseded row with NO replacement survives, because it is still what we would draw", () => {
+    store.putFacetContribution(row("servarr-metadata", "dead", "tt0068646"));
+    // Replaced for one title, untouched for the other.
+    store.putFacetContribution(row("servarr-metadata", "dead"));
+    store.putFacetContribution(row("servarr-metadata", "live"));
+
+    expect(store.pruneFacetContributions(new Map([["servarr-metadata", "live"]]))).toBe(1);
+
+    const left = store.facetContributionsByContentId("ratings");
+    expect(left.map((r) => `${r.entity_id}@${r.config_version}`).sort()).toEqual([
+      "tt0068646@dead",
+      "tt0111161@live",
+    ]);
   });
 });
 

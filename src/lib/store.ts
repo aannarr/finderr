@@ -1242,13 +1242,34 @@ export class Store {
   pruneFacetContributions(current: ReadonlyMap<string, string>): number {
     if (current.size === 0) return 0;
 
-    const stmt = this.db.query("delete from facet_contribution where plugin_id = ? and config_version != ?");
+    /*
+      ONLY ONCE REPLACED. The `exists` clause is what makes a superseded row a fallback
+      rather than litter.
+
+      This used to delete every row at a superseded version the moment the plugin's source
+      hash moved, which was correct while a superseded row was unreadable anyway. It is not
+      any more: `isUsableContribution` renders one until its provider answers again, so
+      deleting it here would reintroduce exactly the burst this is meant to end -- the
+      cache emptying at a restart and the warm loop re-buying it from third parties. Only
+      a row that has ALREADY been replaced at the current version is dead, and that one is
+      genuinely unreachable.
+
+      What is left behind is bounded by the working set: a superseded row survives until
+      its title is next viewed or warmed, and the front page is warmed every six hours. A
+      title nobody ever opens keeps one old row, which is the row that will be served if
+      somebody finally does.
+    */
+    const stmt = this.db.query(
+      "delete from facet_contribution as old where old.plugin_id = ? and old.config_version != ? " +
+        "and exists (select 1 from facet_contribution cur where cur.entity_id = old.entity_id " +
+        "and cur.facet = old.facet and cur.plugin_id = old.plugin_id and cur.config_version = ?)",
+    );
     // One transaction: a half-applied sweep would leave the count in `/api/health`
     // describing a table that no longer matches it.
     return this.db.transaction(() => {
       let pruned = 0;
       for (const [pluginId, version] of current) {
-        pruned += stmt.run(pluginId, version).changes;
+        pruned += stmt.run(pluginId, version, version).changes;
       }
       return pruned;
     })();

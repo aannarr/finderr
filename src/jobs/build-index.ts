@@ -13,6 +13,7 @@ import { loadConfig, paths } from "../lib/config";
 import { CROSSWALK_FILE, fetchCrosswalk } from "../lib/crosswalk";
 import { DumpStateStore, fetchDump, SchemaDriftError } from "../lib/dumps";
 import { buildIndex, gateVolume, promote } from "../lib/index-builder";
+import { describeStale, staleStagesOf } from "../lib/index-stages";
 import { prepareSqlite } from "../lib/spellfix";
 
 const args = new Set(process.argv.slice(2));
@@ -77,6 +78,28 @@ async function main(): Promise<number> {
   }
 
   const haveLive = existsSync(p.db);
+
+  /*
+    A STAGE THIS BUILD KNOWS AND THE LIVE INDEX DOES NOT IS A REASON TO BUILD.
+
+    Upstream drift was the only reason until 2026-09-01, and that left the upgrade path
+    depending on IMDb's publishing schedule. The crosswalk is fetched a few lines above and
+    deliberately does NOT set `anyChanged` -- a fresher crosswalk is not worth six minutes
+    on its own -- so on a day when all four dumps answer 304 the file was downloaded and
+    then ignored, by an index that had no `title_ids` table at all.
+
+    It self-healed within a day because IMDb publishes daily. That is an accident rather
+    than an upgrade path, and it is exactly what somebody who pulls a new image and
+    restarts is entitled to have happen without waiting on a third party.
+  */
+  if (!anyChanged && haveLive) {
+    const stale = staleStagesOf(p.db, cfg);
+    if (stale.length > 0) {
+      log(`the live index is missing: ${describeStale(stale)} -- building for that`);
+      anyChanged = true;
+    }
+  }
+
   if (!anyChanged && haveLive) {
     log("no drift detected and a live index exists -- nothing to do");
     state.close();

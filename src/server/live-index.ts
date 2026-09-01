@@ -293,6 +293,37 @@ export class LiveIndex {
   }
 
   /**
+   * The fuzzy pool's own report, or `null` while there is no engine to ask.
+   *
+   * > [!CAUTION] This exists because two call sites read `live.current` on the boot-build
+   * > path and BOTH took the container down. Measured in Docker on 2026-09-01.
+   * > A data directory with no `titles.db` exited 1 within seconds of boot, every time, on
+   * > `main` as well as on the branch that found it -- and under `restart: always` that is
+   * > a crash loop rather than a slow start. `ResourceMonitor`'s callback asks for these
+   * > stats on a timer, and `/api/health` builds them into every response including the
+   * > anonymous one. Both ran while the boot build was still going, when `current` throws
+   * > by design. So `refreshOnBoot` and the progress page it exists to serve were
+   * > unreachable: nothing lived long enough to render them.
+   * >
+   * > The note in the project brief saying the cold-boot path had never been run live was
+   * > the only thing keeping this hidden, and running it is what found it.
+   *
+   * The holder answers this rather than each caller checking `ready` first, for the same
+   * reason `meta()` does: it is the one thing that knows whether there is an engine, and
+   * "ask the engine, but only if there is one" is precisely the rule two call sites got
+   * wrong. `null` is the shape a caller must handle -- there is no pool to report on.
+   */
+  poolStats(): string | null {
+    if (!this.engine || this.fileMovedUnderUs) return null;
+    try {
+      return this.engine.poolStats();
+    } catch {
+      // Same rule as `safeMeta`: a diagnostic must never be the thing that fails.
+      return null;
+    }
+  }
+
+  /**
    * `meta` of whatever is serving right now, as `/api/health` reports it.
    *
    * Empty once a reload has been refused: at that point the file we opened is not the file

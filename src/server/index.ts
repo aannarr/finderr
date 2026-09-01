@@ -46,6 +46,7 @@ import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
+import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
 import { RequestWorker } from "./request-worker";
 import { discoveryShelves, facetCoverage, frontPageTitles } from "./shelves";
@@ -266,6 +267,12 @@ if (!plex) {
  * handle held across an index promote is unusable (see `live-index.ts`).
  */
 function indexHasRow(tconst: string): boolean {
+  // No index yet means we cannot draw a card for ANY title, which is the honest answer
+  // rather than a throw. Both callers are boot-path timers -- the arr calendars fire
+  // immediately and the TMDB sync eight seconds in -- so on a first install this is asked
+  // while the index is still being built. `current` throws then, out of a timer with
+  // nobody to catch it. See `LiveIndex.poolStats` for the same fault at two other sites.
+  if (!live.ready) return false;
   return live.current.byTconst(tconst) !== null;
 }
 
@@ -323,7 +330,10 @@ worker.start();
  * "thrashing", and it is invisible in process-wide CPU because JSC marks on its own
  * threads.
  */
-const resources = new ResourceMonitor(log, () => live.current.poolStats());
+// `live.poolStats()`, never `live.current.poolStats()`: this runs on a timer that starts
+// before the boot-time build has produced an index, and `current` throws until it has.
+// That threw on the first tick and killed the process -- see the caution on `poolStats`.
+const resources = new ResourceMonitor(log, () => live.poolStats() ?? "");
 resources.start(cfg.resourceLogSeconds * 1000);
 
 /** The front page, as `./shelves` defines it, against this process's index and mirror. */
@@ -348,6 +358,13 @@ const shelvesOf = () => discoveryShelves({ engine: live.current, store });
  * from one day to the next, so a warm title costs neither a call nor a pause.
  */
 async function warmShelves(): Promise<void> {
+  // There is no front page to warm until there is an index to derive one from. The six-hourly
+  // timer that calls this starts at boot, so on a first install it fires while the build is
+  // still running -- and `shelvesOf()` reads `live.current`, which throws until then.
+  // Nothing is lost by returning: the boot-build handler warms explicitly once the index is
+  // adopted, and so does every later swap.
+  if (!live.ready) return;
+
   const titles = frontPageTitles(shelvesOf());
 
   const res = await artwork.materialise(
@@ -733,6 +750,30 @@ const appRoutes = {
    * The acceptance check the metadata epic documents still works, it just has to ask
    * for it: `curl 'localhost:7979/api/health?coverage=1' | jq .facets.coverage`.
    */
+  /*
+    Rebuild the index and adopt it, without a shell on the host.
+
+    THE POINT IS THAT IT DOES BOTH HALVES. `bun src/jobs/build-index.ts` run by hand
+    against a live server PROMOTES: it renames the file this process holds open, after
+    which that connection throws on most reads and quietly serves yesterday on the rest,
+    until somebody restarts the container. Nothing in the job's output says so. This route
+    is the same build followed by the swap, which is the only combination that is safe
+    while the server is up.
+
+    Returns as soon as the refresh is UNDERWAY rather than awaiting it: a build is minutes
+    and an HTTP client that waits that long has usually been killed by a proxy first. The
+    outcome lands in `index.reload` on `/api/health`, which is where the daily refresh
+    already reports.
+  */
+  "/api/admin/index/refresh": {
+    POST: (req: Request) =>
+      auth.asAdmin(req, () => {
+        const already = refresher.refreshing();
+        void refresher.run("admin request").catch((err) => log(`admin refresh failed -- ${err}`));
+        return json({ started: !already, alreadyRunning: already });
+      }),
+  },
+
   "/api/health": (req: Request) => {
     // Liveness is public; every FACT below it is not. See the caution on `healthPayload`.
     // An admin session or the system API key gets the detail, anybody else gets `ok`.
@@ -802,7 +843,10 @@ const appRoutes = {
               : null,
             cpuSeconds: Math.round(rt.cpu.totalSeconds),
             gcSeconds: rt.cpu.gcSeconds === null ? null : Math.round(rt.cpu.gcSeconds),
-            fuzzy: live.current.poolStats(),
+            // Through the holder, because this payload is built for EVERY health request
+            // including the anonymous one, and the container probes it while the boot-time
+            // build is still running. `current` throws then -- see `LiveIndex.poolStats`.
+            fuzzy: live.poolStats(),
           },
           // Passed as a thunk, never a value -- see health.ts.
           coverage: shelfCoverage,
@@ -1536,10 +1580,35 @@ const server: Bun.Server<undefined> = Bun.serve({
 
 log(`listening on http://${cfg.host}:${server.port}`);
 
+// --- build, then adopt: one owner ------------------------------------------
+//
+// The daily refresh and the boot-time stale check both go through this. It serialises them
+// -- a container restarted a minute before the cron fires would otherwise run two builds
+// against one `titles.new.db` -- and it is the path an operator should reach for instead of
+// running the job by hand, because a hand-run build promotes the file this process holds
+// open and leaves it serving errors until somebody restarts it. See `./index-refresh.ts`.
+const refresher = new IndexRefresher({
+  cfg,
+  live,
+  log: (m) => log(m),
+  script: `${import.meta.dir}/../jobs/build-index.ts`,
+  // Shelf membership moves with the index -- new titles clear the vote floor, others drop
+  // below it -- so the front page after a swap is not the one that was warmed. Paced, in
+  // the background, and never awaited on a timer.
+  onSwapped: () => {
+    void warmShelves().catch((err) => log(`post-reload warm failed -- ${(err as Error).message}`));
+  },
+});
+
 // --- adopt the boot-time build ---------------------------------------------
 //
 // Wired here rather than beside the spawn because it wants `warmShelves`, and because this
 // reads in the order it happens: the server is already listening by the time any of it runs.
+//
+// NOT routed through `refresher`: that owns build-AND-adopt, and this build was already
+// started before the port opened so that the progress page could report on it. Only the
+// adoption half is left, and it is `open()` rather than `reload()` because there is no
+// outgoing engine.
 if (indexBuild) {
   void indexBuild.exited.then((code) => {
     // The build gates on volume and on the 42-case canary before `promote()`, so a non-zero
@@ -1551,9 +1620,25 @@ if (indexBuild) {
     const res = live.open();
     if (!res.ok) return;
 
-    // Same follow-up as the daily refresh: the front page is a function of the index, so
-    // it cannot have been warmed before one existed. Paced, in the background, never awaited.
-    void warmShelves().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
+    /*
+      EVERYTHING THAT NEEDS AN INDEX WAS SKIPPED WHILE THERE WAS NONE, so this is where it
+      runs -- not just the warm.
+
+      The mirrors filter what they store through `indexHasRow`, which answers `false` for
+      every title while the index is being built. So on a first install the arr calendars
+      and the TMDB upcoming lists both ran against an index that could not confirm a single
+      row, and stored nothing. Their own timers are six-hourly and daily, which would have
+      left a brand new install with empty shelves for most of a day for no reason other
+      than the order two timers happened to fire in.
+
+      Sequential and never awaited: each is paced, and the warm wants the rows the two
+      syncs above it produce.
+    */
+    void (async () => {
+      await refreshLibrary();
+      await refreshTmdbUpcoming();
+      await warmShelves();
+    })().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
   });
 }
 
@@ -1566,41 +1651,38 @@ if (indexBuild) {
 // docker-compose for any other reason would have silently moved the refresh while this
 // line went on logging UTC.
 try {
-  Bun.cron(
-    cfg.index.refreshCron,
-    async () => {
-      log("scheduled index refresh starting");
-      const proc = Bun.spawn(["bun", `${import.meta.dir}/../jobs/build-index.ts`], {
-        stdout: "inherit",
-        stderr: "inherit",
-        env: process.env,
-      });
-      const code = await proc.exited;
-      log(`scheduled index refresh exited ${code}`);
-
-      // A non-zero exit means a gate refused the build and `promote()` never ran, so the
-      // file on disk is still the one we already have open. Reloading would be a wasted
-      // canary against our own index.
-      if (code !== 0) return;
-
-      // The swap. If the candidate does not open or does not answer, `reload()` puts the
-      // previous file back and opens THAT -- it cannot keep the engine it already has,
-      // because `promote()` has already renamed that file away. There is no half-swapped
-      // state to recover from, which is the whole reason this is preferable to exiting
-      // and being restarted.
-      const res = live.reload();
-      if (!res.swapped) return;
-
-      // Shelf membership moves with the index -- new titles clear the vote floor, others
-      // drop below it -- so the front page after a swap is not the one that was warmed.
-      // Paced, in the background, and never awaited on this timer.
-      void warmShelves().catch((err) => log(`post-reload warm failed -- ${(err as Error).message}`));
-    },
-    { tz: cfg.index.refreshTz },
-  );
+  Bun.cron(cfg.index.refreshCron, () => void refresher.run("scheduled"), { tz: cfg.index.refreshTz });
   log(`index refresh scheduled: ${cfg.index.refreshCron} (${cfg.index.refreshTz})`);
 } catch (err) {
   log(`could not schedule refresh (${(err as Error).message}) -- run build-index.ts from cron instead`);
+}
+
+// --- the upgrade path ------------------------------------------------------
+/*
+  A NEW RELEASE THAT NEEDS A NEW INDEX STAGE REBUILDS ITSELF, WITHOUT A MAINTENANCE PAGE.
+
+  This is the half `refreshOnBoot` never covered. That flag answers "there is NO index";
+  this answers "there is an index and it predates something this build knows how to
+  produce" -- which is what every `docker compose pull && up -d` onto a release that added
+  a stage looks like. Measured on the live deployment when the id crosswalk shipped: the
+  container came up, `hasIds` was false, and it stayed false while every render went on
+  buying the calls the crosswalk existed to remove.
+
+  DELIBERATELY NOT A MAINTENANCE PAGE, and that is the whole design. There IS an index
+  here, and it answers every query correctly -- it merely lacks one optimisation. So the
+  old index keeps serving at full speed for the several minutes the build takes, and the
+  live swap adopts the new one when it passes its gates. Showing a progress page instead
+  would turn a zero-downtime upgrade into an outage in order to report on itself. The
+  progress page is correct only where it already fires: when there is nothing to serve.
+
+  Deferred rather than awaited, so a rebuild never delays the port opening.
+*/
+if (live.ready) {
+  const reason = staleIndexReason(cfg);
+  if (reason) {
+    log(`${reason} -- rebuilding in the background. The current index keeps serving until it is ready.`);
+    setTimeout(() => void refresher.run("stale index at boot"), cfg.index.staleRebuildDelayMs);
+  }
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

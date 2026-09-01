@@ -246,7 +246,24 @@ export class ResourceMonitor {
       }
     }
 
-    const extra = this.extra();
+    /*
+      A DIAGNOSTIC MUST NEVER BE THE THING THAT KILLS THE PROCESS.
+
+      `extra` is a caller's closure over something this class knows nothing about, and on
+      2026-09-01 the one in `src/server/index.ts` read an index that does not exist yet
+      during a first install. It threw on the first tick, out of a `setInterval` with
+      nobody to catch it, and the container exited 1 -- so a fresh install crash-looped
+      instead of building the index it was booting to build.
+
+      The call site is fixed too. This is the belt: a resource log line is not worth a
+      process, and the marker keeps the failure visible rather than swallowing it.
+    */
+    let extra: string;
+    try {
+      extra = this.extra();
+    } catch {
+      extra = "extra:unavailable";
+    }
     if (extra) parts.push(extra);
 
     return `resources: ${parts.join("  ")}`;

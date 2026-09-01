@@ -116,6 +116,20 @@ export interface Config {
      */
     refreshTz: string;
     refreshOnBoot: boolean;
+    /**
+     * How long to wait before rebuilding an index that is missing a stage this build knows.
+     *
+     * Not zero, and the delay is the point. A container that comes up needing a rebuild is
+     * also mirroring Radarr, mirroring Sonarr, walking Plex and warming shelves; starting a
+     * six-minute index build into that has the new release's first impression be its
+     * slowest minute. The rebuild is never urgent -- the index it replaces answers every
+     * query correctly and merely lacks an optimisation -- so it waits for boot to finish.
+     *
+     * Set to 0 in a test to make the check synchronous-ish. There is no ENV mapping: this
+     * is a tuning constant with no operator decision behind it, and the moment it has one
+     * it earns a `FINDERR_` name.
+     */
+    staleRebuildDelayMs: number;
   };
 
   radarr?: ArrService;
@@ -394,6 +408,7 @@ const DEFAULTS: Config = {
     refreshCron: "0 9 * * *", // after TMDB publishes (~07:20 UTC observed) and IMDb's drop
     refreshTz: "UTC",
     refreshOnBoot: true,
+    staleRebuildDelayMs: 30_000,
   },
   regions: ["US"],
   tmdb: {
