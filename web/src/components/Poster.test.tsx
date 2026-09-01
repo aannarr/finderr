@@ -85,6 +85,27 @@ describe("the image", () => {
   test("is decorative by default -- the title is already in the DOM beside it", () => {
     expect(render(<Poster title={WITH_ART} />)).toContain('alt=""');
   });
+
+  test("an uncached image starts hidden and keeps its fade", () => {
+    // Two halves of one rule, and this test can only pin the first. An image the browser
+    // has NOT yet fetched starts at opacity-0 with the 300ms transition, so a slow poster
+    // fades in over the frame rather than popping -- that is deliberate, documented in the
+    // component, and this assertion is what stops someone "fixing" the flash below by
+    // deleting the fade for everyone.
+    //
+    // The second half -- an image already complete at mount latches `loaded` from a ref
+    // callback during the commit phase, so navigating Back to the grid does not re-fade
+    // every cached poster -- CANNOT be expressed here. `renderToStaticMarkup` never creates
+    // a DOM node, so a ref callback never runs and `complete`/`naturalWidth` do not exist;
+    // asserting on it would test the absence of a DOM, not the behaviour. The ref lives on
+    // the `<img>` in `Poster.tsx` with the full story; if these classes ever stop appearing
+    // in static markup, either the fade was removed or the latch started running where no
+    // image exists -- both are regressions.
+    const html = render(<Poster title={WITH_ART} />);
+    expect(html).toContain("opacity-0");
+    expect(html).toContain("transition-opacity");
+    expect(html).not.toContain("opacity-100");
+  });
 });
 
 describe("fallbacks", () => {

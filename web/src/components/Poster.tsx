@@ -28,7 +28,7 @@
  */
 
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { posterUrl, type Title } from "../lib/api";
 
 /**
@@ -110,6 +110,25 @@ export function Poster({
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // An image that is ALREADY decoded at mount must not fade in again. The grid route
+  // unmounts whenever a title is opened (`SearchRoute` says so at its `shelves` state), so
+  // navigating Back remounts every card with `loaded === false` -- and every poster the
+  // browser served instantly from HTTP cache still spent one frame at opacity-0 and then
+  // ran the 300ms fade, which read as the whole grid blinking to black on a page that was
+  // otherwise already there. `onLoad` cannot fix this: for a cached image it either fired
+  // before React attached the listener or fires after the first paint, one dark frame too
+  // late either way. A ref callback runs during the COMMIT phase, before the browser
+  // paints, so latching `loaded` here means the first visible frame is already at full
+  // opacity and there is no flash to see. Genuinely uncached images take the `onLoad` path
+  // below and keep the deliberate fade.
+  //
+  // `naturalWidth > 0` is not decoration: a broken image also reports `complete === true`,
+  // and treating it as loaded would fade in the broken-image glyph the `failed` flag
+  // exists to hide. A broken cached image gets its `onError` like any other.
+  const imgRef = useCallback((node: HTMLImageElement | null) => {
+    if (node?.complete && node.naturalWidth > 0) setLoaded(true);
+  }, []);
+
   const body = (
     <>
       {fallback === "tile" && title && (
@@ -133,6 +152,7 @@ export function Poster({
 
       {src && !failed && (
         <img
+          ref={imgRef}
           src={src}
           alt={alt}
           loading={eager ? "eager" : "lazy"}
