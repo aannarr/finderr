@@ -28,6 +28,7 @@ function deps(onCoverage: () => void): HealthDeps {
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true, noAuth: false },
     queue: { pending: 0 },
     artwork: { resolved: 2192 },
+    shelves: { enabled: false, ready: false, tiers: { index: null, tmdb: null, arr: null }, rows: 0 },
     plugins: ["servarr-metadata", "rotten-tomatoes"],
     facetRows: 4321,
     facetImages: 87,

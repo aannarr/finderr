@@ -134,25 +134,50 @@ describe("discoveryShelves", () => {
   });
 
   /**
-   * Exclusion is the ENGINE's job on every discovery shelf, so what this file owes is the
-   * wiring: the library mirror's keys reach the query as `excludeTconsts`. Asserting on the
-   * returned rows instead would only prove the fake engine ignored the option it was handed.
+   * What you already have is dropped from a recommendation shelf, and kept on a list.
+   *
+   * > [!NOTE] This asserts the OUTCOME, and it used to assert the mechanism -- on purpose
+   * > It was "the library's keys reach the query as `excludeTconsts`", justified in its own
+   * > docstring on the grounds that checking the returned rows "would only prove the fake
+   * > engine ignored the option it was handed". That was exactly right while the ENGINE did
+   * > the excluding. `assembleShelves` does it now -- moved out of the query so a held shelf
+   * > cannot go on offering a film you downloaded an hour ago -- so the rows are produced by
+   * > code in this file and asserting on them is no longer vacuous. The old test defended a
+   * > mechanism that no longer exists; this one defends the rule that always mattered.
    */
-  test("what the library already holds is handed to the engine as an exclusion", () => {
-    const seen: (Set<string> | undefined)[] = [];
-    discoveryShelves(
+  test("what the library already holds is dropped from the recommendation shelves", () => {
+    const shelves = discoveryShelves(
       depsWith(
         {
-          topRated: (opts = {}) => {
-            seen.push(opts.excludeTconsts);
-            return [row(`top-${opts.kind}`)];
-          },
+          // Two candidates, one of them owned, so the filter has something to do and
+          // something to leave behind.
+          topRated: (opts = {}) => [row("owned-1"), row(`top-${opts.kind}`)],
+          topRatedInGenre: () => [row("owned-1"), row("genre-Horror")],
+          newThisDecade: () => [row("owned-1"), row("decade")],
         },
         ["owned-1"],
       ),
     );
-    expect(seen.length).toBeGreaterThan(0);
-    for (const excluded of seen) expect([...(excluded ?? [])]).toEqual(["owned-1"]);
+    const rowsOf = (id: string) => shelves.find((s) => s.id === id)?.rows.map((r) => r.tconst);
+    expect(rowsOf("top-movies")).toEqual(["top-movie"]);
+    expect(rowsOf("top-series")).toEqual(["top-tvSeries"]);
+    expect(rowsOf("new-decade")).toEqual(["decade"]);
+    expect(rowsOf("genre-horror")).toEqual(["genre-Horror"]);
+  });
+
+  /**
+   * The Top 250 and "Popular right now" are LISTS, and a list with the good ones quietly
+   * removed is not that list -- it is a list with holes and no way to tell from the
+   * numbering. Pinned here because it is an editorial decision that reads like an oversight.
+   */
+  test("a canonical list keeps what you own", () => {
+    const shelves = discoveryShelves(
+      depsWith({ browse: () => ({ rows: [row("owned-1")], total: 1 }) }, ["owned-1"], [], UPCOMING, [
+        "owned-1",
+      ]),
+    );
+    expect(shelves.find((s) => s.id === "top-250")?.rows.map((r) => r.tconst)).toEqual(["owned-1"]);
+    expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual(["owned-1"]);
   });
 
   test("recently-added is read out of the mirror, in the mirror's order", () => {

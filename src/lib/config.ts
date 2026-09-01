@@ -345,6 +345,22 @@ export interface Config {
   /** Mirror the arr libraries locally so "do we have it?" never hits the network. */
   libraryRefreshSeconds: number;
 
+  shelves: {
+    /**
+     * Hold the front page in memory, rebuilt by the timer that owns each shelf.
+     *
+     * `FINDERR_KEEP_SHELVES_FRESH=1`. OFF by default, because a cache that can serve a
+     * stale page is exactly the sort of thing that should be switched on deliberately and
+     * switchable off in one environment variable if it ever misbehaves -- there is no
+     * migration and no state to unwind, the next boot simply computes per request again.
+     *
+     * It is a performance switch and NOT a correctness one: `src/server/front-page.ts`
+     * holds unfiltered candidates and every user-specific fact stays on the request path,
+     * so on and off produce identical shelves. `front-page.test.ts` pins that row for row.
+     */
+    keepFresh: boolean;
+  };
+
   /**
    * How stale one series' EPISODE mirror may get before it is walked again, in seconds.
    *
@@ -463,6 +479,8 @@ const DEFAULTS: Config = {
     noAuth: false,
   },
   libraryRefreshSeconds: 60,
+  // Opt-in. See `shelves.keepFresh` -- off is the behaviour every version so far has had.
+  shelves: { keepFresh: false },
   episodeRefreshSeconds: 21_600,
   episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
@@ -586,6 +604,7 @@ function envOverrides(): Record<string, unknown> {
       noAuth: envBool("FINDERR_NO_AUTH"),
     },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
+    shelves: { keepFresh: envBool("FINDERR_KEEP_SHELVES_FRESH") },
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),
     episodeRefreshBatch: envInt("FINDERR_EPISODE_REFRESH_BATCH"),
     resourceLogSeconds: envInt("FINDERR_RESOURCE_LOG_SECONDS"),

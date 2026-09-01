@@ -133,6 +133,17 @@ export interface HealthDeps {
   };
   queue: unknown;
   artwork: unknown;
+  /**
+   * The held front page: whether it is on, whether it is complete, and when each tier last
+   * rebuilt.
+   *
+   * The per-tier timestamps are the field worth reading. `enabled: true` with `ready: false`
+   * means every request is falling back to computing the page -- which is CORRECT and
+   * otherwise invisible, so nothing else would ever tell you the feature is not working. An
+   * `arr` timestamp older than a couple of minutes says the 60-second library timer has
+   * stopped, which is a bigger problem than the shelves.
+   */
+  shelves: unknown;
   plugins: string[];
   facetRows: number;
   facetImages: number;
@@ -206,6 +217,7 @@ export function healthPayload(
     auth: deps.auth,
     queue: deps.queue,
     artwork: deps.artwork,
+    shelves: deps.shelves,
     plugins: { loaded: deps.plugins },
     facets: {
       // `images` is how many facet images we have issued a proxy key for -- a zero

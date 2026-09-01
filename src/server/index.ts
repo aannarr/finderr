@@ -43,13 +43,20 @@ import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
+import { FrontPage } from "./front-page";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
 import { RequestWorker } from "./request-worker";
-import { discoveryShelves, facetCoverage, frontPageTitles } from "./shelves";
+import {
+  type DiscoveryShelf,
+  discoveryShelves,
+  facetCoverage,
+  frontPageTitles,
+  type ShelfTier,
+} from "./shelves";
 
 const cfg = loadConfig();
 const p = paths(cfg);
@@ -309,6 +316,10 @@ async function refreshLibrary(): Promise<void> {
   } catch (err) {
     log(`upcoming sync error -- ${(err as Error).message}`);
   }
+
+  // The arr tier's three shelves -- recently-added and the two arr calendars -- are built
+  // from exactly what the lines above just wrote, so this is where they stop being stale.
+  primeShelves("arr");
 }
 void refreshLibrary();
 setInterval(() => void refreshLibrary(), cfg.libraryRefreshSeconds * 1000);
@@ -340,6 +351,46 @@ resources.start(cfg.resourceLogSeconds * 1000);
 const shelvesOf = () => discoveryShelves({ engine: live.current, store });
 
 /**
+ * The held front page. Inert unless `FINDERR_KEEP_SHELVES_FRESH` is set.
+ *
+ * The deps are a THUNK because `live.current` throws until an index exists and must never
+ * be captured -- a holder that closed over one engine would go on reading a retired handle
+ * after the next swap, which either errors or, worse, quietly serves yesterday.
+ */
+const frontPage = new FrontPage(() => ({ engine: live.current, store }));
+
+/**
+ * Rebuild one tier of the held page, from the timer that just wrote its source.
+ *
+ * Never throws, and never lets a prime failure reach the caller: every call site is a timer,
+ * and a boot-path timer taking the process down is exactly the crash loop of 2026-09-01. A
+ * tier that cannot be built is simply not built, and the page keeps being computed.
+ */
+function primeShelves(tier: ShelfTier): void {
+  if (!cfg.shelves.keepFresh || !live.ready) return;
+  try {
+    frontPage.refresh(tier);
+  } catch (err) {
+    log(`shelf prime (${tier}) failed -- ${(err as Error).message}`);
+  }
+}
+
+/**
+ * THE front page, for every consumer: the render path, the warm loop and the health probe.
+ *
+ * One function so the held copy and the computed one can never be two different pages. It
+ * falls back to computing whenever the holder is off, still filling, or missing a tier --
+ * so turning the flag off is a restart and nothing else, with no state to unwind.
+ */
+function currentShelves(): DiscoveryShelf[] {
+  if (cfg.shelves.keepFresh) {
+    const held = frontPage.current(new Set(store.libraryMap().keys()));
+    if (held) return held;
+  }
+  return shelvesOf();
+}
+
+/**
  * Warm everything reachable in ONE CLICK from a cold front page, so nothing on screen
  * is ever fetched while somebody waits.
  *
@@ -365,7 +416,7 @@ async function warmShelves(): Promise<void> {
   // adopted, and so does every later swap.
   if (!live.ready) return;
 
-  const titles = frontPageTitles(shelvesOf());
+  const titles = frontPageTitles(currentShelves());
 
   const res = await artwork.materialise(
     titles.map((t) => ({ tconst: t.tconst, kind: t.kind })),
@@ -433,6 +484,11 @@ async function refreshTmdbLists(): Promise<void> {
   } catch (err) {
     log(`trending sync error -- ${(err as Error).message}`);
   }
+
+  // Both mirrors this tier's three shelves read from have just been written. Outside the
+  // try blocks on purpose: a failed sync leaves the previous rows standing, and re-priming
+  // from them is right -- stale beats absent, the same rule `syncPlex` follows.
+  primeShelves("tmdb");
 }
 
 // Give the library mirror a moment to land first: "recently added" is read straight
@@ -679,7 +735,7 @@ function liveCollectionRows(contentId?: string) {
  * shelf title on top of the shelf queries, which is why it lives on `/api/health` and
  * on no path a user is waiting on.
  */
-const shelfCoverage = () => facetCoverage(shelvesOf(), (row) => facets.isWarm(entityFor(row)));
+const shelfCoverage = () => facetCoverage(currentShelves(), (row) => facets.isWarm(entityFor(row)));
 
 /**
  * What the award handlers read, resolved at the moment of use.
@@ -837,6 +893,15 @@ const appRoutes = {
           },
           queue: worker.stats(),
           artwork: artwork.stats(),
+          /*
+            Whether the front page is HELD, and when each tier last rebuilt.
+
+            The per-tier timestamps are the field worth reading: they are the only way to
+            tell "held and current" from "held and one timer has quietly stopped writing".
+            `enabled: true` with `ready: false` means every request is falling back to
+            computing the page -- correct, and otherwise completely invisible.
+          */
+          shelves: frontPage.status(cfg.shelves.keepFresh),
           plugins: plugins.list().map((p) => p.meta.id),
           facetRows: store.facetCacheCount(),
           facetImages: store.facetImageCount(),
@@ -1238,7 +1303,7 @@ const appRoutes = {
    */
   "/api/discover": () =>
     json(
-      { shelves: shelvesOf().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) },
+      { shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) },
       { headers: { "Cache-Control": "private, max-age=600" } },
     ),
 
@@ -1614,6 +1679,9 @@ const refresher = new IndexRefresher({
   // below it -- so the front page after a swap is not the one that was warmed. Paced, in
   // the background, and never awaited on a timer.
   onSwapped: () => {
+    // Before the warm, and synchronously: the warm reads the front page, so priming second
+    // would warm the OLD membership and then immediately replace it.
+    primeShelves("index");
     void warmShelves().catch((err) => log(`post-reload warm failed -- ${(err as Error).message}`));
   },
 });
@@ -1652,6 +1720,10 @@ if (indexBuild) {
       Sequential and never awaited: each is paced, and the warm wants the rows the two
       syncs above it produce.
     */
+    // The index tier is buildable the moment `open()` succeeds; the other two prime
+    // themselves at the end of the two syncs below.
+    primeShelves("index");
+
     void (async () => {
       await refreshLibrary();
       await refreshTmdbLists();
@@ -1701,6 +1773,20 @@ if (live.ready) {
     log(`${reason} -- rebuilding in the background. The current index keeps serving until it is ready.`);
     setTimeout(() => void refresher.run("stale index at boot"), cfg.index.staleRebuildDelayMs);
   }
+}
+
+/*
+  The ORDINARY boot: an index was already on disk, so no swap and no post-build hook will
+  ever fire and the index tier would otherwise never be built -- leaving `frontPage.ready`
+  false forever and every request quietly falling back to computing the page. Which is
+  correct, and completely invisible, which is what makes it worth a line here.
+
+  The other two tiers prime themselves: `refreshLibrary()` ran at boot and `refreshTmdbLists()`
+  fires 8 seconds in.
+*/
+if (cfg.shelves.keepFresh) {
+  primeShelves("index");
+  log(`shelves: held in memory, rebuilt per tier (index/tmdb/arr) -- FINDERR_KEEP_SHELVES_FRESH is on`);
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

@@ -416,6 +416,7 @@ rebuild.
 | `FINDERR_INDEX_CAST_CATEGORIES` | ten IMDb job categories | Which credits earn a row. Empty = no cast tables, no person pages |
 | `FINDERR_INDEX_CAST_REFRESH_DAYS` | `7` | How often the 100M-row `title.principals` dump is re-scanned. Other builds carry the cast tables forward in seconds |
 | `FINDERR_LIBRARY_REFRESH_SECONDS` | `60` | Arr and Plex mirror interval |
+| `FINDERR_KEEP_SHELVES_FRESH` | `false` | Hold the front page in memory instead of computing all fifteen shelves per request, rebuilding each shelf from the timer that owns its data — the arr mirror every 60s, the TMDB mirrors every 6h, the index once a day. `/api/discover` goes from ~100ms to ~33ms for about 200 KiB of heap. It changes *when* rows are computed and never which: what you own is still applied per request, so a title you just downloaded leaves the recommendation shelves immediately. `/api/health` reports `shelves` with a per-tier build time |
 | `FINDERR_ARTWORK_CACHE_MAX_BYTES` | `2000000000` | Poster cache ceiling, least-recently-written evicted first |
 | `FINDERR_TMDB_CACHE_IMAGES` | `true` | |
 | `FINDERR_RESOURCE_LOG_SECONDS` | `300` | One-line RSS/heap/GC summary in the log. `0` disables |

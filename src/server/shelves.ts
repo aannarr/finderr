@@ -133,23 +133,92 @@ export interface UpcomingTitleRow extends TitleRow {
 }
 
 /**
- * The shelves, in the order they are rendered.
+ * Which WRITER owns a shelf's rows, and therefore how often they can move.
+ *
+ * > [!IMPORTANT] A tier is a fact about the SOURCE, not a cache setting
+ * > Three timers already write everything the front page reads, on cadences three orders
+ * > of magnitude apart -- `refreshLibrary()` every 60s, `refreshTmdbLists()` every 6h, the
+ * > index swap once a day at 09:00 UTC. Naming the writer on the shelf is what lets
+ * > `FrontPage` re-derive exactly the shelves one timer just invalidated and leave the rest
+ * > standing, and it is why there is no TTL anywhere in this feature: a TTL would be a
+ * > FOURTH definition of a cadence three timers already own, which is the same drift this
+ * > file was created to end.
+ *
+ * A new shelf declares its tier by being added, which is the point -- there is no separate
+ * table mapping shelf to timer that could disagree with the query above it.
+ */
+export type ShelfTier =
+  /** From the local index. Moves only when the index is rebuilt and swapped. */
+  | "index"
+  /** From the TMDB mirrors -- trending and the TMDB half of `upcoming`. */
+  | "tmdb"
+  /** From the arr mirrors -- library membership and the Radarr/Sonarr calendars. */
+  | "arr";
+
+/**
+ * One shelf before its rows have been computed.
+ *
+ * > [!CAUTION] `rows` is a THUNK, and that is the whole mechanism
+ * > Building the list must cost nothing, or `FrontPage` could not ask for the shape of the
+ * > page without paying for every query on it -- which is precisely the 75ms it exists to
+ * > stop paying per request. Evaluating one tier's thunks is how a 60-second refresh of
+ * > "Recently added" avoids re-running five genre queries that cannot have changed.
+ *
+ * The thunk returns CANDIDATES, not the final row set. See `assembleShelves`.
+ */
+export interface ShelfSpec {
+  id: string;
+  title: string;
+  subtitle?: string;
+  browse?: Record<string, string>;
+  tier: ShelfTier;
+  /** Rows kept after `owned` has been applied. */
+  limit: number;
+  /**
+   * Whether what you already have is dropped from this shelf.
+   *
+   * False is a real editorial choice on three shelves rather than an oversight -- the Top
+   * 250 and "Popular right now" are canonical LISTS that would be lying with holes in them,
+   * and "Recently added" is your library by definition.
+   */
+  excludeOwned?: boolean;
+  /** Candidates, WITHOUT the owned filter. Cheap to hold, expensive to compute. */
+  rows: () => TitleRow[];
+}
+
+/**
+ * How many candidates a shelf fetches per row it will keep.
+ *
+ * The owned filter runs at ASSEMBLE time rather than inside the query, so a shelf has to
+ * over-fetch by enough that a library the size of this one cannot empty it. Three is what
+ * `SearchEngine.topRated` already used internally for the same reason.
+ */
+const CANDIDATE_FACTOR = 3;
+
+/**
+ * The shelves, in the order they are rendered, with their rows not yet computed.
  *
  * ORDERED rather than keyed: the client renders whatever the server sends, in the
  * server's order, so adding a shelf never needs a matching client change. A shelf that
  * came back empty is dropped rather than rendered as a blank row.
+ *
+ * `genres` is passed IN rather than read here, because `engine.topGenres()` is itself an
+ * index-tier fact -- and the most expensive single query on the page at 38.8ms, measured.
+ * Taking it as an argument is what lets `FrontPage` compute it once per index swap instead
+ * of once per request; `discoveryShelves` below is the caller that just asks for it.
  */
-export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
+export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
   const { engine } = deps;
-  const owned = new Set(deps.store.libraryMap().keys());
   const year = new Date(deps.now?.() ?? Date.now()).getFullYear();
 
-  const shelves: DiscoveryShelf[] = [
+  return [
     {
       id: "recently-added",
       title: "Recently added to your library",
       subtitle: "newest in Radarr and Sonarr",
-      rows: recentlyAdded(deps, 24),
+      tier: "arr",
+      limit: 24,
+      rows: () => recentlyAdded(deps, 24),
     },
     /*
       THE ONE SHELF THAT IS A LIST RATHER THAN A SELECTION, AND IT KEEPS WHAT YOU OWN.
@@ -182,7 +251,9 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       title: "finderr Top 250",
       subtitle: "weighted by rating and how many people voted",
       browse: { sort: "rank", kind: "movie" },
-      rows: engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : [],
+      tier: "index",
+      limit: 30,
+      rows: () => (engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : []),
     },
     /*
       POPULAR RIGHT NOW, AND IT IS THE ONE SHELF NO LOCAL QUERY COULD PRODUCE.
@@ -204,19 +275,29 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       id: "trending",
       title: "Popular right now",
       subtitle: "what people are watching this week",
-      rows: trendingRows(deps, 30),
+      tier: "tmdb",
+      limit: 30,
+      rows: () => trendingRows(deps, 30),
     },
     {
       id: "top-movies",
       title: "Highly rated, not in your library",
       browse: { kind: "movie" },
-      rows: engine.topRated({ kind: "movie", limit: 30, excludeTconsts: owned }),
+      tier: "index",
+      limit: 30,
+      excludeOwned: true,
+      rows: () => engine.topRated({ kind: "movie", limit: 30 * CANDIDATE_FACTOR }),
     },
     {
       id: "top-series",
       title: "Series worth starting",
       browse: { kind: "tvSeries" },
-      rows: engine.topRated({ kind: "tvSeries", minVotes: 20_000, limit: 30, excludeTconsts: owned }),
+      tier: "index",
+      limit: 30,
+      excludeOwned: true,
+      // `minVotes` is dead weight on a ranked index and the floor for one that has no rank
+      // column yet -- see `SearchEngine.topRated`, which is the single owner of that split.
+      rows: () => engine.topRated({ kind: "tvSeries", minVotes: 20_000, limit: 30 * CANDIDATE_FACTOR }),
     },
     /*
       THE FOUR UPCOMING SHELVES SPLIT TWICE, AND BOTH SPLITS CARRY MEANING.
@@ -239,39 +320,98 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       id: "airing-soon-series",
       title: "Airing soon",
       subtitle: "next episodes of series you follow",
-      rows: fromUpcoming(deps, "sonarr", 30),
+      tier: "arr",
+      limit: 30,
+      rows: () => fromUpcoming(deps, "sonarr", 30),
     },
     {
       id: "airing-soon-movies",
       title: "Releasing soon",
       subtitle: "films in your library with a date",
-      rows: fromUpcoming(deps, "radarr", 30),
+      tier: "arr",
+      limit: 30,
+      rows: () => fromUpcoming(deps, "radarr", 30),
     },
     {
       id: "coming-soon-movies",
       title: "Coming soon: Movies",
-      rows: fromUpcoming(deps, "tmdb-movie", 30).filter((t) => !owned.has(t.tconst)),
+      tier: "tmdb",
+      limit: 30,
+      excludeOwned: true,
+      rows: () => fromUpcoming(deps, "tmdb-movie", 30 * CANDIDATE_FACTOR),
     },
     {
       id: "coming-soon-series",
       title: "Coming soon: Series",
-      rows: fromUpcoming(deps, "tmdb-series", 30).filter((t) => !owned.has(t.tconst)),
+      tier: "tmdb",
+      limit: 30,
+      excludeOwned: true,
+      rows: () => fromUpcoming(deps, "tmdb-series", 30 * CANDIDATE_FACTOR),
     },
     {
       id: "new-decade",
       title: "New this decade",
       browse: { decade: String(decadeOf(year)) },
-      rows: engine.newThisDecade({ limit: 30, excludeTconsts: owned }),
+      tier: "index",
+      limit: 30,
+      excludeOwned: true,
+      rows: () => engine.newThisDecade({ limit: 30 * CANDIDATE_FACTOR }),
     },
     // One row per genre that actually has enough good titles to fill a shelf.
-    ...engine.topGenres(5).map((genre) => ({
+    ...genres.map((genre) => ({
       id: `genre-${genre.toLowerCase()}`,
       title: `Best in ${genre}`,
       browse: { genre },
-      rows: engine.topRatedInGenre(genre, { limit: 30, excludeTconsts: owned }),
+      tier: "index" as const,
+      limit: 30,
+      excludeOwned: true,
+      rows: () => engine.topRatedInGenre(genre, { limit: 30 * CANDIDATE_FACTOR }),
     })),
   ];
-  return shelves.filter((shelf) => shelf.rows.length > 0);
+}
+
+/**
+ * Candidates -> the shelves actually rendered: drop what you own, cut to length, drop empties.
+ *
+ * > [!IMPORTANT] The owned filter lives HERE, never inside the query, and that is the fix
+ * > that makes caching safe
+ * > `excludeTconsts` used to ride into the engine call, which welded a list that changes
+ * > once a DAY to an input that changes every 60 SECONDS -- so a cached genre shelf would
+ * > go on offering you a film you downloaded an hour ago until the next index swap. Keeping
+ * > candidates unfiltered and applying membership at assemble time is what lets the
+ * > expensive half be cached for a day and the volatile half stay live. It costs one
+ * > `Set.has` per candidate.
+ *
+ * `rowsOf` returns `undefined` for a shelf whose tier has not been computed yet, which
+ * `FrontPage` needs during boot and which is not the same as a shelf that came back empty.
+ */
+export function assembleShelves(
+  specs: ShelfSpec[],
+  rowsOf: (spec: ShelfSpec) => TitleRow[] | undefined,
+  owned: ReadonlySet<string>,
+): DiscoveryShelf[] {
+  const out: DiscoveryShelf[] = [];
+  for (const spec of specs) {
+    const { rows: _thunk, tier: _tier, limit, excludeOwned, ...shelf } = spec;
+    const candidates = rowsOf(spec) ?? [];
+    const kept = (excludeOwned ? candidates.filter((r) => !owned.has(r.tconst)) : candidates).slice(0, limit);
+    if (kept.length > 0) out.push({ ...shelf, rows: kept });
+  }
+  return out;
+}
+
+/**
+ * The whole front page, computed now.
+ *
+ * The uncached path, and the one `/api/discover` takes when `shelves.keepFresh` is off. It
+ * is also what every test and `warmShelves` use, so the primed holder can be compared
+ * against it row for row -- the flag is REQUIRED to change only WHEN rows are computed,
+ * never WHICH, and `front-page.test.ts` pins exactly that.
+ */
+export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
+  const owned = new Set(deps.store.libraryMap().keys());
+  const specs = shelfSpecs(deps, deps.engine.topGenres(5));
+  return assembleShelves(specs, (spec) => spec.rows(), owned);
 }
 
 /**
