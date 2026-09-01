@@ -29,8 +29,14 @@ export interface SearchParams extends Filters {
    *
    * Absent means votes-ordered, so every link that existed before this param still means
    * exactly what it meant.
+   *
+   * ONE KEY ACROSS BOTH ROUTES, and each route understands one value: `rank` is browse's,
+   * `year` is the person page's. They are the same kind of thing -- "which ordering am I
+   * reading this list in" -- so a second key would be two names for one idea, and the
+   * route that does not understand a value simply falls back to its own default rather
+   * than erroring. Absent still means votes-ordered on both.
    */
-  sort?: "rank";
+  sort?: "rank" | "year";
 }
 
 /** Parse a positive integer, or undefined for anything that is not one. */
@@ -84,9 +90,9 @@ export function validateSearch(raw: Record<string, unknown>): SearchParams {
   if (year) out.year = year;
   const role = nonEmpty(raw.role);
   if (role) out.role = role;
-  // Only the non-default is spelled: `?sort=votes` would be a second way to write the URL
-  // that already means that, and two spellings of one page are two cache entries.
-  if (raw.sort === "rank") out.sort = "rank";
+  // Only the non-defaults are spelled: `?sort=votes` would be a second way to write the
+  // URL that already means that, and two spellings of one page are two cache entries.
+  if (raw.sort === "rank" || raw.sort === "year") out.sort = raw.sort;
   return out;
 }
 

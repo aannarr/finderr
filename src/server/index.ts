@@ -1151,6 +1151,9 @@ const appRoutes = {
         .filter(Boolean),
       limit: Math.min(num("limit") ?? 60, 200),
       offset: num("offset") ?? 0,
+      // Anything but the one word we understand falls through to the default ordering.
+      // A filmography in the wrong order is a worse answer than a 400 is a useful one.
+      sort: u.searchParams.get("sort") === "year" ? "year" : "votes",
     });
     if (!page) return bad("unknown person", 404);
 

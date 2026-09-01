@@ -27,6 +27,7 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { prettyCategory } from "../lib/awards-format";
+import type { SearchParams } from "../lib/search-params";
 
 const PAGE = 60;
 
@@ -161,8 +162,12 @@ function lifespan(person: PersonPage["person"]): string | null {
 
 export function PersonRoute() {
   const { nconst } = useParams({ strict: false }) as { nconst: string };
-  const { role } = useSearch({ strict: false }) as { role?: string };
+  const { role, sort } = useSearch({ strict: false }) as Pick<SearchParams, "role" | "sort">;
   const navigate = useNavigate();
+  // `sort` is shared with browse, which spells its own non-default `rank`. Only `year`
+  // means anything here, so anything else reads as the votes default rather than as an
+  // ordering this page cannot produce.
+  const byYear = sort === "year" ? "year" : undefined;
 
   const [page, setPage] = useState<PersonPage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -173,20 +178,20 @@ export function PersonRoute() {
   // Seeded during render for the same reason BrowseRoute is: this route unmounts every
   // time you open a title from the filmography, and a null initial state would blank the
   // page on the way back.
-  const requestKey = `${nconst}|${role ?? ""}`;
+  const requestKey = `${nconst}|${role ?? ""}|${byYear ?? ""}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (seededFor !== requestKey) {
     setSeededFor(requestKey);
-    setPage(cachedPerson(nconst, { category: role, limit: PAGE, offset: 0 }) ?? null);
+    setPage(cachedPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 }) ?? null);
     setError(null);
   }
 
   useEffect(() => {
-    if (cachedPerson(nconst, { category: role, limit: PAGE, offset: 0 })) return;
+    if (cachedPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 })) return;
 
     let stale = false;
     setLoading(true);
-    getPerson(nconst, { category: role, limit: PAGE, offset: 0 })
+    getPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 })
       .then((p) => {
         if (!stale) setPage(p);
       })
@@ -199,13 +204,18 @@ export function PersonRoute() {
     return () => {
       stale = true;
     };
-  }, [nconst, role]);
+  }, [nconst, role, byYear]);
 
   const loadMore = async () => {
     if (!page) return;
     setLoading(true);
     try {
-      const next = await getPerson(nconst, { category: role, limit: PAGE, offset: page.credits.length });
+      const next = await getPerson(nconst, {
+        category: role,
+        sort: byYear,
+        limit: PAGE,
+        offset: page.credits.length,
+      });
       setPage({ ...next, credits: [...page.credits, ...next.credits] });
     } catch (e) {
       setError((e as Error).message);
@@ -263,11 +273,11 @@ export function PersonRoute() {
         every chip is a no-op, and a control that cannot change anything is noise.
       */}
       {roles.length > 1 && (
-        <div className="mb-4 flex flex-wrap gap-1.5">
+        <div className="mb-2 flex flex-wrap gap-1.5">
           <ToggleChip
             label="All"
             active={!role}
-            onClick={() => navigate({ to: "/person/$nconst", params: { nconst }, search: {} })}
+            onClick={() => navigate({ to: "/person/$nconst", params: { nconst }, search: { sort } })}
           />
           {roles.map((r) => {
             const value = r.values.join(",");
@@ -278,11 +288,37 @@ export function PersonRoute() {
                 count={r.count}
                 active={role === value}
                 onClick={() =>
-                  navigate({ to: "/person/$nconst", params: { nconst }, search: { role: value } })
+                  navigate({ to: "/person/$nconst", params: { nconst }, search: { role: value, sort } })
                 }
               />
             );
           })}
+        </div>
+      )}
+
+      {/*
+        A SECOND row, under the roles rather than beside them, because the two chip groups
+        answer different questions -- which credits, then in which order -- and one run-on
+        row of chips reads as a single set where picking two would be a contradiction.
+
+        Worth drawing only where there is something to reorder. One credit is the same list
+        either way, so the control would be a no-op exactly like a lone role chip is.
+      */}
+      {page.total > 1 && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          <span className="mr-0.5 text-xs text-muted">Sort</span>
+          <ToggleChip
+            label="Popular"
+            active={!byYear}
+            onClick={() => navigate({ to: "/person/$nconst", params: { nconst }, search: { role } })}
+          />
+          <ToggleChip
+            label="Latest"
+            active={Boolean(byYear)}
+            onClick={() =>
+              navigate({ to: "/person/$nconst", params: { nconst }, search: { role, sort: "year" } })
+            }
+          />
         </div>
       )}
 

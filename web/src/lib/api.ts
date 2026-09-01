@@ -389,12 +389,21 @@ export interface PersonQuery {
   category?: string;
   limit?: number;
   offset?: number;
+  /** `"year"` reads the filmography newest-first; anything else is the votes default. */
+  sort?: string;
 }
 
 const personCache = new Cache<PersonPage>(200);
 
+/**
+ * `sort` is PART OF THE KEY, like every other option here.
+ *
+ * Leaving it out would serve the votes-ordered page under the year-ordered request: the
+ * two are the same rows in a different order, so the grid would simply not change and
+ * the chip would look broken rather than slow.
+ */
 function personKey(nconst: string, opts: PersonQuery): string {
-  return `${nconst}|${opts.category ?? ""}|${opts.limit ?? 60}|${opts.offset ?? 0}`;
+  return `${nconst}|${opts.category ?? ""}|${opts.sort ?? ""}|${opts.limit ?? 60}|${opts.offset ?? 0}`;
 }
 
 /** A person page we already hold. Synchronous, for the same reason `cachedDiscover` is. */
@@ -410,6 +419,7 @@ export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise
   return dedupe(`person:${key}`, async () => {
     const u = new URLSearchParams();
     if (opts.category) u.set("category", opts.category);
+    if (opts.sort) u.set("sort", opts.sort);
     if (opts.limit !== undefined) u.set("limit", String(opts.limit));
     if (opts.offset) u.set("offset", String(opts.offset));
     const qs = u.toString();

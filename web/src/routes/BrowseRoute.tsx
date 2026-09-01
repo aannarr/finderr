@@ -21,6 +21,7 @@ import { ClearChip } from "../components/Chip";
 import { useKeyAction } from "../components/Kbd";
 import { TitleGrid } from "../components/TitleGrid";
 import {
+  type BrowseSort,
   browse,
   cachedBrowseRun,
   type HiddenByFloor,
@@ -79,8 +80,13 @@ export function BrowseRoute() {
     it selects no rows, it orders them. So it travels as a fetch option, like `minVotes`,
     and every request identity below has to name it explicitly. Leaving it out of the key
     would serve a ranked list the votes-ordered page it had already cached.
+
+    NARROWED TO THIS ROUTE'S OWN VOCABULARY. `sort` is one URL key shared with the person
+    page, which spells its non-default `year`; browse only knows `rank`. Anything else is
+    this route's default rather than an ordering it cannot produce, which is the same rule
+    the person page applies to `rank`.
   */
-  const sort = params.sort;
+  const sort: BrowseSort | undefined = params.sort === "rank" ? "rank" : undefined;
 
   /**
    * Which filter the user asked to see past the vote floor for.

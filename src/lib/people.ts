@@ -85,15 +85,45 @@ export interface PersonCreditsOptions {
   categories?: string[];
   limit?: number;
   offset?: number;
+  /**
+   * Which question the filmography is answering. Defaults to `votes`.
+   *
+   * `votes` is "what do I know them from"; `year` is "what have they been doing lately".
+   * Both are real questions and neither subsumes the other, which is why this is a choice
+   * rather than a better default -- see `CREDIT_ORDER`.
+   */
+  sort?: PersonCreditSort;
 }
 
+/** The orderings a filmography can be read in. A closed union, so a bad param cannot reach SQL. */
+export type PersonCreditSort = "votes" | "year";
+
 /**
- * A person and their filmography, votes-first.
+ * The two orderings, each TOTAL and each ending in `tconst`.
+ *
+ * The final `t.tconst` is what makes paging stable and it is not decoration: without a
+ * unique last key, two titles that tie on both columns may swap between page 1 and page 2
+ * and the reader sees one of them twice and the other never. `votes` and `year` are simply
+ * each other's tiebreak, so a title buried by one ordering is surfaced by the other.
+ *
+ * Written out as whole clauses rather than assembled from parts, so the strings that reach
+ * SQLite are literals in this file. `sort` arrives from a query parameter, and a lookup
+ * that can only return one of these two is the guard.
+ */
+const CREDIT_ORDER: Record<PersonCreditSort, string> = {
+  votes: "t.votes desc, t.year desc, t.tconst",
+  year: "t.year desc, t.votes desc, t.tconst",
+};
+
+/**
+ * A person and their filmography, votes-first by default.
  *
  * Ordered by votes rather than by year because the question a filmography answers is
  * "what do I know them from", and a chronological list buries the answer in the middle.
  * Year is the tiebreak so the order is total and paging is stable -- two titles with
- * identical vote counts must not swap places between page 1 and page 2.
+ * identical vote counts must not swap places between page 1 and page 2. `sort: "year"`
+ * swaps the two keys for a reader asking the other question; nothing else changes, and in
+ * particular the CATEGORY COUNTS do not, because they are over all credits either way.
  *
  * `null` when the person is unknown, which the caller renders as a 404 rather than as an
  * empty filmography: "we have never heard of this id" and "this person has no credits"
@@ -148,7 +178,7 @@ export function personPage(db: Database, nconst: string, opts: PersonCreditsOpti
        from title_principal tp join title t on t.rowid_ = tp.title_rowid
        where ${where}
        group by t.rowid_
-       order by t.votes desc, t.year desc, t.tconst limit ? offset ?`,
+       order by ${CREDIT_ORDER[opts.sort ?? "votes"] ?? CREDIT_ORDER.votes} limit ? offset ?`,
     )
     .all(...([...args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as (Omit<Credit, "categories"> & {
     categories: string;

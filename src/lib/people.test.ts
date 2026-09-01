@@ -235,6 +235,56 @@ describe("personPage", () => {
   });
 });
 
+describe("personPage sort", () => {
+  /**
+   * The fixture is chosen so the two orderings DISAGREE: The Dark Knight is older and has
+   * more votes than Inception, so a test whose data happened to agree on both keys would
+   * pass against a `sort` parameter that was silently ignored.
+   */
+  const creditsOf = (sort?: "votes" | "year") =>
+    personPage(indexOf(TITLES, PEOPLE, CREDITS), "nm-nolan", { sort })?.credits.map((c) => c.tconst);
+
+  test("defaults to votes, so every existing caller means what it meant", () => {
+    expect(creditsOf()).toEqual(["tt-dark", "tt-incep"]);
+    expect(creditsOf("votes")).toEqual(["tt-dark", "tt-incep"]);
+  });
+
+  test("'year' reads the filmography newest-first instead", () => {
+    expect(creditsOf("year")).toEqual(["tt-incep", "tt-dark"]);
+  });
+
+  /**
+   * Both orderings end in `t.tconst`, which is what makes them TOTAL. Without it two
+   * titles tying on both columns could swap between pages, and the reader would see one
+   * of them twice and the other never.
+   */
+  test("paging stays stable under either ordering", () => {
+    const db = indexOf(TITLES, PEOPLE, CREDITS);
+    for (const sort of ["votes", "year"] as const) {
+      const first = personPage(db, "nm-nolan", { sort, limit: 1, offset: 0 })?.credits ?? [];
+      const second = personPage(db, "nm-nolan", { sort, limit: 1, offset: 1 })?.credits ?? [];
+      const all = [...first, ...second].map((c) => c.tconst);
+      expect(new Set(all).size).toBe(all.length);
+    }
+  });
+
+  /** The counts describe ALL their credits, so reordering a page cannot move them. */
+  test("the category counts and the total do not move with the ordering", () => {
+    const db = indexOf(TITLES, PEOPLE, CREDITS);
+    const byVotes = personPage(db, "nm-nolan", { sort: "votes" });
+    const byYear = personPage(db, "nm-nolan", { sort: "year" });
+    expect(byYear?.total).toBe(byVotes?.total ?? -1);
+    expect(byYear?.categories).toEqual(byVotes?.categories ?? []);
+  });
+
+  /** The two chips compose with the role chips above them rather than replacing them. */
+  test("sorting composes with a category filter", () => {
+    const db = indexOf(TITLES, PEOPLE, CREDITS);
+    const page = personPage(db, "nm-nolan", { sort: "year", categories: ["director"] });
+    expect(page?.credits.map((c) => c.tconst)).toEqual(["tt-incep", "tt-dark"]);
+  });
+});
+
 describe("nconstsByNameForTitle", () => {
   test("maps the names on a title to our own ids", () => {
     const map = nconstsByNameForTitle(indexOf(TITLES, PEOPLE, CREDITS), "tt-incep");

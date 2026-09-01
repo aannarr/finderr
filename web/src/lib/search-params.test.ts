@@ -90,11 +90,15 @@ describe("validateSearch", () => {
     expect(validateSearch({ q: "fargo", utm_source: "somewhere" })).toEqual({ q: "fargo" });
   });
 
-  test("`sort=rank` survives; anything else is dropped rather than passed on", () => {
+  test("`sort=rank` and `sort=year` survive; anything else is dropped rather than passed on", () => {
     // It reaches the server as an ORDER BY, so the closed union is enforced at the door on
     // both sides. `sort=votes` is dropped ON PURPOSE and is not a bug: absent already means
     // votes-ordered, and two spellings of one page are two cache entries.
     expect(validateSearch({ genre: "Horror", sort: "rank" })).toEqual({ genre: "Horror", sort: "rank" });
+    // `year` is the person page's non-default. One key across both routes, because both
+    // answer "which ordering am I reading this list in"; each route ignores the other's
+    // value and falls back to its own default rather than erroring.
+    expect(validateSearch({ role: "director", sort: "year" })).toEqual({ role: "director", sort: "year" });
     expect(validateSearch({ sort: "votes" })).toEqual({});
     expect(validateSearch({ sort: "rating; drop table title" })).toEqual({});
     expect(validateSearch({ sort: 7 })).toEqual({});
