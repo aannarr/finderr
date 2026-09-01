@@ -77,8 +77,19 @@ export const INDEX_STAGES = {
       minVotes: cfg.index.castMinVotes,
     }),
 
-  /** The `rank` column on `title` and its copy on `title_genre`. */
-  rank: (cfg) => JSON.stringify({ priorVotes: cfg.index.rankPriorVotes }),
+  /**
+   * The `rank` column on `title` and its copy on `title_genre` -- and, since `v: 2`, the
+   * `votes` copy beside it plus `ix_tg_votes`.
+   *
+   * The `v` is what makes an index built before 2026-09-02 STALE rather than merely slow.
+   * Nothing about the recipe's inputs changed, so without it an old file would keep serving
+   * a genre browse down the 3.66s path indefinitely -- correct, and quietly a hundred times
+   * more expensive than the one this build produces. That is exactly the shape the crosswalk
+   * shipped in and had to be fixed by hand: green health, right answers, the optimisation
+   * silently never adopted. Bump it whenever this stage's OUTPUT changes shape, not only
+   * when its configuration does.
+   */
+  rank: (cfg) => JSON.stringify({ v: 2, priorVotes: cfg.index.rankPriorVotes }),
 
   /**
    * `title_ids`, the bulk `tconst -> tmdb/tvdb` crosswalk.

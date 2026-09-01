@@ -63,15 +63,24 @@ create table title (
   norig     text not null default '',
   dtitle    text not null default ''
 );
--- kind and rank are DENORMALISED from title on purpose: with them here,
+-- kind, rank and votes are DENORMALISED from title on purpose: with them here,
 -- "top 250 sci-fi films" is one seek into ix_tg_rank and no sort at all. Reaching
 -- through to the title table for either would make every per-genre list a scan plus
 -- a sort, which is the 13ms-vs-0.4ms difference this whole layer exists for.
+--
+-- votes arrived last, on 2026-09-02, and the reason is worth keeping: rank was
+-- denormalised and votes was not, but VOTES IS THE DEFAULT BROWSE ORDER -- so the
+-- ordinary case took the slow path the exceptional one had been fixed for. Measured on
+-- the live NAS index, /api/browse?genre=Comedy cost 3.66s: SQLite seeks ix_tg_rank for
+-- the genre, then does a primary-key lookup into title for EVERY matching row just to
+-- read votes, then sorts the lot in a temp b-tree -- twice, because the count runs the
+-- same join. (No backticks in here: this block is inside a template literal.)
 create table title_genre (
   title_rowid integer not null,
   genre       text not null,
   kind        text not null default '',
-  rank        real
+  rank        real,
+  votes       integer not null default 0
 );
 create table meta (key text primary key, value text not null);
 
@@ -114,14 +123,14 @@ ${CROSSWALK_SCHEMA}`;
  * is the one caller that gets the order right, and it exists so nobody has to remember this.
  */
 export const EXPLODE_GENRES = `
-insert into title_genre (title_rowid, genre, kind, rank)
+insert into title_genre (title_rowid, genre, kind, rank, votes)
 with split(id, one, rest) as (
   select rowid_, '', genres || ',' from title where genres != ''
   union all
   select id, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
   from split where rest != ''
 )
-select s.id, s.one, t.kind, t.rank from split s join title t on t.rowid_ = s.id where s.one != ''
+select s.id, s.one, t.kind, t.rank, t.votes from split s join title t on t.rowid_ = s.id where s.one != ''
 `;
 
 /** What ranked the index, recorded so a list page can say how it was ordered. */
@@ -207,6 +216,14 @@ export function buildRankLayer(db: Database, cfg: Config, log: (msg: string) => 
   // 3.1ms measured for "top comedies of the 2020s" against 180ms for the live expression.
   db.run("create index ix_rank on title(kind, rank desc)");
   db.run("create index ix_tg_rank on title_genre(genre, kind, rank desc)");
+  // The VOTES twin of ix_tg_rank, and the column order is not the same shape by accident.
+  // `kind` sits LAST here, after the sort column, because a genre browse most often pins
+  // no kind at all -- with `kind` in the middle the ordering would be split across two
+  // groups and SQLite would fall back to a temp b-tree for the one query this exists to
+  // remove. Last, it is still covered, so `?genre=Comedy&kind=movie` filters from the
+  // index rather than from `title`. Both queries are answered without touching the title
+  // table at all, which is what takes the count from 1151ms to a seek.
+  db.run("create index ix_tg_votes on title_genre(genre, votes desc, kind)");
   log(
     `rank: ${prior.ranked.toLocaleString()} titles ranked, prior C=${prior.c.toLocaleString()} ` +
       `mean=${prior.mean.toFixed(3)} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
@@ -338,7 +355,12 @@ export async function buildIndex(
   log("building secondary indexes ...");
   db.run("create index ix_votes on title(votes desc)");
   db.run("create index ix_year on title(year)");
-  db.run("create index ix_kind on title(kind)");
+  // (kind, votes desc), not (kind). The narrower index is a leading-column PREFIX of this
+  // one and so serves nothing this does not -- the same argument that removed
+  // ix_tg_genre below. What the extra column buys: `?kind=movie` was 466ms to count and
+  // 354ms to page on the live NAS index, because SQLite picked ix_kind, walked every
+  // movie row to test `votes`, and then sorted. Both halves are now covered seeks.
+  db.run("create index ix_kind on title(kind, votes desc)");
   db.run("create index ix_tg_title on title_genre(title_rowid)");
   // ix_tg_genre(genre) is gone: ix_tg_rank leads with `genre`, so it serves every query
   // the narrower index served -- a leading-column prefix is the one case where two

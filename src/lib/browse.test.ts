@@ -247,3 +247,132 @@ describe("browseIndex", () => {
     expect(second.total).toBe(8);
   });
 });
+
+/**
+ * `title_genre.votes`, the denormalised copy that turned a 3.66s genre browse into a seek.
+ *
+ * The point of these is that the FAST path and the SLOW path are the same ANSWER. A
+ * denormalised copy is only ever a correctness risk -- an optimisation that returns
+ * different rows is not an optimisation -- so every case here runs the same query twice,
+ * once through `g.votes` and once through `t.votes`, and asserts they agree.
+ */
+describe("the denormalised genre vote copy", () => {
+  const MIXED = [
+    { tconst: "tt-c1", year: 2001, kind: "movie", votes: 500_000, genres: "Comedy,Drama" },
+    { tconst: "tt-c2", year: 2002, kind: "movie", votes: 200_000, genres: "Comedy" },
+    { tconst: "tt-c3", year: 2003, kind: "tvSeries", votes: 300_000, genres: "Comedy" },
+    { tconst: "tt-c4", year: 2004, kind: "movie", votes: 40, genres: "Comedy" },
+    { tconst: "tt-d1", year: 2005, kind: "movie", votes: 900_000, genres: "Drama" },
+  ];
+
+  test("the explode copies each title's votes onto every one of its genre rows", () => {
+    const db = indexOf(MIXED);
+    const rows = db
+      .query("select genre, votes from title_genre where title_rowid = 1 order by genre")
+      .all() as { genre: string; votes: number }[];
+
+    // tt-c1 is Comedy AND Drama, so its vote count lands on both rows.
+    expect(rows).toEqual([
+      { genre: "Comedy", votes: 500_000 },
+      { genre: "Drama", votes: 500_000 },
+    ]);
+  });
+
+  for (const opts of [
+    { genre: "Comedy" },
+    { genre: "Comedy", kind: "movie" },
+    { genre: "Comedy", minVotes: 0 },
+    { genre: "Comedy", kind: "tvSeries" },
+    { genre: "Comedy", sort: "rank" as const },
+    { genre: "Comedy", decade: 2000 },
+  ]) {
+    test(`${JSON.stringify(opts)} answers identically either way`, () => {
+      const db = indexOf(MIXED);
+      const fast = browseIndex(db, { ...opts, genreVotes: true });
+      const slow = browseIndex(db, { ...opts, genreVotes: false });
+
+      expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+      expect(fast.total).toBe(slow.total);
+      expect(fast.hiddenByFloor).toEqual(slow.hiddenByFloor);
+    });
+  }
+
+  test("the fast path still honours the floor and still reports what it hid", () => {
+    const db = indexOf(MIXED);
+    // Only tt-c4 (40 votes) is under the 1000 floor, so the floor is doing real work here
+    // rather than being a no-op the assertion could not tell apart.
+    const floored = browseIndex(db, { genre: "Comedy", genreVotes: true });
+    expect(floored.rows.map((r) => r.tconst)).toEqual(["tt-c1", "tt-c3", "tt-c2"]);
+    expect(floored.total).toBe(3);
+
+    const all = browseIndex(db, { genre: "Comedy", minVotes: 0, genreVotes: true });
+    expect(all.total).toBe(4);
+  });
+
+  /*
+    REGRESSION: the capability, not the column.
+
+    `title_genre.votes` arrived on 2026-09-02, so for up to a day after the release ships
+    the running server holds an index without it -- and a genre browse is the single most
+    common list in the product. Naming `g.votes` unconditionally would throw `no such
+    column` for that whole window. `genreVotes` defaults to false for exactly this, and this
+    is the test that would have caught it.
+  */
+  test("an index built BEFORE the column still browses, on the slow path", () => {
+    const db = indexOf(MIXED);
+    db.run("alter table title_genre drop column votes");
+
+    const out = browseIndex(db, { genre: "Comedy" });
+
+    expect(out.rows.map((r) => r.tconst)).toEqual(["tt-c1", "tt-c3", "tt-c2"]);
+    expect(out.total).toBe(3);
+    // And the fast path is what would have broken it, which is why the default is false.
+    expect(() => browseIndex(db, { genre: "Comedy", genreVotes: true })).toThrow();
+  });
+
+  /*
+    The count drops the `title` join when every predicate is answerable from title_genre --
+    182ms to 2.5ms on the live NAS index. It is safe because EXPLODE_GENRES writes one
+    title_genre row per (title, genre) from an existing title row keyed on an INTEGER
+    PRIMARY KEY, so the join can neither add nor remove a row. These pin that the totals
+    agree with the joined form in every case, including the ones where the join must STAY.
+  */
+  test("dropping the count's join gives the same total, joined or not", () => {
+    const db = indexOf(MIXED);
+    for (const opts of [
+      { genre: "Comedy" },
+      { genre: "Comedy", kind: "movie" },
+      { genre: "Comedy", minVotes: 0 },
+      // year and decade are NOT denormalised, so these must keep the join -- and still agree.
+      { genre: "Comedy", year: 2002 },
+      { genre: "Comedy", decade: 2000 },
+    ]) {
+      const fast = browseIndex(db, { ...opts, genreVotes: true });
+      const joined = browseIndex(db, { ...opts, genreVotes: false });
+      expect(fast.total).toBe(joined.total);
+      expect(fast.rows.map((r) => r.tconst)).toEqual(joined.rows.map((r) => r.tconst));
+    }
+  });
+
+  test("a genre row orphaned from its title would be counted -- so nothing may orphan one", () => {
+    // Not a wish: this asserts the exact invariant the dropped join relies on, so a future
+    // edit that deletes from `title` without deleting from `title_genre` fails HERE, with
+    // this comment, rather than as a browse whose total exceeds its rows by a few hundred.
+    const db = indexOf(MIXED);
+    const orphans = db
+      .query(
+        "select count(*) c from title_genre g left join title t on t.rowid_ = g.title_rowid where t.rowid_ is null",
+      )
+      .get() as { c: number };
+    expect(orphans.c).toBe(0);
+  });
+
+  test("a browse with NO genre is unaffected -- there is no join to read the copy from", () => {
+    const db = indexOf(MIXED);
+    const withFlag = browseIndex(db, { kind: "movie", genreVotes: true });
+    const without = browseIndex(db, { kind: "movie" });
+
+    expect(withFlag.rows.map((r) => r.tconst)).toEqual(without.rows.map((r) => r.tconst));
+    expect(withFlag.rows.map((r) => r.tconst)).toEqual(["tt-d1", "tt-c1", "tt-c2"]);
+  });
+});

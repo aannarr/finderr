@@ -220,6 +220,25 @@ export class SearchEngine {
   readonly hasIds: boolean;
 
   /**
+   * Whether `title_genre` carries its own copy of `votes`.
+   *
+   * The fourth guard, for the same reason as the three above: the index a deploy meets is
+   * the one the LAST refresh built, and this column arrived on 2026-09-02. Without the
+   * check every genre browse would throw `no such column: g.votes` for the up-to-a-day
+   * window before the rebuild lands -- on the single most common list in the product.
+   *
+   * Unlike the others it degrades to something SLOW rather than to something absent: a
+   * false here means a genre browse reads `title.votes` through the join and sorts, which
+   * is precisely the 3.66s this column was added to remove. That is the correct trade for
+   * one refresh cycle, and it is why `rank`'s recipe was bumped rather than left alone --
+   * an index without this column is stale by the stamp, so boot ORDERS the rebuild instead
+   * of waiting for a dump to drift.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasGenreVotes: boolean;
+
+  /**
    * Every title kind this index actually holds, read once at construction.
    *
    * Read from the FILE rather than from `cfg.index.titleTypes`, which is what the next
@@ -243,6 +262,7 @@ export class SearchEngine {
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
     this.hasIds = this.tableExists("title_ids");
+    this.hasGenreVotes = this.columnExists("title_genre", "votes");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
     );
@@ -867,7 +887,10 @@ export class SearchEngine {
    */
   browse(opts: BrowseOptions): BrowseResult {
     const safe = opts.sort === "rank" && !this.hasRank ? { ...opts, sort: "votes" as const } : opts;
-    return browseIndex(this.db, safe);
+    // `genreVotes` is a CAPABILITY, so it comes from the open file and is never something a
+    // caller passes in -- same split as the downgrade above: policy in `browseIndex`, "what
+    // can this particular file do" here.
+    return browseIndex(this.db, { ...safe, genreVotes: this.hasGenreVotes });
   }
 
   private tableExists(name: string): boolean {
@@ -924,6 +947,15 @@ export interface BrowseOptions extends BrowseFilters {
   sort?: BrowseSort;
   limit?: number;
   offset?: number;
+  /**
+   * Whether `title_genre` carries its own `votes` copy -- `SearchEngine.hasGenreVotes`.
+   *
+   * Defaults to FALSE, which is the slow-but-correct reading of `title.votes` through the
+   * join. A capability defaulting to "present" would mean a caller that forgot to ask the
+   * file gets `no such column` on a real index rather than a slower answer, and this
+   * function is deliberately callable against any database somebody hands it.
+   */
+  genreVotes?: boolean;
 }
 
 /**
@@ -981,38 +1013,85 @@ export function browseVoteFloor(f: BrowseFilters, sort: BrowseSort = "votes"): n
   return f.year !== undefined || f.decade !== undefined ? 0 : BROWSE_VOTE_FLOOR;
 }
 
-/** SQL shared by the row query and the count queries of one browse. */
+/**
+ * SQL shared by the row query and the count queries of one browse.
+ *
+ * `countFrom` is a SECOND from-clause and not a stylistic variant of the first. The rows
+ * genuinely need `title` -- that is where the title, the year and the poster live. A COUNT
+ * needs no column at all, so when every predicate is answerable from `title_genre` the
+ * count can read that table alone and never touch `title`: **182ms to 2.5ms on the live
+ * NAS index, same answer** (21,936), because SQLite goes from a primary-key lookup per
+ * matching row to a covering scan of ix_tg_votes.
+ *
+ * The join it drops is safe to drop by CONSTRUCTION rather than by hope: every
+ * `title_genre` row is written by `EXPLODE_GENRES` from an existing `title` row, keyed on
+ * an INTEGER PRIMARY KEY, so the join can neither add a row nor remove one. SQLite cannot
+ * work that out for itself -- there is no foreign key to tell it -- which is why this is
+ * stated here rather than left to the planner.
+ */
 function browseSql(
   f: BrowseFilters,
   minVotes: number,
   sort: BrowseSort = "votes",
-): { join: string; where: string; order: string; args: unknown[] } {
+  genreVotes = false,
+): { join: string; countFrom: string; where: string; order: string; args: unknown[] } {
   const where: string[] = [];
   const args: unknown[] = [];
-  // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
-  // spelling it out only stops SQLite covering the count from an index. Omitting it is
-  // what makes an unfloored per-genre list a pure seek.
-  if (minVotes > 0) {
-    where.push("t.votes >= ?");
-    args.push(minVotes);
-  }
+  // Set by any clause that names a column only `title` has. It is what decides whether the
+  // count may drop the join, and it is a flag rather than a grep over the built SQL: a
+  // predicate that quietly starts reading `t.` while a string test still passes is exactly
+  // the bug that would make a count wrong instead of slow.
+  let touchesTitle = false;
   let join = "";
   if (f.genre) {
     join = "join title_genre g on g.title_rowid = t.rowid_";
     where.push("g.genre = ?");
     args.push(f.genre);
   }
+  /*
+    WHICH TABLE'S COPY OF `votes` -- exactly the question `ranked` answers below for `rank`,
+    and it decides the whole cost of a genre browse.
+
+    `title_genre` carries `votes` denormalised from `title`, and `ix_tg_votes(genre, votes
+    desc, kind)` covers the seek, the order and the kind filter together. Naming `t.votes`
+    instead is the same numbers in the same sequence and a primary-key lookup into `title`
+    per matching row to get there, then a temp b-tree -- 3.66s against a seek, measured on
+    the live NAS index. So the join decides which column is named, not taste.
+
+    `genreVotes` false is an index built before that column existed: it still answers every
+    query correctly, on the old slow path, until the rebuild the stage stamp has ordered.
+  */
+  const voted = join && genreVotes ? "g.votes" : "t.votes";
+  // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
+  // spelling it out only stops SQLite covering the count from an index. Omitting it is
+  // what makes an unfloored per-genre list a pure seek.
+  if (minVotes > 0) {
+    where.push(`${voted} >= ?`);
+    args.push(minVotes);
+    if (voted.startsWith("t.")) touchesTitle = true;
+  }
+  // `year` is NOT denormalised onto title_genre, so a decade or year slice is the one
+  // genre browse whose count still needs the join. Both take floor 0 and pin a narrow
+  // range, so the row set is small and the lookup is cheap -- which is why the column was
+  // not copied.
   if (f.decade !== undefined) {
     where.push("t.year >= ? and t.year <= ?");
     args.push(f.decade, f.decade + 9);
+    touchesTitle = true;
   }
   if (f.year !== undefined) {
     where.push("t.year = ?");
     args.push(f.year);
+    touchesTitle = true;
   }
   if (f.kind) {
-    where.push("t.kind = ?");
+    // `g.kind` on a join for the same reason as `voted` above: it is the trailing column of
+    // ix_tg_votes, so the filter is answered from the index the seek is already in rather
+    // than by reaching into `title` for every candidate row. ix_tg_rank carries it too, so
+    // a ranked genre browse gains the same thing.
+    where.push(join ? "g.kind = ?" : "t.kind = ?");
     args.push(f.kind);
+    if (!join) touchesTitle = true;
   }
 
   /*
@@ -1029,20 +1108,27 @@ function browseSql(
     "the top comedies" and paging far enough would eventually reach them.
   */
   const ranked = join ? "g.rank" : "t.rank";
-  let order = "t.votes desc";
+  let order = `${voted} desc`;
   if (sort === "rank") {
     where.push(`${ranked} is not null`);
     order = `${ranked} desc`;
+    if (!join) touchesTitle = true;
   }
-  // A browse with no filters at all and no floor has nothing to put in a WHERE.
-  return { join, where: where.length > 0 ? where.join(" and ") : "1", order, args };
+  return {
+    join,
+    countFrom: join && !touchesTitle ? "title_genre g" : `title t ${join}`,
+    // A browse with no filters at all and no floor has nothing to put in a WHERE.
+    where: where.length > 0 ? where.join(" and ") : "1",
+    order,
+    args,
+  };
 }
 
 function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
   return (
-    db
-      .query(`select count(*) c from title t ${sql.join} where ${sql.where}`)
-      .get(...(sql.args as never[])) as { c: number }
+    db.query(`select count(*) c from ${sql.countFrom} where ${sql.where}`).get(...(sql.args as never[])) as {
+      c: number;
+    }
   ).c;
 }
 
@@ -1061,7 +1147,7 @@ function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
 export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
-  const sql = browseSql(opts, minVotes, sort);
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes);
   const total = browseTotal(db, sql);
   const rows = db
     .query(
@@ -1076,7 +1162,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   // A rank browse takes no floor, so it never reaches here and never offers a hatch it
   // has nothing behind: an empty ranked list is empty because nothing is ranked.
   if (total > 0 || minVotes === 0) return { rows, total };
-  const unfloored = browseTotal(db, browseSql(opts, 0, sort));
+  const unfloored = browseTotal(db, browseSql(opts, 0, sort, opts.genreVotes));
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }
 
