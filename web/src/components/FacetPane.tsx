@@ -24,14 +24,28 @@ export function Skeleton({ className }: { className?: string }) {
 /**
  * Skeleton lines of body text, one per width.
  *
- * Widths are given rather than counted so a paragraph placeholder can be ragged like
- * real text -- and so each line has a name to be keyed by.
+ * Widths are given rather than counted so a paragraph placeholder can be ragged like real
+ * text.
+ *
+ * > [!IMPORTANT] Keyed by INDEX, not by the width string, and the comment here used to say
+ * > the opposite
+ * > It read "so each line has a name to be keyed by" and used `key={w}` -- which is a
+ * > duplicate key the moment a caller repeats a width, and a ragged paragraph naturally
+ * > does. The synopsis placeholder passes `["w-full", "w-11/12", "w-full", "w-2/3"]`, so
+ * > React logged *"Encountered two children with the same key, `w-full`"* on every render
+ * > of every title page -- a warning nobody had connected to this file.
+ * >
+ * > An index key is CORRECT here for the same reason it is in `SkeletonRepeat` below:
+ * > these are interchangeable grey blocks with no identity, in a list that never reorders,
+ * > never grows and never has an item removed. The width is a style, and a style is not a
+ * > name.
  */
 export function SkeletonLines({ widths }: { widths: readonly string[] }) {
   return (
     <div className="space-y-2">
-      {widths.map((w) => (
-        <Skeleton key={w} className={`h-4 ${w}`} />
+      {widths.map((w, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: placeholders never reorder; see above
+        <Skeleton key={i} className={`h-4 ${w}`} />
       ))}
     </div>
   );
