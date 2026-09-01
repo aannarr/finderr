@@ -219,6 +219,20 @@ export class SearchEngine {
    */
   readonly hasIds: boolean;
 
+  /**
+   * Every title kind this index actually holds, read once at construction.
+   *
+   * Read from the FILE rather than from `cfg.index.titleTypes`, which is what the next
+   * build would produce: the index a running server holds is whatever the last build made,
+   * so a config edit would otherwise have `rankedSeek` querying for a kind that is not in
+   * there (harmless) or -- the one that matters -- skipping one that is, which silently
+   * drops a quarter of every shelf. `select distinct kind from title` is a covering-index
+   * scan of `ix_kind` and costs 0.03ms, measured.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  private readonly kinds: readonly string[];
+
   constructor(
     dbPath: string,
     private cfg: Config,
@@ -229,6 +243,9 @@ export class SearchEngine {
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
     this.hasIds = this.tableExists("title_ids");
+    this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
+      (r) => r.kind,
+    );
   }
 
   /**
@@ -651,25 +668,82 @@ export class SearchEngine {
   }
 
   /**
+   * The top rows by the precomputed `rank`, ONE KIND AT A TIME, merged.
+   *
+   * > [!IMPORTANT] Pinning `kind` is the whole optimisation, and it is not optional
+   * > `ix_rank` is `(kind, rank desc)` and `ix_tg_rank` is `(genre, kind, rank desc)`, so
+   * > rank can only be READ IN ORDER once every column before it is fixed. A query that
+   * > leaves `kind` free still uses the index to FIND its rows and then sorts them in a
+   * > temp b-tree -- which is the 933ms "Best in Drama" this replaced. Seeking each of the
+   * > four kinds separately and merging in JS is `4 x 0.2ms` plus a sort of a few hundred
+   * > rows, measured 2026-09-01 against the real 1.27M-row index.
+   *
+   * **There is deliberately no `votes >= x and rating >= y` floor here**, and that is the
+   * one behavioural difference from the queries this replaced. Those floors were a hand-cut
+   * approximation of "rated well by enough people to mean something", which is exactly and
+   * only what the Bayesian `rank` computes -- keeping both would be two owners of one rule.
+   * They are also what made the seek slow again: a kind with too few titles clearing the
+   * floor never fills its `limit`, so SQLite walks that kind's ENTIRE ranked list looking
+   * for rows that are not there (67-143ms, measured). The floors survive on the `!hasRank`
+   * fallback paths below, because there is nothing else to order those by.
+   */
+  private rankedSeek(opts: {
+    genre?: string;
+    kind?: string;
+    minYear?: number;
+    /** Rows to take PER KIND before merging. */
+    perKind: number;
+  }): TitleRow[] {
+    const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
+    // The genre form ranks off `title_genre`'s own denormalised copy, which is what lets the
+    // seek happen without touching `title` until the rows are already chosen.
+    const sql = opts.genre
+      ? `select ${cols}, g.rank rank_ from title_genre g join title t on t.rowid_ = g.title_rowid
+         where g.genre = ? and g.kind = ? and g.rank is not null
+         order by g.rank desc limit ?`
+      : `select ${cols}, t.rank rank_ from title t
+         where t.kind = ? and t.rank is not null ${opts.minYear === undefined ? "" : "and t.year >= ?"}
+         order by t.rank desc limit ?`;
+
+    const merged: (TitleRow & { rank_: number })[] = [];
+    for (const kind of opts.kind ? [opts.kind] : this.kinds) {
+      const args = opts.genre
+        ? [opts.genre, kind, opts.perKind]
+        : opts.minYear === undefined
+          ? [kind, opts.perKind]
+          : [kind, opts.minYear, opts.perKind];
+      merged.push(...(this.db.query(sql).all(...(args as never[])) as (TitleRow & { rank_: number })[]));
+    }
+    // One sort over a few hundred rows, not over the corpus. `rank_` is stripped rather than
+    // returned: `TitleRow` is what reaches the browser and an internal sort key is not a fact
+    // about the title.
+    merged.sort((a, b) => b.rank_ - a.rank_);
+    return merged.map(({ rank_: _rank, ...row }) => row);
+  }
+
+  /**
    * Discovery rows that cost ZERO API calls -- pure queries over data we already hold.
    * Seerr cannot do this at all.
    */
   topRated(
     opts: { minVotes?: number; kind?: string; limit?: number; excludeTconsts?: Set<string> } = {},
   ): TitleRow[] {
-    const rows = this.db
-      .query(
-        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+    const limit = opts.limit ?? 40;
+    const rows = this.hasRank
+      ? this.rankedSeek({ kind: opts.kind, perKind: limit * 3 })
+      : (this.db
+          .query(
+            `select tconst, title, orig, year, kind, votes, rating, genres, runtime
          from title
          where votes >= ? and rating >= 7.5 ${opts.kind ? "and kind = ?" : ""}
          order by rating * ln(votes) desc
          limit ?`,
-      )
-      .all(
-        ...([opts.minVotes ?? 50_000, ...(opts.kind ? [opts.kind] : []), (opts.limit ?? 40) * 3] as never[]),
-      ) as TitleRow[];
+          )
+          .all(
+            ...([opts.minVotes ?? 50_000, ...(opts.kind ? [opts.kind] : []), limit * 3] as never[]),
+          ) as TitleRow[]);
     const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
-    return out.slice(0, opts.limit ?? 40);
+    return out.slice(0, limit);
   }
 
   /*
@@ -732,33 +806,39 @@ export class SearchEngine {
     genre: string,
     opts: { minVotes?: number; limit?: number; excludeTconsts?: Set<string> } = {},
   ): TitleRow[] {
-    const rows = this.db
-      .query(
-        `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
+    const limit = opts.limit ?? 30;
+    const rows = this.hasRank
+      ? this.rankedSeek({ genre, perKind: limit * 3 })
+      : (this.db
+          .query(
+            `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
          from title t join title_genre g on g.title_rowid = t.rowid_
          where g.genre = ? and t.votes >= ? and t.rating >= 7.0
          order by t.rating * ln(t.votes) desc
          limit ?`,
-      )
-      .all(...([genre, opts.minVotes ?? 20_000, (opts.limit ?? 30) * 3] as never[])) as TitleRow[];
+          )
+          .all(...([genre, opts.minVotes ?? 20_000, limit * 3] as never[])) as TitleRow[]);
     const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
-    return out.slice(0, opts.limit ?? 30);
+    return out.slice(0, limit);
   }
 
   /** Everything from the current decade, best first. */
   newThisDecade(opts: { limit?: number; excludeTconsts?: Set<string> } = {}): TitleRow[] {
     const decade = decadeOf(new Date().getFullYear());
-    const rows = this.db
-      .query(
-        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+    const limit = opts.limit ?? 30;
+    const rows = this.hasRank
+      ? this.rankedSeek({ minYear: decade, perKind: limit * 3 })
+      : (this.db
+          .query(
+            `select tconst, title, orig, year, kind, votes, rating, genres, runtime
          from title
          where year >= ? and votes >= 5000 and rating >= 7.0
          order by rating * ln(votes) desc
          limit ?`,
-      )
-      .all(decade, (opts.limit ?? 30) * 3) as TitleRow[];
+          )
+          .all(decade, limit * 3) as TitleRow[]);
     const out = opts.excludeTconsts ? rows.filter((r) => !opts.excludeTconsts?.has(r.tconst)) : rows;
-    return out.slice(0, opts.limit ?? 30);
+    return out.slice(0, limit);
   }
 
   /** Which genres actually have enough good titles to be worth a shelf. */
