@@ -574,7 +574,10 @@ function addDays(date: string, days: number): string {
 
 export interface TrailerLink {
   url: string;
+  /** The visible text when there is no mark, and the accessible name in every case. */
   label: string;
+  /** The host's mark on disk, or null when we have no art for it. */
+  logo: string | null;
 }
 
 /**
@@ -599,6 +602,40 @@ function trailerLabel(trailer: Trailer): string {
 }
 
 /**
+ * A trailer host -> the Kometa slug for its mark, in the STREAMING set.
+ *
+ * There is no `trailer` group in the imported logo set and this deliberately does not add
+ * one. `bun run logos:import` writes exactly four groups -- rating, streaming, network,
+ * studio -- so a fifth directory would be a PNG placed by hand that the importer neither
+ * writes nor refreshes, which is the drift `assets/brand` has its own rule about. YouTube
+ * is already in the streaming set because TMDB sells it as a service, and it is the same
+ * mark either way: what a logo means does not change with the folder it sits in.
+ *
+ * Keyed on the SITE id a provider sends (`src/plugins/servarr/radarr.ts` emits `youtube`),
+ * not on a service name, so this stays a separate table from `STREAMING_MARKS` rather than
+ * a call into it -- the two are keyed on different vocabularies that happen to agree on one
+ * word today. `null` is ordinary and is the answer for every host we have no art for.
+ *
+ * Exported for the manifest guard in the tests, the same as `STREAMING_MARKS`.
+ */
+export const TRAILER_MARKS: Record<string, string> = {
+  youtube: "youtube",
+};
+
+/**
+ * The mark for a trailer host, or `null` when we have none.
+ *
+ * Same shape and same reason as `ratingLogo` and `streamingLogo`: the client names a file
+ * directly rather than reading the logo manifest, so a test asserts every path this can
+ * emit exists in `src/logos.json` and an upstream rename fails the suite instead of 404ing
+ * in somebody's browser.
+ */
+export function trailerLogo(site: string): string | null {
+  const slug = TRAILER_MARKS[site.trim().toLowerCase()];
+  return slug ? `/logos/streaming/${slug}.png` : null;
+}
+
+/**
  * The trailers we can actually open, in the order the providers sent them.
  *
  * `trailer` merges as a list, so two plugins can contribute the same video and a reader
@@ -609,11 +646,14 @@ function trailerLabel(trailer: Trailer): string {
 export function trailerLinks(trailers: readonly Trailer[]): TrailerLink[] {
   const byUrl = new Map<string, TrailerLink>();
   for (const trailer of trailers) {
-    const buildUrl = TRAILER_SITES[trailer.site.trim().toLowerCase()];
+    const site = trailer.site.trim().toLowerCase();
+    const buildUrl = TRAILER_SITES[site];
     const key = trailer.key.trim();
     if (!buildUrl || key === "") continue;
     const url = buildUrl(key);
-    if (!byUrl.has(url)) byUrl.set(url, { url, label: trailerLabel(trailer) });
+    if (!byUrl.has(url)) {
+      byUrl.set(url, { url, label: trailerLabel(trailer), logo: trailerLogo(site) });
+    }
   }
   return [...byUrl.values()];
 }

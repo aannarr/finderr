@@ -833,6 +833,12 @@ const TRAILER_LINK_SIZE = "h-9 w-32";
  *
  * Null when nothing is playable -- every entry named a site we have no address for --
  * which is the same "nothing to show" the empty list takes, one step later.
+ *
+ * The tile wears the HOST'S MARK where we have one, on the same rule `RatingTile` follows:
+ * two links reading "Trailer" beside each other say nothing about where either one goes,
+ * and the destination is the only thing a reader is choosing between. The text label
+ * survives as the fallback for an unmapped host and as the accessible name in every case,
+ * so a screen reader still hears "Official Trailer" rather than an empty link.
  */
 function TrailerLinks({ trailers }: { trailers: Trailer[] }) {
   const links = trailerLinks(trailers);
@@ -849,7 +855,13 @@ function TrailerLinks({ trailers }: { trailers: Trailer[] }) {
             className={`${TRAILER_LINK_SIZE} inline-flex items-center justify-center rounded-lg
                         border border-line bg-surface px-3 text-sm text-ink hover:border-muted`}
           >
-            {link.label}
+            {/* Height-constrained, width auto -- the marks are not a uniform aspect ratio.
+                The same treatment the rating tiles give theirs, so a row of trailer links
+                and a row of scores sit at one weight. */}
+            {link.logo ? (
+              <img src={link.logo} alt="" aria-hidden className="h-5 w-auto object-contain" />
+            ) : null}
+            <span className={link.logo ? "sr-only" : undefined}>{link.label}</span>
           </a>
         </li>
       ))}

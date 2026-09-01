@@ -35,9 +35,11 @@ import {
   shelfDateLabel,
   sourceName,
   streamingLogo,
+  TRAILER_MARKS,
   titleLinks,
   todayUtc,
   trailerLinks,
+  trailerLogo,
   watchServices,
 } from "./facet-panes";
 import type { CastMember, CrewMember, Episode, Rating, ResolvedFacets, Season, Trailer } from "./facets";
@@ -567,7 +569,11 @@ describe("trailerLinks", () => {
 
   test("builds a watch URL from the site and key the facet carries", () => {
     expect(trailerLinks([trailer()])).toEqual([
-      { url: "https://www.youtube.com/watch?v=cdx31ak4KbQ", label: "Trailer" },
+      {
+        url: "https://www.youtube.com/watch?v=cdx31ak4KbQ",
+        label: "Trailer",
+        logo: "/logos/streaming/youtube.png",
+      },
     ]);
   });
 
@@ -593,6 +599,44 @@ describe("trailerLinks", () => {
     expect(trailerLinks([trailer({ key: "a&b=c" })])[0].url).toBe(
       "https://www.youtube.com/watch?v=a%26b%3Dc",
     );
+  });
+
+  test("carries the host's mark, so the tile is not two links both reading Trailer", () => {
+    expect(trailerLinks([trailer({ site: "YouTube" })])[0].logo).toBe("/logos/streaming/youtube.png");
+  });
+});
+
+describe("trailerLogo", () => {
+  test("folds the site the provider sent, however it spelled it", () => {
+    for (const site of ["youtube", "YouTube", "  YOUTUBE "]) {
+      expect(trailerLogo(site)).toBe("/logos/streaming/youtube.png");
+    }
+  });
+
+  /**
+   * The same rule `ratingLogo` and `streamingLogo` follow: no art means the label stays
+   * visible, never a guessed path that 404s behind an empty tile.
+   */
+  test("a host we have no mark for is null, not a guess", () => {
+    expect(trailerLogo("vimeo")).toBeNull();
+    expect(trailerLogo("")).toBeNull();
+  });
+});
+
+describe("trailerLogo is bound to the imported logo set", () => {
+  /**
+   * The same guard the other two mark tables get. It reads the STREAMING set deliberately:
+   * `bun run logos:import` writes four groups and no `trailer` one, so these marks are
+   * borrowed from the set that already has them rather than hand-placed in a fifth folder
+   * the importer would never refresh.
+   */
+  test("every mark the table names exists in src/logos.json", async () => {
+    const manifest = (await Bun.file(`${import.meta.dir}/../../../src/logos.json`).json()) as {
+      sets: { streaming: string[] };
+    };
+    const have = new Set(manifest.sets.streaming);
+
+    expect([...new Set(Object.values(TRAILER_MARKS))].filter((s) => !have.has(s))).toEqual([]);
   });
 });
 
