@@ -249,7 +249,20 @@ textarea {
    PARENT, so it would silently shrink exactly the control it was meant to
    protect.
 
-/* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is why.
+/* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is what fixed it.
+
+   > [!IMPORTANT] This rule is EMPIRICAL, and no source documents it. Do not
+   > delete it because you cannot find it written down anywhere.
+   > Every reference on this behaviour -- CSS-Tricks, Defensive CSS, Jeffery
+   > To's pixel-perfect write-up -- names exactly one cause: a computed font-size
+   > under 16px. None of them mentions `appearance`, `type="search"`, or native
+   > control metrics. The one thing they add is that the threshold is the
+   > RENDERED size after transforms and scaling rather than the declared value,
+   > and that was measured here and ruled out: no transform, no scale, no zoom
+   > anywhere in the ancestor chain, effective scale exactly 1.0, computed
+   > font-size 16px. The field zoomed on a real iPhone anyway, and stopped when
+   > this rule landed. That test is the entire evidence and it is worth more than
+   > the absence of a citation.
 
    Measured, not reasoned about: the field computes `font-size: 16px` and
    `appearance: auto`. `type="search"` gets a NATIVE control appearance from
