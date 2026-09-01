@@ -161,6 +161,27 @@ export interface Config {
      * ~30 KB, so the default holds tens of thousands.
      */
     cacheMaxBytes: number;
+    /**
+     * Trim the `watchProviders` facet to these countries. UNSET KEEPS EVERY COUNTRY.
+     *
+     * A well-distributed film carries ~112 of them at roughly 25 KB, and a reader ever
+     * sees exactly one: `pickWatchProviders` chooses in the BROWSER, because one cached
+     * answer serves every reader. So all but one country is dead weight in the cache --
+     * but only an operator knows which countries their readers are actually in.
+     *
+     * DELIBERATELY NOT `regions`, and that is the whole reason this key exists. `regions`
+     * answers a different question ("which countries is this instance FOR", for the
+     * upcoming sync) and DEFAULTS TO `["US"]`, so reusing it would have trimmed every
+     * existing deployment to US-only availability without anybody asking for it -- and a
+     * reader outside those countries would silently lose the "Where to watch" pane
+     * entirely, since `pickWatchProviders` has no fallback to "whatever country we do
+     * have". Unset here means today's behaviour exactly, which is what makes this safe to
+     * ship to a running instance.
+     *
+     * Trimming is not free either way: the cached rows are a faithful copy of one upstream
+     * document, so narrowing this and then wanting a country back costs a call per title.
+     */
+    watchProviderRegions?: string[];
   };
 
   plex: {
@@ -530,6 +551,12 @@ function envOverrides(): Record<string, unknown> {
       imageBase: envStr("FINDERR_TMDB_IMAGE_BASE"),
       cacheImages: envBool("FINDERR_TMDB_CACHE_IMAGES"),
       cacheMaxBytes: envInt("FINDERR_ARTWORK_CACHE_MAX_BYTES"),
+      // Same upper-casing as `regions`, and for the same reason: the codes are matched
+      // against TMDB's own ISO 3166-1 alpha-2 keys, which are upper case.
+      watchProviderRegions: envStr("FINDERR_TMDB_WATCH_PROVIDER_REGIONS")
+        ?.split(",")
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean),
     },
     plex: {
       enabled: envBool("FINDERR_PLEX_ENABLED"),

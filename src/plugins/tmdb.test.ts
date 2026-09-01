@@ -25,6 +25,7 @@ import { getJson, type PluginFetch, safeUrl } from "../lib/plugin-fetch";
 import { BUILTIN_PLUGINS_DIR, loadPlugins } from "../lib/plugins";
 import { Store } from "../lib/store";
 import { TMDB_HOST } from "../lib/tmdb-api";
+import { parseWatchProviders } from "./tmdb/watch-providers";
 
 const PLUGIN_ID = "tmdb";
 
@@ -107,6 +108,8 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     // leaves the literal "undefined" behind and the config reads it as a configured value.
     delete process.env.FINDERR_DATA_DIR;
     delete process.env.FINDERR_TMDB_API_KEY;
+    delete process.env.FINDERR_TMDB_WATCH_PROVIDER_REGIONS;
+    delete process.env.FINDERR_REGIONS;
   });
 
   /**
@@ -296,6 +299,80 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     // path that would otherwise print a live credential into the container log.
     expect(logs.some((m) => m.includes("failed for tt1375666"))).toBe(true);
     expect(logs.filter((m) => m.includes(FAKE_API_KEY))).toEqual([]);
+  });
+
+  /**
+   * The whole point of the setting, checked where it actually matters: on the CACHED ROW.
+   * The parser tests below prove the filter; this proves the operator's env var reaches it
+   * through config, plugin init and the document fetch, which is four seams the unit tests
+   * cannot see.
+   */
+  test("a configured region list trims what is cached, for a film and for a series", async () => {
+    process.env.FINDERR_TMDB_WATCH_PROVIDER_REGIONS = "th, gb";
+    loadConfig(true);
+
+    const film = await resolve(INCEPTION);
+    expect(film.mine.data("watchProviders").map((c) => c.country)).toEqual(["GB", "TH"]);
+
+    const series = await resolve(GAME_OF_THRONES);
+    expect(series.mine.data("watchProviders").map((c) => c.country)).toEqual(["GB", "TH"]);
+  });
+
+  /**
+   * The regression this key exists to avoid. `regions` DEFAULTS to `["US"]`, so reusing it
+   * would have trimmed every deployment that never asked for anything -- and a reader
+   * outside those countries loses the pane outright, because `pickWatchProviders` has no
+   * fallback to "whatever country we do have".
+   */
+  test("an unset region list keeps every country, whatever `regions` happens to say", async () => {
+    process.env.FINDERR_REGIONS = "US";
+    delete process.env.FINDERR_TMDB_WATCH_PROVIDER_REGIONS;
+    loadConfig(true);
+
+    const { mine } = await resolve(INCEPTION);
+    expect(mine.data("watchProviders").map((c) => c.country)).toEqual(["DE", "GB", "TH", "US"]);
+  });
+});
+
+/**
+ * The filter itself, against the shape rather than the fixture -- these are the cases the
+ * plugin path cannot reach, because an env var cannot express "empty list" distinctly from
+ * "unset" once it has been through `loadConfig`.
+ */
+describe("parseWatchProviders region filter", () => {
+  const RESULTS = {
+    results: {
+      US: { flatrate: [{ provider_name: "Netflix" }] },
+      GB: { flatrate: [{ provider_name: "Now" }] },
+      TH: { rent: [{ provider_name: "Apple TV Store" }] },
+    },
+  };
+  const countries = (regions?: readonly string[]) =>
+    (parseWatchProviders(RESULTS, regions) ?? []).map((c) => c.country);
+
+  test("undefined keeps every country -- the default and today's behaviour", () => {
+    expect(countries()).toEqual(["GB", "TH", "US"]);
+  });
+
+  /**
+   * An env var of `""` or `" , "` parses down to an empty array, and reading THAT as "keep
+   * no countries" would blank the facet for every title on a typo rather than failing
+   * anywhere a person would notice.
+   */
+  test("an empty list keeps every country too, because a typo must not empty the facet", () => {
+    expect(countries([])).toEqual(["GB", "TH", "US"]);
+  });
+
+  test("a configured list keeps only those, still alphabetical", () => {
+    expect(countries(["TH", "US"])).toEqual(["TH", "US"]);
+  });
+
+  test("matching is case-insensitive, so a lower-cased env value still works", () => {
+    expect(countries(["th"])).toEqual(["TH"]);
+  });
+
+  test("a region the title is not offered in yields an empty list, not every country", () => {
+    expect(countries(["JP"])).toEqual([]);
   });
 });
 

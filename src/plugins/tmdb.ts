@@ -52,7 +52,7 @@ const FRESHNESS = {
  * existed. There is no `meta.provides` to disagree with, which is the point of the shape.
  */
 export function init(c: PluginContext): PluginExports {
-  const apiKey = loadConfig().tmdb.apiKey;
+  const { apiKey, watchProviderRegions } = loadConfig().tmdb;
   if (!apiKey) {
     c.log("no TMDB API key configured -- watchProviders and series keywords stay unanswered");
     return { facets: {} };
@@ -70,7 +70,7 @@ export function init(c: PluginContext): PluginExports {
   async function documentFor(entity: FacetEntity): Promise<TmdbDocument | null> {
     const tmdbId = await resolveTmdbId(api, ids, entity);
     if (tmdbId === null) return null;
-    return documents.getOrAdd(entity.tconst, () => fetchDocument(api, entity, tmdbId));
+    return documents.getOrAdd(entity.tconst, () => fetchDocument(api, entity, tmdbId, watchProviderRegions));
   }
 
   return {

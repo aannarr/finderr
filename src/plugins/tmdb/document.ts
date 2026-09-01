@@ -38,12 +38,30 @@ interface TmdbSeriesDocument {
   "watch/providers"?: TmdbWatchProviderResponse | null;
 }
 
-/** A film and a series ask different questions; this is where that split lives. */
-export function fetchDocument(api: TmdbApi, entity: FacetEntity, tmdbId: number): Promise<TmdbDocument> {
-  return entity.kind === "series" ? seriesDocument(api, tmdbId) : movieDocument(api, tmdbId);
+/**
+ * A film and a series ask different questions; this is where that split lives.
+ *
+ * `regions` is the operator's `tmdb.watchProviderRegions`, undefined in the ordinary case.
+ * It narrows what is KEPT rather than what is asked for -- TMDB returns every country
+ * whatever we do, and the appended form has no per-country parameter at all, so this is a
+ * cache-size lever and never a call-count one.
+ */
+export function fetchDocument(
+  api: TmdbApi,
+  entity: FacetEntity,
+  tmdbId: number,
+  regions?: readonly string[],
+): Promise<TmdbDocument> {
+  return entity.kind === "series"
+    ? seriesDocument(api, tmdbId, regions)
+    : movieDocument(api, tmdbId, regions);
 }
 
-async function seriesDocument(api: TmdbApi, tmdbId: number): Promise<TmdbDocument> {
+async function seriesDocument(
+  api: TmdbApi,
+  tmdbId: number,
+  regions?: readonly string[],
+): Promise<TmdbDocument> {
   const doc = await api.get<TmdbSeriesDocument>(`/tv/${tmdbId}`, {
     append_to_response: "keywords,watch/providers",
   });
@@ -51,12 +69,19 @@ async function seriesDocument(api: TmdbApi, tmdbId: number): Promise<TmdbDocumen
   // and the resolver caches as empty. An appended block that is absent is the same answer
   // for that one facet, which is what passing `undefined` through the parsers gives.
   return {
-    watchProviders: parseWatchProviders(doc?.["watch/providers"]),
+    watchProviders: parseWatchProviders(doc?.["watch/providers"], regions),
     keywords: parseSeriesKeywords(doc?.keywords),
   };
 }
 
-async function movieDocument(api: TmdbApi, tmdbId: number): Promise<TmdbDocument> {
+async function movieDocument(
+  api: TmdbApi,
+  tmdbId: number,
+  regions?: readonly string[],
+): Promise<TmdbDocument> {
   // `keywords` is never read for a film -- see the note at the top of this file.
-  return { watchProviders: await fetchWatchProviders(api, "movie", tmdbId), keywords: null };
+  return {
+    watchProviders: await fetchWatchProviders(api, "movie", tmdbId, regions),
+    keywords: null,
+  };
 }

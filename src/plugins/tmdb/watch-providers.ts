@@ -4,12 +4,16 @@
  * TMDB relays JustWatch's catalogue, which is the only source in this product's reach that
  * has it: no Servarr proxy carries availability, and neither does the IMDb corpus.
  *
- * EVERY COUNTRY IS KEPT, all hundred-odd of them, and the reader's one is picked in the
- * browser. The facet cache holds one answer per title for every reader, so choosing a
- * region here would mean choosing it for everybody -- and there is no region setting to
- * choose from. The `certification` facet already works exactly this way for the same
- * reason. A country's three lists are a few short names, so the whole set is ~25 KB of
- * highly repetitive JSON.
+ * EVERY COUNTRY IS KEPT BY DEFAULT, all hundred-odd of them, and the reader's one is
+ * picked in the browser. The facet cache holds one answer per title for every reader, so
+ * choosing a region here means choosing it for everybody -- which is why `tmdb
+ * .watchProviderRegions` exists, is UNSET by default, and is the only thing that narrows
+ * this. The `certification` facet works exactly this way for the same reason. A country's
+ * three lists are a few short names, so the whole set is ~25 KB of highly repetitive JSON.
+ *
+ * The narrowing is an operator's call and never a default, because `pickWatchProviders`
+ * has no fallback to "whatever country we do have" -- so a country trimmed out here is a
+ * reader in that country losing the pane, not seeing a slightly worse one.
  */
 
 import type { WatchProviders } from "../../lib/facets";
@@ -74,23 +78,41 @@ export async function fetchWatchProviders(
   api: TmdbApi,
   media: TmdbMediaType,
   tmdbId: number,
+  regions?: readonly string[],
 ): Promise<WatchProviders[] | null> {
-  return parseWatchProviders(await api.get<TmdbWatchProviderResponse>(`/${media}/${tmdbId}/watch/providers`));
+  return parseWatchProviders(
+    await api.get<TmdbWatchProviderResponse>(`/${media}/${tmdbId}/watch/providers`),
+    regions,
+  );
 }
 
 /** The parse half, so an appended `watch/providers` block reads through the same rules. */
 export function parseWatchProviders(
   res: TmdbWatchProviderResponse | null | undefined,
+  regions?: readonly string[],
 ): WatchProviders[] | null {
   if (!res) return null;
-  return countriesOf(res.results ?? {});
+  return countriesOf(res.results ?? {}, regions);
 }
 
-/** Every country that offers the title somewhere, in a stable (alphabetical) order. */
-function countriesOf(results: Record<string, TmdbCountryOffers>): WatchProviders[] {
+/**
+ * Every country that offers the title somewhere, in a stable (alphabetical) order.
+ *
+ * `regions` narrows it when an operator has configured one; UNDEFINED AND EMPTY BOTH MEAN
+ * KEEP EVERYTHING, which is not the same rule twice. Undefined is "nobody configured
+ * this"; empty is what an env var of `""` or `" , "` parses down to, and reading that as
+ * "keep no countries" would empty the facet for every title on a typo rather than failing
+ * where somebody would see it.
+ */
+function countriesOf(
+  results: Record<string, TmdbCountryOffers>,
+  regions?: readonly string[],
+): WatchProviders[] {
+  const keep = regions && regions.length > 0 ? new Set(regions.map((r) => r.toUpperCase())) : null;
   return Object.keys(results)
     .sort()
     .flatMap((country) => {
+      if (keep && !keep.has(country.toUpperCase())) return [];
       const offers = results[country];
       if (!offers) return [];
       const entry: WatchProviders = {

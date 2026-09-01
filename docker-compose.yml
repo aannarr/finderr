@@ -65,6 +65,12 @@ services:
       # (`watchProviders`) and keywords for SERIES -- film keywords already arrive
       # free via api.radarr.video.
       FINDERR_TMDB_API_KEY: ${TMDB_API_KEY:-}
+      # Trims the cached availability facet to these countries. EMPTY KEEPS ALL OF THEM,
+      # which is the default: a reader in a country left out loses the "Where to watch"
+      # row outright, because the browser picks its own region and has no fallback.
+      # NOT the same setting as FINDERR_REGIONS -- that one scopes the upcoming sync and
+      # defaults to US, so pointing this at it would trim everybody to US availability.
+      FINDERR_TMDB_WATCH_PROVIDER_REGIONS: ${TMDB_WATCH_PROVIDER_REGIONS:-}
 
       # --- Plex. OPTIONAL, same `:-` rule as TMDB: without it every title's `plex`
       # field is null and the page loses its Play button, nothing else.
