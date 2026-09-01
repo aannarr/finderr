@@ -106,7 +106,14 @@ export interface HealthDeps {
    * arguing that `/api/health` was safe for an anonymous caller to read in full; see the
    * caution on `healthPayload` for why that stopped being true and what replaced it.
    */
-  auth: { users: number; admins: number; sessions: number; apiKey: boolean };
+  auth: {
+    users: number;
+    admins: number;
+    sessions: number;
+    apiKey: boolean;
+    /** `auth.devLoginAs`. Non-null means THE LOGIN WALL IS OPEN -- see that config field. */
+    devLoginAs: string | null;
+  };
   queue: unknown;
   artwork: unknown;
   plugins: string[];

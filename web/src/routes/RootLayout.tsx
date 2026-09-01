@@ -96,10 +96,21 @@ export function RootLayout() {
    * non-admin on the server, so hiding the link is tidiness and the server is the wall.
    */
   const [me, setMe] = useState<PublicUser | null>(null);
+  /**
+   * True only when the server signed this caller in with `auth.devLoginAs`.
+   *
+   * Kept beside `me` rather than folded into it: it is a fact about HOW this session was
+   * established, not about who the user is, and every other consumer of `me` would have to
+   * ignore it.
+   */
+  const [devLogin, setDevLogin] = useState(false);
 
   useEffect(() => {
     void getAuthState()
-      .then((s) => setMe(s.user ?? null))
+      .then((s) => {
+        setMe(s.user ?? null);
+        setDevLogin(s.devLogin === true);
+      })
       .catch(() => setMe(null));
   }, []);
 
@@ -263,8 +274,27 @@ export function RootLayout() {
 
   return (
     <AppProvider value={{ request, pendingCount, isAdmin: me?.role === "admin" }}>
+      {/*
+        The development-login banner.
+
+        ABOVE the sticky header and not itself sticky, so it scrolls away rather than
+        spending a strip of every screen -- but it is the first thing in the document, so it
+        lands in any screenshot of the top of the page, which is the whole job. A screenshot
+        of a login-less finderr is otherwise identical to one of the real thing.
+
+        `role="alert"` because it is a standing warning about the state of the SERVER rather
+        than a piece of page content, so a reader who cannot see the colour still gets told.
+      */}
+      {devLogin && (
+        <div role="alert" className="bg-warn px-4 py-1.5 text-center text-xs font-medium text-black">
+          Authentication is OFF -- every visitor is signed in as {me?.displayName ?? "the dev user"}.
+          Development only.
+        </div>
+      )}
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
-        <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
+        {/* `app-header` is not styling -- it is the view-transition name that keeps the
+            chrome still while the content moves. See the motion block in `styles.css`. */}
+        <header className="app-header sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
           <div className="flex items-baseline gap-3">
             <Link to="/" search={{}} className="text-lg font-semibold tracking-tight">
               finderr

@@ -34,6 +34,14 @@ export interface AuthState {
   user?: PublicUser;
   /** Whether to draw the Plex button at all. The server decides; the client never guesses. */
   plex?: boolean;
+  /**
+   * This caller was signed in by `auth.devLoginAs` rather than by a credential.
+   *
+   * It exists so the app can say so on screen. A screenshot of a login-less finderr is
+   * otherwise indistinguishable from a screenshot of the real one, which is how a
+   * development bypass ends up being reasoned about as though it were production.
+   */
+  devLogin?: boolean;
 }
 
 /**

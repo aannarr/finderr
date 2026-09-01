@@ -145,6 +145,32 @@ const auth = new AuthService({
 });
 
 /*
+  DEVELOPMENT LOGIN, and it is deliberately the loudest thing this process ever prints.
+
+  It runs BEFORE the bootstrap block below, and that ordering is the point: `ensureDevUser`
+  creates the account, so `userCount()` is no longer zero and no bootstrap invite is minted.
+  There is already a way in, and printing an invite nobody needs would train a reader to
+  ignore the one that matters.
+
+  The banner names the account and the bind, because both are things somebody could otherwise
+  get wrong silently -- a developer who set the flag and then wondered why the LAN could not
+  reach the server deserves to be told here rather than in a config file.
+*/
+const devUser = auth.ensureDevUser();
+if (devUser) {
+  log("");
+  log("  ##########################################################");
+  log("  #  AUTHENTICATION IS OFF -- FINDERR_DEV_LOGIN_AS IS SET  #");
+  log("  ##########################################################");
+  log(
+    `  every request is signed in as ${JSON.stringify(devUser.displayName)} (${devUser.role}) -- no login wall`,
+  );
+  log(`  anyone who can reach ${cfg.host}:${cfg.port} is an admin here`);
+  log("  this process holds the Radarr, Sonarr and Plex credentials. Do not expose it.");
+  log("");
+}
+
+/*
   Bootstrap.
 
   An empty user table is a locked front door with nobody holding a key, so the FIRST boot
@@ -723,6 +749,12 @@ const appRoutes = {
             admins: authStore.adminCount(),
             sessions: authStore.sessionCount(),
             apiKey: !!cfg.auth.adminApiKey,
+            // The NAME, not a boolean: "auth is off" and "auth is off and everyone is aannarr"
+            // are different facts, and the second is the one that explains what a reader is
+            // looking at. Null is the ordinary case and every deployment. This block is
+            // admin-only, so it discloses the account name to nobody who could not already
+            // list every user.
+            devLoginAs: cfg.auth.devLoginAs ?? null,
           },
           queue: worker.stats(),
           artwork: artwork.stats(),

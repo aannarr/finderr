@@ -31,6 +31,7 @@ import {
   SESSION_COOKIE,
   secretEquals,
   sessionCookie,
+  type User,
 } from "../lib/auth";
 import type { AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
@@ -96,6 +97,8 @@ export class AuthService {
   private readonly authLimiter: RateLimiter;
   readonly searchLimiter: RateLimiter;
   private readonly fetchImpl: FetchLike;
+  /** Set once by `ensureDevUser`, so the lookup is not repeated on every request. */
+  private devUserId: string | null = null;
 
   constructor(private readonly deps: AuthServiceDeps) {
     this.passkeys = new PasskeyService(deps.auth, deps.cfg, deps.log);
@@ -127,11 +130,68 @@ export class AuthService {
     }
 
     const token = readCookie(req.headers.get("cookie"), SESSION_COOKIE);
-    if (!token) return null;
-    const found = this.deps.auth.readSession(token);
-    if (!found) return null;
-    this.deps.auth.touchSession(found.session.idHash);
-    return { kind: "session", user: found.user, role: found.user.role, session: found.session };
+    if (token) {
+      const found = this.deps.auth.readSession(token);
+      if (found) {
+        this.deps.auth.touchSession(found.session.idHash);
+        return { kind: "session", user: found.user, role: found.user.role, session: found.session };
+      }
+    }
+
+    /*
+      DEVELOPMENT ONLY, and this is the ONE place the login wall is opened.
+
+      It is last rather than first, so a real cookie still wins: signing in as somebody else
+      while this is on has to keep working, or the mode cannot be used to look at what a
+      non-admin sees. A dead or expired cookie falls through to here rather than being
+      refused, which is what stops a stale session from locking a developer out of their own
+      dev server.
+
+      `withAuth`, `requireAdmin` and the login-wall shell pick in `index.ts` all read through
+      this method, so opening it here opens all three and nothing else needed a second edit.
+      That is the whole return on `withAuth` wrapping the table instead of each handler
+      checking for itself.
+    */
+    return this.devPrincipal();
+  }
+
+  /**
+   * The dev admin, created on demand and remembered for the process.
+   *
+   * Memoised on the ID rather than the row, and the row is re-read every call: an admin may
+   * disable or rename this account while the server runs, and a principal built from a
+   * snapshot taken at boot would go on granting access to an account that no longer allows
+   * it. A disabled dev user therefore stops working exactly like any other disabled user,
+   * which is the behaviour worth having in the mode whose whole job is to rehearse the real
+   * one.
+   */
+  private devPrincipal(): Principal | null {
+    const name = this.deps.cfg.auth.devLoginAs;
+    if (!name) return null;
+    const user = this.ensureDevUser();
+    if (!user || user.disabledAt !== null) return null;
+    return { kind: "dev", user, role: user.role };
+  }
+
+  /**
+   * Find or create the account named by `auth.devLoginAs`. Null when the flag is unset.
+   *
+   * Public because the boot banner reports the account it will be signing people in as, and
+   * a banner naming an account that did not exist yet would be a second owner of "who is the
+   * dev user". Matching is on the display name, trimmed and case-insensitive -- it is typed
+   * into a shell by a human, so `aannarr` and `aannarr` cannot be two accounts.
+   */
+  ensureDevUser(): User | null {
+    const name = this.deps.cfg.auth.devLoginAs?.trim();
+    if (!name) return null;
+    if (this.devUserId) return this.deps.auth.getUser(this.devUserId);
+
+    const key = name.toLowerCase();
+    const existing = this.deps.auth.listUsers().find((u) => u.displayName.trim().toLowerCase() === key);
+    const user = existing ?? this.deps.auth.createUser({ displayName: name, role: "admin" });
+    if (!existing) this.deps.log(`dev login: created admin account ${JSON.stringify(name)}`);
+    this.devUserId = user.id;
+    return user;
   }
 
   private ip(req: Request): string {
@@ -246,7 +306,14 @@ export class AuthService {
             plex: this.deps.cfg.plex.enabled && !!this.deps.cfg.plex.token,
           });
         }
-        return json({ authenticated: true, user: publicUser(p.user) });
+        // `devLogin` is omitted rather than sent as `false`, so the ordinary payload is
+        // byte-identical to what it was before this existed and a stale client cannot read
+        // a missing key as anything but "no".
+        return json({
+          authenticated: true,
+          user: publicUser(p.user),
+          ...(p.kind === "dev" ? { devLogin: true } : {}),
+        });
       },
 
       "/api/auth/me": (req) => {

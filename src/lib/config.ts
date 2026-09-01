@@ -272,6 +272,37 @@ export interface Config {
     authRatePerMinute: number;
     /** Requests per minute per IP on /api/search, which is genuinely CPU-bound. */
     searchRatePerMinute: number;
+    /**
+     * Sign EVERY caller in as this admin, by display name. There is no login wall while it is set.
+     *
+     * > [!CAUTION] THIS REMOVES AUTHENTICATION ENTIRELY. Anyone who can reach the port is an admin.
+     * > There is deliberately NO guard rail on it -- no forced loopback bind, no refusal to
+     * > start, no production sniffing. aannarr's call, 2026-09-01, and the reasoning is worth
+     * > keeping: Sonarr and Radarr both ship an unauthenticated local-access mode for exactly
+     * > this shape of deployment, a household tool with one user behind their own front door,
+     * > and finderr being unable to do the same would be a missing feature rather than a
+     * > safety property. **So the decision is the operator's and the mechanism does not
+     * > second-guess it.**
+     * >
+     * > What that costs, stated plainly because nothing in the code will stop you: this
+     * > process holds the Radarr, Sonarr and full-account Plex credentials in its
+     * > environment, and it can start real downloads. Setting this on a host that is
+     * > reachable from the internet -- or from a LAN you do not control -- hands all of that
+     * > to whoever finds the port. It is announced at boot, in `/api/health` and in a banner
+     * > across the top of every page, and those three are the entire defence.
+     *
+     * **It is a NAME rather than a boolean, and that is what keeps development honest.** A
+     * synthetic anonymous principal would make this mode stop exercising what actually ships:
+     * `requested_by` would be null here and populated in production, so `visibleRequest`
+     * stripping, the admin request log and every role-gated surface would never render while
+     * somebody worked. Naming a user means the account is REAL -- looked up by display name,
+     * created as an admin on first boot if missing -- so every path downstream of
+     * `principal()` sees an ordinary user and no code has a branch for this mode.
+     * `the_user` is a fine value if you have no better idea.
+     *
+     * Unset is the default and changes nothing at all.
+     */
+    devLoginAs?: string;
   };
 
   /** Mirror the arr libraries locally so "do we have it?" never hits the network. */
@@ -506,6 +537,7 @@ function envOverrides(): Record<string, unknown> {
       adminApiKey: envStr("FINDERR_ADMIN_API_KEY"),
       authRatePerMinute: envInt("FINDERR_AUTH_RATE_PER_MINUTE"),
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
+      devLoginAs: envStr("FINDERR_DEV_LOGIN_AS"),
     },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),
