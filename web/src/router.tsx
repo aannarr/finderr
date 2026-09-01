@@ -12,6 +12,13 @@
  */
 
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import {
+  markWipeShown,
+  noteOrdinaryNavigation,
+  shouldWipe,
+  tconstOfPath,
+  WIPE_TYPE,
+} from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
 import { installTransitionTracking, navKind, prefersReducedMotion } from "./lib/view-transitions";
 import { AccountRoute } from "./routes/AccountRoute";
@@ -192,8 +199,30 @@ export const router = createRouter({
    * any of the shared-element machinery. `styles.css` owns what each type looks like.
    */
   defaultViewTransition: {
-    types: ({ fromLocation, toLocation }) =>
-      prefersReducedMotion() ? false : [navKind(fromLocation?.pathname ?? "", toLocation.pathname)],
+    types: ({ fromLocation, toLocation }) => {
+      const reducedMotion = prefersReducedMotion();
+      if (reducedMotion) return false;
+
+      /*
+        The joke gets first refusal, and REPLACES the ordinary transition rather than
+        joining it -- a poster flying across a wipe is chaos, and the stylesheet suppresses
+        the shared element for this type.
+
+        `markWipeShown` is called here rather than inside `shouldWipe` because this is the
+        moment the transition is actually handed to the browser. Stamping the cooldown from
+        the question would burn the joke on a navigation nobody watched.
+      */
+      const to = tconstOfPath(toLocation.pathname);
+      if (shouldWipe(to, { reducedMotion })) {
+        markWipeShown();
+        return [WIPE_TYPE];
+      }
+
+      // Every navigation that is not the joke is one the joke may follow. See
+      // `noteOrdinaryNavigation`: the gag only lands against a baseline already felt.
+      noteOrdinaryNavigation();
+      return [navKind(fromLocation?.pathname ?? "", toLocation.pathname)];
+    },
   },
 });
 

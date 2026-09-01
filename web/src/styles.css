@@ -337,3 +337,59 @@ input[type="search"]::-webkit-search-results-decoration {
 :root:active-view-transition .card-grid {
   content-visibility: visible;
 }
+
+/* ---------------------------------------------------------------------------
+   The wipe. `web/src/lib/easter-eggs.ts` decides when; this is what it looks
+   like, and the two files are the whole joke.
+
+   Everything here breaks the house style deliberately, and only for the ~600ms
+   this type is active:
+     - 600ms, not 220. A wipe needs that long to read AS a wipe; at 220 it is an
+       unreadable smear. It IS in the way, on purpose, about twice a week.
+     - `linear`, not the decelerating curve. A wipe is a hard edge travelling at
+       a constant speed -- easing it makes it look like a mistake.
+   --------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:active-view-transition-type(wipe) {
+    /* The poster does NOT fly across a wipe. Suppressing the shared element is
+       what makes this a REPLACEMENT for the normal transition rather than two
+       animations fighting over the same 600ms. */
+    & .vt-poster-rail,
+    & .vt-poster-thumb {
+      view-transition-name: none;
+    }
+
+    /* The header is pinned for every other transition. Not this one: a wipe
+       that leaves a strip of chrome standing still is not a wipe. */
+    & .app-header {
+      view-transition-name: none;
+    }
+
+    &::view-transition-old(root) {
+      animation: fdr-wipe-out 600ms linear both;
+    }
+
+    /* The new page is revealed BY the old one leaving, so it holds still
+       underneath rather than animating itself. Two moving layers would read as
+       a crossfade with extra steps. */
+    &::view-transition-new(root) {
+      animation: none;
+    }
+  }
+}
+
+/* Left to right, with a soft leading edge -- a hard `inset()` cut reads as a
+   dropped frame rather than a sweep. The mask is the whole effect. */
+@keyframes fdr-wipe-out {
+  from {
+    mask-image: linear-gradient(to right, transparent 0%, transparent 0%, black 6%, black 100%);
+    mask-size: 200% 100%;
+    mask-position: 100% 0;
+  }
+  to {
+    mask-image: linear-gradient(to right, transparent 0%, transparent 0%, black 6%, black 100%);
+    mask-size: 200% 100%;
+    mask-position: 0 0;
+  }
+}

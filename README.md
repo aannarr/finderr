@@ -204,6 +204,62 @@ in place. No restart.
 
 Open `http://<host>:7979` and follow the invite link from the log.
 
+#### Creating your first admin
+
+There is no sign-up form. finderr is invite-only, so the very first boot mints an admin
+invitation and prints it, once, to the log:
+
+```bash
+docker compose logs finderr | grep invite
+```
+
+Open that link and create your account. The token is never stored — only a hash of it —
+so it cannot be listed again afterwards. If the line has scrolled away or the invite has
+expired, mint another with the system API key rather than hunting for it:
+
+```bash
+curl -s -X POST http://<host>:7979/api/admin/invites \
+  -H "Authorization: Bearer $FINDERR_ADMIN_API_KEY" \
+  -H 'Content-Type: application/json' -d '{"role":"admin"}' | jq -r .url
+```
+
+That endpoint is how an admin — or a script — does everything a person can do from
+`/admin`. It needs `FINDERR_ADMIN_API_KEY` to be set; without it, the admin API answers
+only to an admin's own session, which is a legitimate way to run and simply means you
+cannot bootstrap from a shell.
+
+`/api/health` tells you where you stand: `auth.users: 0` means nobody has claimed the
+bootstrap invite yet and it is still the only way in.
+
+#### Running without any login at all
+
+Some people run one arr stack for one household behind one front door, the way Sonarr and
+Radarr allow with their local-access setting. finderr can do the same:
+
+```yaml
+environment:
+  FINDERR_DEV_LOGIN_AS: the_user
+```
+
+Every request is then signed in as an admin account of that name, created on first boot.
+No login screen, no invitation, nothing to redeem.
+
+> [!CAUTION]
+> This removes authentication completely. Anyone who can reach the port is an admin — and
+> this process holds your Radarr, Sonarr and Plex credentials and can start real
+> downloads. Nothing in the code will stop you: there is no forced loopback bind and no
+> refusal to start, because whether your network is trustworthy is your call and not
+> something a program can know. **Do not combine it with the section below.**
+
+It announces itself in three places so it can never be running by accident: a banner in
+the boot log, `auth.devLoginAs` in `/api/health`, and an orange strip across the top of
+every page. That strip is deliberate — a screenshot of a login-less finderr is otherwise
+identical to a screenshot of a locked one.
+
+It takes a name rather than a plain on/off switch on purpose. The account is real, so
+requests are still attributed to it and the admin screens behave exactly as they do with
+a normal sign-in; a nameless anonymous mode would quietly stop exercising half the app.
+
 #### Pick the identity settings before the first passkey exists
 
 `FINDERR_AUTH_RP_ID` is the domain every passkey is bound to and it is permanent. Change
@@ -311,6 +367,7 @@ rebuild.
 | `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
+| `FINDERR_DEV_LOGIN_AS` | | **Turns authentication off.** Signs every caller in as an admin of this name. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
 | `FINDERR_INDEX_REFRESH_TZ` | `UTC` | IANA zone for the cron. The dumps publish on UTC |
 | `FINDERR_INDEX_REFRESH_ON_BOOT` | `true` | Build an index on boot when there is none, instead of exiting. The server listens and serves a progress page while it runs |
@@ -600,12 +657,21 @@ mature one, and it does plenty finderr does not:
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
 | Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination |
 | Extensibility | none | addons: facets and panes |
+| On a phone | works | built for it: no zoom on focus, one-handed search, animated navigation |
 | Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
 
-If you run a big shared library with users you do not fully trust and you need approval
-and quotas, Seerr is still the right tool today. If it is a handful of people you invited
-yourself, and what bugs you about Seerr is the waiting, run this instead. The two run side
-by side fine, against the same arrs.
+Seerr is the more powerful of the two and that table is not close in its favour anywhere
+that matters for a big installation. finderr is the less annoying one, and mostly on a
+phone -- which is where every request in my house actually gets made, usually one-handed,
+usually from the sofa. Searching does not wait on a network round trip per keystroke,
+focusing the search box does not zoom the page into a viewport you have to pinch back out
+of, and moving between screens is animated rather than a hard cut. None of that is a
+feature Seerr lacks so much as a set of small irritations it never set out to remove.
+
+So: if you run a big shared library with users you do not fully trust and you need
+approval and quotas, Seerr is still the right tool today. If it is a handful of people you
+invited yourself, and what bugs you about Seerr is the waiting and the fiddling on a small
+screen, run this instead. The two run side by side fine, against the same arrs.
 
 ## Join the crew
 
