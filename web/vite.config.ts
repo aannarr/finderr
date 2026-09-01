@@ -25,11 +25,24 @@ export default defineConfig({
     },
   },
   server: {
-    port: 7980,
+    /**
+     * Both are overridable, because the defaults assume this checkout is the only finderr
+     * on the machine and that is routinely false.
+     *
+     * `FINDERR_DEV_API` matters more than the port does: the proxy target was hardcoded to
+     * `localhost:7979`, which is the port a RUNNING CONTAINER holds on any machine where one
+     * is up. A second dev server then silently served its own UI against the container's
+     * API -- every request answered, nothing broken on screen, and none of it exercising the
+     * code being edited. Pointing it is a flag now rather than an edit.
+     */
+    port: Number(process.env.FINDERR_DEV_WEB_PORT ?? 7980),
+    // `true` binds every interface. A dev server is often read from a second machine --
+    // a phone, or a laptop that is not the one running it -- and localhost cannot be.
+    host: true,
     // In dev the API runs separately; in production Bun serves both from one origin.
-    proxy: {
-      "/api": "http://localhost:7979",
-      "/img": "http://localhost:7979",
-    },
+    proxy: (() => {
+      const api = process.env.FINDERR_DEV_API ?? "http://localhost:7979";
+      return { "/api": api, "/img": api, "/logos": api };
+    })(),
   },
 });

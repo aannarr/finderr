@@ -14,8 +14,8 @@ import { describe, expect, test } from "bun:test";
 
 const CSS = await Bun.file(new URL("./styles.css", import.meta.url)).text();
 
-/** The body of the first at-rule whose prelude matches, with balanced braces. */
-function atRuleBody(css: string, prelude: RegExp): string | null {
+/** The declaration block following the first occurrence of `prelude`, braces balanced. */
+function ruleBody(css: string, prelude: RegExp): string | null {
   const open = css.search(prelude);
   if (open === -1) return null;
   const start = css.indexOf("{", open);
@@ -28,10 +28,28 @@ function atRuleBody(css: string, prelude: RegExp): string | null {
   return null;
 }
 
-describe("iOS input focus-zoom guard", () => {
-  const body = atRuleBody(CSS, /@media\s*\(pointer:\s*coarse\)/);
+/** Everything from the start of the file to the first match, for cascade questions. */
+function before(css: string, prelude: RegExp): string {
+  const i = css.search(prelude);
+  return i === -1 ? css : css.slice(0, i);
+}
 
-  test("a touch-pointer media block exists", () => {
+/**
+ * The floor is found by its SELECTOR, never by the at-rule it happens to sit in.
+ *
+ * It used to be located by `@media (pointer: coarse)`, which coupled these tests to where
+ * the rule lived rather than to what it does -- and when the scoping was removed (see the
+ * rule's own note: coarse-pointer cannot be verified from a headless probe, so it is the
+ * wrong condition to guard the worst mobile defect with) every test here failed while the
+ * protection was intact and stronger. Keying on the selector survives that move and the
+ * next one.
+ */
+const FLOOR = /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)/;
+
+describe("iOS input focus-zoom guard", () => {
+  const body = ruleBody(CSS, FLOOR);
+
+  test("the floor rule exists", () => {
     expect(body).not.toBeNull();
   });
 
@@ -46,13 +64,9 @@ describe("iOS input focus-zoom guard", () => {
   test("it covers select and textarea, not just input", () => {
     // A select opening the iOS picker and a textarea both zoom exactly like an input.
     // Guarding only `input` is the most likely way this rule gets half-deleted.
-    expect(body).toContain("select");
-    expect(body).toContain("textarea");
-  });
-
-  test("it exempts checkboxes and radios", () => {
-    // They carry no text to zoom toward, and sizing them by font-size is a surprise.
-    expect(body).toContain('input:not([type="checkbox"]):not([type="radio"])');
+    const selectors = CSS.slice(CSS.search(FLOOR), CSS.indexOf("{", CSS.search(FLOOR)));
+    expect(selectors).toContain("select");
+    expect(selectors).toContain("textarea");
   });
 
   test("it is unlayered, so a Tailwind utility cannot override it", () => {
@@ -60,14 +74,36 @@ describe("iOS input focus-zoom guard", () => {
     // EVERY layered one regardless of specificity. Moving this block inside a `@layer`
     // would let a `text-sm` on a control silently restore the zoom -- which is exactly
     // the bug, back, with the fix still visible in the file.
-    const index = CSS.search(/@media\s*\(pointer:\s*coarse\)/);
-    const before = CSS.slice(0, index);
-    const opened = (before.match(/@layer[^;{]*\{/g) ?? []).length;
-    const closedTop = before.split("").reduce((depth, ch) => {
+    const head = before(CSS, FLOOR);
+    const opened = (head.match(/@layer[^;{]*\{/g) ?? []).length;
+    const closedTop = head.split("").reduce((depth, ch) => {
       if (ch === "{") return depth + 1;
       if (ch === "}") return depth - 1;
       return depth;
     }, 0);
     expect(opened === 0 || closedTop === 0).toBe(true);
+  });
+});
+
+/**
+ * The search box is 16px and zoomed ANYWAY, which is why the floor above is necessary and
+ * not sufficient.
+ *
+ * Measured in a browser: the field computes `font-size: 16px` and `appearance: auto`.
+ * `type="search"` gets a native control appearance from Safari, and Safari sizes native
+ * controls with its own control-font metrics rather than the author's -- so the zoom
+ * heuristic fires on a field that is 16px by every measurement the page can make. Removing
+ * the native appearance is the fix, and it is invisible on every other platform, which is
+ * exactly the kind of rule a later tidying pass deletes as dead weight.
+ */
+describe("search fields have no native appearance", () => {
+  const body = ruleBody(CSS, /input\[type="search"\]\s*\{/);
+
+  test("appearance is reset, with the -webkit- prefix Safari still needs", () => {
+    expect(body).not.toBeNull();
+    expect(body).toContain("appearance: none");
+    // Safari honours the unprefixed property for many controls but NOT for the search
+    // field's own decorations, so dropping the prefixed line silently restores the bug.
+    expect(body).toContain("-webkit-appearance: none");
   });
 });

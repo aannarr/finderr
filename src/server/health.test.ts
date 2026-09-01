@@ -24,7 +24,7 @@ function deps(onCoverage: () => void): HealthDeps {
       importedAt: "2026-09-01T00:00:00.000Z",
     },
     services: { radarr: true, sonarr: true },
-    auth: { users: 3, admins: 1, sessions: 4, apiKey: true },
+    auth: { users: 3, admins: 1, sessions: 4, apiKey: true, devLoginAs: null },
     queue: { pending: 0 },
     artwork: { resolved: 2192 },
     plugins: ["servarr-metadata", "rotten-tomatoes"],

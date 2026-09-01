@@ -263,6 +263,28 @@ export function RootLayout() {
 
   return (
     <AppProvider value={{ request, pendingCount, isAdmin: me?.role === "admin" }}>
+      {/*
+        The development-login banner.
+
+        ABOVE the sticky header and not itself sticky, so it scrolls away rather than
+        spending a strip of every screen -- but it is the first thing in the document, so it
+        lands in any screenshot of the top of the page, which is the whole job. A screenshot
+        of a login-less finderr is otherwise identical to one of the real thing.
+
+        `role="alert"` because it is a standing warning about the state of the SERVER rather
+        than a piece of page content, so a reader who cannot see the colour still gets told.
+      */}
+      {/*
+        NO BANNER. aannarr, 2026-09-01: "REMOVE THIS HEADER FULL .. no need for it ever".
+
+        It used to draw an orange strip on every page whenever `FINDERR_DEV_LOGIN_AS` was
+        set. The reasoning was that a screenshot of a login-less finderr is otherwise
+        indistinguishable from a screenshot of a locked one -- but the operator who turned
+        the flag on is the same person reading the strip on every screen, so it spends
+        permanent screen space telling them something they chose. The boot banner and
+        `auth.devLoginAs` in `/api/health` remain, and both are read by whoever is asking
+        the question rather than by whoever already knows the answer.
+      */}
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
         <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
           <div className="flex items-baseline gap-3">

@@ -96,7 +96,15 @@ export interface Session {
 
 /** Who is making this request, and how we know. */
 export interface Principal {
-  kind: "session" | "api-key";
+  /**
+   * How this caller was identified.
+   *
+   * `dev` is the development-only login (`auth.devLoginAs`), and it is a distinct kind rather
+   * than a forged `session` so that anything inspecting a principal can tell a real sign-in
+   * from a bypassed one. It still carries a real `user`, so every consumer that only cares
+   * about WHO is calling needs no branch for it.
+   */
+  kind: "session" | "api-key" | "dev";
   /** Null for the system API key -- it is not a person and owns no requests. */
   user: User | null;
   role: Role;

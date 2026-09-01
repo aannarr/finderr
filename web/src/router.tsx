@@ -12,6 +12,16 @@
  */
 
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import {
+  markWipeShown,
+  noteOrdinaryNavigation,
+  pickWipeVariant,
+  prefersReducedMotion,
+  shouldWipe,
+  tconstOfPath,
+  WIPE_CLASS,
+  WIPE_VARIANTS,
+} from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
 import { AdminRoute } from "./routes/AdminRoute";
@@ -175,6 +185,73 @@ export const router = createRouter({
   // The grid can be long; returning to it should land where you left, and arriving
   // at a new view should start at the top.
   scrollRestoration: true,
+  /**
+   * NAVIGATION DOES NOT ANIMATE. The one exception is the easter egg.
+   *
+   * A full transition set was built here first -- a directional page slide keyed on route
+   * depth, a header pinned out of the animation so the chrome stayed still, and a poster
+   * that morphed from the grid card to the title page. It worked. aannarr cut all of it on
+   * 2026-09-01 in favour of an instant swap, and the reason is worth keeping because it is
+   * not "it was buggy": **motion everywhere is what would make the one deliberate piece of
+   * motion unremarkable.** A 600ms wipe is a surprise in an app that never moves. In an app
+   * that already slides and morphs on every click it is just a longer version of the usual
+   * thing.
+   *
+   * `false` here is stronger than a zero-duration animation: `router-core` skips
+   * `document.startViewTransition` altogether, so there is no snapshot, no pseudo-element
+   * tree, and no frame where the old page is painted over the new one.
+   *
+   * **So a "subtle transition" added back later would not be a change beside the easter egg
+   * -- it would spend it.** `web/src/lib/easter-eggs.ts` is the only thing that may return
+   * a type from this function.
+   */
+  defaultViewTransition: {
+    /*
+      `types` is used as a per-navigation HOOK, not as the mechanism.
+
+      The return value is deliberately not relied on: `router-core` only reads it inside a
+      `CSS.supports("selector(:active-view-transition-type(a))")` branch, so on a browser
+      with view transitions but not types -- Safari, at the time of writing -- both the
+      `false` and the `["wipe"]` answers are discarded and `startViewTransition(fn)` runs
+      bare. What IS reliable is that this function is called exactly once per navigation,
+      before the transition starts, which is all the joke needs.
+
+      So the class on `<html>` carries the decision and the stylesheet neutralises the root
+      animation whenever it is absent. That makes an ordinary navigation instant on every
+      browser, including the ones that ignore the `false` below.
+    */
+    types: ({ toLocation }) => {
+      const root = document.documentElement;
+      root.classList.remove(WIPE_CLASS, ...WIPE_VARIANTS);
+
+      /*
+        Reduced motion is back and was never the problem.
+
+        It was the last suspect standing in a long hunt and it was innocent: the device
+        reported `prefers-reduced-motion: false` the whole time. The real cause was paint
+        ORDER -- `::view-transition-new` sits above `::view-transition-old` by default, so
+        every mask and clip on the outgoing page was working perfectly underneath a fully
+        opaque incoming page. The `z-index` pair in `styles.css` is the fix.
+
+        Honouring the setting is not optional for the largest motion in the product, so it
+        gates first, as it always did.
+      */
+      const reducedMotion = prefersReducedMotion();
+      if (reducedMotion) return false;
+
+      if (shouldWipe(tconstOfPath(toLocation.pathname), { reducedMotion })) {
+        markWipeShown();
+        // Base class carries the shared timing and paint order; the variant carries only
+        // its own geometry. Rolled per firing, so the joke stays a small surprise the
+        // second and third time rather than becoming a thing you have seen.
+        root.classList.add(WIPE_CLASS, pickWipeVariant());
+        return [WIPE_CLASS];
+      }
+
+      noteOrdinaryNavigation();
+      return false;
+    },
+  },
 });
 
 declare module "@tanstack/react-router" {

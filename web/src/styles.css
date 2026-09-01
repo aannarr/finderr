@@ -59,18 +59,91 @@ body {
    sm:text-sm` on each control on purpose: the failure mode is the input somebody adds
    next month, and a per-element fix does not cover one that does not exist yet.
 
-   Scoped to `pointer: coarse` so desktop keeps its smaller controls -- the zoom is a
-   touch-device behaviour and there is nothing to fix where a mouse is the primary
-   pointer. Checkboxes and radios are excluded: they carry no text to zoom toward.
+   Checkboxes and radios are excluded: they carry no text to zoom toward.
 
    Nothing in the tree is currently ABOVE 16px, so a flat value loses no size today. A
    control that ever wants to be larger needs its own rule here, because CSS has no way
-   to express "at least this big" for a font size. */
+   to express "at least this big" for a font size.
+
+   > [!IMPORTANT] It is NOT scoped to `@media (pointer: coarse)`, and that is a correction
+   > It was, for one commit, on the reasoning that a desktop browser never does this. The
+   > reasoning is right and the scoping is still wrong, because it cannot be VERIFIED from
+   > here: CDP touch emulation is scoped to a single connection, so a headless probe
+   > reports `matchMedia('(pointer: coarse)').matches === false` even under full device
+   > emulation. There is no way to tell a rule that is not applying from a measurement that
+   > cannot see it, and the rule guarding the worst mobile defect this product has is not
+   > the place for a condition nobody can check. 16px on a form control is the browser
+   > default anyway, so applying it everywhere costs a little size on two admin screens and
+   > removes the whole question. */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  font-size: 16px;
+}
+
+/* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is what fixed it.
+
+   > [!IMPORTANT] This rule is EMPIRICAL, and no source documents it. Do not
+   > delete it because you cannot find it written down anywhere.
+   > Every reference on this behaviour -- CSS-Tricks, Defensive CSS, Jeffery
+   > To's pixel-perfect write-up -- names exactly one cause: a computed font-size
+   > under 16px. None of them mentions `appearance`, `type="search"`, or native
+   > control metrics. The one thing they add is that the threshold is the
+   > RENDERED size after transforms and scaling, and that was measured here and
+   > ruled out: no transform, no scale, no zoom anywhere in the ancestor chain,
+   > effective scale exactly 1.0, computed font-size 16px. The field zoomed on a
+   > real iPhone anyway, and stopped when this rule landed. That test is the
+   > entire evidence and it is worth more than the absence of a citation.
+   >
+   > It has already been deleted once, by accident, while removing an unrelated
+   > block -- and `styles.test.ts` is what caught it. Keep that test.
+
+   Measured: the field computes `font-size: 16px` and `appearance: auto`. A
+   `type="search"` input gets a NATIVE control appearance from Safari, and
+   Safari sizes native form controls with its own control-font metrics rather
+   than the author's, so the zoom heuristic fires on a field that is 16px by
+   every measurement the page can make. It is the one structural difference
+   between this input and the two identically-sized ones that never zoomed.
+
+   The cost is iOS's built-in clear (x) button. Worth it: the box already
+   carries a visible keyboard hint in that corner, and an involuntary zoom is
+   the worst thing that happens on this screen. */
+input[type="search"] {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* Safari draws its own decorations inside a search field; with `appearance:
+   none` they are half-removed rather than gone, so they are cleared explicitly.
+   Unknown pseudo-elements are ignored by every other engine. */
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-results-button,
+input[type="search"]::-webkit-search-results-decoration {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* "Easy to read" WITHOUT a page zoom, which is what was actually wanted.
+
+   iOS offers no way to enlarge a field without scaling the whole page -- the
+   zoom IS a page zoom. So the enlargement is ours instead: on a touch device
+   the search box grows a little when the caret is in it, as our own transition,
+   with the page scale untouched. It is the effect the involuntary zoom was
+   providing by accident, done deliberately and reversibly.
+
+   Coarse-pointer scoping is fine HERE, unlike the 16px floor above: if the
+   query fails to match, nothing breaks -- the field simply does not grow. A
+   guard that fails safe may rest on a condition I cannot verify; one that
+   prevents a defect may not. */
+@media (pointer: coarse) and (prefers-reduced-motion: no-preference) {
+  input[type="search"] {
+    transition: font-size 150ms ease-out;
+  }
+}
 @media (pointer: coarse) {
-  input:not([type="checkbox"]):not([type="radio"]),
-  select,
-  textarea {
-    font-size: 16px;
+  input[type="search"]:focus {
+    font-size: 19px;
   }
 }
 
@@ -81,4 +154,199 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   THE ONLY ANIMATED NAVIGATION IN FINDERR.
+
+   Navigation is otherwise an instant swap -- `router.tsx` returns `false` from
+   its `types` resolver for every ordinary move, so `startViewTransition` is
+   never called and there is no snapshot to animate. `easter-eggs.ts` decides
+   when this fires; these rules are what it looks like. Those two files are the
+   whole joke.
+
+   A directional slide, a pinned header and a poster morph were all built here
+   first and cut on 2026-09-01. Not because they were broken -- because a 600ms
+   wipe is only a surprise in an app that never moves. **Adding a "subtle"
+   transition back would not sit beside this; it would spend it.**
+
+   Both numbers break the house style deliberately, for the ~600ms this type is
+   active and nowhere else:
+     - 600ms. A wipe needs that long to read AS a wipe; shorter is an
+       unreadable smear. It IS in the way, on purpose, about twice a week.
+     - `linear`. A wipe is a hard edge travelling at a constant speed --
+       easing it makes it look like a mistake rather than an effect.
+   --------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Shared by every variant: paint order, timing, and the one mask property that
+     is never geometry. A variant below declares ONLY its own shape. */
+  :root.fdr-wipe {
+    &::view-transition-old(root) {
+      animation-duration: 600ms;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+
+      /* > [!CAUTION] THE Z-INDEX IS THE WHOLE EFFECT, not a tidying detail.
+         > `::view-transition-new` paints ABOVE `::view-transition-old` by
+         > default. So the outgoing page -- the one being dissolved -- sits
+         > UNDERNEATH a fully opaque incoming page, and masking it away reveals
+         > nothing, because there was never anything to see through. Every mask
+         > and every clip-path written here worked correctly and invisibly for
+         > three rounds because of this one missing pair.
+         >
+         > It also explains the false trail: `getAnimations()` said the animation
+         > was running and `getComputedStyle` said the mask was interpolating,
+         > and both were TRUE. The effect was perfect and hidden. Neither tool
+         > can see paint order. */
+      z-index: 2;
+
+      /* `no-repeat` is not optional: the default is `repeat`, so a mask larger
+         than its element TILES instead of sweeping and renders as a stationary
+         pattern. */
+      mask-repeat: no-repeat;
+    }
+
+    /* The destination holds perfectly still and is REVEALED. A moving destination
+       reads as a crossfade rather than a transition between two scenes. */
+    &::view-transition-new(root) {
+      animation: none;
+      z-index: 1;
+    }
+  }
+
+  /* THE VARIANTS. One class each, chosen at random per firing by
+     `pickWipeVariant` in `easter-eggs.ts`. Adding one is a name in that array and
+     a block here -- no TypeScript change.
+
+     THE GEOMETRY RULE, and it is the same for all four: `mask-position` is a
+     WINDOW onto an oversized mask. At 400% the element sees a QUARTER of it, so
+     position 0% shows [0%,25%] and 100% shows [75%,100%]. The gradient's ramp
+     must therefore live strictly between 25% and 75%, or an endpoint catches part
+     of it and the effect starts or ends half-dissolved. 38%->62% is a 24%-wide
+     ramp -- about the element's full width -- which is the broad dissolve rather
+     than a hard cut. Widen toward 25/75 for softer, narrow toward 50/50 for
+     harder. */
+
+  :root.fdr-wipe-l::view-transition-old(root) {
+    mask-image: linear-gradient(to right, black 0 38%, transparent 62% 100%);
+    mask-size: 400% 100%;
+    animation-name: fdr-wipe-x;
+  }
+
+  /* Same mask read the other way: the gradient is mirrored rather than the
+     animation reversed, so both directions share one set of keyframes. */
+  :root.fdr-wipe-r::view-transition-old(root) {
+    mask-image: linear-gradient(to left, black 0 38%, transparent 62% 100%);
+    mask-size: 400% 100%;
+    animation-name: fdr-wipe-x-rev;
+  }
+
+  :root.fdr-wipe-d::view-transition-old(root) {
+    mask-image: linear-gradient(to bottom, black 0 38%, transparent 62% 100%);
+    mask-size: 100% 400%;
+    animation-name: fdr-wipe-y;
+  }
+
+  /* The iris. A circle closing on the centre -- the other transition the films
+     are known for. It animates `mask-size` rather than position: the black core
+     starts larger than the viewport and shrinks to nothing, taking the page with
+     it. 250% rather than 100% so the opaque core covers the corners at the start,
+     which are further from the centre than any edge is. */
+  :root.fdr-wipe-iris::view-transition-old(root) {
+    mask-image: radial-gradient(circle at 50% 50%, black 0 55%, transparent 100%);
+    mask-position: center;
+    animation-name: fdr-wipe-iris;
+  }
+}
+
+/* NOTHING MOVES. The edge travels; the content does not.
+
+   A `translateX` parallax on the outgoing snapshot was tried and rejected by
+   aannarr on sight. Both pages stay exactly where they are and only the boundary
+   sweeps across them. Do not add a transform here.
+
+   > [!IMPORTANT] A `mask`, and the earlier verdict that masks do not work on
+   > these pseudo-elements was WRONG
+   > That conclusion was drawn while the reduced-motion gate was silently
+   > suppressing the entire effect, so the mask version and the `clip-path`
+   > version failed identically -- and the property got the blame that belonged
+   > to the gate. Masks render here fine. `clip-path` replaced it only because a
+   > hard edge was assumed to be wanted; a soft dissolve was, and `clip-path`
+   > cannot express one at all.
+   >
+   > The wider lesson from that whole hunt: with four independent conditions each
+   > able to return false in silence, EVERY hypothesis about the rendering was
+   > being tested through a filter that might be the real cause. Strip the
+   > conditions first, then debug what draws. */
+@keyframes fdr-wipe-x {
+  from {
+    mask-position: 0% 0;
+  }
+  to {
+    mask-position: 100% 0;
+  }
+}
+
+@keyframes fdr-wipe-x-rev {
+  from {
+    mask-position: 100% 0;
+  }
+  to {
+    mask-position: 0% 0;
+  }
+}
+
+@keyframes fdr-wipe-y {
+  from {
+    mask-position: 0 0%;
+  }
+  to {
+    mask-position: 0 100%;
+  }
+}
+
+/* The iris closes by SHRINKING the mask rather than moving it. 250% at the start
+   so the opaque core clears the corners, which sit further from the centre than
+   any edge does; 0% leaves nothing of the page behind. */
+@keyframes fdr-wipe-iris {
+  from {
+    mask-size: 250% 250%;
+  }
+  to {
+    mask-size: 0% 0%;
+  }
+}
+
+/* `fdr-wipe-in` is gone with the diagnostic that needed it. It slid the incoming
+   page to prove `transform` composited on a view-transition pseudo-element -- it
+   does -- and a wipe wants a still destination. */
+
+/* `content-visibility` and a view transition do not get along, and the wipe is
+   now the only place the two ever meet.
+
+   The grid skips painting offscreen rows. When a transition ends and the live
+   DOM takes over from the snapshot, content-visibility re-evaluates what is
+   near the viewport and re-rasterises everything it had skipped -- one frame,
+   the whole grid, a visible flicker. It was measured on the ordinary back
+   navigation before that transition was removed (no refetch, no DOM change, no
+   scroll movement: purely a paint), and the wipe would hit it the same way.
+
+   The optimisation exists for search-as-you-type, where the grid updates on
+   every keystroke. A wipe is not that, and lasts 600ms. */
+:root:active-view-transition .card-grid {
+  content-visibility: visible;
+}
+
+/* A transition that is NOT the joke does nothing at all.
+
+   Belt to the `return false` in router.tsx's braces. That return is ignored on
+   any browser that has view transitions but not view-transition TYPES, where
+   `router-core` calls `startViewTransition(fn)` regardless -- which would give
+   every ordinary navigation the browser's default cross-fade, the exact
+   opposite of this app's rule. Killing the root animation unless the wipe class
+   is present makes that stray transition instant instead. */
+:root:not(.fdr-wipe)::view-transition-old(root),
+:root:not(.fdr-wipe)::view-transition-new(root) {
+  animation: none;
 }

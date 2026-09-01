@@ -2,7 +2,18 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- `interactive-widget=resizes-content`: the soft keyboard SHRINKS the layout viewport
+         instead of sliding over the page. Without it a focused field near the bottom is
+         covered by the keyboard and the browser scrolls to compensate, which on iOS reads
+         as the page lurching. There is deliberately no `maximum-scale` or `user-scalable=no`
+         here: both have been IGNORED by iOS Safari since iOS 10, on purpose, because
+         disabling pinch-zoom breaks the browser for anybody who needs to enlarge text. The
+         only real cure for an unwanted zoom is to give Safari no reason to do it -- see the
+         form-control block in styles.css. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#1A1C22" />
     <title>finderr</title>
