@@ -186,6 +186,13 @@ input[type="search"]::-webkit-search-results-decoration {
        now the only group that exists and there is nothing left to exclude. */
     &::view-transition-old(root) {
       animation: fdr-wipe-out 600ms linear both;
+      /* STATIC, so they are set once here rather than repeated in both
+         keyframes. `no-repeat` is not a detail: the default is `repeat`, so a
+         mask wider than the element TILES instead of sweeping, and the wipe
+         renders as a stationary pattern. Only `mask-position` animates. */
+      mask-image: linear-gradient(to right, black 0 40%, transparent 60% 100%);
+      mask-size: 400% 100%;
+      mask-repeat: no-repeat;
     }
 
     /* The new page is revealed BY the old one leaving, so it holds still
@@ -198,17 +205,33 @@ input[type="search"]::-webkit-search-results-decoration {
 }
 
 /* Left to right, with a soft leading edge -- a hard `inset()` cut reads as a
-   dropped frame rather than a sweep. The mask is the whole effect. */
+   dropped frame rather than a sweep.
+
+   > [!IMPORTANT] THE GEOMETRY IS THE WHOLE THING, and the first version animated
+   > from opaque to opaque
+   > `mask-position` on an oversized mask is a WINDOW onto it, and the arithmetic
+   > is easy to get backwards. At `mask-size: 400%`, `mask-position: 0%` shows
+   > the mask's leftmost quarter and `100%` shows its rightmost quarter -- so the
+   > left quarter must be fully BLACK (page visible, the start) and the right
+   > quarter fully TRANSPARENT (page gone, the end). The ramp sits between them,
+   > at 40%-60%, which is inside neither quarter: that is what makes both ends
+   * clean rather than starting half-faded.
+   >
+   > The first attempt used a 200% mask whose gradient was transparent for only
+   > its first 6%. At 200% each end shows a HALF, so the "transparent" end was
+   > still ~88% black: a 600ms animation between two states that looked
+   > identical. It ran perfectly -- `getAnimations()` reported it running on
+   > `::view-transition-old(root)` for the full 600ms -- and was invisible. An
+   > animation being live is not evidence that it does anything.
+   >
+   > 400% rather than 200% for exactly that reason: it buys a solid quarter at
+   > each end, so neither endpoint can catch part of the ramp. */
 @keyframes fdr-wipe-out {
   from {
-    mask-image: linear-gradient(to right, transparent 0%, transparent 0%, black 6%, black 100%);
-    mask-size: 200% 100%;
-    mask-position: 100% 0;
+    mask-position: 0% 0;
   }
   to {
-    mask-image: linear-gradient(to right, transparent 0%, transparent 0%, black 6%, black 100%);
-    mask-size: 200% 100%;
-    mask-position: 0 0;
+    mask-position: 100% 0;
   }
 }
 
