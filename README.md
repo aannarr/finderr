@@ -278,6 +278,38 @@ On macOS the fuzzy tier needs Homebrew's SQLite, because Apple's build has exten
 loading disabled: `brew install sqlite && bun run spellfix:build`. Without it finderr logs
 loudly and serves the two full-text tiers only.
 
+### Upgrading
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+That is the whole thing. There is no migration step to run and no order to get right.
+
+Releases sometimes add a stage to the index: cast and crew were one, and the bulk id
+crosswalk was another. finderr records which stages the index it is serving actually
+carries, so on boot it can tell that the file predates something this build knows how to
+produce. When it finds one missing it rebuilds in the background and swaps the result in
+without a restart, and it says so in the log:
+
+```
+[finderr] the open index is missing: ids -- rebuilding in the background.
+          The current index keeps serving until it is ready.
+[finderr] index reloaded in place -- 1,275,695 titles, canary 42/42, 425ms. No restart.
+```
+
+Nothing goes down while that happens. The index you already have answers every query
+correctly, it just lacks an optimisation, so it keeps serving at full speed for the few
+minutes the rebuild takes. There is no maintenance page, because there is nothing to
+apologise for. The one place you do see a progress page is a FIRST install, where there is
+genuinely nothing to serve yet: the server comes up, explains itself, and refreshes when
+the index is ready.
+
+The app database migrates itself on open, and the metadata cache survives an upgrade. A
+plugin whose code changed keeps serving its last answer for a title while it fetches a
+fresh one, so a release does not empty the cache and go re-fetch it all from other
+people's servers.
+
 ## Configuration
 
 Environment variables are the primary surface. A YAML file at `/config/config.yml` is
