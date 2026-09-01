@@ -241,6 +241,12 @@ if (!plex) {
  * handle held across an index promote is unusable (see `live-index.ts`).
  */
 function indexHasRow(tconst: string): boolean {
+  // No index yet means we cannot draw a card for ANY title, which is the honest answer
+  // rather than a throw. Both callers are boot-path timers -- the arr calendars fire
+  // immediately and the TMDB sync eight seconds in -- so on a first install this is asked
+  // while the index is still being built. `current` throws then, out of a timer with
+  // nobody to catch it. See `LiveIndex.poolStats` for the same fault at two other sites.
+  if (!live.ready) return false;
   return live.current.byTconst(tconst) !== null;
 }
 
@@ -326,6 +332,13 @@ const shelvesOf = () => discoveryShelves({ engine: live.current, store });
  * from one day to the next, so a warm title costs neither a call nor a pause.
  */
 async function warmShelves(): Promise<void> {
+  // There is no front page to warm until there is an index to derive one from. The six-hourly
+  // timer that calls this starts at boot, so on a first install it fires while the build is
+  // still running -- and `shelvesOf()` reads `live.current`, which throws until then.
+  // Nothing is lost by returning: the boot-build handler warms explicitly once the index is
+  // adopted, and so does every later swap.
+  if (!live.ready) return;
+
   const titles = frontPageTitles(shelvesOf());
 
   const res = await artwork.materialise(
@@ -1552,9 +1565,25 @@ if (indexBuild) {
     const res = live.open();
     if (!res.ok) return;
 
-    // Same follow-up as the daily refresh: the front page is a function of the index, so
-    // it cannot have been warmed before one existed. Paced, in the background, never awaited.
-    void warmShelves().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
+    /*
+      EVERYTHING THAT NEEDS AN INDEX WAS SKIPPED WHILE THERE WAS NONE, so this is where it
+      runs -- not just the warm.
+
+      The mirrors filter what they store through `indexHasRow`, which answers `false` for
+      every title while the index is being built. So on a first install the arr calendars
+      and the TMDB upcoming lists both ran against an index that could not confirm a single
+      row, and stored nothing. Their own timers are six-hourly and daily, which would have
+      left a brand new install with empty shelves for most of a day for no reason other
+      than the order two timers happened to fire in.
+
+      Sequential and never awaited: each is paced, and the warm wants the rows the two
+      syncs above it produce.
+    */
+    void (async () => {
+      await refreshLibrary();
+      await refreshTmdbUpcoming();
+      await warmShelves();
+    })().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
   });
 }
 
