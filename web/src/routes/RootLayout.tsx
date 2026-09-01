@@ -11,6 +11,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { JumpKeysProvider } from "../components/JumpKeys";
 import { useKeyAction } from "../components/Kbd";
 import {
   getRequests,
@@ -404,8 +405,18 @@ export function RootLayout() {
           </div>
         </header>
 
-        {/* Toasts render themselves from ToastProvider, which wraps the router. */}
-        <Outlet />
+        {/*
+          Toasts render themselves from ToastProvider, which wraps the router.
+
+          Alt-to-jump wraps the OUTLET rather than the whole shell, and only just: the
+          scope has to cover every route that draws cards while excluding nothing above
+          it, and there are no cards in the header. One provider for the app -- per-route
+          or per-shelf scopes would make `Alt+1` mean a different card in every shelf on
+          the front page. See `JumpKeysProvider`.
+        */}
+        <JumpKeysProvider>
+          <Outlet />
+        </JumpKeysProvider>
       </div>
     </AppProvider>
   );

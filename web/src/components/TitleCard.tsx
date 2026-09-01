@@ -2,7 +2,9 @@ import { Link } from "@tanstack/react-router";
 import { memo } from "react";
 import { prefetchTitle, type Title } from "../lib/api";
 import { shelfDateLabel, todayUtc } from "../lib/facet-panes";
+import { jumpAriaKeyShortcut } from "../lib/jump-keys";
 import { BrowseChip } from "./BrowseChip";
+import { JumpBadge, useJumpKey } from "./JumpKeys";
 import { Poster } from "./Poster";
 import { RequestAction } from "./RequestAction";
 
@@ -45,12 +47,18 @@ export const TitleCard = memo(function TitleCard({
   // `hasFile` only means something once the episode exists. Today counts as aired: an
   // episode airing tonight may already have been grabbed, which is exactly worth showing.
   const aired = up ? up.date <= today : false;
+  // Null on every page with no `JumpKeysProvider`, and on any card not currently on
+  // screen -- so this costs nothing and draws nothing outside the grid routes.
+  const jump = useJumpKey();
 
   return (
     // h-full so the card fills its grid row or shelf slot -- without it a card with a
     // one-line title is shorter than its neighbours and the Request buttons sit at
     // different heights across the row.
-    <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface">
+    <article
+      ref={jump.ref}
+      className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface"
+    >
       {/*
         The badges sit INSIDE the poster's frame, so this stays a positioned box of its own
         rather than being folded into `<Poster>`. The component owns the artwork and its
@@ -94,9 +102,18 @@ export const TitleCard = memo(function TitleCard({
           */
           onMouseEnter={() => prefetchTitle(t.tconst)}
           onFocus={() => prefetchTitle(t.tconst)}
+          /*
+            The FIRST `a[href]` inside the card, which is what `JumpKeysProvider` clicks.
+            It is also the one a reader focusing this card lands on, so the shortcut is
+            announced on the element that answers to it.
+          */
+          aria-keyshortcuts={jump.label ? jumpAriaKeyShortcut(jump.label) : undefined}
           className="absolute inset-0 z-10 cursor-pointer outline-none
                      focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
         />
+
+        {/* Over the poster, above the link, only while Alt is held. */}
+        {jump.armed && jump.label && <JumpBadge label={jump.label} />}
 
         {owned && (
           <span className="pointer-events-none absolute bottom-2 left-2 z-20 rounded bg-accent/85 px-1.5 py-0.5 text-[10px] font-medium text-black">
