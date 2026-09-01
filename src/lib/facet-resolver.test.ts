@@ -490,8 +490,16 @@ describe("pre-warming a shelf", () => {
 });
 
 describe("cache invalidation", () => {
-  /** A corrected API key must actually take effect, which is why the key carries it. */
-  test("a contribution written under a different config version is ignored", async () => {
+  /**
+   * A corrected API key must actually take effect, which is why the key carries it.
+   *
+   * What changed on 2026-09-01 is only WHAT IS DRAWN WHILE THAT HAPPENS. A superseded row
+   * used to be invisible, so an upgrade meant a page of skeletons and a burst of re-fetches
+   * against third parties -- measured at the live deployment as 5,379 cached rows dropping
+   * to 3,495 at one restart. It now renders its last known value while its provider is
+   * asked again, and the correction still lands on this same view.
+   */
+  test("a superseded contribution is DRAWN while its provider is asked again", async () => {
     const registry = registryOf({ id: "p", facet: "ratings", run: ratingProvider("p") });
     store.putFacetContribution({
       reason: null,
@@ -507,9 +515,41 @@ describe("cache invalidation", () => {
     });
 
     const resolver = resolverFor(registry);
-    expect(resolver.read(INCEPTION).ratings?.status).toBe("pending");
 
+    // Drawn, at the old value, rather than held back as a skeleton.
+    const before = resolver.read(INCEPTION);
+    expect(before.ratings?.status).toBe("ready");
+    expect(before.ratings?.data).toEqual([{ source: "stale", kind: "critics", value: 1, outOf: 100 }]);
+
+    // And the provider is STILL owed an answer, which is what makes this a fallback rather
+    // than a stale cache: the page polls while `working` is above zero.
+    expect(resolver.isWarm(INCEPTION)).toBe(false);
+    expect(resolver.workState(INCEPTION).working).toBe(1);
+
+    // The correction lands on this view, not after the facet's own TTL -- which for a
+    // `settled` rating is 90 days, and was the failure the version key was added for.
     const facets = await resolver.resolve(INCEPTION, { deadlineMs: 2_000 });
+    expect(facets.ratings?.data).toEqual([{ source: "p", kind: "critics", value: 86, outOf: 100 }]);
+  });
+
+  test("a row whose PLUGIN is gone is not drawn -- that rule does not soften", async () => {
+    // An uninstalled addon's facts must leave the page. Nobody will ever answer for them
+    // again, so there is nothing to fall back to and no correction coming.
+    const registry = registryOf({ id: "p", facet: "ratings", run: ratingProvider("p") });
+    store.putFacetContribution({
+      reason: null,
+      entity_id: INCEPTION.tconst,
+      facet: "ratings",
+      plugin_id: "uninstalled",
+      config_version: "whatever",
+      outcome: "ok",
+      data: JSON.stringify([{ source: "ghost", kind: "critics", value: 1, outOf: 100 }]),
+      freshness: "settled",
+      resolved_at: new Date().toISOString(),
+      expires_at: null,
+    });
+
+    const facets = await resolverFor(registry).resolve(INCEPTION, { deadlineMs: 2_000 });
     expect(facets.ratings?.data).toEqual([{ source: "p", kind: "critics", value: 86, outOf: 100 }]);
   });
 });

@@ -72,6 +72,46 @@ export function isLiveContribution(registry: PluginRegistry, row: FacetContribut
   return registry.has(row.plugin_id) && row.config_version === registry.configVersionOf(row.plugin_id);
 }
 
+/**
+ * Is this row good enough to DRAW, even though it may not be current?
+ *
+ * ## The two questions this splits apart
+ *
+ * `isLiveContribution` answers "may this row be treated as the provider's current answer?"
+ * and is the right rule for deciding whether to ASK again. It was also, until 2026-09-01,
+ * the rule for deciding whether to RENDER -- and those are not the same question.
+ *
+ * `configVersion` is a hash of a plugin's whole source tree, which is deliberately
+ * conservative: the cost of a false positive is a re-fetch, the cost of a false negative is
+ * a wrong value served for up to 90 days, and that is not a close call. But it is very
+ * coarse. Editing a log line invalidates every row the plugin ever wrote.
+ *
+ * **Measured on the live deployment, 2026-09-01.** A release that touched a fetch helper and
+ * a comment in three plugins took the cache from 5,379 rows to 3,495 at one restart, and
+ * the warm loop then re-bought every one of them from `api.radarr.video` and an Algolia
+ * index we are uninvited on. The upgrade was not wrong about anything -- almost none of
+ * those facets had changed shape -- and it cost a burst of traffic to third parties plus a
+ * page of skeletons for every reader who arrived first.
+ *
+ * ## So: serve the old value, and ask anyway
+ *
+ * A superseded row is USABLE. It renders immediately, at the value we last received, while
+ * `outstanding()` still counts its provider as owing an answer -- so the page polls, the
+ * provider is asked at the ordinary paced rate, and the fresh row replaces it in place.
+ * Convergence is one view rather than one TTL.
+ *
+ * That directly addresses the failure the source hash was introduced for. The symptom then
+ * was "correct a provider's mapping and the OLD value keeps being served until the facet's
+ * own TTL expires", which for a `settled` facet is 90 days. Here the old value survives
+ * exactly one render of one title, and only for someone who was already looking at it.
+ *
+ * A row whose PLUGIN is gone is not usable, and that rule does not soften: an uninstalled
+ * addon's facts must leave the page, and nobody is ever going to answer for them again.
+ */
+export function isUsableContribution(registry: PluginRegistry, row: FacetContributionRow): boolean {
+  return registry.has(row.plugin_id);
+}
+
 /** The slice of `Store` this needs. Narrow so a test can hand over a fake. */
 export interface FacetCache {
   facetContributions(entityId: string, now?: string): FacetContributionRow[];
@@ -200,7 +240,7 @@ export class FacetResolver {
    * hide their panes rather than wait for data that is never coming.
    */
   read(entity: FacetEntity): ResolvedFacets {
-    const rows = this.liveRows(entity.tconst);
+    const rows = this.rowsFor(entity.tconst, "usable");
     const out: Record<string, ResolvedFacet> = {};
     for (const facet of facetsFor(entity.kind)) {
       out[facet] = this.resolveOne(facet, entity.kind, rows.get(facet) ?? []);
@@ -286,11 +326,18 @@ export class FacetResolver {
 
   // --- internals -----------------------------------------------------------
 
-  /** Cached rows that still count (see `isLiveContribution`), grouped by facet. */
-  private liveRows(entityId: string): Map<string, FacetContributionRow[]> {
+  /**
+   * Cached rows grouped by facet, for one of the two questions the caller has.
+   *
+   * `"usable"` is what to DRAW -- superseded rows included, so an upgrade renders the last
+   * known value instead of a skeleton. `"current"` is who still OWES an answer. See
+   * `isUsableContribution` for why those are different questions.
+   */
+  private rowsFor(entityId: string, want: "usable" | "current"): Map<string, FacetContributionRow[]> {
+    const keep = want === "usable" ? isUsableContribution : isLiveContribution;
     const grouped = new Map<string, FacetContributionRow[]>();
     for (const row of this.store.facetContributions(entityId, new Date(this.now()).toISOString())) {
-      if (!isLiveContribution(this.registry, row)) continue;
+      if (!keep(this.registry, row)) continue;
       const list = grouped.get(row.facet);
       if (list) list.push(row);
       else grouped.set(row.facet, [row]);
@@ -309,9 +356,23 @@ export class FacetResolver {
     const providers = this.registry.providersFor(facet, kind);
     if (providers.length === 0) return { status: "empty" };
 
+    /*
+      One value per plugin, and a CURRENT row always beats a superseded one.
+
+      Both can be present at once: a plugin whose source moved writes its new answer beside
+      the old one, and the old one stays readable until it is replaced (see
+      `isUsableContribution`). The map is keyed by plugin, so without this the winner would
+      be whichever row the store happened to return last -- and the store returns them in
+      insert order, which is a race rather than a rule. Ranking on CONTENT rather than on
+      position is the same rule `mergeRatings` follows for the same reason.
+    */
     const byPlugin = new Map<string, FacetShapes[FacetName]>();
+    const currentPlugin = new Set<string>();
     for (const row of rows) {
       if (row.outcome !== "ok" || row.data === null) continue;
+      const current = isLiveContribution(this.registry, row);
+      if (!current && currentPlugin.has(row.plugin_id)) continue;
+      if (current) currentPlugin.add(row.plugin_id);
       byPlugin.set(row.plugin_id, JSON.parse(row.data) as FacetShapes[FacetName]);
     }
 
@@ -331,7 +392,7 @@ export class FacetResolver {
    * every shelf, and a health check that warms the cache measures itself.
    */
   private outstanding(entity: FacetEntity): RegisteredProvider[] {
-    const rows = this.liveRows(entity.tconst);
+    const rows = this.rowsFor(entity.tconst, "current");
     const owed: RegisteredProvider[] = [];
 
     for (const facet of facetsFor(entity.kind)) {
@@ -493,7 +554,10 @@ export class FacetResolver {
     const owed = this.outstanding(entity);
     const problems: FacetProblem[] = [];
 
-    for (const row of this.liveRows(entity.tconst).values()) {
+    // CURRENT rows, not usable ones: a failure recorded under a superseded config version
+    // is a fact about a plugin we have already replaced, and its provider is in `owed`
+    // right now. Reporting it would name an author whose next answer is already in flight.
+    for (const row of this.rowsFor(entity.tconst, "current").values()) {
       for (const r of row) {
         if (r.outcome !== "failed") continue;
         problems.push({
