@@ -46,6 +46,7 @@ import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
+import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
 import { RequestWorker } from "./request-worker";
 import { discoveryShelves, facetCoverage, frontPageTitles } from "./shelves";
@@ -684,6 +685,30 @@ const appRoutes = {
    * The acceptance check the metadata epic documents still works, it just has to ask
    * for it: `curl 'localhost:7979/api/health?coverage=1' | jq .facets.coverage`.
    */
+  /*
+    Rebuild the index and adopt it, without a shell on the host.
+
+    THE POINT IS THAT IT DOES BOTH HALVES. `bun src/jobs/build-index.ts` run by hand
+    against a live server PROMOTES: it renames the file this process holds open, after
+    which that connection throws on most reads and quietly serves yesterday on the rest,
+    until somebody restarts the container. Nothing in the job's output says so. This route
+    is the same build followed by the swap, which is the only combination that is safe
+    while the server is up.
+
+    Returns as soon as the refresh is UNDERWAY rather than awaiting it: a build is minutes
+    and an HTTP client that waits that long has usually been killed by a proxy first. The
+    outcome lands in `index.reload` on `/api/health`, which is where the daily refresh
+    already reports.
+  */
+  "/api/admin/index/refresh": {
+    POST: (req: Request) =>
+      auth.asAdmin(req, () => {
+        const already = refresher.refreshing();
+        void refresher.run("admin request").catch((err) => log(`admin refresh failed -- ${err}`));
+        return json({ started: !already, alreadyRunning: already });
+      }),
+  },
+
   "/api/health": (req: Request) => {
     // Liveness is public; every FACT below it is not. See the caution on `healthPayload`.
     // An admin session or the system API key gets the detail, anybody else gets `ok`.
@@ -1481,10 +1506,35 @@ const server: Bun.Server<undefined> = Bun.serve({
 
 log(`listening on http://${cfg.host}:${server.port}`);
 
+// --- build, then adopt: one owner ------------------------------------------
+//
+// The daily refresh and the boot-time stale check both go through this. It serialises them
+// -- a container restarted a minute before the cron fires would otherwise run two builds
+// against one `titles.new.db` -- and it is the path an operator should reach for instead of
+// running the job by hand, because a hand-run build promotes the file this process holds
+// open and leaves it serving errors until somebody restarts it. See `./index-refresh.ts`.
+const refresher = new IndexRefresher({
+  cfg,
+  live,
+  log: (m) => log(m),
+  script: `${import.meta.dir}/../jobs/build-index.ts`,
+  // Shelf membership moves with the index -- new titles clear the vote floor, others drop
+  // below it -- so the front page after a swap is not the one that was warmed. Paced, in
+  // the background, and never awaited on a timer.
+  onSwapped: () => {
+    void warmShelves().catch((err) => log(`post-reload warm failed -- ${(err as Error).message}`));
+  },
+});
+
 // --- adopt the boot-time build ---------------------------------------------
 //
 // Wired here rather than beside the spawn because it wants `warmShelves`, and because this
 // reads in the order it happens: the server is already listening by the time any of it runs.
+//
+// NOT routed through `refresher`: that owns build-AND-adopt, and this build was already
+// started before the port opened so that the progress page could report on it. Only the
+// adoption half is left, and it is `open()` rather than `reload()` because there is no
+// outgoing engine.
 if (indexBuild) {
   void indexBuild.exited.then((code) => {
     // The build gates on volume and on the 42-case canary before `promote()`, so a non-zero
@@ -1511,41 +1561,38 @@ if (indexBuild) {
 // docker-compose for any other reason would have silently moved the refresh while this
 // line went on logging UTC.
 try {
-  Bun.cron(
-    cfg.index.refreshCron,
-    async () => {
-      log("scheduled index refresh starting");
-      const proc = Bun.spawn(["bun", `${import.meta.dir}/../jobs/build-index.ts`], {
-        stdout: "inherit",
-        stderr: "inherit",
-        env: process.env,
-      });
-      const code = await proc.exited;
-      log(`scheduled index refresh exited ${code}`);
-
-      // A non-zero exit means a gate refused the build and `promote()` never ran, so the
-      // file on disk is still the one we already have open. Reloading would be a wasted
-      // canary against our own index.
-      if (code !== 0) return;
-
-      // The swap. If the candidate does not open or does not answer, `reload()` puts the
-      // previous file back and opens THAT -- it cannot keep the engine it already has,
-      // because `promote()` has already renamed that file away. There is no half-swapped
-      // state to recover from, which is the whole reason this is preferable to exiting
-      // and being restarted.
-      const res = live.reload();
-      if (!res.swapped) return;
-
-      // Shelf membership moves with the index -- new titles clear the vote floor, others
-      // drop below it -- so the front page after a swap is not the one that was warmed.
-      // Paced, in the background, and never awaited on this timer.
-      void warmShelves().catch((err) => log(`post-reload warm failed -- ${(err as Error).message}`));
-    },
-    { tz: cfg.index.refreshTz },
-  );
+  Bun.cron(cfg.index.refreshCron, () => void refresher.run("scheduled"), { tz: cfg.index.refreshTz });
   log(`index refresh scheduled: ${cfg.index.refreshCron} (${cfg.index.refreshTz})`);
 } catch (err) {
   log(`could not schedule refresh (${(err as Error).message}) -- run build-index.ts from cron instead`);
+}
+
+// --- the upgrade path ------------------------------------------------------
+/*
+  A NEW RELEASE THAT NEEDS A NEW INDEX STAGE REBUILDS ITSELF, WITHOUT A MAINTENANCE PAGE.
+
+  This is the half `refreshOnBoot` never covered. That flag answers "there is NO index";
+  this answers "there is an index and it predates something this build knows how to
+  produce" -- which is what every `docker compose pull && up -d` onto a release that added
+  a stage looks like. Measured on the live deployment when the id crosswalk shipped: the
+  container came up, `hasIds` was false, and it stayed false while every render went on
+  buying the calls the crosswalk existed to remove.
+
+  DELIBERATELY NOT A MAINTENANCE PAGE, and that is the whole design. There IS an index
+  here, and it answers every query correctly -- it merely lacks one optimisation. So the
+  old index keeps serving at full speed for the several minutes the build takes, and the
+  live swap adopts the new one when it passes its gates. Showing a progress page instead
+  would turn a zero-downtime upgrade into an outage in order to report on itself. The
+  progress page is correct only where it already fires: when there is nothing to serve.
+
+  Deferred rather than awaited, so a rebuild never delays the port opening.
+*/
+if (live.ready) {
+  const reason = staleIndexReason(cfg);
+  if (reason) {
+    log(`${reason} -- rebuilding in the background. The current index keeps serving until it is ready.`);
+    setTimeout(() => void refresher.run("stale index at boot"), cfg.index.staleRebuildDelayMs);
+  }
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

@@ -906,8 +906,16 @@ export class AuthService {
     return p;
   }
 
-  /** Admin session or the system key. Anything else is a 401/403 and a log line. */
-  private async asAdmin(req: Request, fn: (p: Principal) => Response | Promise<Response>): Promise<Response> {
+  /**
+   * Admin session or the system key. Anything else is a 401/403 and a log line.
+   *
+   * PUBLIC so an admin route can live beside the thing it administers. `/api/admin/index/refresh`
+   * is declared in `./index.ts` next to the refresher it drives, rather than being wired
+   * back through this file as a callback -- the alternative was an `onIndexRefresh` dep
+   * that would make the identity module import the index builder's vocabulary. The rule it
+   * enforces stays owned here, which is the part that must not be duplicated.
+   */
+  async asAdmin(req: Request, fn: (p: Principal) => Response | Promise<Response>): Promise<Response> {
     const r = this.adminPrincipal(req);
     if (r instanceof Response) return r;
     try {
