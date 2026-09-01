@@ -21,7 +21,7 @@ import { ClearChip } from "../components/Chip";
 import { CollectionJump } from "../components/CollectionJump";
 import { FacetBar } from "../components/FacetBar";
 import { useKeyAction } from "../components/Kbd";
-import { Shelf, TitleGrid } from "../components/TitleGrid";
+import { Shelf, ShelfSkeleton, TitleGrid } from "../components/TitleGrid";
 import {
   cachedDiscover,
   cachedSearch,
@@ -209,13 +209,25 @@ export function SearchRoute() {
         <CollectionJump name={collectionToken.name} closed={collectionToken.closed} />
       ) : searching ? (
         <TitleGrid titles={result?.hits ?? []} />
-      ) : (
-        /*
+      ) : /*
           Every shelf is a local index query costing zero external calls. The server
           decides which shelves exist and in what order; this just renders them, so a
           new shelf never needs a change here.
+
+          > [!IMPORTANT] `null` and `[]` mean different things and get different screens
+          > `null` is "we have not asked yet, or the answer has not landed" -- a first
+          > visit with a cold client cache -- and it draws the skeleton. `[]` is the
+          > server ANSWERING that it has no shelves, which is a real state on an index
+          > that has just been built, and it must stay blank: a placeholder that never
+          > resolves is worse than an empty page, because it promises something is coming.
+          >
+          > `shelves?.map()` alone drew nothing for both, which is what made a cold first
+          > load a header and a screenful of dark.
         */
-        shelves?.map((s) => (
+      shelves === null ? (
+        <ShelfSkeleton />
+      ) : (
+        shelves.map((s) => (
           <Shelf
             key={s.id}
             title={s.title}
