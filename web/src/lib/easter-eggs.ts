@@ -1,21 +1,30 @@
 /**
- * The one joke in this product, and the whole of it.
+ * The one joke in this product, and the ONLY animated navigation in it.
  *
- * Opening a Star Wars title occasionally replaces the ordinary navigation transition with
- * a horizontal wipe -- the scene transition the films are known for -- exaggerated well past
- * anything the rest of the app would allow.
+ * > [!IMPORTANT] finderr does not animate navigation. At all. This is the single exception.
+ * > A slide-and-morph set was built first -- directional page slide, a pinned header, a
+ * > poster that flew from the grid card to the title page -- and aannarr cut all of it on
+ * > 2026-09-01 in favour of nothing. Navigation is now an instant swap: `types` below
+ * > returns `false` for every ordinary move, which makes `router-core` skip
+ * > `document.startViewTransition` entirely rather than run a zero-length animation.
+ * >
+ * > That is what makes the joke land. A wipe is a surprise in an app that never moves; in an
+ * > app that slides and morphs on every click it is just a longer version of the usual
+ * > thing. **Adding a "subtle" transition back would not be a change beside this feature --
+ * > it would spend it.**
+ *
+ * Opening a Star Wars title therefore goes from an instant swap to a 600ms horizontal wipe,
+ * the scene transition the films are known for, and nothing else in the product moves like
+ * that or is allowed to.
  *
  * **If deleting this file does not delete the joke, the joke has leaked.** That is the
  * design constraint, not a tidiness preference: an easter egg sprinkled across four files is
  * one nobody dares touch later. Everything here is a pure function; the only wiring outside
  * this file is one call in the router's `types` resolver and one block in `styles.css`.
  *
- * > [!IMPORTANT] It deliberately breaks the "subtle, not in the way" rule, and rarity is the
- * > only thing that makes that acceptable
- * > A wipe needs 500-600ms to read AS a wipe -- at the 220ms the rest of the app uses it is
- * > an unreadable smear. So it IS in the way, on purpose, for about half a second. That is a
- * > gift when it happens twice a week and a tax when it happens twice a minute, which is why
- * > the throttle below is not a nicety and must never be loosened "just for testing".
+ * Rarity is what keeps it a gift rather than a tax -- at most once every three minutes, and
+ * never before the reader has seen an ordinary instant navigation to compare it against. The
+ * throttle is not a nicety and must never be loosened "just for testing".
  */
 
 /**
@@ -131,6 +140,22 @@ export interface WipeOptions {
   now?: number;
   /** Injected in tests, and the reason this module needs no DOM to be tested. */
   reducedMotion?: boolean;
+}
+
+/**
+ * Does this reader want motion at all?
+ *
+ * It lives here rather than in a shared helper because this is the only motion left in the
+ * product -- there is nothing else to share it with. Read at the moment of navigating rather
+ * than cached: the OS setting can change while a tab is open, and a cached answer would need
+ * an invalidation nobody would write.
+ *
+ * Anything that cannot answer -- no `matchMedia`, as in the test environment -- is treated
+ * as "reduced". When we do not know, the accessible default is the safe one.
+ */
+export function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /**

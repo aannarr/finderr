@@ -1,8 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { memo, useRef } from "react";
+import { memo } from "react";
 import { prefetchTitle, type Title } from "../lib/api";
 import { shelfDateLabel, todayUtc } from "../lib/facet-panes";
-import { claimPosterTransition } from "../lib/view-transitions";
 import { BrowseChip } from "./BrowseChip";
 import { Poster } from "./Poster";
 import { RequestAction } from "./RequestAction";
@@ -40,15 +39,6 @@ export const TitleCard = memo(function TitleCard({
   title: Title;
   onRequest: (t: Title) => void;
 }) {
-  /**
-   * The frame that flies to the title page.
-   *
-   * The FRAME rather than the `<img>`: the frame is the thing with a stable box at t=0,
-   * including for a title with no artwork, so the animation is the same shape whether or not
-   * an image ever arrives. Naming the image would mean a card whose poster had not loaded
-   * animated a transparent rectangle.
-   */
-  const posterFrame = useRef<HTMLDivElement>(null);
   const owned = t.inLibrary;
   const up = t.upcoming;
   const today = todayUtc();
@@ -66,7 +56,7 @@ export const TitleCard = memo(function TitleCard({
         rather than being folded into `<Poster>`. The component owns the artwork and its
         fallback; what is overlaid on top is the card's business and no other screen's.
       */}
-      <div ref={posterFrame} className="relative aspect-2/3 shrink-0">
+      <div className="relative aspect-2/3 shrink-0">
         <Poster title={t} fallback="tile" className="absolute inset-0 size-full overflow-hidden" />
 
         <span className="absolute top-2 left-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white/80">
@@ -104,16 +94,6 @@ export const TitleCard = memo(function TitleCard({
           */
           onMouseEnter={() => prefetchTitle(t.tconst)}
           onFocus={() => prefetchTitle(t.tconst)}
-          /*
-            Claim the shared-element name for THIS card's poster.
-
-            In the click handler and not in an effect: the handler runs synchronously before
-            the router starts the transition, which is the only moment that guarantees the
-            name is on the node when the browser takes its snapshot. It is also why the same
-            title appearing on three shelves is not a problem -- only the one that was
-            clicked ever wears the name, so there is nothing to deduplicate.
-          */
-          onClick={() => claimPosterTransition(posterFrame.current)}
           className="absolute inset-0 z-10 cursor-pointer outline-none
                      focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
         />
@@ -158,11 +138,9 @@ export const TitleCard = memo(function TitleCard({
         <h3 className="line-clamp-2 min-h-[2.5rem] text-sm leading-snug font-medium" title={t.title}>
           {/* Also a link, so the destination is reachable from the text as well as
               the poster overlay above. */}
-          {/* The title text is the same destination, so it flies the same poster. */}
           <Link
             to="/title/$tconst"
             params={{ tconst: t.tconst }}
-            onClick={() => claimPosterTransition(posterFrame.current)}
             className="outline-none hover:underline focus-visible:underline"
           >
             {t.title}

@@ -15,12 +15,12 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import {
   markWipeShown,
   noteOrdinaryNavigation,
+  prefersReducedMotion,
   shouldWipe,
   tconstOfPath,
   WIPE_TYPE,
 } from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
-import { installTransitionTracking, navKind, prefersReducedMotion } from "./lib/view-transitions";
 import { AccountRoute } from "./routes/AccountRoute";
 import { AdminRoute } from "./routes/AdminRoute";
 import { AwardsRoute } from "./routes/AwardsRoute";
@@ -178,50 +178,50 @@ const routeTree = rootRoute.addChildren([
   adminRoute,
 ]);
 
-installTransitionTracking();
-
 export const router = createRouter({
   routeTree,
   // The grid can be long; returning to it should land where you left, and arriving
   // at a new view should start at the top.
   scrollRestoration: true,
   /**
-   * Every navigation animates, and the TYPE says which way it went.
+   * NAVIGATION DOES NOT ANIMATE. The one exception is the easter egg.
    *
-   * On the router rather than per-`Link`, deliberately: as a prop it would be a rule with
-   * one owner per call site, and the first `<Link>` somebody adds without it becomes the
-   * one navigation in the app that snaps. `router-core` feature-detects both the API and
-   * types support and falls through to a plain navigation, so a browser without either is
-   * not a case anything here has to handle.
+   * A full transition set was built here first -- a directional page slide keyed on route
+   * depth, a header pinned out of the animation so the chrome stayed still, and a poster
+   * that morphed from the grid card to the title page. It worked. aannarr cut all of it on
+   * 2026-09-01 in favour of an instant swap, and the reason is worth keeping because it is
+   * not "it was buggy": **motion everywhere is what would make the one deliberate piece of
+   * motion unremarkable.** A 600ms wipe is a surprise in an app that never moves. In an app
+   * that already slides and morphs on every click it is just a longer version of the usual
+   * thing.
    *
-   * It applies to the BACK button too, because popstate goes through the same commit path
-   * and carries no per-navigation option -- which is how back gets its transition without
-   * any of the shared-element machinery. `styles.css` owns what each type looks like.
+   * `false` here is stronger than a zero-duration animation: `router-core` skips
+   * `document.startViewTransition` altogether, so there is no snapshot, no pseudo-element
+   * tree, and no frame where the old page is painted over the new one.
+   *
+   * **So a "subtle transition" added back later would not be a change beside the easter egg
+   * -- it would spend it.** `web/src/lib/easter-eggs.ts` is the only thing that may return
+   * a type from this function.
    */
   defaultViewTransition: {
-    types: ({ fromLocation, toLocation }) => {
+    types: ({ toLocation }) => {
       const reducedMotion = prefersReducedMotion();
       if (reducedMotion) return false;
 
       /*
-        The joke gets first refusal, and REPLACES the ordinary transition rather than
-        joining it -- a poster flying across a wipe is chaos, and the stylesheet suppresses
-        the shared element for this type.
-
         `markWipeShown` is called here rather than inside `shouldWipe` because this is the
         moment the transition is actually handed to the browser. Stamping the cooldown from
         the question would burn the joke on a navigation nobody watched.
       */
-      const to = tconstOfPath(toLocation.pathname);
-      if (shouldWipe(to, { reducedMotion })) {
+      if (shouldWipe(tconstOfPath(toLocation.pathname), { reducedMotion })) {
         markWipeShown();
         return [WIPE_TYPE];
       }
 
-      // Every navigation that is not the joke is one the joke may follow. See
-      // `noteOrdinaryNavigation`: the gag only lands against a baseline already felt.
+      // Every instant navigation is one the joke may follow: the gag only lands against a
+      // baseline the reader has already felt. See `noteOrdinaryNavigation`.
       noteOrdinaryNavigation();
-      return [navKind(fromLocation?.pathname ?? "", toLocation.pathname)];
+      return false;
     },
   },
 });

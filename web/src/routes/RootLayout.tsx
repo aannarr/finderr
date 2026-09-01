@@ -292,9 +292,7 @@ export function RootLayout() {
         </div>
       )}
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
-        {/* `app-header` is not styling -- it is the view-transition name that keeps the
-            chrome still while the content moves. See the motion block in `styles.css`. */}
-        <header className="app-header sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
+        <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
           <div className="flex items-baseline gap-3">
             <Link to="/" search={{}} className="text-lg font-semibold tracking-tight">
               finderr

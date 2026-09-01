@@ -81,174 +81,6 @@ textarea {
   font-size: 16px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* ---------------------------------------------------------------------------
-   Navigation motion.
-
-   `web/src/lib/view-transitions.ts` decides WHICH transition each navigation
-   gets (as a view-transition type) and WHICH element flies. This owns what
-   each one looks like, and nothing else in the product may animate a page
-   change -- one owner, so the timings cannot drift apart.
-
-   The brief was "subtle, not in the way". Three numbers carry that and they
-   are not taste:
-     - 220ms. Under ~150 a slide reads as a tear rather than motion; over ~350
-       it is something you wait for. The browser default is 250.
-     - cubic-bezier(0.2, 0, 0, 1) -- fast off the line, soft landing. Never
-       ease-in-out for navigation: the slow start makes the click feel
-       unregistered.
-     - 12px. Far enough to feel the direction, near enough that you do not
-       watch it happen.
-
-   The poster morph and the page motion share ONE duration on purpose. Give
-   them different values and the poster lands before or after the page settles,
-   which looks broken in a way nobody can name.
-   --------------------------------------------------------------------------- */
-
-@media (prefers-reduced-motion: no-preference) {
-  ::view-transition-group(*) {
-    animation-duration: 220ms;
-    animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
-  }
-
-  /* The outgoing snapshot paints OVER the incoming one for the whole
-     transition, so an equal-length fade smears during a slide. Cutting the old
-     one short is what makes the movement legible rather than muddy. */
-  ::view-transition-old(root) {
-    animation-duration: 120ms;
-  }
-
-  /* Going deeper: the new page arrives from the right, the old leaves left.
-     `translate` only -- no scale. Two motions on one element at this duration
-     is mush, and the poster morph is already carrying a scale of its own. */
-  :root:active-view-transition-type(deeper) {
-    &::view-transition-old(root) {
-      animation-name: fdr-fade-out, fdr-slide-out-left;
-    }
-    &::view-transition-new(root) {
-      animation-name: fdr-fade-in, fdr-slide-in-right;
-    }
-  }
-
-  /* Coming back: the mirror image, so the direction of travel is the thing
-     the reader actually perceives. */
-  :root:active-view-transition-type(back) {
-    &::view-transition-old(root) {
-      animation-name: fdr-fade-out, fdr-slide-out-right;
-    }
-    &::view-transition-new(root) {
-      animation-name: fdr-fade-in, fdr-slide-in-left;
-    }
-  }
-
-  /* `lateral` gets the browser's own cross-fade and no slide. A sideways move
-     has no direction to show, and inventing one would tell the reader they
-     went deeper when they did not. */
-}
-
-/* The chrome does NOT cross-fade with the content.
-
-   Without this the header is part of the root snapshot, so it fades and slides
-   with everything else and the whole thing reads as a document being swapped.
-   Naming it lifts it into its own transition group, where old and new are
-   identical and nothing visibly happens -- the frame stays rock stable and only
-   the content moves. It is the cheapest large improvement in the set.
-
-   The name is static and there is exactly one header in the document, so the
-   uniqueness rule is satisfied by construction. */
-.app-header {
-  view-transition-name: app-header;
-}
-
-@keyframes fdr-fade-in {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes fdr-fade-out {
-  to {
-    opacity: 0;
-  }
-}
-@keyframes fdr-slide-in-right {
-  from {
-    translate: 12px 0;
-  }
-}
-@keyframes fdr-slide-in-left {
-  from {
-    translate: -12px 0;
-  }
-}
-@keyframes fdr-slide-out-left {
-  to {
-    translate: -12px 0;
-  }
-}
-@keyframes fdr-slide-out-right {
-  to {
-    translate: 12px 0;
-  }
-}
-
-/* The DESTINATION half of the poster morph.
-
-   Two `<Poster>` elements exist on the title page for one title -- the sticky
-   rail (`hidden sm:block`) and the mobile thumbnail (`sm:hidden`) -- and both
-   are in the DOM at all times. Only one is displayed at any width, and the
-   spec says a `display: none` element is not rendered and so takes no
-   snapshot. That SHOULD make naming both safe.
-
-   It is not worth betting on. A duplicate `view-transition-name` skips the
-   entire transition silently, with nothing in the console and nothing on
-   screen -- you would look for the bug in the JavaScript for an hour. So the
-   name is applied per breakpoint instead, and exactly one element can wear it
-   at any viewport by construction rather than by inference about rendering.
-
-   40rem is Tailwind's `sm`. If that breakpoint moves, this moves with it. */
-@media (prefers-reduced-motion: no-preference) {
-  @media (width >= 40rem) {
-    .vt-poster-rail {
-      view-transition-name: poster;
-    }
-  }
-  @media (width < 40rem) {
-    .vt-poster-thumb {
-      view-transition-name: poster;
-    }
-  }
-}
-
-/* ---------------------------------------------------------------------------
-   iOS Safari zooms the page when a focused control's computed font-size is
-   under 16px, and pinches back out is the reader's problem. It is not
-   configurable: `maximum-scale=1` in the viewport meta has been IGNORED since
-   iOS 10, deliberately, because it breaks pinch-zoom for people who need it.
-   Font size is the only lever.
-
-   One rule here rather than a size bump on each control, because the failure is
-   the input somebody adds next month with `text-sm` copied from its neighbour.
-   A floor nobody has to remember is worth more than three correct call sites.
-
-   Only on a COARSE pointer: a desktop browser never does this, and the smaller
-   type is deliberate on the admin and account screens where the fields sit in
-   dense rows.
-
-   The flat 16px is safe TODAY because no control in this product asks to be
-   larger -- every one is text-sm or text-base. A control that genuinely wants
-   to be bigger needs its own rule above this one, and `max(16px, 1em)` is NOT
-   the clever fix: inside a font-size declaration `em` resolves against the
-   PARENT, so it would silently shrink exactly the control it was meant to
-   protect.
-
 /* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is what fixed it.
 
    > [!IMPORTANT] This rule is EMPIRICAL, and no source documents it. Do not
@@ -257,25 +89,25 @@ textarea {
    > To's pixel-perfect write-up -- names exactly one cause: a computed font-size
    > under 16px. None of them mentions `appearance`, `type="search"`, or native
    > control metrics. The one thing they add is that the threshold is the
-   > RENDERED size after transforms and scaling rather than the declared value,
-   > and that was measured here and ruled out: no transform, no scale, no zoom
-   > anywhere in the ancestor chain, effective scale exactly 1.0, computed
-   > font-size 16px. The field zoomed on a real iPhone anyway, and stopped when
-   > this rule landed. That test is the entire evidence and it is worth more than
-   > the absence of a citation.
+   > RENDERED size after transforms and scaling, and that was measured here and
+   > ruled out: no transform, no scale, no zoom anywhere in the ancestor chain,
+   > effective scale exactly 1.0, computed font-size 16px. The field zoomed on a
+   > real iPhone anyway, and stopped when this rule landed. That test is the
+   > entire evidence and it is worth more than the absence of a citation.
+   >
+   > It has already been deleted once, by accident, while removing an unrelated
+   > block -- and `styles.test.ts` is what caught it. Keep that test.
 
-   Measured, not reasoned about: the field computes `font-size: 16px` and
-   `appearance: auto`. `type="search"` gets a NATIVE control appearance from
-   Safari, and Safari sizes native form controls with its own control-font
-   metrics rather than the author's font-size -- so the zoom heuristic sees a
-   sub-16px control and fires, on a field that is 16px by every measurement the
-   page can make. It is the one structural difference between this input and the
-   two identically-sized ones that never zoomed.
+   Measured: the field computes `font-size: 16px` and `appearance: auto`. A
+   `type="search"` input gets a NATIVE control appearance from Safari, and
+   Safari sizes native form controls with its own control-font metrics rather
+   than the author's, so the zoom heuristic fires on a field that is 16px by
+   every measurement the page can make. It is the one structural difference
+   between this input and the two identically-sized ones that never zoomed.
 
-   `appearance: none` gives up iOS's built-in clear (x) button. That is a real
-   cost and it is the right trade: the box already has a visible keyboard hint
-   in the same corner, and an involuntary zoom is the worst thing that happens
-   on this screen. */
+   The cost is iOS's built-in clear (x) button. Worth it: the box already
+   carries a visible keyboard hint in that corner, and an involuntary zoom is
+   the worst thing that happens on this screen. */
 input[type="search"] {
   appearance: none;
   -webkit-appearance: none;
@@ -294,21 +126,19 @@ input[type="search"]::-webkit-search-results-decoration {
 
 /* "Easy to read" WITHOUT a page zoom, which is what was actually wanted.
 
-   iOS offers no way to enlarge the field without scaling the whole page -- the
-   zoom IS a page zoom. So the enlargement is ours instead: on a touch device the
-   search box grows a little when the caret is in it, as our own transition, with
-   the page scale untouched. It is the effect the involuntary zoom was
-   accidentally providing, done deliberately and reversibly.
+   iOS offers no way to enlarge a field without scaling the whole page -- the
+   zoom IS a page zoom. So the enlargement is ours instead: on a touch device
+   the search box grows a little when the caret is in it, as our own transition,
+   with the page scale untouched. It is the effect the involuntary zoom was
+   providing by accident, done deliberately and reversibly.
 
-   Coarse-pointer scoping is fine HERE, unlike the floor above: if the query
-   fails to match, nothing breaks -- the field simply does not grow. A guard that
-   fails safe may rest on a condition I cannot verify; one that prevents a defect
-   may not. */
+   Coarse-pointer scoping is fine HERE, unlike the 16px floor above: if the
+   query fails to match, nothing breaks -- the field simply does not grow. A
+   guard that fails safe may rest on a condition I cannot verify; one that
+   prevents a defect may not. */
 @media (pointer: coarse) and (prefers-reduced-motion: no-preference) {
   input[type="search"] {
-    transition:
-      font-size 150ms ease-out,
-      padding 150ms ease-out;
+    transition: font-size 150ms ease-out;
   }
 }
 @media (pointer: coarse) {
@@ -317,55 +147,43 @@ input[type="search"]::-webkit-search-results-decoration {
   }
 }
 
-/* The single flicker after a BACK navigation.
-
-   Measured across a real back-nav in a browser: no refetch, no change in card
-   count, no scroll movement. Nothing re-rendered -- so it was a PAINT event, and
-   `content-visibility: auto` on `.card-grid` is the only thing on the page that
-   decides painting for itself.
-
-   The mechanism: during a view transition the browser shows a SNAPSHOT of the
-   grid. When the transition ends and the live DOM takes over,
-   content-visibility re-evaluates which rows are near the viewport and
-   re-rasterises the ones it had skipped -- one frame, the whole grid, exactly
-   the "looks good, one flicker, good again" that was reported.
-
-   Turning it off for the length of the transition is the fix. The optimisation
-   exists for search-as-you-type, where the grid updates on every keystroke; a
-   navigation is not that, and it lasts 220ms. `:active-view-transition` is true
-   only while one is running, so nothing changes for any other frame. */
-:root:active-view-transition .card-grid {
-  content-visibility: visible;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ---------------------------------------------------------------------------
-   The wipe. `web/src/lib/easter-eggs.ts` decides when; this is what it looks
-   like, and the two files are the whole joke.
+   THE ONLY ANIMATED NAVIGATION IN FINDERR.
 
-   Everything here breaks the house style deliberately, and only for the ~600ms
-   this type is active:
-     - 600ms, not 220. A wipe needs that long to read AS a wipe; at 220 it is an
+   Navigation is otherwise an instant swap -- `router.tsx` returns `false` from
+   its `types` resolver for every ordinary move, so `startViewTransition` is
+   never called and there is no snapshot to animate. `easter-eggs.ts` decides
+   when this fires; these rules are what it looks like. Those two files are the
+   whole joke.
+
+   A directional slide, a pinned header and a poster morph were all built here
+   first and cut on 2026-09-01. Not because they were broken -- because a 600ms
+   wipe is only a surprise in an app that never moves. **Adding a "subtle"
+   transition back would not sit beside this; it would spend it.**
+
+   Both numbers break the house style deliberately, for the ~600ms this type is
+   active and nowhere else:
+     - 600ms. A wipe needs that long to read AS a wipe; shorter is an
        unreadable smear. It IS in the way, on purpose, about twice a week.
-     - `linear`, not the decelerating curve. A wipe is a hard edge travelling at
-       a constant speed -- easing it makes it look like a mistake.
+     - `linear`. A wipe is a hard edge travelling at a constant speed --
+       easing it makes it look like a mistake rather than an effect.
    --------------------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {
   :root:active-view-transition-type(wipe) {
-    /* The poster does NOT fly across a wipe. Suppressing the shared element is
-       what makes this a REPLACEMENT for the normal transition rather than two
-       animations fighting over the same 600ms. */
-    & .vt-poster-rail,
-    & .vt-poster-thumb {
-      view-transition-name: none;
-    }
-
-    /* The header is pinned for every other transition. Not this one: a wipe
-       that leaves a strip of chrome standing still is not a wipe. */
-    & .app-header {
-      view-transition-name: none;
-    }
-
+    /* No element-level suppression is needed here any more. It used to name
+       the poster and the header to keep them out of the wipe; both lost their
+       `view-transition-name` when the ordinary transitions went, so `root` is
+       now the only group that exists and there is nothing left to exclude. */
     &::view-transition-old(root) {
       animation: fdr-wipe-out 600ms linear both;
     }
@@ -392,4 +210,20 @@ input[type="search"]::-webkit-search-results-decoration {
     mask-size: 200% 100%;
     mask-position: 0 0;
   }
+}
+
+/* `content-visibility` and a view transition do not get along, and the wipe is
+   now the only place the two ever meet.
+
+   The grid skips painting offscreen rows. When a transition ends and the live
+   DOM takes over from the snapshot, content-visibility re-evaluates what is
+   near the viewport and re-rasterises everything it had skipped -- one frame,
+   the whole grid, a visible flicker. It was measured on the ordinary back
+   navigation before that transition was removed (no refetch, no DOM change, no
+   scroll movement: purely a paint), and the wipe would hit it the same way.
+
+   The optimisation exists for search-as-you-type, where the grid updates on
+   every keystroke. A wipe is not that, and lasts 600ms. */
+:root:active-view-transition .card-grid {
+  content-visibility: visible;
 }
