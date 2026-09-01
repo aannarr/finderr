@@ -59,19 +59,26 @@ body {
    sm:text-sm` on each control on purpose: the failure mode is the input somebody adds
    next month, and a per-element fix does not cover one that does not exist yet.
 
-   Scoped to `pointer: coarse` so desktop keeps its smaller controls -- the zoom is a
-   touch-device behaviour and there is nothing to fix where a mouse is the primary
-   pointer. Checkboxes and radios are excluded: they carry no text to zoom toward.
+   Checkboxes and radios are excluded: they carry no text to zoom toward.
 
    Nothing in the tree is currently ABOVE 16px, so a flat value loses no size today. A
    control that ever wants to be larger needs its own rule here, because CSS has no way
-   to express "at least this big" for a font size. */
-@media (pointer: coarse) {
-  input:not([type="checkbox"]):not([type="radio"]),
-  select,
-  textarea {
-    font-size: 16px;
-  }
+   to express "at least this big" for a font size.
+
+   > [!IMPORTANT] It is NOT scoped to `@media (pointer: coarse)`, and that is a correction
+   > It was, for one commit, on the reasoning that a desktop browser never does this. The
+   > reasoning is right and the scoping is still wrong, because it cannot be VERIFIED from
+   > here: CDP touch emulation is scoped to a single connection, so a headless probe
+   > reports `matchMedia('(pointer: coarse)').matches === false` even under full device
+   > emulation. There is no way to tell a rule that is not applying from a measurement that
+   > cannot see it, and the rule guarding the worst mobile defect this product has is not
+   > the place for a condition nobody can check. 16px on a form control is the browser
+   > default anyway, so applying it everywhere costs a little size on two admin screens and
+   > removes the whole question. */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  font-size: 16px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -242,12 +249,78 @@ body {
    PARENT, so it would silently shrink exactly the control it was meant to
    protect.
 
-   Checkbox and radio are excluded because they carry no text and never trigger
-   the zoom -- sizing them here would just make them bigger for no reason. */
-@media (pointer: coarse) {
-  input:not([type="checkbox"]):not([type="radio"]),
-  select,
-  textarea {
-    font-size: 16px;
+/* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is why.
+
+   Measured, not reasoned about: the field computes `font-size: 16px` and
+   `appearance: auto`. `type="search"` gets a NATIVE control appearance from
+   Safari, and Safari sizes native form controls with its own control-font
+   metrics rather than the author's font-size -- so the zoom heuristic sees a
+   sub-16px control and fires, on a field that is 16px by every measurement the
+   page can make. It is the one structural difference between this input and the
+   two identically-sized ones that never zoomed.
+
+   `appearance: none` gives up iOS's built-in clear (x) button. That is a real
+   cost and it is the right trade: the box already has a visible keyboard hint
+   in the same corner, and an involuntary zoom is the worst thing that happens
+   on this screen. */
+input[type="search"] {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* Safari draws its own decorations inside a search field; with `appearance:
+   none` they are half-removed rather than gone, so they are cleared explicitly.
+   Unknown pseudo-elements are ignored by every other engine. */
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-results-button,
+input[type="search"]::-webkit-search-results-decoration {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* "Easy to read" WITHOUT a page zoom, which is what was actually wanted.
+
+   iOS offers no way to enlarge the field without scaling the whole page -- the
+   zoom IS a page zoom. So the enlargement is ours instead: on a touch device the
+   search box grows a little when the caret is in it, as our own transition, with
+   the page scale untouched. It is the effect the involuntary zoom was
+   accidentally providing, done deliberately and reversibly.
+
+   Coarse-pointer scoping is fine HERE, unlike the floor above: if the query
+   fails to match, nothing breaks -- the field simply does not grow. A guard that
+   fails safe may rest on a condition I cannot verify; one that prevents a defect
+   may not. */
+@media (pointer: coarse) and (prefers-reduced-motion: no-preference) {
+  input[type="search"] {
+    transition:
+      font-size 150ms ease-out,
+      padding 150ms ease-out;
   }
+}
+@media (pointer: coarse) {
+  input[type="search"]:focus {
+    font-size: 19px;
+  }
+}
+
+/* The single flicker after a BACK navigation.
+
+   Measured across a real back-nav in a browser: no refetch, no change in card
+   count, no scroll movement. Nothing re-rendered -- so it was a PAINT event, and
+   `content-visibility: auto` on `.card-grid` is the only thing on the page that
+   decides painting for itself.
+
+   The mechanism: during a view transition the browser shows a SNAPSHOT of the
+   grid. When the transition ends and the live DOM takes over,
+   content-visibility re-evaluates which rows are near the viewport and
+   re-rasterises the ones it had skipped -- one frame, the whole grid, exactly
+   the "looks good, one flicker, good again" that was reported.
+
+   Turning it off for the length of the transition is the fix. The optimisation
+   exists for search-as-you-type, where the grid updates on every keystroke; a
+   navigation is not that, and it lasts 220ms. `:active-view-transition` is true
+   only while one is running, so nothing changes for any other frame. */
+:root:active-view-transition .card-grid {
+  content-visibility: visible;
 }
