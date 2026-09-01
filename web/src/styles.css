@@ -219,3 +219,35 @@ body {
     }
   }
 }
+
+/* ---------------------------------------------------------------------------
+   iOS Safari zooms the page when a focused control's computed font-size is
+   under 16px, and pinches back out is the reader's problem. It is not
+   configurable: `maximum-scale=1` in the viewport meta has been IGNORED since
+   iOS 10, deliberately, because it breaks pinch-zoom for people who need it.
+   Font size is the only lever.
+
+   One rule here rather than a size bump on each control, because the failure is
+   the input somebody adds next month with `text-sm` copied from its neighbour.
+   A floor nobody has to remember is worth more than three correct call sites.
+
+   Only on a COARSE pointer: a desktop browser never does this, and the smaller
+   type is deliberate on the admin and account screens where the fields sit in
+   dense rows.
+
+   The flat 16px is safe TODAY because no control in this product asks to be
+   larger -- every one is text-sm or text-base. A control that genuinely wants
+   to be bigger needs its own rule above this one, and `max(16px, 1em)` is NOT
+   the clever fix: inside a font-size declaration `em` resolves against the
+   PARENT, so it would silently shrink exactly the control it was meant to
+   protect.
+
+   Checkbox and radio are excluded because they carry no text and never trigger
+   the zoom -- sizing them here would just make them bigger for no reason. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
