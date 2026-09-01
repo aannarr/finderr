@@ -200,6 +200,14 @@ export interface UpcomingRow {
 /** Who claimed it. One writer each, and each replaces only its own rows. */
 export type UpcomingSource = "radarr" | "sonarr" | "tmdb-movie" | "tmdb-series";
 
+/** One title on this week's trending list. See the `trending` table. */
+export interface TrendingRow {
+  tconst: string;
+  kind: string;
+  /** TMDB's own rank, 0-based. The ONLY ordering this shelf has; see the table comment. */
+  position: number;
+}
+
 const SCHEMA = `
 -- title_slug is the arr's OWN url segment for the title, mirrored rather than derived.
 -- Radarr and Sonarr both route their detail page as /movie/:titleSlug and /series/:titleSlug,
@@ -340,6 +348,29 @@ create table if not exists upcoming (
 -- narrower shape before these two existed.
 
 create index if not exists ix_upcoming_source_date on upcoming(source, date);
+
+-- What is popular RIGHT NOW, mirrored from TMDB on the same timer as upcoming.
+--
+-- Its own table rather than a fifth upcoming source, and the difference is the whole
+-- reason: every row in upcoming is ABOUT A DATE and the table is ordered by it. Trending
+-- has no date at all -- it is a ranked list -- so filing it there would mean inventing a
+-- date column value that means nothing and then sorting the shelf by the invention.
+--
+-- position IS the ranking, straight from TMDB's response order, and it is stored rather
+-- than derived because nothing in our own corpus approximates it: the IMDb dumps carry
+-- numVotes, which measures all-time notability and would put the same great films on a
+-- shelf about this week. That is exactly the shelf this replaces.
+--
+-- Keyed on tconst alone, unlike upcoming: there is one trending list and one source for
+-- it, so a title cannot be trending twice.
+create table if not exists trending (
+  tconst    text primary key,
+  kind      text not null,
+  position  integer not null,
+  synced_at text not null
+);
+
+create index if not exists ix_trending_position on trending(position);
 
 -- Poster URLs, keyed by IMDb id.
 --
@@ -913,6 +944,53 @@ export class Store {
       ? this.db.query("select count(*) c from upcoming where source = ?").get(source)
       : this.db.query("select count(*) c from upcoming").get();
     return (row as { c: number }).c;
+  }
+
+  // --- trending mirror -----------------------------------------------------
+
+  /**
+   * Swap the whole trending list.
+   *
+   * A FULL swap, unlike `replaceUpcoming`'s per-source one, because there is exactly one
+   * writer and one list: "what is popular this week" is a single answer, and a title that
+   * has fallen off it has to leave the shelf. Same protection as every other mirror here
+   * -- a sync that THREW must not reach this method, or an upstream blip empties a shelf
+   * that was working a minute ago.
+   *
+   * An empty `rows` is therefore a deliberate, successful "nothing matched", and it does
+   * clear the table. That is the legacy-agent shape `syncPlex` documents: the caller is
+   * what tells a real emptiness from a failed walk.
+   */
+  replaceTrending(rows: TrendingRow[]): number {
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      "insert or replace into trending (tconst, kind, position, synced_at) values (?,?,?,?)",
+    );
+    this.db.run("begin");
+    try {
+      this.db.run("delete from trending");
+      for (const r of rows) {
+        if (!r.tconst) continue;
+        ins.run(r.tconst, r.kind, r.position, now);
+      }
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+    this.setKv("trending_synced", now);
+    return this.trendingCount();
+  }
+
+  /** The list in TMDB's own order, which is the only order it has. */
+  trending(limit = 30): TrendingRow[] {
+    return this.db
+      .query("select tconst, kind, position from trending order by position asc limit ?")
+      .all(limit) as TrendingRow[];
+  }
+
+  trendingCount(): number {
+    return (this.db.query("select count(*) c from trending").get() as { c: number }).c;
   }
 
   // --- requests ------------------------------------------------------------

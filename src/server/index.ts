@@ -38,7 +38,7 @@ import { parseSeasonsInput } from "../lib/seasons";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
-import { syncArrCalendars, syncTmdbUpcoming } from "../lib/upcoming";
+import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
@@ -392,17 +392,24 @@ async function warmShelves(): Promise<void> {
 }
 
 /*
-  TMDB's upcoming lists, on a SLOW timer and deliberately not the library one.
+  TMDB's upcoming lists AND its trending list, on a SLOW timer and deliberately not the
+  library one.
 
-  Six-hourly rather than every libraryRefreshSeconds because the answer barely moves -- a
-  film's release date changes a handful of times in its life -- and because unlike the arr
-  calendars this one costs a third party. It runs BEFORE `warmShelves` in the same tick so
-  the titles it adds are warmed on this pass rather than waiting six hours for the next.
+  Six-hourly rather than every libraryRefreshSeconds because the answers barely move -- a
+  film's release date changes a handful of times in its life, and a WEEKLY trending list
+  turns over about as often as its name says -- and because unlike the arr calendars these
+  cost a third party. They run BEFORE `warmShelves` in the same tick so the titles they add
+  are warmed on this pass rather than waiting six hours for the next, which is what
+  "a shelf is not published until its titles are warm" needs in order to hold.
 
-  No key means no shelf, quietly, the same way the `tmdb` plugin goes dark: two rows fewer
-  and nothing else changes.
+  No key means no shelves, quietly, the same way the `tmdb` plugin goes dark: three rows
+  fewer and nothing else changes.
+
+  THE TWO SYNCS FAIL INDEPENDENTLY, in their own try blocks, for the reason
+  `replaceUpcoming` is scoped per source: trending being unreachable must not also stop
+  the upcoming rows that were one await away from landing.
 */
-async function refreshTmdbUpcoming(): Promise<void> {
+async function refreshTmdbLists(): Promise<void> {
   if (!cfg.tmdb.apiKey) return;
   const api = new TmdbApi(
     createPluginFetch({
@@ -412,20 +419,27 @@ async function refreshTmdbUpcoming(): Promise<void> {
     }),
     cfg.tmdb.apiKey,
   );
+  const deps = { store, hasRow: indexHasRow, log };
   try {
-    const res = await syncTmdbUpcoming({ store, hasRow: indexHasRow, log }, api, cfg.regions);
+    const res = await syncTmdbUpcoming(deps, api, cfg.regions);
     for (const r of res) log(`upcoming: ${r.rows} from ${r.source}`);
   } catch (err) {
     // safeUrl already stripped the key from anything getJson reports; nothing here adds a URL.
     log(`upcoming sync error -- ${(err as Error).message}`);
+  }
+  try {
+    const res = await syncTmdbTrending(deps, api);
+    log(`trending: ${res.rows} from ${res.source}`);
+  } catch (err) {
+    log(`trending sync error -- ${(err as Error).message}`);
   }
 }
 
 // Give the library mirror a moment to land first: "recently added" is read straight
 // out of it, and owned titles are excluded from every other shelf -- so warming
 // before it lands both misses a shelf and pays for posters we then filter out.
-setTimeout(() => void refreshTmdbUpcoming().then(warmShelves), 8_000);
-setInterval(() => void refreshTmdbUpcoming().then(warmShelves), 6 * 60 * 60 * 1000);
+setTimeout(() => void refreshTmdbLists().then(warmShelves), 8_000);
+setInterval(() => void refreshTmdbLists().then(warmShelves), 6 * 60 * 60 * 1000);
 
 /**
  * Import the award nominations, in-process and never on a request path.
@@ -799,6 +813,7 @@ const appRoutes = {
             tmdbMovie: store.upcomingCount("tmdb-movie"),
             tmdbSeries: store.upcomingCount("tmdb-series"),
           },
+          trending: store.trendingCount(),
           awards: (() => {
             const meta = awardSourceMeta(store);
             return {
@@ -1639,7 +1654,7 @@ if (indexBuild) {
     */
     void (async () => {
       await refreshLibrary();
-      await refreshTmdbUpcoming();
+      await refreshTmdbLists();
       await warmShelves();
     })().catch((err) => log(`post-build warm failed -- ${(err as Error).message}`));
   });

@@ -91,6 +91,16 @@ export interface HealthDeps {
    */
   upcoming: { radarr: number; sonarr: number; tmdbMovie: number; tmdbSeries: number };
   /**
+   * How many titles are on the mirrored trending list.
+   *
+   * Zero is the ORDINARY case with no TMDB key, exactly like `upcoming.tmdbMovie`. Zero
+   * WITH a key is worth a look, and it has one benign cause worth knowing before you go
+   * hunting: the crosswalk drops any trending title our INDEX cannot draw a card for, so
+   * a week whose list is mostly brand-new streaming series legitimately keeps fewer than
+   * the twenty TMDB sent.
+   */
+  trending: number;
+  /**
    * The award mirror: how many nominations are stored, and which commit they came from.
    *
    * `rows: 0` is the field worth reading -- the import is optional and runs on its own
@@ -185,6 +195,7 @@ export function healthPayload(
     library: deps.library,
     plex: deps.plex,
     upcoming: deps.upcoming,
+    trending: deps.trending,
     awards: deps.awards,
     // Resource use, with the CEILING beside the usage -- a byte count on its own cannot
     // be triaged, and `atLimit` rising is the clearest sign the heap has outgrown the

@@ -39,7 +39,7 @@ export interface ShelfDeps {
     SearchEngine,
     "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse" | "hasRank"
   >;
-  store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource">;
+  store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource" | "trending">;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
   now?: () => number;
 }
@@ -92,6 +92,31 @@ function fromUpcoming(deps: ShelfDeps, source: UpcomingSource, limit: number): U
         hasFile: row.has_file === null ? null : row.has_file === 1,
       },
     });
+  }
+  return out;
+}
+
+/**
+ * This week's trending list, as index rows, in TMDB's order.
+ *
+ * ORDER IS THE WHOLE POINT and it comes from the mirror, not from anything here: nothing
+ * in our own corpus approximates "popular this week" -- `votes` measures all-time
+ * notability -- so re-sorting these rows by anything local would throw away the only
+ * ranking they have and put Shawshank at the head of a shelf about this week.
+ *
+ * The library is NOT excluded, unlike the recommendation shelves. "What is everyone
+ * watching" is a fact about the world rather than a suggestion, and removing the ones you
+ * own leaves a list that silently disagrees with every other trending list there is --
+ * the same reasoning the Top 250 shelf keeps its owned titles for. The grid already marks
+ * an owned title, so nothing is lost by leaving them in.
+ */
+function trendingRows(deps: ShelfDeps, limit: number): TitleRow[] {
+  const out: TitleRow[] = [];
+  for (const row of deps.store.trending(limit)) {
+    // The mirror and the index refresh on different timers, so a swap can retire a row
+    // between them -- the same reason `fromUpcoming` tolerates a null here.
+    const title = deps.engine.byTconst(row.tconst);
+    if (title) out.push(title);
   }
   return out;
 }
@@ -158,6 +183,28 @@ export function discoveryShelves(deps: ShelfDeps): DiscoveryShelf[] {
       subtitle: "weighted by rating and how many people voted",
       browse: { sort: "rank", kind: "movie" },
       rows: engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : [],
+    },
+    /*
+      POPULAR RIGHT NOW, AND IT IS THE ONE SHELF NO LOCAL QUERY COULD PRODUCE.
+
+      Every other row here is a selection over the index. This one is mirrored from TMDB
+      because the corpus has no signal for it: `numVotes` measures how many people have
+      EVER rated a title, so a votes-ordered "popular" shelf is a list of the same great
+      films every week. That is not a shortcoming of the query, it is the wrong number.
+
+      Second, under "recently added", because it answers the other half of the question a
+      reader opens the front page with -- what is new to ME, then what is new to everyone.
+
+      Empty is the ordinary state without a TMDB key: the sync never runs, the table stays
+      empty, and the filter at the bottom of this function drops the shelf entirely. A
+      keyless finderr simply has one fewer row, which is the same shape `hasRank` gives
+      the Top 250 before an index has been rebuilt.
+    */
+    {
+      id: "trending",
+      title: "Popular right now",
+      subtitle: "what people are watching this week",
+      rows: trendingRows(deps, 30),
     },
     {
       id: "top-movies",

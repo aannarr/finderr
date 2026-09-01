@@ -1,10 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { RadarrCalendarEntry, SonarrCalendarEntry } from "./arr";
+import { loadConfig } from "./config";
+import type { PluginFetch } from "./plugin-fetch";
+import { Store } from "./store";
+import { TmdbApi } from "./tmdb-api";
 import {
   calendarWindow,
   radarrUpcomingRows,
   sonarrUpcomingRows,
   soonestFutureDate,
+  syncTmdbTrending,
   toCalendarDate,
 } from "./upcoming";
 
@@ -272,5 +279,141 @@ describe("calendarWindow", () => {
       start: "2026-08-24",
       end: "2026-09-14",
     });
+  });
+});
+
+describe("syncTmdbTrending", () => {
+  let dataDir: string;
+  let store: Store;
+  let asked: string[];
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(`${tmpdir()}/finderr-trending-test-`);
+    process.env.FINDERR_DATA_DIR = dataDir;
+    store = new Store(loadConfig(true));
+    asked = [];
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+    delete process.env.FINDERR_DATA_DIR;
+  });
+
+  /** TMDB's trending page plus whatever `external_ids` each id needs, all from memory. */
+  function apiFor(
+    results: { id: number; media_type?: string | null }[],
+    imdbOf: Record<string, string | null> = {},
+    trendingStatus = 200,
+  ): TmdbApi {
+    const fetchImpl: PluginFetch = async (input) => {
+      const url = new URL(String(input));
+      asked.push(url.pathname);
+      if (url.pathname === "/3/trending/all/week") {
+        return trendingStatus === 200
+          ? Response.json({ results })
+          : new Response("nope", { status: trendingStatus });
+      }
+      const ext = /^\/3\/(movie|tv)\/(\d+)\/external_ids$/.exec(url.pathname);
+      if (ext) return Response.json({ imdb_id: imdbOf[`${ext[1]}:${ext[2]}`] ?? null });
+      return new Response("not found", { status: 404 });
+    };
+    return new TmdbApi(fetchImpl, "0123456789abcdef0123456789abcdef");
+  }
+
+  const deps = (known: string[]) => ({ store, hasRow: (t: string) => known.includes(t) });
+
+  test("mirrors the list in TMDB's order, tagging each row with its kind", async () => {
+    const api = apiFor(
+      [
+        { id: 1, media_type: "movie" },
+        { id: 2, media_type: "tv" },
+      ],
+      { "movie:1": "tt0000001", "tv:2": "tt0000002" },
+    );
+    const res = await syncTmdbTrending(deps(["tt0000001", "tt0000002"]), api);
+
+    expect(res).toEqual({ source: "tmdb-trending", rows: 2 });
+    expect(store.trending()).toEqual([
+      { tconst: "tt0000001", kind: "movie", position: 0 },
+      { tconst: "tt0000002", kind: "series", position: 1 },
+    ]);
+  });
+
+  /**
+   * The position must number the rows we KEEP. Numbering the raw response instead would
+   * leave gaps, and a shelf ordered by a gapped column is still fine -- but a later reader
+   * comparing `position` to a list length would be quietly wrong.
+   */
+  test("positions are contiguous over the rows kept, not over the raw response", async () => {
+    const api = apiFor(
+      [
+        { id: 1, media_type: "movie" },
+        { id: 9, media_type: "movie" },
+        { id: 2, media_type: "movie" },
+      ],
+      { "movie:1": "tt0000001", "movie:9": "tt0000009", "movie:2": "tt0000002" },
+    );
+    // tt0000009 crosswalks fine but is not in our index, so no card can be drawn for it.
+    await syncTmdbTrending(deps(["tt0000001", "tt0000002"]), api);
+    expect(store.trending().map((r) => [r.tconst, r.position])).toEqual([
+      ["tt0000001", 0],
+      ["tt0000002", 1],
+    ]);
+  });
+
+  /** `person` is a real `media_type` on this endpoint and is not a title. */
+  test("a result that is not a film or a series is skipped and costs no crosswalk", async () => {
+    const api = apiFor([{ id: 5, media_type: "person" }, { id: 6 }]);
+    const res = await syncTmdbTrending(deps([]), api);
+    expect(res.rows).toBe(0);
+    expect(asked.filter((p) => p.includes("external_ids"))).toEqual([]);
+  });
+
+  /**
+   * The rule every mirror in this tree follows. An emptied shelf and a broken sync look
+   * identical on screen, so a failed call must leave last week's list standing.
+   */
+  test("a failed call throws and never reaches the store", async () => {
+    await syncTmdbTrending(
+      deps(["tt0000001"]),
+      apiFor([{ id: 1, media_type: "movie" }], { "movie:1": "tt0000001" }),
+    );
+    expect(store.trendingCount()).toBe(1);
+
+    await expect(syncTmdbTrending(deps(["tt0000001"]), apiFor([], {}, 503))).rejects.toThrow();
+    // Still standing.
+    expect(store.trendingCount()).toBe(1);
+  });
+
+  /** A successful call that genuinely matches nothing IS an answer, and it does clear. */
+  test("a successful empty answer clears the table", async () => {
+    await syncTmdbTrending(
+      deps(["tt0000001"]),
+      apiFor([{ id: 1, media_type: "movie" }], { "movie:1": "tt0000001" }),
+    );
+    expect(store.trendingCount()).toBe(1);
+
+    await syncTmdbTrending(deps([]), apiFor([]));
+    expect(store.trendingCount()).toBe(0);
+  });
+
+  /**
+   * The crosswalk is parked forever and SHARED with the upcoming sync, so a title that
+   * trends two weeks running costs one `external_ids` call in total, not one per run.
+   */
+  test("the tmdbId -> tconst crosswalk is bought once, including a null one", async () => {
+    const results = [
+      { id: 1, media_type: "movie" },
+      { id: 7, media_type: "movie" },
+    ];
+    const imdb = { "movie:1": "tt0000001" };
+    await syncTmdbTrending(deps(["tt0000001"]), apiFor(results, imdb));
+    const first = asked.filter((p) => p.includes("external_ids")).length;
+    expect(first).toBe(2);
+
+    asked = [];
+    await syncTmdbTrending(deps(["tt0000001"]), apiFor(results, imdb));
+    expect(asked.filter((p) => p.includes("external_ids"))).toEqual([]);
   });
 });

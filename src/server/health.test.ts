@@ -18,6 +18,7 @@ function deps(onCoverage: () => void): HealthDeps {
     library: { radarr: 1371, sonarr: 596, episodes: 24_812 },
     plex: { items: 1730, machineId: "0123456789abcdef0123456789abcdef01234567" },
     upcoming: { radarr: 42, sonarr: 27, tmdbMovie: 19, tmdbSeries: 16 },
+    trending: 18,
     awards: {
       rows: 12_137,
       sha: "c5e9716b7e020e70205d6b95f5a5678526c1b45f",

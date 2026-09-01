@@ -33,8 +33,9 @@ function depsWith(
   owned: string[] = [],
   added: string[] = [],
   upcoming: Record<string, string[]> = UPCOMING,
+  trending: string[] = [],
 ): ShelfDeps {
-  const upcomingIds = new Set(Object.values(upcoming).flat());
+  const upcomingIds = new Set([...Object.values(upcoming).flat(), ...trending]);
   return {
     engine: {
       topRated: (opts = {}) => [row(`top-${opts.kind}`, `top ${opts.kind}`, opts.kind ?? "movie")],
@@ -61,6 +62,10 @@ function depsWith(
           date_kind: "cinemas",
           detail: null,
         })),
+      // Empty by default, which is the keyless case: the shelf drops out entirely and
+      // every existing assertion about shelf order stays true without naming it.
+      trending: (limit: number) =>
+        trending.slice(0, limit).map((tconst, position) => ({ tconst, kind: "movie", position })),
     } as unknown as ShelfDeps["store"],
     now: () => Date.parse("2026-06-15T00:00:00Z"),
   };
@@ -160,6 +165,54 @@ describe("discoveryShelves", () => {
   test("the new-decade shelf browses to the current decade", () => {
     const shelves = discoveryShelves(depsWith());
     expect(shelves.find((s) => s.id === "new-decade")?.browse).toEqual({ decade: "2020" });
+  });
+
+  /**
+   * The mirror's order IS the ranking, and nothing local reproduces it. Re-sorting these
+   * rows by votes would put the same great films on a shelf about this week, which is the
+   * exact shelf this one exists instead of.
+   */
+  test("trending is drawn in the mirror's order, not re-sorted", () => {
+    const shelves = discoveryShelves(depsWith({}, [], [], UPCOMING, ["tr-3", "tr-1", "tr-2"]));
+    expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual([
+      "tr-3",
+      "tr-1",
+      "tr-2",
+    ]);
+  });
+
+  /**
+   * The ordinary state without a TMDB key: the sync never runs, the table stays empty, and
+   * the shelf is dropped rather than drawn as a blank row. Same shape `hasRank` gives the
+   * Top 250 before a rebuild.
+   */
+  test("an empty trending mirror drops the shelf rather than drawing an empty row", () => {
+    expect(discoveryShelves(depsWith()).find((s) => s.id === "trending")).toBeUndefined();
+  });
+
+  /**
+   * Unlike every recommendation shelf here. "What is everyone watching" is a fact about
+   * the world, and a trending list with the ones you own quietly removed disagrees with
+   * every other trending list there is -- the Top 250 shelf keeps its owned titles for the
+   * same reason. The grid already marks an owned title.
+   */
+  test("trending keeps titles you already own", () => {
+    const shelves = discoveryShelves(depsWith({}, ["tr-owned"], [], UPCOMING, ["tr-owned", "tr-new"]));
+    expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual([
+      "tr-owned",
+      "tr-new",
+    ]);
+  });
+
+  /** The mirror and the index refresh on different timers, so a swap can retire a row. */
+  test("a trending row the index cannot draw is skipped, not rendered blank", () => {
+    const shelves = discoveryShelves(
+      depsWith({ byTconst: (id) => (id === "tr-gone" ? null : row(id)) }, [], [], UPCOMING, [
+        "tr-here",
+        "tr-gone",
+      ]),
+    );
+    expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual(["tr-here"]);
   });
 });
 

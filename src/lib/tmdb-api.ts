@@ -114,6 +114,28 @@ export class TmdbApi {
       page: String(opts.page ?? 1),
     });
   }
+
+  /**
+   * What people are actually watching this week, films and series in one ranked list.
+   *
+   * `all` rather than two calls, because TMDB ranks both against ONE popularity score and
+   * splitting it would mean interleaving two lists by a number we would then have to keep.
+   * It is one call for twenty titles and it carries `media_type` per result, which is what
+   * lets a mixed list be un-mixed where a kind is actually needed.
+   *
+   * WEEK, NOT DAY, and that is a cost decision rather than a taste one. A shelf is not
+   * published until its titles are warm, so trending CHURN sets the warm cost of every
+   * refresh; the daily list turns over far faster than the weekly one for a question
+   * nobody asks hourly. `time_window` is a path segment, not a parameter.
+   *
+   * THE POSITION IS THE ANSWER AND IT IS NOT DERIVABLE HERE. Our own corpus carries
+   * `numVotes`, which measures all-time notability -- Shawshank is not what is popular
+   * this week -- so there is no local query that approximates this and that is the whole
+   * reason the call exists.
+   */
+  trending(window: "day" | "week" = "week"): Promise<TmdbTrendingPage | null> {
+    return this.get<TmdbTrendingPage>(`/trending/all/${window}`);
+  }
 }
 
 /** `/discover` narrowed to the fields the upcoming sync reads. */
@@ -128,4 +150,19 @@ export interface TmdbDiscoverResult {
   name?: string | null;
   release_date?: string | null;
   first_air_date?: string | null;
+}
+
+/** `/trending/all` narrowed to what the trending sync reads. Order IS the ranking. */
+export interface TmdbTrendingPage {
+  results?: TmdbTrendingResult[] | null;
+}
+
+export interface TmdbTrendingResult {
+  id: number;
+  /**
+   * `movie` or `tv`. A mixed list is the point, so this is the only thing that says which
+   * endpoint an id belongs to -- and the crosswalk needs it, because `/movie/{id}` and
+   * `/tv/{id}` are different id spaces that happily collide.
+   */
+  media_type?: string | null;
 }

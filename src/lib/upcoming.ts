@@ -27,7 +27,7 @@
  */
 
 import type { RadarrCalendarEntry, RadarrClient, SonarrCalendarEntry, SonarrClient } from "./arr";
-import type { Store, UpcomingRow } from "./store";
+import type { Store, TrendingRow, UpcomingRow } from "./store";
 import type { TmdbApi } from "./tmdb-api";
 
 /** How far ahead each source is asked. Films move slowly; an episode airs this week. */
@@ -387,4 +387,42 @@ async function crosswalk(
   const imdb = await api.imdbIdOf(tmdbId, media);
   deps.store.setKv(key, imdb ?? "");
   return imdb;
+}
+
+/**
+ * Mirror this week's trending list.
+ *
+ * IT LIVES HERE, BESIDE `syncTmdbUpcoming`, because it is the same shape of thing: an
+ * external list mirrored on a timer so the render path stays local SQLite, crosswalked
+ * through the same permanently-parked `tmdbId -> tconst` answers. Sharing `crosswalk` is
+ * the point -- an upcoming film that later trends is already paid for.
+ *
+ * ONE CALL plus whatever crosswalks are not yet cached. TMDB's response ORDER is the
+ * ranking and is preserved as `position`, counted over the rows we KEEP rather than over
+ * the raw response, so a list with gaps in it still numbers 0..n-1.
+ *
+ * A THROW NEVER REACHES THE STORE, which is the rule every mirror in this tree follows.
+ * `api.get` answers `null` on a non-200, and that is treated as a failure rather than as
+ * an empty list: an emptied shelf and a broken sync look identical on screen, so the
+ * previous week's list is left standing instead. A successful call that genuinely matches
+ * nothing DOES clear the table, because that is a real answer.
+ */
+export async function syncTmdbTrending(deps: SyncDeps, api: TmdbApi): Promise<SyncResult> {
+  const page = await api.trending("week");
+  if (!page) throw new Error("tmdb trending: no answer");
+
+  const rows: TrendingRow[] = [];
+  for (const result of page.results ?? []) {
+    // `media_type` is the only thing saying which id space this id belongs to, and
+    // `/movie/{id}` and `/tv/{id}` collide happily. Anything else TMDB starts returning
+    // here -- `person` is the one that exists today -- is not a title and is skipped.
+    const media = result.media_type === "movie" ? "movie" : result.media_type === "tv" ? "tv" : null;
+    if (!media) continue;
+    const tconst = await crosswalk(deps, api, result.id, media);
+    // Not in our index means no card can be drawn, the same filter `renderable` applies.
+    if (!tconst || !deps.hasRow(tconst)) continue;
+    rows.push({ tconst, kind: media === "tv" ? "series" : "movie", position: rows.length });
+  }
+
+  return { source: "tmdb-trending", rows: deps.store.replaceTrending(rows) };
 }
