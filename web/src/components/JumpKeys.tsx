@@ -1,10 +1,15 @@
 /**
- * The DOM half of Alt-to-jump: which cards are on screen, and clicking one.
+ * The DOM half of navigation mode: which cards are on screen, and clicking one.
  *
  * `lib/jump-keys.ts` owns which key means which POSITION. This owns which card is at a
  * position right now, which is a question only the browser can answer -- and the answer
  * changes on every scroll, which is why positions are assigned live rather than baked in
  * when a grid renders.
+ *
+ * The shape, end to end: `⌘/` (`Ctrl+/`) labels every card on screen, one bare key opens
+ * one, Escape leaves. Nothing is drawn until a reader asks for it -- a permanent badge on
+ * every card is thirty-five pieces of chrome over the artwork for a feature most people
+ * never use.
  *
  * > [!IMPORTANT] VISIBLE, AND IN DOCUMENT ORDER. Both halves matter.
  * > Visible, because a label on a card below the fold addresses something the reader
@@ -12,17 +17,22 @@
  * > order: React does not mount a list top-to-bottom in any guaranteed way, a `memo`'d
  * > card that never re-rendered never re-registers, and "load more" appends a page whose
  * > cards mount after cards that are visually above them. Sorting by
- * > `compareDocumentPosition` at assignment time is what keeps `Alt+1` on the top-left
- * > card instead of on whichever one React happened to touch first.
+ * > `compareDocumentPosition` at assignment time is what keeps `1` on the top-left card
+ * > instead of on whichever one React happened to touch first.
  *
- * The labels are drawn ONLY WHILE ALT IS HELD. A permanent badge on every card is thirty
- * five pieces of chrome over the artwork for a feature most readers never use; holding the
- * modifier is also exactly when the answer is wanted, so the reveal teaches the shortcut
- * to anybody who presses Alt for any reason at all.
+ * > [!CAUTION] THE MODE LISTENS IN THE CAPTURE PHASE, and that is not a detail
+ * > Every other shortcut in this app hangs a BUBBLE-phase listener on `window`
+ * > (`useKeyAction`). Escape already means `back` on the title page and `clearFilters` on
+ * > the grids -- so if the mode listened in the same phase, leaving the mode with Escape
+ * > would ALSO clear the reader's filters, and which of the two happened would depend on
+ * > which component mounted first. Capture runs before any of them, and the mode calls
+ * > `stopPropagation` on everything it consumes, so while it is open it is the only thing
+ * > reading the keyboard. That is what "mode" has to mean to be worth having.
  */
 
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { jumpIndexFor, jumpLabelAt } from "../lib/jump-keys";
+import { jumpLabelAt, jumpLabelFor } from "../lib/jump-keys";
+import { HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 
 interface JumpRegistry {
   /** Register a card's element; returns the unsubscribe. */
@@ -38,8 +48,8 @@ interface JumpRegistry {
    * a reassignment would be invisible to React.
    */
   version: number;
-  /** Is Alt held right now? The badges follow this and nothing else. */
-  armed: boolean;
+  /** Is navigation mode open? The badges follow this and nothing else. */
+  active: boolean;
 }
 
 /**
@@ -72,7 +82,11 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
   const labels = useRef(new Map<HTMLElement, string>());
   const observer = useRef<IntersectionObserver | null>(null);
   const [version, setVersion] = useState(0);
-  const [armed, setArmed] = useState(false);
+  const [active, setActive] = useState(false);
+  // Read inside the listener, which is registered once. Without this the handler would
+  // close over the first `false` forever, or the listener would re-subscribe per toggle.
+  const isActive = useRef(false);
+  isActive.current = active;
 
   /**
    * Recompute the assignment from what is visible, in document order.
@@ -145,50 +159,90 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    /*
-      THE LISTENER IS ON `window` AND DOES NOT CHECK THE CARET, unlike `useKeyAction`.
+    const close = () => setActive(false);
 
-      That is the one deliberate difference from every other shortcut in this app, and it
-      is safe for the reason the search box makes it necessary: the box is autofocused and
-      holds the caret almost permanently, so a caret check would mean the feature never
-      works. An Alt chord produces no character in a text field on any platform this runs
-      on -- on macOS Option composes one, which is exactly why the match reads `code` and
-      not `key` -- so nothing is being stolen from the typist.
-    */
+    const open = () => {
+      /*
+        BLUR THE CARET ON THE WAY IN. The search box is autofocused and holds focus almost
+        permanently, so without this the very first hint key would type a letter into the
+        query instead of opening a card -- the mode would look broken and would corrupt
+        what the reader had typed. Blurring is also what makes the mode honest: it is not
+        a mode if the text field is still collecting characters underneath it.
+      */
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      setActive(true);
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && !event.metaKey && !event.ctrlKey) setArmed(true);
-      const index = jumpIndexFor(event);
-      if (index === null) return;
-      const label = jumpLabelAt(index);
-      const target = label ? [...labels.current.entries()].find(([, l]) => l === label)?.[0] : undefined;
+      // The one way IN, and the only part of this that is a named binding. It carries
+      // `mod`, so `firesFrom` lets it through the caret in the search box -- which is
+      // where a reader almost always is when they want it.
+      if (matchesBinding(event, KEYMAP.jumpMode, HOST_PLATFORM)) {
+        event.preventDefault();
+        event.stopPropagation();
+        isActive.current ? close() : open();
+        return;
+      }
+      if (!isActive.current) return;
+
+      /*
+        FROM HERE DOWN THE MODE OWNS THE KEYBOARD, which is the whole point of it being a
+        mode: `stopPropagation` in the capture phase keeps every `useKeyAction` listener
+        from also seeing these. Escape in particular already means `back`/`clearFilters`,
+        and leaving the mode must not also wipe the reader's filters.
+      */
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
+
+      const label = jumpLabelFor(event);
+      if (label === null) {
+        // A modified chord is somebody else's -- `⌘R` is a reload and swallowing it would
+        // make this a trap. Anything else unlabelled closes the mode rather than sitting
+        // there eating keystrokes: a reader who typed a letter meant to search, not to
+        // pick, and the fastest way out of a mode you did not want is any key at all.
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        event.stopPropagation();
+        close();
+        return;
+      }
+
+      const target = [...labels.current.entries()].find(([, l]) => l === label)?.[0];
+      event.preventDefault();
+      event.stopPropagation();
+      close();
       if (!target) return;
       // The card's own primary link, which owns where it goes and the prefetch on the way.
       // Clicking it rather than navigating here means this file holds no route knowledge.
-      const link = target.querySelector<HTMLElement>("a[href]");
-      if (!link) return;
-      event.preventDefault();
-      link.click();
+      target.querySelector<HTMLElement>("a[href]")?.click();
     };
-    // Alt released, or focus left the window while it was held -- a badge that outlives
-    // the modifier is chrome nobody asked for and cannot dismiss.
-    const disarm = () => setArmed(false);
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (!event.altKey) disarm();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", disarm);
+
+    /*
+      Capture, not bubble -- see the caution at the top of this file. Registered once and
+      reading `isActive` through a ref, so toggling the mode never re-subscribes.
+    */
+    window.addEventListener("keydown", onKeyDown, true);
+    // Anything that moves the page invalidates the labels a reader is looking at, so the
+    // mode closes rather than pointing at cards that have scrolled away. A badge that
+    // outlives the reader's attention is chrome they did not ask for and cannot dismiss.
+    window.addEventListener("blur", close);
+    window.addEventListener("scroll", close, { passive: true });
+    window.addEventListener("pointerdown", close);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", disarm);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("scroll", close);
+      window.removeEventListener("pointerdown", close);
     };
   }, []);
 
   const labelOf = useCallback((el: HTMLElement | null) => (el ? (labels.current.get(el) ?? null) : null), []);
 
   return (
-    <JumpContext.Provider value={{ register, labelOf, version, armed }}>{children}</JumpContext.Provider>
+    <JumpContext.Provider value={{ register, labelOf, version, active }}>{children}</JumpContext.Provider>
   );
 }
 
@@ -202,7 +256,7 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
 export function useJumpKey(): {
   ref: (el: HTMLElement | null) => void;
   label: string | null;
-  armed: boolean;
+  active: boolean;
 } {
   const ctx = useContext(JumpContext);
   const node = useRef<HTMLElement | null>(null);
@@ -211,7 +265,7 @@ export function useJumpKey(): {
   /*
     NO SUBSCRIPTION AND NO FORCED RE-RENDER: the context IS the subscription.
 
-    `JumpKeysProvider` publishes a fresh value whenever `version` or `armed` moves, and a
+    `JumpKeysProvider` publishes a fresh value whenever `version` or `active` moves, and a
     context update re-renders every consumer -- `memo` does not stop it, which is the one
     thing worth knowing here, because `TitleCard` is memoised and its props do not change
     when its number does. So reading `labelOf` during render is enough, and the `version`
@@ -229,16 +283,20 @@ export function useJumpKey(): {
   );
   useEffect(() => () => cleanup.current?.(), []);
 
-  return { ref, label: ctx?.labelOf(node.current) ?? null, armed: ctx?.armed ?? false };
+  return { ref, label: ctx?.labelOf(node.current) ?? null, active: ctx?.active ?? false };
 }
 
 /**
- * The badge, drawn over the poster's top-left corner while Alt is held.
+ * The badge, drawn over a card's poster while navigation mode is open.
  *
  * `aria-hidden`, like every other `<kbd>` in this app: it would otherwise land inside the
  * card's accessible name and a reader would hear "3 Details for Inception". The shortcut
  * reaches them through `aria-keyshortcuts` on the link instead, which is the attribute
  * that exists for it.
+ *
+ * It covers the poster rather than sitting in a corner, and that is deliberate: the mode
+ * is transient and modal, so every labelled card should read as "pick one of these" at a
+ * glance rather than as a badge somebody has to hunt for on artwork.
  */
 export function JumpBadge({ label }: { label: string }) {
   return (

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { JUMP_KEYS, jumpAriaKeyShortcut, jumpIndexFor, jumpLabelAt } from "./jump-keys";
-import { KEYMAP, matchesBinding } from "./keymap";
+import { JUMP_KEYS, jumpAriaKeyShortcut, jumpLabelAt, jumpLabelFor } from "./jump-keys";
+import { firesWhileTyping, KEYMAP, matchesBinding } from "./keymap";
 
-/** An Alt chord, with every modifier explicit so a test says what it is testing. */
-function chord(code: string, over: Partial<Parameters<typeof jumpIndexFor>[0]> = {}) {
-  return { code, altKey: true, metaKey: false, ctrlKey: false, ...over };
+/** A bare keystroke inside the mode, with every modifier explicit. */
+function chord(key: string, over: Partial<Parameters<typeof jumpLabelFor>[0]> = {}) {
+  return { key, metaKey: false, ctrlKey: false, altKey: false, ...over };
 }
 
 describe("JUMP_KEYS", () => {
@@ -32,78 +32,108 @@ describe("jumpLabelAt", () => {
     expect(jumpLabelAt(34)).toBe("z");
   });
 
-  /** Past the alphabet a card gets no label rather than a second modifier or a sequence. */
+  /** Past the alphabet a card gets no label rather than a two-key sequence. */
   test("past the end is null, not a wrap-around", () => {
     expect(jumpLabelAt(35)).toBeNull();
     expect(jumpLabelAt(999)).toBeNull();
   });
 });
 
-describe("jumpIndexFor", () => {
-  test("Alt plus a digit or a letter addresses its position", () => {
-    expect(jumpIndexFor(chord("Digit1"))).toBe(0);
-    expect(jumpIndexFor(chord("Digit9"))).toBe(8);
-    expect(jumpIndexFor(chord("KeyA"))).toBe(9);
-    expect(jumpIndexFor(chord("KeyZ"))).toBe(34);
+describe("jumpLabelFor", () => {
+  test("a bare digit or letter picks its label", () => {
+    expect(jumpLabelFor(chord("1"))).toBe("1");
+    expect(jumpLabelFor(chord("9"))).toBe("9");
+    expect(jumpLabelFor(chord("a"))).toBe("a");
+    expect(jumpLabelFor(chord("z"))).toBe("z");
+  });
+
+  /** Caps Lock or a held Shift must not make a labelled card unreachable. */
+  test("case is folded, so a capital picks the same card", () => {
+    expect(jumpLabelFor(chord("A"))).toBe("a");
+    expect(jumpLabelFor(chord("Z"))).toBe("z");
   });
 
   /**
-   * THE ONE THAT WOULD HAVE SHIPPED BROKEN ON A MAC. macOS treats Option as a compose
-   * modifier, so Alt+3 arrives with `key` of "£" on a UK layout and Alt+a as "å" -- a
-   * matcher reading `key` works on Linux and silently does nothing here. `code` is the
-   * physical key and is untouched by the composition.
+   * `⌘R` inside the mode is a reload, not a pick. Swallowing a modified chord would make
+   * the mode a trap, so it is disqualified here and the provider lets it through.
    */
-  test("it matches the physical key, so Option-as-compose cannot break it", () => {
-    // The shape a real macOS event has: composed `key`, unchanged `code`.
-    expect(jumpIndexFor({ ...chord("KeyA"), code: "KeyA" })).toBe(9);
-    expect(jumpIndexFor(chord("Digit3"))).toBe(2);
+  test("any modifier disqualifies the keystroke", () => {
+    expect(jumpLabelFor(chord("a", { metaKey: true }))).toBeNull();
+    expect(jumpLabelFor(chord("a", { ctrlKey: true }))).toBeNull();
+    expect(jumpLabelFor(chord("a", { altKey: true }))).toBeNull();
   });
 
-  test("without Alt it addresses nothing -- plain typing is not a jump", () => {
-    expect(jumpIndexFor(chord("Digit1", { altKey: false }))).toBeNull();
+  test("zero, punctuation and named keys are not labels", () => {
+    expect(jumpLabelFor(chord("0"))).toBeNull();
+    expect(jumpLabelFor(chord("/"))).toBeNull();
+    expect(jumpLabelFor(chord("Enter"))).toBeNull();
+    expect(jumpLabelFor(chord("Escape"))).toBeNull();
+    expect(jumpLabelFor(chord("ArrowLeft"))).toBeNull();
   });
 
   /**
-   * Alt+⌘+arrow switches tabs; Ctrl+Alt+letter is a dead key on Windows layouts. Quietly
-   * stealing one is worse than not having the shortcut.
+   * The reversal worth knowing. The Alt-held design this replaced HAD to read `code`,
+   * because macOS composes with Option (`Alt+a` arrives as `"å"`). With no modifier held
+   * that trap is gone and `code` becomes the wrong answer instead: it is the PHYSICAL key,
+   * so on AZERTY the keycap printed `A` reports `KeyQ` and a reader pressing the letter
+   * they can see on the badge would open the wrong card. `key` is what the keyboard
+   * produced, which is exactly what the badge shows -- layout-correct with no table.
    */
-  test("a second command modifier disqualifies the chord", () => {
-    expect(jumpIndexFor(chord("Digit1", { metaKey: true }))).toBeNull();
-    expect(jumpIndexFor(chord("Digit1", { ctrlKey: true }))).toBeNull();
-  });
-
-  test("zero, punctuation and the keypad are not jump keys", () => {
-    expect(jumpIndexFor(chord("Digit0"))).toBeNull();
-    expect(jumpIndexFor(chord("Numpad3"))).toBeNull();
-    expect(jumpIndexFor(chord("Slash"))).toBeNull();
-    expect(jumpIndexFor(chord("Enter"))).toBeNull();
-    expect(jumpIndexFor(chord("Escape"))).toBeNull();
+  test("it reads the character produced, not the physical key", () => {
+    // An AZERTY reader pressing the key labelled A: key "a", code "KeyQ".
+    expect(jumpLabelFor({ ...chord("a"), key: "a" })).toBe("a");
+    // A composed character is not a label, so a dead key cannot pick a card by accident.
+    expect(jumpLabelFor(chord("å"))).toBeNull();
+    expect(jumpLabelFor(chord("£"))).toBeNull();
   });
 });
 
 /**
- * The two keyboard systems must not overlap, and this is where that is pinned.
- *
- * `matchesBinding` rejects ANY chord with Alt held, which is what makes the jump family
- * safe to live outside `KEYMAP`. Relaxing that clause to "allow Alt bindings" without
- * giving jump keys somewhere else to be excluded would have every jump chord also fire a
- * named action.
+ * Mode ENTRY is a named binding; the hint keys are not, and cannot be -- they address an
+ * ordinal position that means something different on every scroll.
  */
-describe("jump keys and KEYMAP cannot collide", () => {
-  test("no named binding fires while Alt is held", () => {
+describe("KEYMAP.jumpMode", () => {
+  test("it is command-modified, which is the only way it fires from the search box", () => {
+    // The box is autofocused and holds the caret almost permanently. `firesWhileTyping`
+    // lets a command-modified chord through a caret and nothing else, so an unmodified
+    // entry key could never fire where a reader actually is.
+    expect(KEYMAP.jumpMode.mod).toBe("command");
+    expect(firesWhileTyping(KEYMAP.jumpMode)).toBe(true);
+  });
+
+  test("it is the same slash that focuses search, one modifier apart", () => {
+    expect(KEYMAP.jumpMode.key).toBe(KEYMAP.focusSearch.key);
+    expect(KEYMAP.focusSearch.mod).toBeUndefined();
+  });
+
+  test("it folds to the platform's own command modifier", () => {
+    const cmd = { key: "/", metaKey: true, ctrlKey: false, altKey: false };
+    const ctrl = { key: "/", metaKey: false, ctrlKey: true, altKey: false };
+    expect(matchesBinding(cmd, KEYMAP.jumpMode, "mac")).toBe(true);
+    expect(matchesBinding(ctrl, KEYMAP.jumpMode, "other")).toBe(true);
+    // A bare slash is still just "focus the search box".
+    expect(
+      matchesBinding({ key: "/", metaKey: false, ctrlKey: false, altKey: false }, KEYMAP.jumpMode, "mac"),
+    ).toBe(false);
+  });
+
+  /**
+   * The mode owns the keyboard while it is open, so no hint key may also be a named
+   * binding -- a reader pressing `a` must open a card and nothing else. Every named
+   * binding is a named key (Enter, Escape, arrows) or a modified one, and this pins it.
+   */
+  test("no named binding collides with a bare hint key", () => {
     for (const binding of Object.values(KEYMAP)) {
-      for (const platform of ["mac", "other"] as const) {
-        const held = { key: binding.key, metaKey: true, ctrlKey: true, altKey: true };
-        expect(matchesBinding(held, binding, platform)).toBe(false);
-      }
+      if (binding.mod) continue;
+      expect(JUMP_KEYS).not.toContain(binding.key.toLowerCase());
     }
   });
 });
 
 describe("jumpAriaKeyShortcut", () => {
-  /** The `aria-keyshortcuts` grammar names modifiers after the DOM's own event flags. */
-  test("spells the chord the way the attribute expects", () => {
-    expect(jumpAriaKeyShortcut("1")).toBe("Alt+1");
-    expect(jumpAriaKeyShortcut("z")).toBe("Alt+z");
+  /** Bare inside the mode, so the attribute names the key alone -- no modifier to spell. */
+  test("names the key a reader actually presses", () => {
+    expect(jumpAriaKeyShortcut("1")).toBe("1");
+    expect(jumpAriaKeyShortcut("z")).toBe("z");
   });
 });

@@ -12,7 +12,7 @@ import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-route
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { JumpKeysProvider } from "../components/JumpKeys";
-import { useKeyAction } from "../components/Kbd";
+import { Kbd, type KeyAction, mergeKeyProps, useKeyAction } from "../components/Kbd";
 import {
   getRequests,
   patchTitleState,
@@ -24,6 +24,7 @@ import {
 import { AppProvider } from "../lib/app-context";
 import { getAuthState, type PublicUser } from "../lib/auth-api";
 import { type HeaderState, INITIAL_HEADER_STATE, nextHeaderState } from "../lib/header-scroll";
+import { ariaKeyShortcuts, HOST_PLATFORM, KEYMAP } from "../lib/keymap";
 import type { SearchParams } from "../lib/search-params";
 import { summariseSeasons } from "../lib/season-select";
 import { useToasts } from "../lib/toasts";
@@ -193,6 +194,19 @@ export function RootLayout() {
   // The input is never UNMOUNTED while collapsed -- only sized to nothing -- so the ref is
   // live either way and `/` stays one atomic action. See `focusSearch`.
   const searchKey = useKeyAction("focusSearch", focusSearch);
+  /*
+    Navigation mode's ANNOUNCEMENT only -- it has no handler here on purpose.
+
+    `JumpKeysProvider` binds the key, because it is the only thing that knows which cards
+    are on screen. But the provider wraps the `<Outlet />` and this header sits above it,
+    so there is no control down there to hang the declaration on, and a shortcut a screen
+    reader is never told about is one it cannot discover. This carries the aria half and
+    nothing else, built from the same `KEYMAP` entry the provider matches against.
+  */
+  const jumpModeAnnounce: KeyAction = {
+    props: { "aria-keyshortcuts": ariaKeyShortcuts(KEYMAP.jumpMode, HOST_PLATFORM) },
+    hint: null,
+  };
 
   /**
    * Poll the request queue while anything is in flight.
@@ -394,12 +408,42 @@ export function RootLayout() {
                 }}
                 placeholder="Search anything -- spelling optional"
                 aria-label="Search titles"
-                {...searchKey.props}
+                /*
+                  BOTH shortcuts, merged. `aria-keyshortcuts` takes a space-separated list,
+                  so spreading a second props object would silently overwrite the first --
+                  which is exactly what `mergeKeyProps` exists to prevent, and why the mode
+                  is handed through it as a props-only `KeyAction` rather than concatenated
+                  by hand. A reader who tabs here is told about `/` AND about the mode.
+                */
+                {...mergeKeyProps(searchKey, jumpModeAnnounce)}
                 className="w-full rounded-xl border border-line bg-surface px-4 py-3 pr-10 text-base outline-none
                          placeholder:text-muted focus:border-accent/60"
               />
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+              {/*
+                Both slashes, in the one place a keyboard-first reader is already looking.
+
+                `/` puts the caret here; `⌘/` labels every card on screen so one key opens
+                one. They sit together because they are the same idea one modifier apart --
+                the two entry points to driving this without a mouse -- and because this
+                app's rule is that an action wears its own key rather than hiding in a help
+                overlay nobody opens. Navigation mode has no button of its own to wear one,
+                so the search box carries it: it is where the caret already is, which is
+                exactly where a reader is when they want to stop typing and start picking.
+
+                THE GLYPH ALONE, not a `useKeyAction`, and that is not a shortcut taken.
+                `useKeyAction` binds a handler to the control that wears the key, which is
+                right for an action a button performs. Navigation mode is not performed by
+                any control -- it is a mode the whole page enters, and `JumpKeysProvider`
+                owns its listener because it is the only thing that knows which cards are
+                on screen. `Kbd` reads the same `KEYMAP` entry that provider matches
+                against, so the single source of truth is intact, which is what the rule
+                is actually protecting. It is always drawn: the binding is
+                command-modified, so it fires through a caret and never advertises a key
+                that would not work from where the reader is.
+              */}
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center gap-1">
                 {searchKey.hint}
+                <Kbd action="jumpMode" />
               </span>
             </div>
           </div>

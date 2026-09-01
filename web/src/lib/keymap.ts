@@ -23,7 +23,8 @@ export type ActionId =
   | "clearFilters"
   | "focusSearch"
   | "prevSeason"
-  | "nextSeason";
+  | "nextSeason"
+  | "jumpMode";
 
 /** Which key the machine calls "the command modifier": ⌘ on a Mac, Ctrl everywhere else. */
 export type Platform = "mac" | "other";
@@ -67,6 +68,25 @@ export const KEYMAP: Record<ActionId, KeyBinding> = {
   // element a keyboard can reach, so nothing native loses them.
   prevSeason: { key: "ArrowLeft", glyph: "←" },
   nextSeason: { key: "ArrowRight", glyph: "→" },
+  /*
+    Enter navigation mode: label every card on screen, then a single key opens one.
+
+    THE SLASH IS DELIBERATE AND IT IS THE SAME SLASH. `/` already means "go to the
+    keyboard's entry point" here (it focuses the search box), so the modified form reading
+    "go to the keyboard's OTHER entry point" is one idea with two doors rather than two
+    unrelated keys to remember. It is also what vim readers reach for first.
+
+    IT CARRIES `mod`, AND THAT IS WHAT MAKES IT WORK AT ALL. The search box is autofocused
+    and holds the caret almost permanently; `firesWhileTyping` lets a command-modified
+    chord through a caret and nothing else, so an unmodified entry key could never fire
+    where a reader actually is. ⌘/ on a Mac, Ctrl+/ elsewhere -- neither is claimed by
+    Chrome, Firefox or Safari.
+
+    Only the ENTRY is a named action. The hint keys are not, and cannot be: they address an
+    ordinal position that means something different on every scroll, not a named thing. See
+    `lib/jump-keys.ts`.
+  */
+  jumpMode: { key: "/", mod: "command", glyph: "/" },
 };
 
 const MOD_GLYPH: Record<Platform, string> = { mac: "⌘", other: "Ctrl" };

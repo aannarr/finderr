@@ -50,6 +50,7 @@ export const TitleCard = memo(function TitleCard({
   // Null on every page with no `JumpKeysProvider`, and on any card not currently on
   // screen -- so this costs nothing and draws nothing outside the grid routes.
   const jump = useJumpKey();
+  const jumpLabel = jump.active ? jump.label : null;
 
   return (
     // h-full so the card fills its grid row or shelf slot -- without it a card with a
@@ -107,13 +108,13 @@ export const TitleCard = memo(function TitleCard({
             It is also the one a reader focusing this card lands on, so the shortcut is
             announced on the element that answers to it.
           */
-          aria-keyshortcuts={jump.label ? jumpAriaKeyShortcut(jump.label) : undefined}
+          aria-keyshortcuts={jumpLabel ? jumpAriaKeyShortcut(jumpLabel) : undefined}
           className="absolute inset-0 z-10 cursor-pointer outline-none
                      focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
         />
 
-        {/* Over the poster, above the link, only while Alt is held. */}
-        {jump.armed && jump.label && <JumpBadge label={jump.label} />}
+        {/* Over the poster, above the link, only while navigation mode is open. */}
+        {jumpLabel && <JumpBadge label={jumpLabel} />}
 
         {owned && (
           <span className="pointer-events-none absolute bottom-2 left-2 z-20 rounded bg-accent/85 px-1.5 py-0.5 text-[10px] font-medium text-black">

@@ -1,37 +1,36 @@
 /**
- * Alt+<key> to open a card you can see, without reaching for the mouse.
+ * Navigation mode: label every card on screen, then one key opens one.
  *
  * PURE AND DOM-FREE, the same split `keymap.ts` uses: this module decides which key
  * addresses which position, `components/JumpKeys.tsx` decides which cards are on screen
  * and clicks one. That is what makes the rules below testable without a browser.
  *
- * > [!IMPORTANT] This is deliberately NOT an entry in `KEYMAP`, and the reason is the shape
- * > `KEYMAP` is a `Record<ActionId, KeyBinding>` -- one NAMED action, one key. A jump key
- * > is the opposite: thirty-five keys addressing an ORDINAL POSITION that means something
- * > different on every scroll. Spelling it as thirty-five `ActionId`s would be a keymap
- * > entry per row of a grid, and every consumer of `KEYMAP` (the glyph, the aria fold, the
- * > match rule) would have to learn to ignore them.
+ * > [!IMPORTANT] A MODE, not a held modifier, and the reason is that the alphabet is taken
+ * > This started as hold-Alt-and-press-a-key, which does not survive contact with a real
+ * > browser: on Windows and Linux `Alt`+letter is the MENU ACCELERATOR. `Alt+D` focuses
+ * > Chrome's address bar, `Alt+F` opens the File menu, `Alt+E`, `Alt+V` and friends open
+ * > theirs. Roughly half the alphabet was fighting the browser for the same chord, and the
+ * > browser wins. Every other modifier is worse: `Ctrl`+letter is browser shortcuts,
+ * > `Cmd`+letter is browser shortcuts, and the Windows key is the OS.
  * >
- * > The two systems cannot collide, and that is by construction rather than by agreement:
- * > `matchesBinding` returns false for ANY chord with Alt held, so no named binding can
- * > fire from a jump chord and no jump chord can be swallowed by one. That clause was
- * > already there, and it is load-bearing for this file -- do not relax it to "allow Alt
- * > bindings" without giving jump keys somewhere else to be excluded.
+ * > **Inside a mode there is no modifier to collide with.** One chord gets in
+ * > (`KEYMAP.jumpMode`, the only part of this that is a named action), the mode then owns
+ * > the keyboard, and a hint is a single bare keystroke -- which is both faster and the
+ * > shape vim readers already know from Vimium's `f`.
  */
-
-import type { KeyChord } from "./keymap";
 
 /**
  * The labels, in the order positions are handed out: 1-9, then a-z.
  *
- * DIGITS FIRST because the first row of a grid is where a reader looks, and `Alt+1` is a
- * shorter thought than `Alt+a`. Zero is left out on purpose -- it would have to mean
- * either "10" or "the tenth", and either reading puts a two-character label on a badge
- * sized for one.
+ * DIGITS FIRST because the first row of a grid is where a reader looks, and "the third
+ * one" is a thought people already have about a row of cards. Zero is left out on purpose
+ * -- it would have to mean either "10" or "the tenth", and either reading puts a
+ * two-character label on a badge sized for one.
  *
- * Thirty-five positions in total. Past that a card gets no label rather than a second
- * modifier or a two-key sequence: a reader who has scrolled thirty-five cards deep is
- * scrolling, and the ones on screen get renumbered as they arrive anyway.
+ * Thirty-five positions. Past that a card gets no label rather than a two-key sequence:
+ * Vimium pairs letters up (`fj`, `fk`) because a whole page of links needs hundreds of
+ * targets, and a screen of posters needs about twenty. One keystroke per card is worth
+ * more here than reaching the thirty-sixth.
  */
 export const JUMP_KEYS: readonly string[] = [..."123456789", ..."abcdefghijklmnopqrstuvwxyz"];
 
@@ -41,49 +40,41 @@ export function jumpLabelAt(index: number): string | null {
 }
 
 /**
- * Which position this keystroke addresses, or `null` if it addresses none.
+ * Which label this keystroke picks, or `null` if it picks none.
  *
- * ALT AND NOTHING ELSE. A chord that also holds ⌘ or Ctrl is an application command the
- * browser or the OS very likely owns -- Alt+⌘+arrow switches tabs, Ctrl+Alt+letter is a
- * dead key on a Windows layout -- and quietly stealing one is worse than not having the
- * shortcut. Shift is not checked, for `matchesBinding`'s reason: it is part of how the
- * character is produced on plenty of layouts.
+ * ONLY EVER CALLED WHILE THE MODE IS ACTIVE, which is what lets it be this permissive: a
+ * bare key is a hint here because nothing else is listening for one.
  *
- * > [!CAUTION] `event.key` IS THE WRONG THING TO READ HERE, on a Mac
- * > macOS treats Option as a compose modifier: Alt+3 arrives with `key` of `"£"` on a UK
- * > layout, and Alt+a as `"å"`. Reading `key` would give a shortcut that works on Linux
- * > and silently does nothing on the machine this was written on. `code` is the physical
- * > key and is unaffected -- `Digit3`, `KeyA` -- which is why this takes a chord carrying
- * > BOTH and matches on `code` alone.
+ * > [!IMPORTANT] It reads `key`, and the Alt version had to read `code` -- the reversal is real
+ * > Under the old hold-Alt design `key` was unusable: macOS treats Option as a compose
+ * > modifier, so `Alt+a` arrives as `"å"` and `Alt+3` as `"£"` on a UK layout, and a
+ * > matcher on `key` worked on Linux and silently did nothing on a Mac. `code` was the fix.
+ * >
+ * > With no modifier held that trap is gone, and `code` becomes the WRONG answer instead:
+ * > it is the physical key, so on AZERTY the keycap printed `A` reports `KeyQ` and a
+ * > reader pressing the letter they can see on the badge would open the wrong card.
+ * > `key` is the character the keyboard actually produced, which is exactly what the badge
+ * > shows. Layout-correct by construction, on every layout, with no table.
+ *
+ * A modifier disqualifies the keystroke rather than being ignored: `⌘R` inside the mode is
+ * a reload, not a pick, and swallowing it would make the mode a trap.
  */
-export function jumpIndexFor(chord: JumpChord): number | null {
-  if (!chord.altKey || chord.metaKey || chord.ctrlKey) return null;
-  const label = labelOfCode(chord.code);
-  if (label === null) return null;
-  const index = JUMP_KEYS.indexOf(label);
-  return index === -1 ? null : index;
+export function jumpLabelFor(chord: JumpChord): string | null {
+  if (chord.metaKey || chord.ctrlKey || chord.altKey) return null;
+  const label = chord.key.toLowerCase();
+  return JUMP_KEYS.includes(label) ? label : null;
 }
 
-/** A `KeyboardEvent` reduced to what the rule above reads. `code`, not `key` -- see there. */
-export interface JumpChord extends Omit<KeyChord, "key"> {
-  /** `KeyboardEvent.code`: the physical key, unchanged by Option-as-compose. */
-  code: string;
-}
-
-/**
- * `Digit3` -> `3`, `KeyA` -> `a`, anything else -> null.
- *
- * The numeric keypad is deliberately excluded (`Numpad3`): it is a different physical key
- * and a reader pressing it means the number, not the third card on screen.
- */
-function labelOfCode(code: string): string | null {
-  const digit = /^Digit([1-9])$/.exec(code);
-  if (digit) return digit[1];
-  const letter = /^Key([A-Z])$/.exec(code);
-  return letter ? letter[1].toLowerCase() : null;
+/** A `KeyboardEvent`, reduced to what the rule above reads, so a test needs no DOM. */
+export interface JumpChord {
+  /** `KeyboardEvent.key`: the character produced, which is what the badge shows. */
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
 }
 
 /** How a jump key is announced to a screen reader, from the same single source. */
 export function jumpAriaKeyShortcut(label: string): string {
-  return `Alt+${label}`;
+  return label;
 }
