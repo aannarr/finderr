@@ -180,7 +180,7 @@ export function TitleRoute() {
             title={title}
             fallback="label"
             eager
-            className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
+            className="vt-poster-rail aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
           />
           <TitleFactsCard facets={facets} working={working} className="mt-4" />
         </aside>
@@ -197,7 +197,7 @@ export function TitleRoute() {
               <Poster
                 title={title}
                 fallback="label"
-                className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
+                className="vt-poster-thumb aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
               />
             </div>
             <div className="min-w-0 flex-1">

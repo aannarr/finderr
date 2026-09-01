@@ -13,6 +13,7 @@
 
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { validateSearch } from "./lib/search-params";
+import { installTransitionTracking, navKind, prefersReducedMotion } from "./lib/view-transitions";
 import { AccountRoute } from "./routes/AccountRoute";
 import { AdminRoute } from "./routes/AdminRoute";
 import { AwardsRoute } from "./routes/AwardsRoute";
@@ -170,11 +171,30 @@ const routeTree = rootRoute.addChildren([
   adminRoute,
 ]);
 
+installTransitionTracking();
+
 export const router = createRouter({
   routeTree,
   // The grid can be long; returning to it should land where you left, and arriving
   // at a new view should start at the top.
   scrollRestoration: true,
+  /**
+   * Every navigation animates, and the TYPE says which way it went.
+   *
+   * On the router rather than per-`Link`, deliberately: as a prop it would be a rule with
+   * one owner per call site, and the first `<Link>` somebody adds without it becomes the
+   * one navigation in the app that snaps. `router-core` feature-detects both the API and
+   * types support and falls through to a plain navigation, so a browser without either is
+   * not a case anything here has to handle.
+   *
+   * It applies to the BACK button too, because popstate goes through the same commit path
+   * and carries no per-navigation option -- which is how back gets its transition without
+   * any of the shared-element machinery. `styles.css` owns what each type looks like.
+   */
+  defaultViewTransition: {
+    types: ({ fromLocation, toLocation }) =>
+      prefersReducedMotion() ? false : [navKind(fromLocation?.pathname ?? "", toLocation.pathname)],
+  },
 });
 
 declare module "@tanstack/react-router" {
