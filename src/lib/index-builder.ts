@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync }
 import { type Config, paths } from "./config";
 import { CROSSWALK_FILE, CROSSWALK_SCHEMA, loadCrosswalk, parseCrosswalkCsv } from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
+import { INDEX_STAGES, stampStages } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
 import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
@@ -366,6 +367,10 @@ export async function buildIndex(
   setMeta.run("rank_prior_votes", String(prior.c));
   setMeta.run("rank_prior_mean", prior.mean.toFixed(4));
   setMeta.run("ranked", String(prior.ranked));
+  // WHICH stages this file carries, so the next release can tell that an index predates a
+  // stage rather than only that it cannot read one. Written here, after every stage has
+  // run, and never by a stage itself -- see `stampStages`.
+  stampStages(db, cfg);
 
   db.run("pragma optimize");
   db.close();
@@ -513,15 +518,19 @@ function stampCast(db: Database, cfg: Config, builtAt: Date): void {
 /**
  * The filters that decide which credits exist, in a canonical form two builds can compare.
  *
- * Categories are DEDUPED AND SORTED, so listing them in a different order is the same
- * recipe. Getting that wrong is not a small bug: every build would see a mismatch, rescan
- * 101.5M rows, and quietly undo the carry-forward that makes a nightly build affordable.
+ * Categories are DEDUPED AND SORTED by `INDEX_STAGES.cast`, so listing them in a different
+ * order is the same recipe. Getting that wrong is not a small bug: every build would see a
+ * mismatch, rescan 101.5M rows, and quietly undo the carry-forward that makes a nightly
+ * build affordable.
+ *
+ * **It delegates rather than deriving its own**, because the same string is now also the
+ * cast entry in the index STAGE stamp (`./index-stages`). Two derivations of one recipe
+ * would let a boot-time "cast is stale" disagree with the build's own carry-forward
+ * decision -- the build would carry the tables forward and the next boot would order
+ * another rebuild, forever.
  */
 function castRecipe(cfg: Config): string {
-  return JSON.stringify({
-    categories: [...new Set(cfg.index.castCategories)].sort(),
-    minVotes: cfg.index.castMinVotes,
-  });
+  return INDEX_STAGES.cast(cfg);
 }
 
 /** The recipe an existing index was built with, or null if it predates the stamp. */
