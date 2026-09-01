@@ -238,11 +238,16 @@ Radarr allow with their local-access setting. finderr can do the same:
 
 ```yaml
 environment:
-  FINDERR_NO_AUTH: the_user
+  FINDERR_NO_AUTH: 1
 ```
 
-Every request is then signed in as an admin account of that name, created on first boot.
-No login screen, no invitation, nothing to redeem.
+Every request is then signed in as an admin account called `the_user`, created on first
+boot. No login screen, no invitation, nothing to redeem.
+
+One flag and one constant: there is deliberately no environment variable for the account
+name. The account is real rather than a synthetic anonymous caller, so `requested_by`,
+the admin request log and every role-gated surface behave exactly as they do with the
+login wall up — which is what stops this mode from quietly not exercising what ships.
 
 > [!CAUTION]
 > This removes authentication completely. Anyone who can reach the port is an admin — and
@@ -399,7 +404,7 @@ rebuild.
 | `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
-| `FINDERR_NO_AUTH` | | **Turns authentication off.** Signs every caller in as an admin of this name. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
+| `FINDERR_NO_AUTH` | `false` | **Turns authentication off.** Signs every caller in as an admin called `the_user`. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
 | `FINDERR_INDEX_REFRESH_TZ` | `UTC` | IANA zone for the cron. The dumps publish on UTC |
 | `FINDERR_INDEX_REFRESH_ON_BOOT` | `true` | Build an index on boot when there is none, instead of exiting. The server listens and serves a progress page while it runs |
