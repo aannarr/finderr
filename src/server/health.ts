@@ -150,6 +150,16 @@ export interface HealthDeps {
    * anybody ever turned it on.
    */
   push: { enabled: boolean; devices: number };
+  /**
+   * The arr callback: whether a password is configured, and what has arrived since boot.
+   *
+   * Three counts, and the pair worth reading is `received` beside `applied`. Configuring the
+   * Webhook connections is a manual step on the arr side, so `received: 0` is how an operator
+   * finds out they did not save it -- there is no other signal, and the poller keeps working
+   * either way, which is exactly what makes a mis-configured webhook invisible. `refused`
+   * rising is a wrong password or a caller that should not be there.
+   */
+  webhook: { enabled: boolean; received: number; applied: number; refused: number };
   queue: unknown;
   artwork: unknown;
   /**
@@ -249,6 +259,7 @@ export function healthPayload(
     timings: deps.timings,
     services: deps.services,
     auth: deps.auth,
+    webhook: deps.webhook,
     queue: deps.queue,
     artwork: deps.artwork,
     shelves: deps.shelves,

@@ -27,6 +27,7 @@ function deps(onCoverage: () => void): HealthDeps {
     services: { radarr: true, sonarr: true, prowlarr: false },
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true, noAuth: false },
     push: { enabled: true, devices: 2 },
+    webhook: { enabled: true, received: 14, applied: 9, refused: 0 },
     queue: { pending: 0 },
     artwork: { resolved: 2192 },
     shelves: { enabled: false, ready: false, tiers: { index: null, tmdb: null, arr: null }, rows: 0 },

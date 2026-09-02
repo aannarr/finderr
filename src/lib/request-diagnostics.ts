@@ -40,6 +40,7 @@ export type RequestVerdict =
   | "searching"
   | "downloading"
   | "imported"
+  | "needs_manual_import"
   | "nothing_accepted"
   | "no_releases"
   | "failed";
@@ -81,6 +82,17 @@ export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: str
     label: "Available",
     tone: "done",
     sentence: "Downloaded and added to your library.",
+  },
+  needs_manual_import: {
+    label: "Needs a manual import",
+    // `dead_end` rather than `working`, and the distinction is the point: nothing further
+    // will happen on its own, so the reader should stop waiting and go and do something.
+    // It is the one verdict here that describes a task rather than a state.
+    tone: "dead_end",
+    // Names no path and no download client. The reader is being told to go and look, and
+    // "which folder" is the class of fact `safeArrMessage` keeps off the wire.
+    sentence:
+      "The download finished, but it could not be filed automatically -- somebody needs to import it by hand in Radarr or Sonarr.",
   },
   nothing_accepted: {
     label: "Nothing accepted",
@@ -170,6 +182,10 @@ export function verdictFor(
       return "downloading";
     case "sent":
       return "searching";
+    // No evidence refines this one: the arr said so directly, over a webhook, and nothing
+    // finderr can poll would have told us. See `RequestStatus.manual_import`.
+    case "manual_import":
+      return "needs_manual_import";
     case "no_release":
       // A positive count is the only thing that earns the confident answer. No diagnostic,
       // or a count we never got, both fall back to the narrower verdict.

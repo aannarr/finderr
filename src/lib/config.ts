@@ -387,6 +387,55 @@ export interface Config {
     noAuth: boolean;
   };
 
+  /**
+   * The callback Radarr and Sonarr push request state changes to.
+   *
+   * > [!CAUTION] This is the ONE route that accepts state changes without a session
+   * > `/api/webhook/arr` is on `AuthService.publicPaths()` -- it has to be, because an arr
+   * > has no cookie and no Plex account -- so the credentials here are the whole of its
+   * > authentication. **Unset `password` means the route refuses every caller**, which is
+   * > the right default for a surface reachable from `finderr.example.com`: a webhook nobody
+   * > configured is a webhook nobody misses, and a webhook nobody authenticated is an
+   * > anonymous writer of somebody's request log.
+   *
+   * A Webhook connection's configurable fields are `url, method, username, password,
+   * headers` -- there is no shared-secret field -- so the choice was HTTP basic auth or a
+   * token in the URL. Basic auth, for the reason `safeUrl` and the `X-Plex-Token` header
+   * rule were both bought with: a credential in a URL ends up in a log line.
+   */
+  webhook: {
+    /** The basic-auth user an arr sends. A name, not a secret; the password is the secret. */
+    username: string;
+    /** The basic-auth password. UNSET DISABLES THE ROUTE ENTIRELY -- see above. */
+    password?: string;
+    /**
+     * Refuse a webhook whose source address is not on a private network.
+     *
+     * A SECOND LAYER, off by default. The arrs reach finderr over the LAN in the shipped
+     * deployment, so this costs nothing there and closes the route to the internet even if
+     * the password leaks. It is off by default because on is silently wrong for anyone whose
+     * arrs are not on an RFC1918 network -- a tunnel, a different site, a hosted arr -- and
+     * the failure mode is a webhook that stops arriving with nothing in a browser to say so.
+     *
+     * > [!IMPORTANT] It reads the source address through `auth.trustProxy`, like everything else
+     * > Behind Caddy every request carries the proxy's own address, so with `trustProxy` off
+     * > this would see one private address for the entire internet and be worthless. With it
+     * > on, the header is only trusted at its LAST hop -- and anyone who can reach finderr
+     * > directly on the LAN can forge it, which is accepted here exactly as it is for the
+     * > rate limiter: this narrows the surface, the password is what closes it.
+     */
+    lanOnly: boolean;
+    /**
+     * Requests per minute per IP on the webhook route.
+     *
+     * Generous rather than tight, because a legitimate season pack is a burst: a grab and an
+     * import per episode, back to back. Dropping one of those costs nothing permanent -- the
+     * reconcile poller is the safety net and catches up within thirty seconds -- but it
+     * would cost the `manual_import` state, which nothing else can see.
+     */
+    ratePerMinute: number;
+  };
+
   /** What one person may ask the library for. */
   requests: {
     /**
@@ -621,6 +670,14 @@ const DEFAULTS: Config = {
     // The login wall is ON unless an operator turns it off, and it is never off by accident.
     noAuth: false,
   },
+  webhook: {
+    username: "finderr",
+    // No password default, deliberately: a shipped one would be a shipped credential on a
+    // public route. Absent means the route refuses everybody, which is the state every
+    // install starts in and stays in until an operator sets one.
+    lanOnly: false,
+    ratePerMinute: 300,
+  },
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
@@ -765,6 +822,12 @@ function envOverrides(): Record<string, unknown> {
       agentCheapRatePerMinute: envInt("FINDERR_AGENT_CHEAP_RATE_PER_MINUTE"),
       agentExpensiveRatePerMinute: envInt("FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE"),
       noAuth: envBool("FINDERR_NO_AUTH"),
+    },
+    webhook: {
+      username: envStr("FINDERR_WEBHOOK_USERNAME"),
+      password: envStr("FINDERR_WEBHOOK_PASSWORD"),
+      lanOnly: envBool("FINDERR_WEBHOOK_LAN_ONLY"),
+      ratePerMinute: envInt("FINDERR_WEBHOOK_RATE_PER_MINUTE"),
     },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
     push: {

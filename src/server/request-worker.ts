@@ -250,10 +250,20 @@ export class RequestWorker {
    */
   async reconcile(): Promise<void> {
     const { store, log } = this.deps;
+    /*
+      `manual_import` is in here, and that is what keeps it from being a dead end.
+
+      A webhook put the row there because the arr could not file the download itself. The
+      moment a person sorts it out, the file appears in the library mirror and the loop below
+      takes the row to `available` with the arrival notification, exactly as it would have
+      for a download that never needed help. Leaving it out would have been the bug: the
+      reader would keep being told to go and import something they already imported.
+    */
     const open = [
       ...store.listRequests("sent", 200),
       ...store.listRequests("grabbed", 200),
       ...store.listRequests("downloading", 200),
+      ...store.listRequests("manual_import", 200),
     ];
     if (open.length === 0) return;
 

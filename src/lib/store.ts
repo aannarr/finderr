@@ -30,7 +30,21 @@ export type RequestStatus =
   | "downloading"
   | "available"
   | "failed"
-  | "no_release";
+  | "no_release"
+  /**
+   * The download finished and the arr cannot file it without a person.
+   *
+   * WRITTEN ONLY FROM A WEBHOOK -- see `./arr-webhook.ts`. It is the one request state
+   * finderr cannot reach by polling: the arr's queue reports such an item as completed and
+   * the history has nothing to say, so a poller sees a title that stopped moving and can
+   * only keep calling it "searching". Seerr shows this class as Processing forever; naming
+   * it is the whole reason this state exists.
+   *
+   * It is an in-flight state rather than a dead end -- `RequestWorker.reconcile` keeps
+   * watching it, so the moment somebody sorts the import out by hand the library mirror
+   * takes the row to `available` exactly as it would have anyway.
+   */
+  | "manual_import";
 
 export interface MediaRequest {
   id: number;
@@ -1171,6 +1185,26 @@ export class Store {
     return (
       (this.db.query("select * from request where tconst = ?").get(tconst) as MediaRequest | undefined) ??
       null
+    );
+  }
+
+  /**
+   * The request an arr's own row id belongs to, for a caller that has no `tconst`.
+   *
+   * The webhook fallback (`../server/arr-webhook.ts`): a Radarr movie or a Sonarr series may
+   * hold no IMDb id at all, and then the arr's id is the only handle in the payload. Scoped
+   * by SERVICE because the two arrs number their rows independently -- Radarr movie 42 and
+   * Sonarr series 42 are unrelated, and a lookup on the id alone would occasionally file an
+   * event against somebody else's request.
+   *
+   * Newest activity first, for the same reason `arr_id` is not unique: a title deleted from
+   * an arr and re-added keeps its old request row until it is re-requested.
+   */
+  requestByArrId(service: MediaRequest["service"], arrId: number): MediaRequest | null {
+    return (
+      (this.db
+        .query("select * from request where service = ? and arr_id = ? order by updated_at desc limit 1")
+        .get(service, arrId) as MediaRequest | undefined) ?? null
     );
   }
 
