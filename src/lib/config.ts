@@ -11,12 +11,17 @@
 
 import { existsSync, readFileSync } from "node:fs";
 
-export interface ArrService {
+/**
+ * Any servarr: a base URL and an API key.
+ *
+ * Radarr, Sonarr and Prowlarr are configured identically at this level and differ only in
+ * what they can be ASKED -- which is why the client hierarchy splits the same way (see
+ * `ServarrHttp` in `./arr.ts`). Keeping the shared half named means a fourth service is a
+ * type alias rather than a fourth copy of these three fields.
+ */
+export interface ServarrService {
   url: string;
   apiKey: string;
-  /** Radarr: root folder for movies. Sonarr: root folder for series. */
-  rootFolder?: string;
-  qualityProfileId?: number;
   /**
    * The address an ADMIN'S BROWSER should use to reach this arr, if it differs from `url`.
    *
@@ -31,6 +36,13 @@ export interface ArrService {
    * Only ever sent to an admin -- see `arrLink()` in `src/lib/arr-links.ts`.
    */
   publicUrl?: string;
+}
+
+/** A servarr that holds a library: the two finderr adds titles to. */
+export interface ArrService extends ServarrService {
+  /** Radarr: root folder for movies. Sonarr: root folder for series. */
+  rootFolder?: string;
+  qualityProfileId?: number;
 }
 
 export interface Config {
@@ -134,6 +146,16 @@ export interface Config {
 
   radarr?: ArrService;
   sonarr?: ArrService;
+
+  /**
+   * Prowlarr, read-only and OPTIONAL. Unset means request diagnostics say less.
+   *
+   * finderr never asks Prowlarr to search -- it reads `/api/v1/history` to find out
+   * whether the searches Radarr and Sonarr already ran came back with anything. Without
+   * it a request that has found nothing can only be reported as still looking, which is
+   * a narrower answer rather than a wrong one. See `src/lib/request-diagnostics.ts`.
+   */
+  prowlarr?: ServarrService;
 
   /**
    * Which countries this instance is FOR, most important first.
@@ -596,16 +618,24 @@ function merge<T>(base: T, override: unknown): T {
   return out as T;
 }
 
-function arrFromEnv(prefix: "RADARR" | "SONARR"): Partial<ArrService> | undefined {
+/**
+ * The three fields every servarr shares. `undefined` when the operator set none of them,
+ * which is what keeps an unconfigured service absent rather than half-present.
+ */
+function servarrFromEnv(prefix: "RADARR" | "SONARR" | "PROWLARR"): Partial<ServarrService> | undefined {
   const url = envStr(`FINDERR_${prefix}_URL`);
   const apiKey = envStr(`FINDERR_${prefix}_API_KEY`);
-  const rootFolder = envStr(`FINDERR_${prefix}_ROOT_FOLDER`);
   const publicUrl = envStr(`FINDERR_${prefix}_PUBLIC_URL`);
+  if (!url && !apiKey && !publicUrl) return undefined;
+  return { url, apiKey, publicUrl } as Partial<ServarrService>;
+}
+
+function arrFromEnv(prefix: "RADARR" | "SONARR"): Partial<ArrService> | undefined {
+  const rootFolder = envStr(`FINDERR_${prefix}_ROOT_FOLDER`);
   const qualityProfileId = envInt(`FINDERR_${prefix}_QUALITY_PROFILE_ID`);
-  if (!url && !apiKey && !rootFolder && !publicUrl && qualityProfileId === undefined) {
-    return undefined;
-  }
-  return { url, apiKey, rootFolder, publicUrl, qualityProfileId } as Partial<ArrService>;
+  const shared = servarrFromEnv(prefix);
+  if (!shared && !rootFolder && qualityProfileId === undefined) return undefined;
+  return { ...shared, rootFolder, qualityProfileId } as Partial<ArrService>;
 }
 
 function envOverrides(): Record<string, unknown> {
@@ -634,6 +664,7 @@ function envOverrides(): Record<string, unknown> {
     },
     radarr: arrFromEnv("RADARR"),
     sonarr: arrFromEnv("SONARR"),
+    prowlarr: servarrFromEnv("PROWLARR"),
     // Upper-cased on the way in: TMDB takes ISO 3166-1 alpha-2 and rejects "us".
     regions: envStr("FINDERR_REGIONS")
       ?.split(",")
@@ -718,7 +749,7 @@ function validate(c: Config): void {
   // Empty is legal and means "index no cast at all" -- a deliberate way to opt out of
   // the largest dump. It is not an error, so nothing is pushed for it.
 
-  for (const name of ["radarr", "sonarr"] as const) {
+  for (const name of ["radarr", "sonarr", "prowlarr"] as const) {
     const svc = c[name];
     if (!svc) continue;
     if (!svc.url) problems.push(`${name} is configured but FINDERR_${name.toUpperCase()}_URL is missing`);

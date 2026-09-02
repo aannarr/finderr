@@ -7,7 +7,10 @@
  * never over the network. That single choice is most of the speed difference.
  */
 
-import type { ArrService } from "./config";
+import type { ArrService, ServarrService } from "./config";
+
+/** Every servarr finderr speaks to. Used for log lines and for `safeArrMessage`. */
+export type ServarrName = "radarr" | "sonarr" | "prowlarr";
 
 export interface ArrRootFolder {
   id: number;
@@ -109,6 +112,36 @@ export interface QueueItem {
   movieId?: number;
   seriesId?: number;
   errorMessage?: string;
+  /**
+   * When the arr expects this to finish, as an ISO instant.
+   *
+   * An INSTANT rather than the sibling `timeleft` duration, because the answer is read by a
+   * browser up to a reconcile period after it was written: a duration would be stale by
+   * however long the row sat in SQLite, while an instant stays correct as the clock moves.
+   * Absent for a queued-but-not-started item, and free to be in the past for a stalled one.
+   */
+  estimatedCompletionTime?: string;
+}
+
+/**
+ * One row of a Radarr or Sonarr history page.
+ *
+ * The two services agree on everything here and differ only in which id is populated,
+ * which is the same shape `/queue` already has -- so one type serves both.
+ *
+ * > [!IMPORTANT] `quality.quality.name` is the ONE string from an arr this feature forwards
+ * > It is a profile name Radarr shows in its own UI ("Bluray-1080p"), chosen from a closed
+ * > list the operator configured, and it carries no path, no hostname and no free text.
+ * > Everything else on this record -- `sourceTitle`, `data` -- is a release name or the
+ * > arr's own prose and is NOT safe to forward. See `safeArrMessage`.
+ */
+export interface ArrHistoryRecord {
+  /** `grabbed`, `downloadFolderImported`, `downloadFailed`, ... -- see `ARR_GRAB_EVENT`. */
+  eventType?: string;
+  date?: string;
+  movieId?: number;
+  seriesId?: number;
+  quality?: { quality?: { name?: string } };
 }
 
 export class ArrError extends Error {
@@ -146,14 +179,28 @@ export function safeArrMessage(err: unknown): string {
   return `${err.service} refused the request (HTTP ${err.status})`;
 }
 
-export class ArrClient {
+/**
+ * The HTTP half of talking to a *arr, with nothing media-specific in it.
+ *
+ * Split out from `ArrClient` when Prowlarr arrived. Every servarr shares this exact
+ * transport -- `X-Api-Key`, JSON in and out, a void controller action answering 200 with a
+ * zero-byte body -- and differs only in its API VERSION and in which endpoints exist. Two
+ * copies of the empty-body handling would have been two places to relearn it.
+ *
+ * It stops here rather than growing `queue()` and friends because Prowlarr has neither a
+ * queue nor a root folder: a subclass that inherits methods its service will 404 on forces
+ * every caller to know which of them are real.
+ */
+export class ServarrHttp<S extends ServarrService = ServarrService> {
   constructor(
-    protected readonly name: "radarr" | "sonarr",
-    protected readonly svc: ArrService,
+    protected readonly name: ServarrName,
+    protected readonly svc: S,
+    /** The path segment after `/api`. Radarr and Sonarr are v3; Prowlarr is v1. */
+    private readonly apiVersion: string = "v3",
   ) {}
 
   private url(path: string, query?: Record<string, string | number | undefined>): string {
-    const u = new URL(`/api/v3${path}`, this.svc.url);
+    const u = new URL(`/api/${this.apiVersion}${path}`, this.svc.url);
     for (const [k, v] of Object.entries(query ?? {})) {
       if (v !== undefined) u.searchParams.set(k, String(v));
     }
@@ -216,6 +263,19 @@ export class ArrClient {
     }
   }
 
+}
+
+/**
+ * What Radarr and Sonarr share on top of the transport: a library, a queue, and the two
+ * lists an admin picks a request's destination from.
+ *
+ * Prowlarr deliberately does NOT extend this -- see `ProwlarrClient` in `./prowlarr.ts`.
+ */
+export class ArrClient extends ServarrHttp<ArrService> {
+  constructor(name: "radarr" | "sonarr", svc: ArrService) {
+    super(name, svc);
+  }
+
   rootFolders() {
     return this.get<ArrRootFolder[]>("/rootfolder");
   }
@@ -224,6 +284,28 @@ export class ArrClient {
   }
   queue() {
     return this.get<{ records: QueueItem[] }>("/queue", { pageSize: 200 });
+  }
+
+  /**
+   * The most recent history events, newest first.
+   *
+   * ONE call for the whole library rather than one per open request. The alternative --
+   * Radarr's `/history/movie?movieId=` and Sonarr's `/history/series?seriesId=` -- is a
+   * call per request on a 30-second timer, which is the shape of load that gets an arr
+   * treated as the reason the NAS is slow.
+   *
+   * A GRAB is what this is for and grabs are rare, so a page of 200 covers a long way
+   * back. Nothing here is authoritative about a request that has been open for weeks:
+   * the evidence is written down when it is seen, and staying in the page is not a
+   * condition for keeping it.
+   */
+  history(pageSize = 200) {
+    return this.get<{ records: ArrHistoryRecord[] }>("/history", {
+      page: 1,
+      pageSize,
+      sortKey: "date",
+      sortDirection: "descending",
+    });
   }
 }
 
