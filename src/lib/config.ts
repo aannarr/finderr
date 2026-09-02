@@ -383,6 +383,37 @@ export interface Config {
     quotaPerDay: number;
   };
 
+  /** Telling the person who asked, on the device they asked from. */
+  push: {
+    /**
+     * Whether this instance offers web push at all. ON by default.
+     *
+     * It costs nothing when nobody subscribes -- the keys are generated on the first ask
+     * and no message is ever sent to zero devices -- and turning it off is for an operator
+     * who does not want their server talking to Google's, Apple's and Mozilla's push
+     * services on their users' behalf. That is a legitimate position and it deserves a
+     * switch rather than an explanation.
+     *
+     * Off makes `/api/push/key` report `enabled: false`, which is what the client checks
+     * before offering the control. Existing subscriptions are kept, not deleted: a flag
+     * flipped to debug something must not destroy state.
+     */
+    enabled: boolean;
+    /**
+     * The `sub` claim in every VAPID token: how a push service reaches THIS operator.
+     *
+     * RFC 8292 asks for a `mailto:` or `https:` URL, and the services use it to contact
+     * whoever is sending if something goes wrong. It is configuration rather than a
+     * constant because it is a claim about a deployment and this repo is somebody else's.
+     *
+     * The default is a valid address at `localhost`, which is honest -- it says "nobody
+     * filled this in" without inventing a real inbox. Every push service tested accepts a
+     * well-formed address; set `FINDERR_PUSH_CONTACT` to a real one if yours refuses, or
+     * simply so a service that needs to reach you can.
+     */
+    contact: string;
+  };
+
   /** Mirror the arr libraries locally so "do we have it?" never hits the network. */
   libraryRefreshSeconds: number;
 
@@ -566,6 +597,7 @@ const DEFAULTS: Config = {
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
+  push: { enabled: true, contact: "mailto:finderr@localhost" },
   libraryRefreshSeconds: 60,
   // Opt-in. See `shelves.keepFresh` -- off is the behaviour every version so far has had.
   shelves: { keepFresh: false },
@@ -706,6 +738,10 @@ function envOverrides(): Record<string, unknown> {
       noAuth: envBool("FINDERR_NO_AUTH"),
     },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
+    push: {
+      enabled: envBool("FINDERR_PUSH_ENABLED"),
+      contact: envStr("FINDERR_PUSH_CONTACT"),
+    },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
     shelves: { keepFresh: envBool("FINDERR_KEEP_SHELVES_FRESH") },
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),

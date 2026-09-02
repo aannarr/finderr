@@ -140,6 +140,16 @@ export interface HealthDeps {
     /** `auth.noAuth`. TRUE means THE LOGIN WALL IS OPEN -- see that config field. */
     noAuth: boolean;
   };
+  /**
+   * Web push: whether it is switched on, and how many devices have subscribed.
+   *
+   * A COUNT, like everything else in `auth` above, and for the same reason: it says
+   * notifications are reaching somebody without saying whose phone. `enabled: true` with
+   * `devices: 0` is the ordinary state of a fresh install and is what to check first when
+   * an arrival did not notify anybody -- before looking at the push service, look at whether
+   * anybody ever turned it on.
+   */
+  push: { enabled: boolean; devices: number };
   queue: unknown;
   artwork: unknown;
   /**

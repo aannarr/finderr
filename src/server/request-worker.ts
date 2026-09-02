@@ -15,7 +15,7 @@ import type { RadarrClient, SonarrClient } from "../lib/arr";
 import { ArrError, safeArrMessage } from "../lib/arr";
 import type { ProwlarrClient } from "../lib/prowlarr";
 import { decodeSeasons } from "../lib/seasons";
-import type { Store } from "../lib/store";
+import type { MediaRequest, Store } from "../lib/store";
 import { searchOnAddOf } from "../lib/store";
 import { diagnoseRequests, downloadsByArrId } from "./diagnose-requests";
 
@@ -30,6 +30,22 @@ export interface WorkerDeps {
    */
   prowlarr?: ProwlarrClient;
   log: (...args: unknown[]) => void;
+  /**
+   * Called once for each request that has just become available.
+   *
+   * A CALLBACK RATHER THAN A NOTIFIER, so this file never learns that push notifications
+   * exist. What it knows is the moment -- it is the only thing that does -- and who acts on
+   * that moment is `src/server/index.ts`'s wiring decision. It also keeps the worker
+   * testable without a push service, a VAPID pair or a network.
+   *
+   * The row passed is the one read at the start of the pass, so its `status` still says
+   * what it was before the transition; `tconst`, `title`, `year` and `requested_by` are
+   * what a listener wants and none of them move.
+   *
+   * Fire and forget. A listener that throws or hangs must not be able to stop the pass, so
+   * anything asynchronous is the listener's own business.
+   */
+  onAvailable?: (request: MediaRequest) => void;
 }
 
 /**
@@ -258,6 +274,14 @@ export class RequestWorker {
       if (l?.has_file === 1) {
         store.updateRequest(r.tconst, { status: "available", error: null, available_seen_at: null });
         log(`request: "${r.title}" is now available`);
+        // AFTER the write, so a listener that reads the row back sees the new status; and
+        // wrapped, because a listener throwing here would abandon the rest of this pass --
+        // leaving every other open request un-reconciled for the sake of one notification.
+        try {
+          this.deps.onAvailable?.(r);
+        } catch (err) {
+          log(`request: arrival listener failed for "${r.title}" -- ${(err as Error).message}`);
+        }
       }
     }
 

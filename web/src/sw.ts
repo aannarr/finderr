@@ -109,6 +109,108 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+/*
+  ---------------------------------------------------------------------------
+  Push. The other half of what a service worker is for, and the reason iOS
+  requires the app to be installed before it will deliver one at all.
+  ---------------------------------------------------------------------------
+*/
+
+/**
+ * What the server sends. Mirrors `PushMessage` in `src/server/push.ts`.
+ *
+ * Re-declared rather than imported, because this file is bundled as its own self-contained
+ * entry: importing the server module would pull a server module into a service worker. The
+ * two declarations are checked against each other by `web/src/sw-push.test.ts`, which reads
+ * both files -- the alternative is two shapes drifting apart with the only symptom being a
+ * blank notification on somebody's phone.
+ */
+interface PushMessage {
+  title: string;
+  body: string;
+  url: string;
+  tag: string;
+}
+
+self.addEventListener("push", (event) => {
+  /*
+    A NOTIFICATION IS SHOWN FOR EVERY PUSH, WITHOUT EXCEPTION.
+
+    Every browser that implements push does so under `userVisibleOnly`, and a handler that
+    receives a message without showing something is met with an escalating penalty --
+    Chrome shows its own "This site has been updated in the background" notice, and repeat
+    offenders have the permission revoked. So the fallback below is not politeness: an
+    unreadable payload still has to become a notification, and a vague one is the only
+    honest thing to say about a message we could not parse.
+  */
+  const message = readMessage(event.data);
+  event.waitUntil(
+    self.registration.showNotification(message.title, {
+      body: message.body,
+      // The maskable icon is the one drawn at notification size on Android; iOS uses the
+      // home-screen icon regardless of what is named here.
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      // Same tag REPLACES rather than stacks, so a series arriving season by season does
+      // not fill a lock screen. The server keys it per request.
+      tag: message.tag,
+      data: { url: message.url },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data as { url?: string } | null)?.url ?? "/";
+  event.waitUntil(openInExistingWindow(url));
+});
+
+/** The payload, or something honest to say when it cannot be read. */
+function readMessage(data: PushMessageData | null): PushMessage {
+  const fallback: PushMessage = {
+    title: "finderr",
+    body: "Something you asked for has arrived.",
+    url: "/requests",
+    tag: "finderr",
+  };
+  if (!data) return fallback;
+  try {
+    const parsed = data.json() as Partial<PushMessage>;
+    // Every field checked, because one missing string renders as the word "undefined" on
+    // somebody's lock screen -- and a push payload arrives from a server that may be a
+    // release ahead of this worker.
+    return {
+      title: typeof parsed.title === "string" ? parsed.title : fallback.title,
+      body: typeof parsed.body === "string" ? parsed.body : fallback.body,
+      url: typeof parsed.url === "string" ? parsed.url : fallback.url,
+      tag: typeof parsed.tag === "string" ? parsed.tag : fallback.tag,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Bring finderr forward rather than opening a second copy of it.
+ *
+ * Tapping a notification while the app is already open should navigate the window that is
+ * already there. `openWindow` unconditionally would leave a reader with two instances of an
+ * installed app and lose whatever they had on screen.
+ */
+async function openInExistingWindow(url: string): Promise<void> {
+  const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of clients) {
+    // Same origin only, which `matchAll` already guarantees -- this narrows to a window we
+    // can actually navigate, since `focus` exists on WindowClient alone.
+    if ("focus" in client) {
+      await client.focus();
+      await client.navigate(url).catch(() => undefined);
+      return;
+    }
+  }
+  await self.clients.openWindow(url);
+}
+
 /**
  * A document request. The network decides; the offline page is the consolation.
  *

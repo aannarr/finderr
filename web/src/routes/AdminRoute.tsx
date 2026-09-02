@@ -26,6 +26,7 @@ import {
   resetUser,
   revokeInvite,
 } from "../lib/auth-api";
+import { LINK_BUTTON } from "../lib/ui";
 
 function when(iso: string | null): string {
   if (!iso) return "—";
@@ -238,5 +239,3 @@ export function AdminRoute() {
     </div>
   );
 }
-
-const LINK_BUTTON = "text-sm text-muted underline underline-offset-4 hover:text-ink";

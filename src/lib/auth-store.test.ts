@@ -282,6 +282,83 @@ describe("plex pins", () => {
   });
 });
 
+describe("push subscriptions", () => {
+  const sub = (endpoint: string, userId: string) => ({
+    endpoint,
+    userId,
+    p256dh: "key",
+    auth: "secret",
+  });
+
+  test("a subscription round-trips and is counted", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/1", u.id));
+    expect(auth.listPushSubscriptions(u.id).map((s) => s.endpoint)).toEqual(["https://push.example/1"]);
+    expect(auth.pushSubscriptionCount()).toBe(1);
+  });
+
+  /**
+   * A browser re-subscribes routinely -- a push service may rotate an endpoint's keys, and
+   * the app re-checks on every load. Insert-only would make each of those a duplicate row,
+   * and one arrival would then be delivered to the same device several times.
+   */
+  test("re-subscribing the same endpoint updates rather than duplicating", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/1", u.id));
+    auth.putPushSubscription({ ...sub("https://push.example/1", u.id), p256dh: "rotated" });
+    const rows = auth.listPushSubscriptions(u.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.p256dh).toBe("rotated");
+  });
+
+  /**
+   * A SHARED DEVICE. One person signs out, another signs in, and the browser re-subscribes
+   * with the endpoint it already had. The row has to change hands, or one person's arrivals
+   * are pushed to the other's phone.
+   */
+  test("an endpoint that changes owner follows the new one", () => {
+    const ana = auth.createUser({ displayName: "Ana", role: "user" });
+    const ben = auth.createUser({ displayName: "Ben", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/shared", ana.id));
+    auth.putPushSubscription(sub("https://push.example/shared", ben.id));
+    expect(auth.listPushSubscriptions(ana.id)).toHaveLength(0);
+    expect(auth.listPushSubscriptions(ben.id)).toHaveLength(1);
+  });
+
+  /**
+   * An endpoint URL is not a secret from the push service's point of view, so a delete
+   * keyed on it alone would be a stranger's off switch for somebody else's notifications.
+   */
+  test("unsubscribing is scoped to the owner", () => {
+    const ana = auth.createUser({ displayName: "Ana", role: "user" });
+    const ben = auth.createUser({ displayName: "Ben", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/ana", ana.id));
+    expect(auth.deletePushSubscription(ben.id, "https://push.example/ana")).toBe(false);
+    expect(auth.deletePushSubscription(ana.id, "https://push.example/ana")).toBe(true);
+  });
+
+  /** The 404/410 path: the push service has said this endpoint is gone, whoever owned it. */
+  test("forgetting a dead endpoint does not need to know whose it was", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/dead", u.id));
+    auth.forgetPushEndpoint("https://push.example/dead");
+    expect(auth.pushSubscriptionCount()).toBe(0);
+  });
+
+  /**
+   * The reason the table is declared beside `app_user` rather than with the rest of the
+   * request machinery: a subscription is a device that will be pushed to on somebody's
+   * behalf, and leaving one behind means going on notifying a phone about an account that
+   * no longer exists.
+   */
+  test("deleting a user takes their subscriptions with it", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/1", u.id));
+    auth.deleteUser(u.id);
+    expect(auth.pushSubscriptionCount()).toBe(0);
+  });
+});
+
 describe("the hot path stays cheap without ever trusting the sweep", () => {
   test("an expired session is refused even when the sweep already ran this minute", () => {
     const u = auth.createUser({ displayName: "A", role: "user" });

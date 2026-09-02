@@ -57,6 +57,7 @@ import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
 import { type PreviewDeps, previewResponse } from "./preview";
 import { PREVIEW_IMAGE_PATH, PREVIEW_PATH, PreviewResolver } from "./preview-resolver";
+import { PushNotifier } from "./push";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
@@ -155,10 +156,42 @@ const artwork = new ArtworkService(cfg, store, { radarr, sonarr }, log);
 // Cast headshots, season posters and episode stills, served from our own origin. Reuses
 // the artwork service for the bytes -- a face is not a different kind of JPEG.
 const facetImages = new FacetImageProxy({ store, bytes: artwork });
-const worker = new RequestWorker({ store, radarr, sonarr, prowlarr, log });
 
 // Identity. Shares the app database connection -- one file, one writer, one migration.
 const authStore = new AuthStore(store.db);
+
+/*
+  Web push, and it is constructed BEFORE the request worker on purpose.
+
+  The worker owns the one moment a request becomes available and reports it through an
+  `onAvailable` callback, so it never learns that notifications exist -- which is what keeps
+  it testable without a VAPID pair or a network. Wiring that callback here is the only place
+  the two meet.
+
+  `announceArrival` never throws and never awaits anything the reconcile pass depends on, so
+  the call is deliberately not awaited: a push service having a bad minute must not slow the
+  timer that is updating everybody else's requests.
+*/
+const pushNotifier = new PushNotifier({
+  store,
+  authStore,
+  enabled: cfg.push.enabled,
+  contact: cfg.push.contact,
+  log: (m) => log(m),
+});
+
+const worker = new RequestWorker({
+  store,
+  radarr,
+  sonarr,
+  prowlarr,
+  log,
+  onAvailable: (request) => {
+    void pushNotifier
+      .announceArrival(request)
+      .catch((err) => log(`push: announcing "${request.title}" failed -- ${(err as Error).message}`));
+  },
+});
 const auth = new AuthService({
   auth: authStore,
   store,
@@ -1017,6 +1050,7 @@ const appRoutes = {
             // list every user.
             noAuth: cfg.auth.noAuth,
           },
+          push: { enabled: pushNotifier.enabled, devices: authStore.pushSubscriptionCount() },
           queue: worker.stats(),
           artwork: artwork.stats(),
           /*
@@ -1712,6 +1746,103 @@ const appRoutes = {
       // desired state -- "no unread arrivals for you" -- is already true.
       if (!me) return json({ seen: 0 });
       return json({ seen: store.markAvailableSeen(me) });
+    },
+  },
+
+  /*
+    ---------------------------------------------------------------------------
+    Web push. Three routes: what to subscribe with, subscribe, unsubscribe.
+
+    > [!IMPORTANT] On iOS this is reachable ONLY from an installed app
+    > Safari serves the Push API to a web app the reader has added to their home screen,
+    > over HTTPS, and to nothing else -- no configuration changes that. So "add to home
+    > screen" is not a nicety here, it is the subscription ceremony, and the client says so
+    > rather than offering a control that cannot work.
+    ---------------------------------------------------------------------------
+  */
+
+  /**
+   * The instance's VAPID public key, which is what a browser subscribes against.
+   *
+   * PUBLIC BY DESIGN -- it is an identity, not a secret: it lets a push service verify that
+   * a message came from this server, and every subscriber has to be handed a copy. The
+   * private half never leaves the process.
+   *
+   * It also reports whether push is switched on at all, so the client asks one question
+   * instead of trying to subscribe and interpreting the failure.
+   */
+  "/api/push/key": async () =>
+    json(
+      { enabled: pushNotifier.enabled, publicKey: await pushNotifier.publicKey() },
+      // The key is stable for the life of the database, but a client caching it across a
+      // regeneration would subscribe against a key this server cannot sign with -- and the
+      // failure is silent. An hour is short enough to heal that and long enough to matter.
+      { headers: { "Cache-Control": "private, max-age=3600" } },
+    ),
+
+  "/api/push/subscribe": {
+    POST: async (req: Request) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      // A subscription belongs to a PERSON, because what it delivers is news about their
+      // own requests. There is nothing an anonymous caller could be told.
+      if (!me) return bad("sign in to enable notifications", 401);
+      if (!pushNotifier.enabled) return bad("notifications are switched off on this server", 503);
+
+      let body: { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+      try {
+        body = (await req.json()) as typeof body;
+      } catch {
+        return bad("body must be JSON");
+      }
+
+      const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
+      const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
+      const authSecret = typeof body.keys?.auth === "string" ? body.keys.auth : "";
+      if (!endpoint || !p256dh || !authSecret) return bad("endpoint and both keys are required");
+      /*
+        THE ENDPOINT IS A URL THIS SERVER WILL LATER POST TO, so it is validated before it
+        is stored rather than at send time. A row that only fails when a film arrives is a
+        row nobody finds out about until the one moment it was supposed to work -- and
+        `https` alone is what stops a subscription pointing this server at a plain-http
+        address of somebody's choosing.
+      */
+      let parsed: URL;
+      try {
+        parsed = new URL(endpoint);
+      } catch {
+        return bad("endpoint is not a URL");
+      }
+      if (parsed.protocol !== "https:") return bad("endpoint must be https");
+
+      authStore.putPushSubscription({
+        endpoint,
+        userId: me,
+        p256dh,
+        auth: authSecret,
+        // Which device this is, for the account page. It is the same string the session
+        // row already records, so this discloses nothing new about the reader.
+        userAgent: req.headers.get("user-agent"),
+      });
+      return json({ ok: true });
+    },
+  },
+
+  "/api/push/unsubscribe": {
+    POST: async (req: Request) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      // Already true for an anonymous caller: they have no subscriptions to remove.
+      if (!me) return json({ removed: false });
+
+      let body: { endpoint?: unknown };
+      try {
+        body = (await req.json()) as typeof body;
+      } catch {
+        return bad("body must be JSON");
+      }
+      if (typeof body.endpoint !== "string") return bad("endpoint is required");
+      // Scoped to the caller in the STORE, not here: an endpoint URL is not a secret, and a
+      // delete keyed on it alone would be a stranger's off switch for your notifications.
+      return json({ removed: authStore.deletePushSubscription(me, body.endpoint) });
     },
   },
 

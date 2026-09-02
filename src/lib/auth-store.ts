@@ -125,6 +125,35 @@ create table if not exists plex_pin (
   created_at  text not null,
   expires_at  text not null
 );
+
+-- A browser that has agreed to be told when its owner's request arrives.
+--
+-- NOTE: no backticks anywhere in this comment. AUTH_SCHEMA is a template literal.
+--
+-- IT LIVES HERE, WITH IDENTITY, FOR THE CASCADE. A push subscription is a device that will
+-- be sent messages on somebody's behalf, so it has to die with the account exactly as a
+-- session does -- and an "on delete cascade" only works if the table is declared where
+-- app_user is. Deleting a user and leaving this behind would mean going on pushing to a
+-- phone about an account that no longer exists.
+--
+-- ENDPOINT IS THE KEY, and it is the browser's own opaque URL. Keying on the user instead
+-- would allow one device each; keying on a generated id would let the same browser
+-- re-subscribe into a second row after clearing its storage, and both rows would then be
+-- delivered the same notification.
+--
+-- p256dh and auth are the subscriber's half of the encryption. They are not a credential
+-- for anything here: they let this server encrypt TO that browser and nothing else. See
+-- ./web-push.ts.
+create table if not exists push_subscription (
+  endpoint     text primary key,
+  user_id      text not null references app_user(id) on delete cascade,
+  p256dh       text not null,
+  auth         text not null,
+  user_agent   text,
+  created_at   text not null,
+  last_sent_at text
+);
+create index if not exists ix_push_user on push_subscription(user_id);
 `;
 
 interface UserRow {
@@ -161,6 +190,21 @@ interface InviteRow {
   expires_at: string;
   redeemed_at: string | null;
   redeemed_by: string | null;
+}
+
+/**
+ * One subscribed browser, as stored. Exported: the notifier reads these rows straight into
+ * `PushTarget`, and re-typing the three fields it needs would be a second shape to keep in
+ * step with the table.
+ */
+export interface PushSubscriptionRow {
+  endpoint: string;
+  user_id: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  created_at: string;
+  last_sent_at: string | null;
 }
 
 interface SessionRow {
@@ -624,6 +668,83 @@ export class AuthStore {
 
   sessionCount(): number {
     const r = this.db.query("select count(*) as n from session").get() as { n: number };
+    return r.n;
+  }
+
+  // --- push subscriptions --------------------------------------------------
+  //
+  // Beside sessions rather than in the store's own file, for the reason the table's own
+  // comment gives: a subscription is a DEVICE ATTACHED TO AN ACCOUNT, and it has to die
+  // with that account. Everything else about it -- when to send, what to say -- is
+  // `src/server/push.ts`'s business and none of it is here.
+
+  /**
+   * Record a browser's subscription, or refresh the one it already had.
+   *
+   * UPSERT, because a browser re-subscribes routinely: a push service may rotate an
+   * endpoint's keys, and the app re-subscribes on every load to notice when it has. The
+   * conflict arm rewrites `user_id` as well as the keys, which is the case of a shared
+   * device -- one person signs out, another signs in, and the endpoint now belongs to them.
+   * Leaving the old owner would push one person's news to the other's phone.
+   */
+  putPushSubscription(s: {
+    endpoint: string;
+    userId: string;
+    p256dh: string;
+    auth: string;
+    userAgent?: string | null;
+    now?: Date;
+  }): void {
+    this.db
+      .query(
+        `insert into push_subscription (endpoint, user_id, p256dh, auth, user_agent, created_at)
+         values (?, ?, ?, ?, ?, ?)
+         on conflict(endpoint) do update set
+           user_id = excluded.user_id, p256dh = excluded.p256dh,
+           auth = excluded.auth, user_agent = excluded.user_agent`,
+      )
+      .run(s.endpoint, s.userId, s.p256dh, s.auth, s.userAgent ?? null, isoNow(s.now));
+  }
+
+  /**
+   * Forget one browser's subscription.
+   *
+   * Scoped to the owner, so the endpoint alone is not enough to unsubscribe somebody else's
+   * device. An endpoint URL is not a secret from the push service's point of view, and a
+   * delete keyed on it alone would be a stranger's off switch for your notifications.
+   */
+  deletePushSubscription(userId: string, endpoint: string): boolean {
+    return (
+      this.db.query("delete from push_subscription where user_id = ? and endpoint = ?").run(userId, endpoint)
+        .changes > 0
+    );
+  }
+
+  /**
+   * Drop a dead endpoint, whoever it belonged to.
+   *
+   * The 404/410 path, and the one place the owner is NOT part of the key: the push service
+   * has said this endpoint no longer exists, which is true regardless of whose it was.
+   */
+  forgetPushEndpoint(endpoint: string): void {
+    this.db.query("delete from push_subscription where endpoint = ?").run(endpoint);
+  }
+
+  listPushSubscriptions(userId: string): PushSubscriptionRow[] {
+    return this.db
+      .query("select * from push_subscription where user_id = ? order by created_at asc")
+      .all(userId) as PushSubscriptionRow[];
+  }
+
+  /** Stamped after a successful send, so an admin can see which devices are still real. */
+  markPushSent(endpoint: string, now?: Date): void {
+    this.db
+      .query("update push_subscription set last_sent_at = ? where endpoint = ?")
+      .run(isoNow(now), endpoint);
+  }
+
+  pushSubscriptionCount(): number {
+    const r = this.db.query("select count(*) as n from push_subscription").get() as { n: number };
     return r.n;
   }
 

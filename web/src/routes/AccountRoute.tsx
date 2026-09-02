@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { PushToggle } from "../components/PushToggle";
 import { clearPersistedCaches } from "../lib/api";
 import {
   type CredentialSummary,
@@ -24,6 +25,7 @@ import {
   unlinkPlex,
 } from "../lib/auth-api";
 import { pollPlexPin } from "../lib/plex-poll";
+import { LINK_BUTTON } from "../lib/ui";
 
 function when(iso: string | null): string {
   if (!iso) return "never";
@@ -357,6 +359,13 @@ export function AccountRoute() {
 
       {error && <p className="text-sm text-muted">{error}</p>}
 
+      {/*
+        Below the devices it is about: a notification is delivered to ONE browser, so the
+        switch belongs beside the list of browsers rather than in a settings page of its
+        own. It draws nothing at all where push cannot work.
+      */}
+      <PushToggle />
+
       <section>
         <button type="button" onClick={signOut} className={LINK_BUTTON}>
           Sign out
@@ -365,5 +374,3 @@ export function AccountRoute() {
     </div>
   );
 }
-
-const LINK_BUTTON = "text-sm text-muted underline underline-offset-4 hover:text-ink";
