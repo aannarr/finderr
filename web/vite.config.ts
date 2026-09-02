@@ -21,6 +21,29 @@ export default defineConfig({
       input: {
         main: `${import.meta.dirname}/index.html`,
         login: `${import.meta.dirname}/login.html`,
+        /**
+         * The service worker, as a third entry rather than a hand-written file in
+         * `public/`.
+         *
+         * It buys the same thing every other module in this tree gets: TypeScript, and a
+         * policy split into `web/src/lib/sw-policy.ts` that has real tests. A worker pasted
+         * into `public/` would be plain JS nothing typechecks and nothing can import.
+         */
+        sw: `${import.meta.dirname}/src/sw.ts`,
+      },
+      output: {
+        /**
+         * THE WORKER'S FILENAME IS NOT HASHED, AND THAT IS NOT AN OVERSIGHT.
+         *
+         * A service worker's URL is its identity: the browser fetches the same address and
+         * compares bytes to decide whether an update exists. Hash the name and every
+         * release registers a NEW worker while the old one stays alive at its old address,
+         * controlling the same pages forever. It also has to sit at the root to claim the
+         * root scope -- a worker at `/assets/sw.js` may only control `/assets/`.
+         *
+         * `web/src/lib/sw-register.ts` names the same path. The two must agree.
+         */
+        entryFileNames: (chunk) => (chunk.name === "sw" ? "sw.js" : "assets/[name]-[hash].js"),
       },
     },
   },

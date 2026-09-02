@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#1A1C22" />
+    <title>finderr — offline</title>
+    <!--
+      SELF-CONTAINED ON PURPOSE. This page is served by the service worker at the one moment
+      the network is unreachable, so a stylesheet link, a font or an icon it could not fetch
+      would render as a broken page about being unable to fetch things. Everything is inline
+      and everything is a system font.
+
+      It also names no route, no API and nothing about what this product does -- it is
+      precached before anybody signs in and is the only HTML the worker can produce from
+      disk. See the `network-first` note in web/src/lib/sw-policy.ts.
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100svh;
+        display: grid;
+        place-items: center;
+        padding: calc(2rem + env(safe-area-inset-top, 0px)) 1.5rem calc(2rem + env(safe-area-inset-bottom, 0px));
+        background: #16181d;
+        color: #f0f1f3;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main {
+        max-width: 24rem;
+        text-align: center;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0.75rem 0 0;
+        font-size: 0.875rem;
+        line-height: 1.5;
+        color: #a3a7b0;
+      }
+      button {
+        margin-top: 1.5rem;
+        border: 1px solid #4a4f5c;
+        border-radius: 0.75rem;
+        background: #262a33;
+        color: inherit;
+        /* 16px, for the same reason every control in styles.css is: below it iOS zooms the
+           page and does not zoom back. */
+        font: inherit;
+        font-size: 16px;
+        padding: 0.6rem 1.25rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>finderr is offline</h1>
+      <p>
+        This device cannot reach the server right now. Nothing has been lost — anything already loaded is still
+        here once the connection is back.
+      </p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>

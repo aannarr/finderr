@@ -20,5 +20,9 @@
 
 		"types": ["bun", "vite/client"]
 	},
-	"include": ["src/**/*", "web/src/**/*", "web/*.ts"]
+	"include": ["src/**/*", "web/src/**/*", "web/*.ts"],
+	// The service worker is checked by `tsconfig.sw.json` instead, against the `webworker`
+	// lib. It cannot be in both projects: the globals it uses do not exist here, and adding
+	// the lib that declares them collides with `dom`. See that file's own note.
+	"exclude": ["web/src/sw.ts"]
 }

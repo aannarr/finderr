@@ -1,0 +1,22 @@
+{
+  /*
+    The service worker, typechecked against the WORKER globals rather than the DOM's.
+
+    `ServiceWorkerGlobalScope`, `FetchEvent` and `ExtendableEvent` live in TypeScript's
+    `webworker` lib, and that lib cannot simply be added to the main `tsconfig.json`:
+    `dom` and `webworker` both declare `self`, `caches`, `fetch` and most of the event
+    types, so listing them together is hundreds of duplicate-identifier errors. A second
+    project is the supported way to have both in one repo, and `bun run typecheck` runs it.
+
+    The alternative -- hand-written `declare interface` approximations of the worker
+    globals inside `sw.ts` -- would compile, and would be a lie the compiler agrees with.
+  */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "WebWorker"],
+    // `bun` and `vite/client` both pull DOM globals in, which is the conflict this file
+    // exists to avoid. `import.meta.env` is not read by the worker.
+    "types": []
+  },
+  "include": ["web/src/sw.ts", "web/src/lib/sw-policy.ts"]
+}
