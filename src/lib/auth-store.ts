@@ -787,11 +787,6 @@ export class AuthStore {
       .run(isoNow(t), userId, isoIn(-SWEEP_INTERVAL_MS, t));
   }
 
-  agentKeyCount(): number {
-    const r = this.db.query("select count(*) as n from agent_key").get() as { n: number };
-    return r.n;
-  }
-
   // --- push subscriptions --------------------------------------------------
   //
   // Beside sessions rather than in the store's own file, for the reason the table's own

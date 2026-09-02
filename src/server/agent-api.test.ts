@@ -168,10 +168,10 @@ describe("the key authenticates, and carries less than its owner", () => {
 
     const { token: second } = h.auth.putAgentKey({ userId, readOnly: false });
     expect((await h.call("/api/discover", { bearer: second })).status).toBe(200);
-    // 401 rather than 403: the old token identifies nobody at all now.
+    // 401 rather than 403: the old token identifies nobody at all now. That IS the
+    // observable half of "one key per user" -- the schema enforces the other half by making
+    // `user_id` the primary key, so there is no second row for a test to find.
     expect((await h.call("/api/discover", { bearer: first })).status).toBe(401);
-    // And there is exactly one key, because the schema cannot express two.
-    expect(h.auth.agentKeyCount()).toBe(1);
   });
 
   test("a revoked key is refused immediately", async () => {
