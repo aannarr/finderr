@@ -308,6 +308,88 @@ function operationSection(op: AgentOperation, origin: string): string {
 }
 
 /**
+ * The routes this key can reach that nobody wrote an example for.
+ *
+ * Derived from the LIVE table, which is what makes a route added later appear in the
+ * document by having been added. Methods the key cannot call are REMOVED rather than listed
+ * and disclaimed: a read-only manifest that names a write is one an agent will act on and be
+ * refused for -- and because this list is derived, it would have named one without anybody
+ * choosing to.
+ */
+function undescribedRoutes(view: AgentManifestView, described: ReadonlySet<string>): RouteSummary[] {
+  return view.reachable
+    .filter((r) => agentMayReach(r.path) && !described.has(r.path))
+    .map((r) => ({
+      path: r.path,
+      methods: r.methods === null ? null : r.methods.filter((m) => agentMayCall(m, view.key)),
+    }))
+    .filter((r) => r.methods === null || r.methods.length > 0)
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * The daily quota, which is a DIFFERENT refusal from a rate-limit bucket.
+ *
+ * Both answer 429 and they reset differently, so an agent that backs off from one while
+ * waiting for the other wastes a day. Naming them separately is the whole job of this
+ * section.
+ *
+ * It is spent by CREATING a request, so it cannot bite a key that may not create one: a
+ * read-only key gets the one sentence that is true for it rather than a budget it can never
+ * draw on.
+ */
+function quotaSection(view: AgentManifestView): string {
+  if (view.key.readOnly) {
+    return `## Daily title quota
+
+Nothing here spends it: the quota is charged when a request is CREATED, and this key cannot
+create one.`;
+  }
+  const line =
+    view.quota.limitPerDay === 0
+      ? "There is no daily title quota on this instance."
+      : `**${view.quota.usedToday} of ${view.quota.limitPerDay}** titles used today. ` +
+        `The count resets at ${view.quota.resetsAt} (00:00 UTC).`;
+
+  return `## Daily title quota
+
+**A different refusal from the rate limits, with different reset semantics.** The buckets
+count CALLS per minute; this counts TITLES per UTC day, and it is only spent by a \`POST\`
+that creates a new request. Both answer 429, so read the message: backing off from one while
+waiting for the other wastes the whole day.
+
+${line}`;
+}
+
+/**
+ * What "I asked for it, is it here yet" looks like, and how long it takes.
+ *
+ * A read-only key gets the POLLING half and not the asking half: it can still watch a
+ * request, and telling it how to make one would be telling it to do the single thing it is
+ * refused.
+ */
+function requestSection(key: AgentManifestView["key"]): string {
+  if (key.readOnly) {
+    return `## Watching a request
+
+This key cannot ask for a title. It can watch one: \`GET /api/requests?mine=1\` reports
+\`status\`, which moves \`queued\` -> \`searching\` -> \`available\`, or \`error\`. Typical
+fulfilment is ${FULFILMENT_MINUTES.min}-${FULFILMENT_MINUTES.max} minutes and can be much
+longer for something obscure or unreleased, so poll about once a minute -- it is a
+cheap-bucket call.`;
+  }
+  return `## How long a request takes
+
+A \`POST /api/requests\` returns **202** as soon as it is enqueued -- that is not the
+download finishing. Typical fulfilment is ${FULFILMENT_MINUTES.min}-${FULFILMENT_MINUTES.max}
+minutes, and it can be much longer for something obscure or unreleased.
+
+Poll \`GET /api/requests?mine=1\` and read \`status\`: \`queued\` -> \`searching\` ->
+\`available\`, or \`error\`. Poll it at a sensible interval -- once a minute is plenty, and it
+is a cheap-bucket call.`;
+}
+
+/**
  * Render the manifest for ONE key, at view time.
  *
  * Pure: it takes data and returns a string, so the test that pins "every advertised
@@ -318,73 +400,10 @@ export function renderManifest(view: AgentManifestView): string {
   const advertised = AGENT_OPERATIONS.filter(
     (op) => agentMayReach(op.path) && agentMayCall(op.method, view.key),
   );
-  const described = new Set(advertised.map((op) => op.path));
-  /*
-    Everything else the key can reach, with the methods it cannot call REMOVED rather than
-    listed and disclaimed. A read-only manifest that names a write is a manifest an agent
-    will act on and be refused for -- and this list is derived, so it would have named one
-    without anybody choosing to.
-  */
-  const other = view.reachable
-    .filter((r) => agentMayReach(r.path) && !described.has(r.path))
-    .map((r) => ({
-      path: r.path,
-      methods: r.methods === null ? null : r.methods.filter((m) => agentMayCall(m, view.key)),
-    }))
-    .filter((r) => r.methods === null || r.methods.length > 0)
-    .sort((a, b) => a.path.localeCompare(b.path));
-
-  const quotaLine =
-    view.quota.limitPerDay === 0
-      ? "There is no daily title quota on this instance."
-      : `**${view.quota.usedToday} of ${view.quota.limitPerDay}** titles used today. ` +
-        `The count resets at ${view.quota.resetsAt} (00:00 UTC).`;
-
-  /*
-    The quota is spent by CREATING a request, so it cannot bite a key that may not create
-    one. A read-only key gets the one sentence that is true for it instead of a budget it
-    can never draw on -- and, incidentally, no mention of a method it is refused.
-  */
-  const quotaSection = view.key.readOnly
-    ? `## Daily title quota
-
-Nothing here spends it: the quota is charged when a request is CREATED, and this key cannot
-create one.`
-    : `## Daily title quota
-
-**A different refusal from the rate limits, with different reset semantics.** The buckets
-count CALLS per minute; this counts TITLES per UTC day, and it is only spent by a \`POST\`
-that creates a new request. Both answer 429, so read the message: backing off from one while
-waiting for the other wastes the whole day.
-
-${quotaLine}`;
-
+  const other = undescribedRoutes(view, new Set(advertised.map((op) => op.path)));
   const expensive = expensiveOperationsFor(view.key)
     .map((op) => `\`${op}\``)
     .join(", ");
-
-  /*
-    A read-only key gets the POLLING half of the request story and not the asking half. It
-    can still watch what somebody else asked for, and telling it how to ask would be telling
-    it to do the one thing it is refused.
-  */
-  const requestSection = view.key.readOnly
-    ? `## Watching a request
-
-This key cannot ask for a title. It can watch one: \`GET /api/requests?mine=1\` reports
-\`status\`, which moves \`queued\` -> \`searching\` -> \`available\`, or \`error\`. Typical
-fulfilment is ${FULFILMENT_MINUTES.min}-${FULFILMENT_MINUTES.max} minutes and can be much
-longer for something obscure or unreleased, so poll about once a minute -- it is a
-cheap-bucket call.`
-    : `## How long a request takes
-
-A \`POST /api/requests\` returns **202** as soon as it is enqueued -- that is not the
-download finishing. Typical fulfilment is ${FULFILMENT_MINUTES.min}-${FULFILMENT_MINUTES.max}
-minutes, and it can be much longer for something obscure or unreleased.
-
-Poll \`GET /api/requests?mine=1\` and read \`status\`: \`queued\` -> \`searching\` ->
-\`available\`, or \`error\`. Poll it at a sensible interval -- once a minute is plenty, and it
-is a cheap-bucket call.`;
 
   return `# finderr agent API
 
@@ -431,7 +450,7 @@ These limits are **in addition to** a per-address limit you also pay, so \`remai
 floor rather than a promise. The counters live in memory and reset when the server restarts,
 which means the number above can go UP without you doing anything.
 
-${quotaSection}
+${quotaSection(view)}
 
 ## Operations
 
@@ -457,7 +476,7 @@ before believing anything is absent:
 Asking again later is legitimate and cheap: whatever landed after your deadline was cached
 on the way, so a second call usually answers instantly from local state.
 
-${requestSection}
+${requestSection(view.key)}
 
 ## Everything else this key can reach
 
@@ -573,8 +592,17 @@ export function withAgentApi<T extends Record<string, unknown>>(routes: T, deps:
     (path, handler) =>
     (...args: unknown[]) => {
       const req = args[0] as Request;
-      const p = deps.principal(req);
       const call = () => (handler as (...a: unknown[]) => unknown)(...args);
+      /*
+        A request with no `Authorization` header cannot be an agent, and this is the whole
+        reason the check is here rather than after resolving a principal. `principal()` reads
+        the session row on every call, and this wrapper sits on EVERY route -- so without
+        this line every browser request in the product would pay a session read that this
+        guard has no use for.
+      */
+      if (!req.headers.get("authorization")) return call();
+
+      const p = deps.principal(req);
       if (p?.kind !== "agent" || !p.agent || !p.user) return call();
 
       if (!agentMayReach(path)) {

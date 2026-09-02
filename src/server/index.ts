@@ -1237,7 +1237,12 @@ const appRoutes = {
     if (!row) return bad("unknown title", 404);
 
     const entity = entityFor(row);
-    if (auth.principal(req)?.kind === "agent") {
+    // Read ONCE, and BEFORE the await: `principal` touches the session row on every call, so
+    // asking it twice for one GET is two writes and two chances to disagree -- and asking
+    // after the wait would resolve it against a session that may have been revoked while we
+    // were blocked, which is a different question from the one this handler asked.
+    const asker = auth.principal(req);
+    if (asker?.kind === "agent") {
       await facets.resolve(entity, { deadlineMs: agentWaitMs(new URL(req.url)) });
     }
     // Rewritten before it leaves: every image a provider sent points at this origin, so
@@ -1266,7 +1271,7 @@ const appRoutes = {
             also the only place in this product that deliberately sends a browser an
             upstream URL, which is why it takes the role rather than being handed one.
           */
-        arrLink: arrLink(cfg, store.libraryMap().get(row.tconst), auth.principal(req)?.role ?? null),
+        arrLink: arrLink(cfg, store.libraryMap().get(row.tconst), asker?.role ?? null),
         /*
             OUR SONARR'S per-episode state, one entry per episode it lists.
 
