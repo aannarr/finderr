@@ -18,6 +18,7 @@ import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
+import { RequestVerdictPanel } from "../components/RequestProgress";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
 import { postEpisodeRequest, type RequestOverrides, type Title } from "../lib/api";
@@ -271,10 +272,14 @@ export function TitleRoute() {
                   <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
                 )}
               </span>
-            ) : title.requestStatus ? (
-              <span className="block rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-center text-sm">
-                {title.requestStatus === "no_release" ? "No release found" : title.requestStatus}
-              </span>
+            ) : title.requestVerdict ? (
+              /*
+                The one screen with room for the whole answer: what state the request is in,
+                how far along the download is, and one honest sentence about why it is
+                taking as long as it is. The grid gets the short form of the same fact from
+                `RequestAction`, off the same `VERDICT_COPY` table.
+              */
+              <RequestVerdictPanel state={title} error={title.requestError} />
             ) : (
               <button
                 type="button"

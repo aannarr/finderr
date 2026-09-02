@@ -58,6 +58,18 @@ services:
       FINDERR_EPISODE_REFRESH_SECONDS: ${EPISODE_REFRESH_SECONDS:-21600}
       FINDERR_EPISODE_REFRESH_BATCH: ${EPISODE_REFRESH_BATCH:-25}
 
+      # --- Prowlarr. OPTIONAL and READ-ONLY: `:-` like TMDB, never `:?`.
+      #
+      # It answers exactly one question -- did the searches Radarr and Sonarr already ran
+      # come back with anything -- and that is what lets a request page say "your indexers
+      # do have this, nothing was accepted" instead of only "still looking". finderr never
+      # asks Prowlarr to SEARCH; it reads /api/v1/history and nothing else.
+      #
+      # Leave it unset and every other verdict is unchanged: a request that has found
+      # nothing is reported as still looking, which is narrower rather than wrong.
+      FINDERR_PROWLARR_URL: ${PROWLARR_URL:-}
+      FINDERR_PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
+
       # --- TMDB. OPTIONAL, unlike the two above: every facet that ships today is
       # served keyless through the Servarr proxies, and the app must still boot for
       # anyone without a key. So this is `:-` (empty default), never `:?` (required).

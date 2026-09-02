@@ -24,7 +24,7 @@ function deps(onCoverage: () => void): HealthDeps {
       sha: "c5e9716b7e020e70205d6b95f5a5678526c1b45f",
       importedAt: "2026-09-01T00:00:00.000Z",
     },
-    services: { radarr: true, sonarr: true },
+    services: { radarr: true, sonarr: true, prowlarr: false },
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true, noAuth: false },
     queue: { pending: 0 },
     artwork: { resolved: 2192 },

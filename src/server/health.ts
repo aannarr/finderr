@@ -111,7 +111,16 @@ export interface HealthDeps {
    * the reason the field exists rather than a bare date.
    */
   awards: { rows: number; sha: string | null; importedAt: string | null };
-  services: { radarr: boolean; sonarr: boolean };
+  /**
+   * Which services this instance is CONFIGURED to talk to. Not a reachability probe --
+   * pinging three hosts on every health call would put a network round trip on the one
+   * endpoint that has to answer while everything else is broken.
+   *
+   * `prowlarr: false` is a normal state and not a fault: it is read-only and optional, and
+   * without it a request that has found nothing is reported as still looking rather than as
+   * hopeless. That is the first thing to check when a diagnostics verdict looks vague.
+   */
+  services: { radarr: boolean; sonarr: boolean; prowlarr: boolean };
   /**
    * Identity, as three counts and a boolean -- no names, no ids, no tokens.
    *

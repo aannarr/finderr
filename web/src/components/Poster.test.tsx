@@ -31,6 +31,10 @@ const TITLE: Title = {
   hasFile: false,
   progress: null,
   requestStatus: null,
+  requestError: null,
+  requestVerdict: null,
+  requestProgress: null,
+  requestEtaAt: null,
   service: "radarr",
   // `null` means we hold no artwork for this title -- `posterUrl` returns null for it, which
   // is the "no image" branch every fallback below is about.

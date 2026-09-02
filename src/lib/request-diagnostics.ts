@@ -45,31 +45,46 @@ export type RequestVerdict =
   | "failed";
 
 /**
+ * How a verdict should FEEL, which is a different question from what it says.
+ *
+ * Three states and not seven, because the only thing a colour has to carry is whether the
+ * reader should keep waiting (`working`), stop waiting (`done`), or do something
+ * (`dead_end`). It lives beside the words rather than in a component, so the chip on a card
+ * and the panel on a title page cannot come to different conclusions about the same title.
+ */
+export type VerdictTone = "working" | "done" | "dead_end";
+
+/**
  * The words. One label for a chip, one sentence for a reader who wants to know why.
  *
  * `Record<RequestVerdict, ...>` rather than a lookup with a fallback, so adding a verdict
  * to the union above is a compile error until it has been given words -- which is what
  * stops a new state shipping as a raw enum string in front of a human.
  */
-export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: string }> = {
+export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: string; tone: VerdictTone }> = {
   queued: {
     label: "Queued",
+    tone: "working",
     sentence: "Waiting its turn to be sent. Requests go out one at a time so the indexers are not flooded.",
   },
   searching: {
     label: "Searching",
+    tone: "working",
     sentence: "Your indexers are being asked for this. Nothing has turned up yet.",
   },
   downloading: {
     label: "Downloading",
+    tone: "working",
     sentence: "A release was found and is downloading now.",
   },
   imported: {
     label: "Available",
+    tone: "done",
     sentence: "Downloaded and added to your library.",
   },
   nothing_accepted: {
     label: "Nothing accepted",
+    tone: "dead_end",
     // Deliberately does NOT name the quality profile as the cause. A release can be turned
     // down for a size limit, a minimum seeder count or a blocked release group just as
     // easily, and finderr cannot see which -- the arrs record what they GRABBED, never what
@@ -79,11 +94,13 @@ export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: str
   },
   no_releases: {
     label: "No releases found",
+    tone: "dead_end",
     sentence:
       "Your indexers have been asked for this since you requested it and none of them have a release. That is unlikely to change on its own.",
   },
   failed: {
     label: "Request failed",
+    tone: "dead_end",
     sentence: "The request could not be sent.",
   },
 };

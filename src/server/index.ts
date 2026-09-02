@@ -31,7 +31,9 @@ import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
 import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
+import { ProwlarrClient } from "../lib/prowlarr";
 import { RateLimiter } from "../lib/rate-limit";
+import { verdictFor } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaVerdict, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
@@ -141,12 +143,19 @@ const indexBuild = live.ready
 const store = new Store(cfg);
 const radarr = cfg.radarr ? new RadarrClient(cfg.radarr) : undefined;
 const sonarr = cfg.sonarr ? new SonarrClient(cfg.sonarr) : undefined;
+/*
+  Prowlarr, read-only and optional. It answers exactly one question -- did the searches the
+  arrs already ran come back with anything -- and finderr never asks it to search. Unset is
+  the ordinary case for a fresh checkout and costs a request diagnostic its sharpest
+  verdict, nothing else. See `src/lib/prowlarr.ts`.
+*/
+const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
 const images = new ImageCache(cfg);
 const artwork = new ArtworkService(cfg, store, { radarr, sonarr }, log);
 // Cast headshots, season posters and episode stills, served from our own origin. Reuses
 // the artwork service for the bytes -- a face is not a different kind of JPEG.
 const facetImages = new FacetImageProxy({ store, bytes: artwork });
-const worker = new RequestWorker({ store, radarr, sonarr, log });
+const worker = new RequestWorker({ store, radarr, sonarr, prowlarr, log });
 
 // Identity. Shares the app database connection -- one file, one writer, one migration.
 const authStore = new AuthStore(store.db);
@@ -724,11 +733,13 @@ const previewDeps: PreviewDeps = {
 function decorate<T extends TitleRow>(rows: T[]) {
   const lib = store.libraryMap();
   const reqs = store.requestMap();
+  const diagnostics = store.requestDiagnosticMap();
   const plex = store.plexMap();
   const machineId = store.plexMachineIdentifier() ?? "";
   return rows.map((r) => {
     const l = lib.get(r.tconst);
     const q = reqs.get(r.tconst);
+    const d = diagnostics.get(r.tconst) ?? null;
     const art = store.getArtwork(r.tconst);
     const ratingKey = plex.get(r.tconst);
     return {
@@ -737,6 +748,26 @@ function decorate<T extends TitleRow>(rows: T[]) {
       hasFile: l ? l.has_file === 1 : false,
       progress: l?.progress ?? null,
       requestStatus: q?.status ?? null,
+      /*
+        Why this request is taking as long as it is -- a CODE, never the sentence.
+
+        The words live in `VERDICT_COPY` and the browser imports them, so a grid of forty
+        cards carries forty short strings rather than forty copies of a paragraph, and the
+        wording has one owner instead of one on the wire and one in the component.
+      */
+      requestVerdict: q ? verdictFor(q, d) : null,
+      /** 0..1 while a release is downloading, null otherwise. */
+      requestProgress: d?.download_progress ?? null,
+      /** When the arr expects it to land, ISO. The browser turns that into "~4 min". */
+      requestEtaAt: d?.eta_at ?? null,
+      /*
+        Why a FAILED request failed, in more detail than the generic verdict sentence.
+
+        Already through `safeArrMessage` before it was ever written to the row -- the
+        request worker sanitises on the way in, precisely so this column can be served.
+        Null for every request that has not failed.
+      */
+      requestError: q?.error ?? null,
       service: serviceFor(r.kind),
       posterUrl: art !== undefined && art.url === null ? null : `/img/t/${r.tconst}`,
       studio: art?.studio ?? null,
@@ -976,7 +1007,7 @@ const appRoutes = {
               importedAt: meta?.importedAt ?? null,
             };
           })(),
-          services: { radarr: !!radarr, sonarr: !!sonarr },
+          services: { radarr: !!radarr, sonarr: !!sonarr, prowlarr: !!prowlarr },
           auth: {
             users: authStore.userCount(),
             admins: authStore.adminCount(),
@@ -1424,8 +1455,26 @@ const appRoutes = {
      */
     GET: (req: Request) => {
       const role = auth.principal(req)?.role ?? null;
+      const diagnostics = store.requestDiagnosticMap();
       return json({
-        requests: store.listRequests(undefined, 200).map((r) => visibleRequest(r, role)),
+        requests: store.listRequests(undefined, 200).map((r) => {
+          const d = diagnostics.get(r.tconst) ?? null;
+          /*
+            The verdict and the bar ride along, on the same fields `decorate()` puts on a
+            title. One shape for "what is happening with this request" means the component
+            drawing a row and the one drawing a card are the same component.
+
+            Nothing from `request_diagnostic` is privileged: it is an observation of the
+            arrs' own queues, not of who asked. `visibleRequest` still owns the fields that
+            ARE privileged, and it is applied to the row before anything is added to it.
+          */
+          return {
+            ...visibleRequest(r, role),
+            requestVerdict: verdictFor(r, d),
+            requestProgress: d?.download_progress ?? null,
+            requestEtaAt: d?.eta_at ?? null,
+          };
+        }),
         queue: worker.stats(),
       });
     },
