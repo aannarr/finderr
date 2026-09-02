@@ -104,6 +104,20 @@ folder for one request without touching the defaults.
 With a Plex token, a title you already own gets a Play button that deep-links into the
 Plex app or web player, instead of a line of text saying you have it.
 
+`/requests` is where your own asks live, newest arrivals first, each with the same honest
+sentence about why it is slow that the title page gives. Anything that arrived and you have
+not seen yet is counted in the header, and the count survives closing the app -- one per
+request, so a season pack finishing is one piece of news rather than twenty.
+
+It installs. Add it to a home screen and it opens as an app: its own window, the content
+inside the notch and above the home indicator, a service worker that keeps posters and
+bundles on the device and shows an offline page instead of a browser error, and the front
+page you left restored before the first paint. HTML is never cached, so a release lands the
+moment the network is up. **Notifications** are opt-in per device, on the account page: when
+something you asked for arrives, finderr tells you without being open. On iPhone and iPad
+that needs the installed app over HTTPS -- Safari does not offer push to a tab, and the app
+says so rather than showing a button that cannot work.
+
 Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
 table. The first boot prints an invite link for the first admin; admins mint invites,
 manage users and roles, and can reset anyone's access. Everybody gets an account page to
@@ -404,6 +418,8 @@ rebuild.
 | `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
 | `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
+| `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
+| `FINDERR_PUSH_CONTACT` | `mailto:finderr@localhost` | The `sub` claim in every VAPID token — how a push service reaches **you** if something goes wrong. The default is well-formed and accepted by every service tested; set a real address if yours refuses it, or so somebody can actually reach you |
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
 | `FINDERR_NO_AUTH` | `false` | **Turns authentication off.** Signs every caller in as an admin called `the_user`. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
@@ -567,10 +583,15 @@ bearer key.
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
 | `GET` | `/api/awards/oscars` | the ceremony timeline and its provenance |
 | `GET` | `/api/awards/oscars/:ceremony` | one year, categories in their canonical order |
-| `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side |
+| `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side. Also carries `unseen`, your own count of arrivals you have not been shown |
+| `GET` | `/api/requests?mine=1` | the same shape, narrowed to the caller. A server-side filter, because `requested_by` is stripped before a non-admin ever sees it |
 | `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
 | `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |
+| `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
+| `GET` | `/api/push/key` | whether push is on, and the VAPID public key to subscribe with |
+| `POST` | `/api/push/subscribe` | the browser's own `PushSubscription.toJSON()`, verbatim |
+| `POST` | `/api/push/unsubscribe` `{endpoint}` | scoped to the caller: an endpoint is not a secret, so it alone must not be anybody's off switch |
 | `GET` | `/api/arr/options` | admin. The quality profiles and root folders each arr offers |
 | `POST` | `/api/library/sync` | admin. Walk Radarr, Sonarr and Plex now |
 | `GET` | `/api/admin/invites`, `/users`, `/requests` | admin. Mint, list, revoke, reset |
@@ -592,12 +613,13 @@ Every line here is a real limitation. It is not a roadmap.
 - No request quotas and no approval workflow. Requests are attributed to whoever made
   them and admins can see who asked for what, but nothing limits how much one person may
   ask for and nothing holds a request for review. Every request goes straight to the arr.
-- No notifications. Nobody is told when a download lands. The lifecycle hooks an addon
-  would need for Discord, ntfy or a webhook are designed and not built;
-  [ADDONS.md](ADDONS.md) lists them and says plainly that they do not exist yet.
+- Notifications go to the person who asked, and nowhere else. Web push tells them on their
+  own devices when their own request arrives; there is no Discord, ntfy, Telegram or
+  webhook, and no way to announce an arrival to a room. The lifecycle hooks an addon would
+  need for that are designed and not built; [ADDONS.md](ADDONS.md) lists them and says
+  plainly that they do not exist yet.
 - No request cancel or delete from the UI. A request that reached the arr is undone in
-  the arr. There is also no "my requests" page for a normal user; you get a toast and an
-  in-flight badge, and the full log lives on the admin screen.
+  the arr.
 - A series already in Sonarr cannot be extended by the season. Season picking works when a
   series is first requested; asking again for a show the library mirror already knows
   answers `409 already in your library`, and the worker only ever calls *add*. Adding a
@@ -626,8 +648,10 @@ Every line here is a real limitation. It is not a roadmap.
   addon is possible today; the app's own chrome is not translatable yet.
 - The front page is the same for everyone. Shelves come from the index and the library;
   no watch history, no "because you watched", no personalisation.
-- It installs to a home screen but needs the server. There is a web manifest and phone
-  layouts, and no service worker.
+- Installed, it still needs the server to be reachable. The service worker keeps posters
+  and bundles on the device and restores the front page you left, but HTML is deliberately
+  never cached -- which shell this origin serves depends on your session cookie -- so
+  offline you get an offline page rather than a browsable app.
 
 ### Limits of the sources
 
@@ -690,13 +714,13 @@ mature one, and it does plenty finderr does not:
 | Media servers | Plex, Jellyfin, Emby | Plex |
 | Users | any server user, imported | invite-only, passkey or Plex |
 | Request approval, quotas | yes | no |
-| Notifications | Discord, Telegram, email, Pushover, webhooks, ... | none |
+| Notifications | Discord, Telegram, email, Pushover, webhooks, ... | web push to the asker's own devices, and an in-app unread count |
 | 4K / second instance | yes | no |
 | Issue reporting | yes | no |
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
 | Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination |
 | Extensibility | none | addons: facets and panes |
-| On a phone | works | built for it: no zoom on focus, one-handed search, animated navigation |
+| On a phone | works | built for it: installs to the home screen, no zoom on focus, one-handed search, safe-area aware, works through a flaky connection |
 | Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
 
 Seerr is the more powerful of the two and that table is not close in its favour anywhere

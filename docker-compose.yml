@@ -158,6 +158,21 @@ services:
       # unlike the per-IP limiters above.
       FINDERR_REQUEST_QUOTA_PER_DAY: ${REQUEST_QUOTA_PER_DAY:-0}
 
+      # --- notifications
+      # Web push, so the person who asked is told when their request arrives without
+      # keeping finderr open. On by default and free until somebody turns it on: the VAPID
+      # key pair is generated on the first ask and stored in the app database, so there is
+      # no key to configure and nothing to rotate.
+      #
+      # PUSH_CONTACT is the `sub` claim every VAPID token carries -- how a push service
+      # reaches YOU about abuse. The default is well-formed and accepted by every service
+      # tested; set a real address so somebody can actually reach you.
+      #
+      # ON iOS THIS ONLY WORKS FOR AN INSTALLED APP over HTTPS. Safari does not offer push
+      # to a browser tab, so "add to home screen" is the subscription ceremony.
+      FINDERR_PUSH_ENABLED: ${PUSH_ENABLED:-true}
+      FINDERR_PUSH_CONTACT: ${PUSH_CONTACT:-mailto:finderr@localhost}
+
       # --- index
       # 09:00 UTC: after TMDB publishes (~07:20 UTC observed) and IMDb's daily drop.
       # Bun.cron is UTC-only, which is what we want -- the dumps publish on UTC.
