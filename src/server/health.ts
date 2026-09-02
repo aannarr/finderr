@@ -187,6 +187,25 @@ export interface HealthDeps {
    */
   facetRowsPruned: number;
   /**
+   * How much evidence the search retune has, and whether any of it is being lost.
+   *
+   * `dropped` is the field worth watching: non-zero means a client is reporting clicks
+   * faster than the 30-second flush drains the buffer, so rows are being refused rather
+   * than memory growing. `pending` beside a `stored` that never rises says the flush timer
+   * has stopped.
+   *
+   * It counts rows and states a switch; it contains no query and, by construction, nobody's
+   * identity -- see `src/lib/search-log.ts`.
+   */
+  searchLog: {
+    enabled: boolean;
+    pending: number;
+    searches: number;
+    clicks: number;
+    dropped: number;
+    stored: { searches: number; clicks: number };
+  };
+  /**
    * Where the time actually goes, at all three layers: what each ROUTE took, what each
    * provider took inside it, and what each upstream HOST took underneath that -- plus the
    * individual requests slow enough to have kept their arguments.
@@ -263,6 +282,7 @@ export function healthPayload(
     queue: deps.queue,
     artwork: deps.artwork,
     shelves: deps.shelves,
+    searchLog: deps.searchLog,
     plugins: { loaded: deps.plugins },
     facets: {
       // `images` is how many facet images we have issued a proxy key for -- a zero

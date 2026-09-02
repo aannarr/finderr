@@ -281,6 +281,31 @@ export async function search(q: string, f: Filters = {}, signal?: AbortSignal): 
   });
 }
 
+/**
+ * Say which result was opened, so the server can find out where it was ranked.
+ *
+ * A search that returns the right film at rank 4 reports itself as a success, and nothing
+ * except this can tell anyone otherwise. It is the half of the search log that makes the
+ * other half worth keeping -- see `src/lib/search-log.ts`.
+ *
+ * `keepalive` is what makes it work at all: this fires on a click that is NAVIGATING away,
+ * and a browser cancels ordinary in-flight requests when the page goes. It is also why the
+ * body stays tiny -- the keepalive budget is 64 KB across all such requests.
+ *
+ * Fire-and-forget, and failure is SILENT on purpose. Nothing on screen depends on it, so a
+ * 401 mid-session or an offline device must not put an error where somebody is trying to
+ * open a film. It carries no identity: the server stores the query, the title, the rank and
+ * the tier, and nothing about who.
+ */
+export function reportSearchClick(query: string, tconst: string, rank: number, tier: string): void {
+  void fetch("/api/search/click", {
+    method: "POST",
+    keepalive: true,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query, tconst, rank, tier }),
+  }).catch(() => {});
+}
+
 /** The local row, plus whatever facets the server already had cached for it. */
 /**
  * Is anyone still working on this title, and what has already gone wrong.

@@ -37,9 +37,18 @@ const KIND_LABEL: Record<string, string> = {
 export const TitleCard = memo(function TitleCard({
   title: t,
   onRequest,
+  onOpen,
 }: {
   title: Title;
   onRequest: (t: Title) => void;
+  /**
+   * The card was OPENED -- both links, one meaning.
+   *
+   * A prop rather than a second kind of card, because only the search grid has anything to
+   * say about a click (which query, at what rank) and every other grid in the product draws
+   * the same component with nothing to report. Absent is the ordinary case.
+   */
+  onOpen?: () => void;
 }) {
   const owned = t.inLibrary;
   const up = t.upcoming;
@@ -103,6 +112,9 @@ export const TitleCard = memo(function TitleCard({
           */
           onMouseEnter={() => prefetchTitle(t.tconst)}
           onFocus={() => prefetchTitle(t.tconst)}
+          // Both links report, because both go to the same place and a reader who clicks
+          // the title text opened the card exactly as much as one who clicked the poster.
+          onClick={onOpen}
           /*
             The FIRST `a[href]` inside the card, which is what `JumpKeysProvider` clicks.
             It is also the one a reader focusing this card lands on, so the shortcut is
@@ -159,6 +171,7 @@ export const TitleCard = memo(function TitleCard({
           <Link
             to="/title/$tconst"
             params={{ tconst: t.tconst }}
+            onClick={onOpen}
             className="outline-none hover:underline focus-visible:underline"
           >
             {t.title}

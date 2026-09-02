@@ -35,6 +35,14 @@ function deps(onCoverage: () => void): HealthDeps {
     facetRows: 4321,
     facetImages: 87,
     facetRowsPruned: 12,
+    searchLog: {
+      enabled: true,
+      pending: 3,
+      searches: 118,
+      clicks: 41,
+      dropped: 0,
+      stored: { searches: 4_902, clicks: 1_180 },
+    },
     timings: {
       providers: { "servarr-metadata|cast": { n: 9, totalMs: 3100, maxMs: 800, p50Ms: 330, p95Ms: 780 } },
       outbound: {

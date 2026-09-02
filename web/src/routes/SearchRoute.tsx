@@ -26,7 +26,9 @@ import {
   cachedDiscover,
   cachedSearch,
   type DiscoverShelf,
+  type Filters,
   getDiscover,
+  reportSearchClick,
   type SearchResponse,
   search,
   subscribeTitleState,
@@ -37,6 +39,17 @@ import { collectionTokenOf, filtersOf, type SearchParams, toggleFilter } from ".
 import { isSearching, searchPhase } from "../lib/search-view";
 
 const EMPTY_FACETS = { genre: [], decade: [], year: [], kind: [] };
+
+/**
+ * What an answer on screen is an answer TO: the query and the refinements together.
+ *
+ * One owner, because a facet toggle changes the answer without changing the query text --
+ * so the two halves have to travel as one string or `searchPhase` cannot tell a settled
+ * grid from a stale one. It was spelt out at both call sites before.
+ */
+function answerKey(query: string, filters: Filters): string {
+  return `${query}|${JSON.stringify(filters)}`;
+}
 
 export function SearchRoute() {
   const params = useSearch({ strict: false }) as SearchParams;
@@ -98,15 +111,19 @@ export function SearchRoute() {
    * to a search rendered one frame of an empty grid before the cached results appeared.
    * The same pattern BrowseRoute uses, and for the same reason.
    */
-  const seedKey = `${deferredQuery.trim()}|${JSON.stringify(filters)}`;
+  const seedKey = answerKey(deferredQuery.trim(), filters);
   const [seededFor, setSeededFor] = useState<string | null>(null);
   /*
-    Which key the PAINTED result belongs to, so the view can tell "this is the answer" from
+    WHICH QUESTION the painted result answers, so the view can tell "this is the answer" from
     "this is the previous answer, still on screen while we fetch". Before the debounce there
     was barely a window between those two; now there is always one, and a reader watching a
     stale grid with nothing moving is how a fast search reads as a broken one.
+
+    The `key` drives that comparison and the `query` is what a click reports, and they are
+    ONE state rather than two because they are one fact: reporting a click against whatever
+    is in the box right now would attribute it to a query the reader never saw results for.
   */
-  const [resultFor, setResultFor] = useState<string | null>(null);
+  const [answered, setAnswered] = useState<{ key: string; query: string } | null>(null);
   if (seededFor !== seedKey) {
     const q = deferredQuery.trim();
     const hit = q.length > 0 ? cachedSearch(q, filters) : null;
@@ -114,7 +131,7 @@ export function SearchRoute() {
     // keystroke of a new query would blank the grid it is refining.
     if (hit || q.length === 0) {
       setResult(hit ?? null);
-      setResultFor(hit ? seedKey : null);
+      setAnswered(hit ? { key: seedKey, query: q } : null);
     }
     setSeededFor(seedKey);
     setError(null);
@@ -123,7 +140,7 @@ export function SearchRoute() {
   useEffect(() => {
     const q = debouncedQuery.trim();
     if (q.length === 0) return;
-    const key = `${q}|${JSON.stringify(filters)}`;
+    const key = answerKey(q, filters);
     // Already painted from cache above.
     if (cachedSearch(q, filters)) return;
 
@@ -135,7 +152,7 @@ export function SearchRoute() {
       .then((r) => {
         if (!ctrl.signal.aborted) {
           setResult(r);
-          setResultFor(key);
+          setAnswered({ key, query: q });
           setError(null);
         }
       })
@@ -161,8 +178,23 @@ export function SearchRoute() {
   );
 
   const searching = searchQuery.trim().length > 0;
-  const phase = searchPhase(deferredQuery, resultFor, seedKey);
+  const phase = searchPhase(deferredQuery, answered?.key ?? null, seedKey);
   const working = isSearching(phase);
+
+  /**
+   * Tell the server which result was opened, and where it was.
+   *
+   * The query and tier come from the ANSWER on screen, never from the box: a reader
+   * clicking a card during a refine is opening a result of the older query, and reporting
+   * it against the newer one would put the ranking failure on the wrong search.
+   */
+  const reportClick = useCallback(
+    (title: { tconst: string }, rank: number) => {
+      if (!answered || !result) return;
+      reportSearchClick(answered.query, title.tconst, rank, result.tier);
+    },
+    [answered, result],
+  );
 
   /** One owner for "drop the refinements, keep the query", shared by the chip and `esc`. */
   const clearFilters = useCallback(
@@ -276,7 +308,7 @@ export function SearchRoute() {
                 : undefined
             }
           >
-            <TitleGrid titles={result?.hits ?? []} />
+            <TitleGrid titles={result?.hits ?? []} onOpen={reportClick} />
           </div>
         )
       ) : /*

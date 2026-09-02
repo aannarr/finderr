@@ -882,3 +882,54 @@ describe("migrating a database written before request.seasons", () => {
     }
   });
 });
+
+describe("search log", () => {
+  const search = (query: string, at: number, results = 5) => ({ query, at, results });
+
+  test("keeps a query, its stamp and its result count -- and nothing else", () => {
+    store.writeSearches([search("the matrix", 1_000, 25)]);
+
+    const row = store.db.query("select * from search_log").get() as Record<string, unknown>;
+    // The column list IS the privacy rule (D4 on the tuning card). A session id, a user id
+    // or an address appearing here is the failure this assertion exists to catch.
+    expect(Object.keys(row).sort()).toEqual(["at", "query", "results"]);
+    expect(row).toMatchObject({ query: "the matrix", at: 1_000, results: 25 });
+  });
+
+  test("keeps a click with its rank, and nobody's name", () => {
+    store.writeClicks([{ query: "dune", tconst: "tt1160419", rank: 4, tier: "fuzzy", at: 2_000 }]);
+
+    const row = store.db.query("select * from search_click").get() as Record<string, unknown>;
+    expect(Object.keys(row).sort()).toEqual(["at", "query", "rank", "tconst", "tier"]);
+    expect(row).toMatchObject({ rank: 4, tier: "fuzzy" });
+  });
+
+  test("stores two identical queries as two rows", () => {
+    // No primary key, deliberately: collapsing them would understate the query people run
+    // most, which is exactly the one a retune should care about.
+    store.writeSearches([search("dune", 1_000), search("dune", 2_000)]);
+
+    expect(store.searchLogCounts().searches).toBe(2);
+  });
+
+  test("prunes to a row ceiling, oldest first", () => {
+    store.writeSearches([1, 2, 3, 4, 5].map((i) => search(`q${i}`, i * 1_000)));
+    store.writeClicks(
+      [1, 2, 3].map((i) => ({ query: `q${i}`, tconst: "tt1", rank: 0, tier: "fts" as const, at: i })),
+    );
+
+    expect(store.pruneSearchLog(2)).toBe(4);
+    expect(store.searchLogRows(10).map((r) => r.query)).toEqual(["q5", "q4"]);
+    expect(store.searchClickRows(10)).toHaveLength(2);
+  });
+
+  test("pruning an empty log is a no-op rather than a throw", () => {
+    expect(store.pruneSearchLog(100)).toBe(0);
+  });
+
+  test("reads newest first, which is what a report wants", () => {
+    store.writeSearches([search("older", 1_000), search("newer", 2_000)]);
+
+    expect(store.searchLogRows(10).map((r) => r.query)).toEqual(["newer", "older"]);
+  });
+});

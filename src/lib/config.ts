@@ -436,6 +436,38 @@ export interface Config {
     ratePerMinute: number;
   };
 
+  /**
+   * Keep what people search for, so the scorer can be tuned against real queries.
+   *
+   * The whole reason this is worth having, and the whole reason it is safe to have, are in
+   * `./search-log.ts`. In short: every constant in `SearchEngine.rank` was chosen to make an
+   * agent-written canary suite pass, and nothing has ever compared those cases to a query a
+   * human typed. A row holds a query, a timestamp and a result count -- no session, no user,
+   * no address -- so there is no person in this data to protect.
+   */
+  searchLog: {
+    /**
+     * ON by default, which is the one default here that deserves an argument.
+     *
+     * Every other switch in this file that changes behaviour for an existing install is
+     * opt-in, and those are performance or policy switches whose off state is what the
+     * operator already had. This one is different in the way that matters: it collects
+     * nothing about anybody, and off by default means the mechanism ships and the data
+     * never arrives -- an operator does not know to turn on a log they have not read the
+     * source for. Set `FINDERR_SEARCH_LOG=0` and nothing is buffered and nothing is
+     * written; the two tables are left in place rather than dropped, because a flag flipped
+     * to try something out must not destroy state.
+     */
+    enabled: boolean;
+    /**
+     * Rows kept per table, oldest deleted first. A disk bound, not a retention policy.
+     *
+     * 50,000 queries is more than a household types in a year and costs a few megabytes.
+     * See `Store.pruneSearchLog` for why the ceiling is a row count rather than an age.
+     */
+    keepRows: number;
+  };
+
   /** What one person may ask the library for. */
   requests: {
     /**
@@ -678,6 +710,8 @@ const DEFAULTS: Config = {
     lanOnly: false,
     ratePerMinute: 300,
   },
+  // On, and bounded. See the field for why this is the one default that is not opt-in.
+  searchLog: { enabled: true, keepRows: 50_000 },
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
@@ -829,6 +863,10 @@ function envOverrides(): Record<string, unknown> {
       lanOnly: envBool("FINDERR_WEBHOOK_LAN_ONLY"),
       ratePerMinute: envInt("FINDERR_WEBHOOK_RATE_PER_MINUTE"),
     },
+    searchLog: {
+      enabled: envBool("FINDERR_SEARCH_LOG"),
+      keepRows: envInt("FINDERR_SEARCH_LOG_KEEP_ROWS"),
+    },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
     push: {
       enabled: envBool("FINDERR_PUSH_ENABLED"),
@@ -901,6 +939,10 @@ function validate(c: Config): void {
         `auth.origins entry ${JSON.stringify(o)} must be a bare origin like https://finderr.example.com`,
       );
   }
+  // Zero would prune every row on the flush that wrote it, which reads as "logging is
+  // broken" rather than as "logging is off" -- that is what `enabled` is for.
+  if (c.searchLog.keepRows < 1) problems.push("searchLog.keepRows must be >= 1");
+
   if (c.auth.sessionDays <= 0) problems.push("auth.sessionDays must be > 0");
   if (c.auth.inviteHours <= 0) problems.push("auth.inviteHours must be > 0");
   // Short enough to brute-force is worse than absent, because absent is visible in the

@@ -38,6 +38,13 @@ import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
+import {
+  NO_SEARCH_LOG,
+  parseClickBody,
+  FLUSH_MS as SEARCH_LOG_FLUSH_MS,
+  SearchLog,
+  type SearchLogger,
+} from "../lib/search-log";
 import { parseSeasonsInput } from "../lib/seasons";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
@@ -326,6 +333,28 @@ const previewResolver = new PreviewResolver(cfg.preview.resolvePerMinute);
 */
 const requestTimings = new Timings();
 const slowRequests = new SlowLog();
+
+/*
+  What people actually searched for, buffered in memory and drained on a timer.
+
+  The render path only ever pushes to an array -- `bun:sqlite` is synchronous, so an insert
+  inside `/api/search` would hold the event loop for every other request on the page, which
+  is the measurement that bought the search debounce. The flush also PRUNES, so the two
+  tables have a ceiling rather than a growth rate.
+
+  `NO_SEARCH_LOG` when the operator turned it off, so "is logging on" is decided once here
+  instead of at each of the three call sites. See `../lib/search-log.ts` for what a row may
+  hold, which is deliberately far less than what the server knows about the caller.
+*/
+const searchLog: SearchLogger = cfg.searchLog.enabled ? new SearchLog(store) : NO_SEARCH_LOG;
+if (cfg.searchLog.enabled) {
+  setInterval(() => {
+    searchLog.flush();
+    store.pruneSearchLog(cfg.searchLog.keepRows);
+  }, SEARCH_LOG_FLUSH_MS);
+} else {
+  log("search log: off (FINDERR_SEARCH_LOG) -- nothing is buffered and nothing is written");
+}
 
 /*
   Sweep the contributions the loaded plugins have superseded.
@@ -1124,6 +1153,19 @@ const appRoutes = {
           facetRows: store.facetCacheCount(),
           facetImages: store.facetImageCount(),
           facetRowsPruned,
+          /*
+            How much evidence the retune has, and whether anything is being lost.
+
+            `stored` is what a report would read; `pending` is what has not been flushed yet.
+            `dropped` is the field worth watching -- non-zero means a client is looping on
+            the click endpoint faster than the 30s flush drains it. It counts NO queries and
+            NO people: the whole payload is four integers.
+          */
+          searchLog: {
+            enabled: cfg.searchLog.enabled,
+            ...searchLog.report(),
+            stored: store.searchLogCounts(),
+          },
           timings: {
             providers: facets.timingReport(),
             outbound: outboundTimings().report(),
@@ -1217,12 +1259,54 @@ const appRoutes = {
     // background. Never blocks the response.
     artwork.prewarm(res.hits.map((h) => ({ tconst: h.tconst, kind: h.kind })));
 
+    /*
+      The evidence the scorer is retuned against, and it costs one array push.
+
+      `hits.length` rather than `candidates`: the question worth answering later is "did
+      this query work for the person who typed it", and `0` is the failure to go looking
+      for. `candidates` counts what the index offered before the facet filters ran, which is
+      never zero for a query that returned nothing after a chip was applied.
+    */
+    searchLog.searched(q, res.hits.length);
+
     return json(
       { ...res, hits: decorate(res.hits) },
       // Identical queries are extremely common while typing. A short private cache
       // means the back button and repeated keystrokes cost nothing at all.
       { cache: perSession(60) },
     );
+  },
+
+  /**
+   * Which result somebody opened, and where it was sitting.
+   *
+   * THE HALF THAT MAKES THE QUERY LOG WORTH KEEPING. A log of queries can say a search
+   * returned something; only this can say the thing the reader wanted was at rank 4, which
+   * is a ranking failure the search itself reports as a success.
+   *
+   * Fire-and-forget by contract -- `204`, no body, and the browser sends it with `keepalive`
+   * on the way to another page (`reportSearchClick` in `web/src/lib/api.ts`). It carries no
+   * identity and it is not a state change anybody can observe, so the only thing that can go
+   * wrong here is junk in the tuning data: `parseClickBody` refuses anything it does not
+   * recognise rather than storing a coerced version of it.
+   *
+   * No limiter of its own. It is behind the login wall, it costs one array push into a
+   * bounded buffer, and a signed-in client looping on it spends its own agent budget and
+   * gets `dropped` counted in `/api/health` rather than unbounded memory.
+   */
+  "/api/search/click": {
+    POST: async (req: Request) => {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return bad("body must be JSON");
+      }
+      const row = parseClickBody(body, Date.now());
+      if (!row) return bad("query, tconst, rank and tier are required");
+      searchLog.clicked(row);
+      return new Response(null, { status: 204 });
+    },
   },
 
   /**

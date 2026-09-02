@@ -37,7 +37,21 @@ import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
-export type Tier = "fts" | "or" | "lev" | "fuzzy" | "stopword" | "empty";
+/**
+ * Which escalation answered a query, as a value list rather than a bare union.
+ *
+ * The list is here and the type is derived from it because the tier travels to the browser
+ * and comes back on a click report (`parseClickBody` in `./search-log.ts`), so something
+ * has to be able to CHECK a string against the vocabulary at runtime. A second hand-written
+ * array beside a union is two copies of one fact, and the copy is always the stale one.
+ */
+export const TIERS = ["fts", "or", "lev", "fuzzy", "stopword", "empty"] as const;
+
+export type Tier = (typeof TIERS)[number];
+
+export function isTier(v: unknown): v is Tier {
+  return typeof v === "string" && (TIERS as readonly string[]).includes(v);
+}
 
 export interface TitleRow {
   tconst: string;

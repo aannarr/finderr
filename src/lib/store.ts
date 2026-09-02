@@ -13,6 +13,7 @@ import type { Config } from "./config";
 import { paths } from "./config";
 import type { PlexItem } from "./plex";
 import type { RequestDiagnostic } from "./request-diagnostics";
+import type { ClickRow, SearchLogSink, SearchRow } from "./search-log";
 import { encodeSeasons } from "./seasons";
 
 /**
@@ -572,6 +573,35 @@ create table if not exists award_nominee (
   primary key (award, ceremony, seq, nconst)
 );
 create index if not exists ix_award_nominee_nconst on award_nominee(nconst);
+
+-- What somebody searched for, and what somebody opened. The evidence the scorer is retuned
+-- against -- see src/lib/search-log.ts for the whole reasoning, including why the tier is
+-- absent from search_log and recovered by replay instead.
+--
+-- > [!CAUTION] NEITHER TABLE MAY EVER GAIN A COLUMN THAT NAMES A PERSON
+-- > No session, no user id, no address. That is the D4 ruling on the tuning card, and it is
+-- > the reason these two are safe to keep at all. A row here is about a QUERY.
+--
+-- No primary key on either, deliberately: two people searching the same thing in the same
+-- second are two facts and collapsing them would understate exactly the query that matters
+-- most. Both are pruned to a row ceiling rather than to an age -- see pruneSearchLog.
+create table if not exists search_log (
+  query   text not null,
+  at      integer not null,
+  results integer not null
+);
+create index if not exists ix_search_log_at on search_log(at);
+
+-- rank is ZERO-BASED, matching the grid position the browser reported. A click at rank 4 is
+-- the ranking failure this table exists to make countable.
+create table if not exists search_click (
+  query  text not null,
+  tconst text not null,
+  rank   integer not null,
+  tier   text not null,
+  at     integer not null
+);
+create index if not exists ix_search_click_at on search_click(at);
 `;
 
 /**
@@ -707,7 +737,7 @@ const ADDED_COLUMNS: {
   },
 ];
 
-export class Store {
+export class Store implements SearchLogSink {
   readonly db: Database;
 
   constructor(cfg: Config) {
@@ -1665,6 +1695,71 @@ export class Store {
 
   facetImageCount(): number {
     return (this.db.query("select count(*) c from facet_image").get() as { c: number }).c;
+  }
+
+  // --- search log ----------------------------------------------------------
+  //
+  // `Store` IS the `SearchLogSink`, so nothing between the buffer and SQLite has to know
+  // about both. See `../lib/search-log.ts` for what may and may not be in a row.
+
+  /** One transaction per batch: a flush of forty rows costs one fsync, not forty. */
+  writeSearches(rows: readonly SearchRow[]): void {
+    const ins = this.db.prepare("insert into search_log (query, at, results) values (?,?,?)");
+    this.db.transaction(() => {
+      for (const r of rows) ins.run(r.query, r.at, r.results);
+    })();
+  }
+
+  writeClicks(rows: readonly ClickRow[]): void {
+    const ins = this.db.prepare(
+      "insert into search_click (query, tconst, rank, tier, at) values (?,?,?,?,?)",
+    );
+    this.db.transaction(() => {
+      for (const r of rows) ins.run(r.query, r.tconst, r.rank, r.tier, r.at);
+    })();
+  }
+
+  /**
+   * Keep the newest `keep` rows of each table and delete the rest. Returns rows removed.
+   *
+   * A ROW CEILING RATHER THAN AN AGE, and the difference matters for what this data is for.
+   * An age limit on a household instance that goes quiet for a month deletes the only
+   * evidence there was; a ceiling keeps the last N queries however long they took to
+   * arrive, which is what a retune wants to read. It is a disk bound, not a retention
+   * policy -- there is no identity here to expire.
+   */
+  pruneSearchLog(keep: number): number {
+    let removed = 0;
+    for (const table of ["search_log", "search_click"]) {
+      // The cutoff is read first rather than folded into the DELETE: a correlated subquery
+      // over `at` is evaluated per candidate row, and this one runs on a 30s timer.
+      const edge = this.db.query(`select at from ${table} order by at desc limit 1 offset ?`).get(keep) as
+        | { at: number }
+        | undefined;
+      if (!edge) continue;
+      removed += this.db.run(`delete from ${table} where at <= ?`, [edge.at]).changes;
+    }
+    return removed;
+  }
+
+  /** Every logged query, newest first. The report job's whole input. */
+  searchLogRows(limit: number): SearchRow[] {
+    return this.db
+      .query("select query, at, results from search_log order by at desc limit ?")
+      .all(limit) as SearchRow[];
+  }
+
+  searchClickRows(limit: number): ClickRow[] {
+    return this.db
+      .query("select query, tconst, rank, tier, at from search_click order by at desc limit ?")
+      .all(limit) as ClickRow[];
+  }
+
+  searchLogCounts(): { searches: number; clicks: number } {
+    return {
+      searches: (this.db.query("select count(*) c from search_log").get() as { c: number }).c,
+      clicks: (this.db.query("select count(*) c from search_click").get() as { c: number }).c,
+    };
   }
 
   // --- awards --------------------------------------------------------------

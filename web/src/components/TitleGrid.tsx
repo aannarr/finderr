@@ -16,12 +16,26 @@ import { TitleCard } from "./TitleCard";
 /** The one grid class list, shared with `GridSkeleton` so the two cannot drift apart. */
 const GRID_CLASS = "card-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
 
-export const TitleGrid = memo(function TitleGrid({ titles }: { titles: Title[] }) {
+export const TitleGrid = memo(function TitleGrid({
+  titles,
+  onOpen,
+}: {
+  titles: Title[];
+  /**
+   * A card in THIS grid was opened, with its position.
+   *
+   * The position is passed here rather than looked up by the caller because the grid is what
+   * decides the order -- asking a route to find a title's index in the array it just handed
+   * over would be a second copy of the ranking, and the copy is what goes wrong when a grid
+   * later filters or reorders. Only `SearchRoute` supplies it.
+   */
+  onOpen?: (title: Title, rank: number) => void;
+}) {
   const { request } = useApp();
   return (
     <div className={GRID_CLASS}>
-      {titles.map((t) => (
-        <TitleCard key={t.tconst} title={t} onRequest={request} />
+      {titles.map((t, rank) => (
+        <TitleCard key={t.tconst} title={t} onRequest={request} onOpen={onOpen && (() => onOpen(t, rank))} />
       ))}
     </div>
   );
