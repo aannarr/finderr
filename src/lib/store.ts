@@ -12,6 +12,7 @@ import type { Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
 import type { PlexItem } from "./plex";
+import type { RequestDiagnostic } from "./request-diagnostics";
 import { encodeSeasons } from "./seasons";
 
 /**
@@ -286,6 +287,33 @@ create table if not exists request (
 );
 create index if not exists ix_request_status on request(status);
 create unique index if not exists ix_request_tconst on request(tconst);
+
+-- What we have LEARNED about an open request, so a reader can be told why it is slow.
+--
+-- NOTE: no backticks anywhere in this comment -- SCHEMA is a template literal.
+--
+-- One row per requested title, written by the reconcile timer and read on the render path
+-- like every other mirror here. Separate from the request table rather than more columns on
+-- it, because the two have different owners and different lifetimes: a request row is the
+-- record of an ASK and every column on it was written by the person who asked, while this is
+-- an observation of somebody else's machine, rewritten every thirty seconds. Dropping and
+-- refilling this table costs nothing; dropping a request column loses a fact.
+--
+-- EVIDENCE ONLY. The verdict a reader sees is derived by verdictFor() in
+-- request-diagnostics.ts and is deliberately not stored -- see the note on
+-- RequestDiagnostic. Every column is nullable and null means "we do not know", which is a
+-- different answer from zero and the whole reason the feature can stay honest.
+create table if not exists request_diagnostic (
+  tconst            text primary key,
+  download_progress real,
+  eta_at            text,
+  grabbed_at        text,
+  grabbed_quality   text,
+  indexers_searched integer,
+  releases_seen     integer,
+  last_search_at    text,
+  updated_at        text not null
+);
 
 create table if not exists kv (key text primary key, value text not null);
 
@@ -1121,6 +1149,60 @@ export class Store {
 
   requestMap(): Map<string, MediaRequest> {
     const rows = this.db.query("select * from request").all() as MediaRequest[];
+    return new Map(rows.map((r) => [r.tconst, r]));
+  }
+
+  // --- request diagnostics ---------------------------------------------------
+
+  /**
+   * Record what the reconcile pass learned about one request.
+   *
+   * A WHOLE-ROW replace rather than a patch of the fields that changed, because the
+   * observation is whole: a title that has left the arr's queue must lose its progress and
+   * its ETA in the same write that notices, or the page keeps drawing a bar for a download
+   * that stopped. Every caller passes everything it knows, and "we no longer know" is
+   * written as null.
+   */
+  upsertRequestDiagnostic(d: Omit<RequestDiagnostic, "updated_at">): void {
+    this.db.run(
+      "insert into request_diagnostic (tconst,download_progress,eta_at,grabbed_at,grabbed_quality," +
+        "indexers_searched,releases_seen,last_search_at,updated_at) values (?,?,?,?,?,?,?,?,?) " +
+        "on conflict(tconst) do update set download_progress=excluded.download_progress, " +
+        "eta_at=excluded.eta_at, grabbed_at=excluded.grabbed_at, grabbed_quality=excluded.grabbed_quality, " +
+        "indexers_searched=excluded.indexers_searched, releases_seen=excluded.releases_seen, " +
+        "last_search_at=excluded.last_search_at, updated_at=excluded.updated_at",
+      [
+        d.tconst,
+        d.download_progress,
+        d.eta_at,
+        d.grabbed_at,
+        d.grabbed_quality,
+        d.indexers_searched,
+        d.releases_seen,
+        d.last_search_at,
+        new Date().toISOString(),
+      ],
+    );
+  }
+
+  getRequestDiagnostic(tconst: string): RequestDiagnostic | null {
+    return (
+      (this.db.query("select * from request_diagnostic where tconst = ?").get(tconst) as
+        | RequestDiagnostic
+        | undefined) ?? null
+    );
+  }
+
+  /**
+   * Every diagnostic, keyed by tconst -- the render-path read.
+   *
+   * Whole-table like `requestMap`, and bounded the same way: at most one row per title
+   * anybody has ever asked for. `decorate()` needs an arbitrary subset of the titles on a
+   * page, and a query per card would be the network call this whole architecture exists to
+   * avoid, in SQLite.
+   */
+  requestDiagnosticMap(): Map<string, RequestDiagnostic> {
+    const rows = this.db.query("select * from request_diagnostic").all() as RequestDiagnostic[];
     return new Map(rows.map((r) => [r.tconst, r]));
   }
 

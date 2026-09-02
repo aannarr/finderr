@@ -169,17 +169,41 @@ export interface DownloadProgress {
 }
 
 /**
- * Read one queue record as progress.
+ * Read every queue record belonging to one library item as a single bar.
+ *
+ * A LIST rather than one record, because a series downloading four episodes at once has
+ * four rows against the same `seriesId` and the reader asked for the series. So the bar is
+ * the whole ask: bytes summed, and the ETA the LAST of them to land -- picking the first
+ * would promise a finish while three episodes were still coming.
  *
  * `size` is bytes and `sizeleft` counts DOWN, so the fraction is what has already arrived.
- * Clamped because an arr briefly reports `sizeleft` above `size` while a download is being
- * verified, and a bar rendering -3% is a bug report.
+ * Each record is clamped BEFORE it is summed, because an arr briefly reports `sizeleft`
+ * above `size` while a download is being verified and one such row would drag the total
+ * backwards.
  */
-export function downloadProgressOf(item: QueueItem): DownloadProgress {
-  const etaAt = item.estimatedCompletionTime ?? null;
-  if (!(item.size > 0)) return { progress: null, etaAt };
-  const done = (item.size - item.sizeleft) / item.size;
-  return { progress: Math.min(1, Math.max(0, done)), etaAt };
+export function downloadProgressOf(items: readonly QueueItem[]): DownloadProgress {
+  let size = 0;
+  let left = 0;
+  let etaAt: string | null = null;
+  let etaMs = Number.NEGATIVE_INFINITY;
+
+  for (const item of items) {
+    if (item.size > 0) {
+      size += item.size;
+      left += Math.min(Math.max(item.sizeleft, 0), item.size);
+    }
+    // Parsed rather than string-compared: an arr may answer with an offset instead of Z,
+    // and "2026-09-02T21:00:00+07:00" sorts after "2026-09-02T15:00:00Z" as text while
+    // being the same instant.
+    const at = item.estimatedCompletionTime ? Date.parse(item.estimatedCompletionTime) : Number.NaN;
+    if (Number.isFinite(at) && at > etaMs) {
+      etaMs = at;
+      etaAt = item.estimatedCompletionTime ?? null;
+    }
+  }
+
+  if (size <= 0) return { progress: null, etaAt };
+  return { progress: (size - left) / size, etaAt };
 }
 
 /**

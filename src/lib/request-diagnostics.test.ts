@@ -89,23 +89,38 @@ describe("live download progress", () => {
     ({ id: 1, title: "x", status: "downloading", size, sizeleft, estimatedCompletionTime: eta }) as QueueItem;
 
   test("the fraction already downloaded, with the arr's own completion instant", () => {
-    const { progress, etaAt } = downloadProgressOf(item(1000, 380, "2026-09-02T14:06:00Z"));
+    const { progress, etaAt } = downloadProgressOf([item(1000, 380, "2026-09-02T14:06:00Z")]);
     expect(progress).toBeCloseTo(0.62, 5);
     expect(etaAt).toBe("2026-09-02T14:06:00Z");
   });
 
   test("a size we cannot divide by yields no bar rather than a wrong one", () => {
-    expect(downloadProgressOf(item(0, 0)).progress).toBeNull();
+    expect(downloadProgressOf([item(0, 0)]).progress).toBeNull();
+    expect(downloadProgressOf([]).progress).toBeNull();
   });
 
   /** An arr briefly reports sizeleft above size while verifying; -3% is a bug report. */
   test("clamped at both ends", () => {
-    expect(downloadProgressOf(item(1000, 1200)).progress).toBe(0);
-    expect(downloadProgressOf(item(1000, -50)).progress).toBe(1);
+    expect(downloadProgressOf([item(1000, 1200)]).progress).toBe(0);
+    expect(downloadProgressOf([item(1000, -50)]).progress).toBe(1);
   });
 
   test("no completion estimate is null, not a guess", () => {
-    expect(downloadProgressOf(item(1000, 500)).etaAt).toBeNull();
+    expect(downloadProgressOf([item(1000, 500)]).etaAt).toBeNull();
+  });
+
+  /** Four episodes of one series are one ask, so they are one bar. */
+  test("several queue rows for one item sum into a single bar", () => {
+    const { progress } = downloadProgressOf([item(1000, 0), item(1000, 500), item(2000, 2000)]);
+    expect(progress).toBeCloseTo(1500 / 4000, 5);
+  });
+
+  test("the ETA is the LAST of them to land, compared as instants and not as text", () => {
+    const { etaAt } = downloadProgressOf([
+      item(1000, 500, "2026-09-02T21:00:00+07:00"), // 14:00Z
+      item(1000, 500, "2026-09-02T15:00:00Z"),
+    ]);
+    expect(etaAt).toBe("2026-09-02T15:00:00Z");
   });
 });
 

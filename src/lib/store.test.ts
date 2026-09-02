@@ -526,6 +526,61 @@ describe("request seasons", () => {
 });
 
 /**
+ * The evidence behind "why is this taking so long". The VOCABULARY it feeds is pinned in
+ * `./request-diagnostics.test.ts`; this is only about the round trip.
+ */
+describe("request diagnostics", () => {
+  const evidence = {
+    tconst: "tt3659388",
+    download_progress: 0.62,
+    eta_at: "2026-09-02T14:06:00Z",
+    grabbed_at: "2026-09-02T14:03:00Z",
+    grabbed_quality: "Bluray-1080p",
+    indexers_searched: 2,
+    releases_seen: 7,
+    last_search_at: "2026-09-02T14:02:00Z",
+  };
+
+  test("a title nobody has diagnosed reads as null, never as a row of zeroes", () => {
+    expect(store.getRequestDiagnostic("tt0000000")).toBeNull();
+  });
+
+  test("evidence round-trips, and a real zero survives as a zero", () => {
+    store.upsertRequestDiagnostic({ ...evidence, releases_seen: 0 });
+    const got = store.getRequestDiagnostic(evidence.tconst);
+    expect(got?.download_progress).toBeCloseTo(0.62, 5);
+    expect(got?.grabbed_quality).toBe("Bluray-1080p");
+    // The distinction the whole feature turns on: 0 is "we asked and there was nothing",
+    // which is a verdict, while null is "we never found out", which is not.
+    expect(got?.releases_seen).toBe(0);
+    expect(got?.updated_at).toBeTruthy();
+  });
+
+  /**
+   * The whole-row rule. A second pass that no longer sees the download must ERASE the bar,
+   * not leave the last one it saw -- so the upsert overwrites every column, including with
+   * nulls.
+   */
+  test("a later pass that knows less overwrites what an earlier one knew", () => {
+    store.upsertRequestDiagnostic(evidence);
+    store.upsertRequestDiagnostic({ ...evidence, download_progress: null, eta_at: null });
+    const got = store.getRequestDiagnostic(evidence.tconst);
+    expect(got?.download_progress).toBeNull();
+    expect(got?.eta_at).toBeNull();
+    // ...while everything the pass still knew is untouched.
+    expect(got?.grabbed_quality).toBe("Bluray-1080p");
+  });
+
+  test("the map is what the render path reads, keyed by tconst", () => {
+    store.upsertRequestDiagnostic(evidence);
+    store.upsertRequestDiagnostic({ ...evidence, tconst: "tt1375666" });
+    const map = store.requestDiagnosticMap();
+    expect(map.size).toBe(2);
+    expect(map.get("tt1375666")?.releases_seen).toBe(7);
+  });
+});
+
+/**
  * The counting half of the daily quota. The RULE is in `./request-quota.test.ts`.
  *
  * Every assertion here is about the same claim: the quota has no counter of its own, so

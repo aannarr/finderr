@@ -13,14 +13,22 @@
 
 import type { RadarrClient, SonarrClient } from "../lib/arr";
 import { ArrError, safeArrMessage } from "../lib/arr";
+import type { ProwlarrClient } from "../lib/prowlarr";
 import { decodeSeasons } from "../lib/seasons";
 import type { Store } from "../lib/store";
 import { searchOnAddOf } from "../lib/store";
+import { diagnoseRequests, downloadsByArrId } from "./diagnose-requests";
 
 export interface WorkerDeps {
   store: Store;
   radarr?: RadarrClient;
   sonarr?: SonarrClient;
+  /**
+   * Read-only, and only for diagnostics. Optional: without it a request that has found
+   * nothing is reported as still looking rather than as hopeless -- see
+   * `../lib/request-diagnostics.ts`.
+   */
+  prowlarr?: ProwlarrClient;
   log: (...args: unknown[]) => void;
 }
 
@@ -218,9 +226,14 @@ export class RequestWorker {
    * request that has been sitting with nothing found. The second is the case Seerr
    * handles worst -- it shows "Processing" forever for a title that has no release
    * anywhere, with no way for the user to know they should stop waiting.
+   *
+   * It also writes down WHY, in the same pass and from the same queue read -- see
+   * `./diagnose-requests`. The status is the state machine; the diagnostic is the evidence
+   * a reader is shown, and deriving one from the other is `verdictFor`'s job rather than
+   * this method's.
    */
   async reconcile(): Promise<void> {
-    const { store, radarr, sonarr, log } = this.deps;
+    const { store, log } = this.deps;
     const open = [
       ...store.listRequests("sent", 200),
       ...store.listRequests("grabbed", 200),
@@ -239,42 +252,39 @@ export class RequestWorker {
       }
     }
 
-    // Anything currently downloading gets flagged as such.
-    try {
-      const queues = await Promise.all([
-        radarr ? radarr.queue() : Promise.resolve(null),
-        sonarr ? sonarr.queue() : Promise.resolve(null),
-      ]);
-      const active = new Set<number>();
-      for (const q of queues)
-        for (const rec of q?.records ?? []) {
-          if (rec.movieId) active.add(rec.movieId);
-          if (rec.seriesId) active.add(rec.seriesId);
-        }
-      for (const r of open) {
-        if (r.arr_id !== null && active.has(r.arr_id) && r.status !== "downloading") {
-          store.updateRequest(r.tconst, { status: "downloading" });
-        }
+    // ONE queue read, feeding both questions the queues can answer: is this downloading at
+    // all, and how far along is it. Two reads would be two answers free to disagree.
+    const downloads = await downloadsByArrId(this.deps);
+    for (const r of open) {
+      if (r.arr_id !== null && downloads.has(r.arr_id) && r.status !== "downloading") {
+        store.updateRequest(r.tconst, { status: "downloading" });
       }
-    } catch {
-      // A queue read failing is not worth surfacing; the next tick will retry.
     }
 
     // Age out the hopeless ones. Nine reconcile passes is roughly 4.5 minutes of
     // being "sent" with nothing to show for it -- long enough to be meaningful,
     // short enough to be useful.
+    //
+    // No `error` is written with the transition. The sentence a reader sees for a
+    // given-up request is `VERDICT_COPY.no_releases` (or `nothing_accepted`, when the
+    // indexers turned out to have something) and it is chosen from the evidence below --
+    // a fixed string here would be a second, blunter copy of the same claim.
     for (const r of open) {
       if (r.status !== "sent") continue;
       const attempts = r.search_attempts + 1;
       store.updateRequest(r.tconst, { search_attempts: attempts });
       const ageHours = (Date.now() - new Date(r.created_at).getTime()) / 3_600_000;
       if (attempts > 9 && ageHours > 24) {
-        store.updateRequest(r.tconst, {
-          status: "no_release",
-          error: "No release found on any configured indexer after 24 hours of searching.",
-        });
+        store.updateRequest(r.tconst, { status: "no_release", error: null });
         log(`request: "${r.title}" -> no_release`);
       }
+    }
+
+    // Safe to pass the rows read at the top of the pass: a diagnostic is keyed on tconst
+    // and built from `title`, `arr_id` and `created_at`, none of which the loops above
+    // touch. The STATUS they do move is read fresh wherever a verdict is derived.
+    for (const d of await diagnoseRequests(this.deps, open, downloads)) {
+      store.upsertRequestDiagnostic(d);
     }
   }
 }

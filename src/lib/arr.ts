@@ -136,7 +136,10 @@ export interface QueueItem {
  * > arr's own prose and is NOT safe to forward. See `safeArrMessage`.
  */
 export interface ArrHistoryRecord {
-  /** `grabbed`, `downloadFolderImported`, `downloadFailed`, ... -- see `ARR_GRAB_EVENT`. */
+  /**
+   * `grabbed`, `downloadFolderImported`, `downloadFailed`, ... Only the first is read here
+   * -- see `ARR_GRAB_EVENT` in `../server/diagnose-requests.ts`.
+   */
   eventType?: string;
   date?: string;
   movieId?: number;
@@ -262,7 +265,6 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
       return { ok: false, error: (err as Error).message };
     }
   }
-
 }
 
 /**
@@ -272,10 +274,6 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
  * Prowlarr deliberately does NOT extend this -- see `ProwlarrClient` in `./prowlarr.ts`.
  */
 export class ArrClient extends ServarrHttp<ArrService> {
-  constructor(name: "radarr" | "sonarr", svc: ArrService) {
-    super(name, svc);
-  }
-
   rootFolders() {
     return this.get<ArrRootFolder[]>("/rootfolder");
   }
