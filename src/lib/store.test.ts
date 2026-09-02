@@ -538,7 +538,6 @@ describe("request diagnostics", () => {
     grabbed_quality: "Bluray-1080p",
     indexers_searched: 2,
     releases_seen: 7,
-    last_search_at: "2026-09-02T14:02:00Z",
   };
 
   test("a title nobody has diagnosed reads as null, never as a row of zeroes", () => {

@@ -131,7 +131,6 @@ export interface RequestDiagnostic {
   indexers_searched: number | null;
   /** The most releases any ONE of those searches returned. Null = searched, count unknown. */
   releases_seen: number | null;
-  last_search_at: string | null;
   updated_at: string;
 }
 
@@ -324,13 +323,20 @@ export function formatRemaining(ms: number): string | null {
 // The Prowlarr correlation -- slice A3
 // ---------------------------------------------------------------------------
 
-/** What Prowlarr's history says about one title. */
+/**
+ * What Prowlarr's history says about one title.
+ *
+ * Two numbers and no timestamp. WHEN the last search ran is available here for free and is
+ * deliberately not kept: nothing renders it, and a column nobody reads is a column that
+ * goes wrong quietly. A "last searched 4 hours ago" line would be about six lines to add
+ * back, and would need the raw instant on the wire rather than a sentence, because a
+ * relative time worded on the server is stale before it arrives.
+ */
 export interface SearchEvidence {
   /** Distinct indexers that ran a matching query. */
   indexers: number;
   /** The most releases any one of those searches returned. Null when no count was given. */
   releasesSeen: number | null;
-  lastSearchAt: string | null;
 }
 
 /** Prowlarr's word for a search somebody asked for, as opposed to a feed it polls itself. */
@@ -392,7 +398,6 @@ export function searchEvidenceFor(
   const since = Date.parse(target.sinceIso);
   const indexers = new Set<number>();
   let releasesSeen: number | null = null;
-  let lastSearchAt: string | null = null;
 
   for (const rec of records) {
     // An RSS poll happens whether or not anybody asked for anything -- counting it would
@@ -407,8 +412,7 @@ export function searchEvidenceFor(
     if (rec.indexerId !== undefined) indexers.add(rec.indexerId);
     const found = resultCount(rec.data?.queryResults);
     if (found !== null) releasesSeen = Math.max(releasesSeen ?? 0, found);
-    if (lastSearchAt === null || at > Date.parse(lastSearchAt)) lastSearchAt = rec.date ?? null;
   }
 
-  return { indexers: indexers.size, releasesSeen, lastSearchAt };
+  return { indexers: indexers.size, releasesSeen };
 }

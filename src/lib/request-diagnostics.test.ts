@@ -286,7 +286,7 @@ describe("reading Prowlarr's history for one title", () => {
 
   test("an RSS poll is not a search anybody asked for", () => {
     const ev = searchEvidenceFor([query({ eventType: "indexerRss" })], target);
-    expect(ev).toEqual({ indexers: 0, releasesSeen: null, lastSearchAt: null });
+    expect(ev).toEqual({ indexers: 0, releasesSeen: null });
   });
 
   test("a search for another title is ignored", () => {
@@ -303,14 +303,6 @@ describe("reading Prowlarr's history for one title", () => {
   test("a zero count is evidence, a missing count is not", () => {
     expect(searchEvidenceFor([query()], target).releasesSeen).toBe(0);
     expect(searchEvidenceFor([query({ data: { query: "Sicario 2015" } })], target).releasesSeen).toBeNull();
-  });
-
-  test("reports when the most recent matching search ran", () => {
-    const ev = searchEvidenceFor(
-      [query({ date: "2026-09-02T12:00:00Z" }), query({ date: "2026-09-02T13:30:00Z" })],
-      target,
-    );
-    expect(ev.lastSearchAt).toBe("2026-09-02T13:30:00Z");
   });
 
   test("an undated record is dropped rather than assumed recent", () => {

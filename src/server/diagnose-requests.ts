@@ -152,7 +152,7 @@ export async function diagnoseRequests(
     // "asked and found nothing" -- so the counts are null rather than zero.
     const evidence = deps.prowlarr
       ? searchEvidenceFor(searches, { title: r.title, sinceIso: r.created_at })
-      : { indexers: null, releasesSeen: null, lastSearchAt: null };
+      : { indexers: null, releasesSeen: null };
 
     return {
       tconst: r.tconst,
@@ -162,7 +162,6 @@ export async function diagnoseRequests(
       grabbed_quality: grab?.quality ?? null,
       indexers_searched: evidence.indexers,
       releases_seen: evidence.releasesSeen,
-      last_search_at: evidence.lastSearchAt,
     };
   });
 }

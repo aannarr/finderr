@@ -125,7 +125,6 @@ describe("building an evidence row per open request", () => {
       grabbed_quality: "Bluray-1080p",
       indexers_searched: 1,
       releases_seen: 4,
-      last_search_at: "2026-09-02T11:00:00Z",
     });
   });
 
@@ -150,7 +149,6 @@ describe("building an evidence row per open request", () => {
     const [row] = await diagnoseRequests(deps, [request()], new Map());
     expect(row?.releases_seen).toBeNull();
     expect(row?.indexers_searched).toBeNull();
-    expect(row?.last_search_at).toBeNull();
   });
 
   test("a Prowlarr that is down is the same as an absent one, and says so once", async () => {
