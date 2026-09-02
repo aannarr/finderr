@@ -246,6 +246,57 @@ export function publicUser(u: User): {
   };
 }
 
+// --- origins and return destinations ---------------------------------------
+
+/**
+ * The origin to hand a third party, or to write into a tag somebody else will store.
+ *
+ * Chosen from the CONFIGURED origins by matching the request's own host, never taken from
+ * the request. An origin built out of a header is an open redirect with extra steps, and
+ * both callers hand the result to somebody outside: Plex bounces a browser to it, and an
+ * Open Graph tag is fetched by a crawler and then cached by Slack or Twitter for as long
+ * as they feel like. A wrong value there is not a transient bug.
+ *
+ * Falls back to the first configured origin, which is what an unrecognised host deserves.
+ */
+export function publicOrigin(reqUrl: string, origins: readonly string[]): string {
+  const host = new URL(reqUrl).host;
+  const match = origins.find((o) => {
+    try {
+      return new URL(o).host === host;
+    } catch {
+      return false;
+    }
+  });
+  return match ?? origins[0] ?? "";
+}
+
+/**
+ * A caller-supplied place to go after signing in, or `null` if it is not one of ours.
+ *
+ * > [!CAUTION] This is an open-redirect guard and the rejections are the whole point
+ * > It accepts a PATH and never a URL, because every URL-shaped thing is a way out of this
+ * > origin. `//evil.example` is the one that catches people: it has no scheme, it starts
+ * > with a slash, it passes a naive `startsWith("/")` check, and a browser reads it as
+ * > protocol-relative and leaves. `\\evil.example` is the same trick for the browsers that
+ * > normalise a backslash, and a control character can smuggle either past a regex that
+ * > was written without `\n` in mind.
+ *
+ * Anything rejected becomes `null` and the caller sends the user to `/`, which is never
+ * wrong -- only less helpful.
+ */
+export function safeReturnPath(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (value.length > 512) return null;
+  if (!value.startsWith("/")) return null;
+  // Protocol-relative, in both spellings a browser accepts.
+  if (value.startsWith("//") || value.startsWith("/\\")) return null;
+  // No scheme, no control characters, no whitespace, no fragment games.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
+  if (/[\x00-\x20\x7f<>"'\\]/.test(value)) return null;
+  return value;
+}
+
 // --- cookies ---------------------------------------------------------------
 
 export const SESSION_COOKIE = "fdr_sid";

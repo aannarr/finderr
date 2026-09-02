@@ -40,6 +40,50 @@ export function inviteTokenFromPath(pathname: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/**
+ * A caller-supplied destination, or `null` if it is not one of ours.
+ *
+ * > [!IMPORTANT] DELIBERATELY DUPLICATED from `safeReturnPath` in `src/lib/auth.ts`
+ * > Same precedent and same reason as `decadeOf` and `personNameKey`: that module imports
+ * > `node:crypto`, so a VALUE import would pull it into the pre-auth browser bundle. The
+ * > two must stay identical -- the server validates what it stores against the PIN row and
+ * > this validates what it acts on, and a divergence means one end accepts a destination
+ * > the other refuses.
+ *
+ * `//evil.example` is the rejection that matters: no scheme, leading slash, passes any
+ * naive `startsWith("/")` check, and a browser reads it as protocol-relative and leaves.
+ */
+export function safeReturnPath(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (value.length > 512) return null;
+  if (!value.startsWith("/")) return null;
+  if (value.startsWith("//") || value.startsWith("/\\")) return null;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
+  if (/[\x00-\x20\x7f<>"'\\]/.test(value)) return null;
+  return value;
+}
+
+/**
+ * Where to go once the ceremony succeeds.
+ *
+ * > [!CAUTION] The screen's OWN paths must never be the answer, or sign-in loops
+ * > The obvious fallback -- "go back to whatever is in the address bar" -- is right for a
+ * > deep link and catastrophic for the two paths this screen legitimately owns. `/login`
+ * > carries `?plex=<pin>` on the way back from plex.tv, so returning there re-enters the
+ * > Plex wait with a spent pin; `/invite/<token>` would re-present a claimed invitation as
+ * > a dead one. Both look like a broken sign-in to the person it happens to.
+ *
+ * Pure and exported so the loop cases are pinned by tests rather than by a browser.
+ */
+export function returnDestination(search: string, pathname: string): string {
+  const asked = safeReturnPath(new URLSearchParams(search).get("next"));
+  if (asked) return asked;
+  // The address bar is the fallback, WITHOUT its query: a deep link's own path is what the
+  // reader wanted, and anything in the query at this point belongs to the ceremony.
+  if (pathname === "/login" || pathname.startsWith("/invite/")) return "/";
+  return safeReturnPath(pathname) ?? "/";
+}
+
 type Phase =
   | { kind: "loading" }
   | { kind: "signin" }
@@ -56,9 +100,25 @@ export function AuthScreen() {
 
   const canPasskey = passkeysAvailable();
 
-  /** Signed in: leave this bundle entirely, so the server hands over the app shell. */
+  /**
+   * Signed in: leave this bundle entirely, so the server hands over the app shell.
+   *
+   * **To where the reader was ACTUALLY going**, which used to be a hardcoded `/`. Somebody
+   * following a shared `/title/tt0096895` link was served this screen at that URL, signed
+   * in, and landed on the front page -- the thing they were sent had been thrown away at
+   * the last step. Harmless-looking while nothing linked in; the whole point of a link
+   * preview once something does.
+   *
+   * Two sources, in order. `?next=` is what the preview page's sign-in button sets, and it
+   * survives the Plex round trip because the server puts it back. `location.pathname` is
+   * the fallback for a passkey sign-in, which never leaves this page -- so the address bar
+   * still holds the deep link and no server involvement is needed at all.
+   *
+   * `safeReturnPath` is shared with the server rather than re-implemented, because both
+   * ends must agree on what counts as ours; a client-only guard is one an attacker skips.
+   */
   const enterApp = useCallback(() => {
-    window.location.href = "/";
+    window.location.href = returnDestination(window.location.search, window.location.pathname);
   }, []);
 
   /**
@@ -142,7 +202,12 @@ export function AuthScreen() {
 
   const withPlex = (token?: string) =>
     run(async () => {
-      const { authUrl } = await plexBegin(token);
+      // Computed BEFORE leaving: after the bounce this tab is at `/login?plex=...` and the
+      // deep link the reader arrived on is no longer anywhere in the browser.
+      const { authUrl } = await plexBegin(
+        token,
+        returnDestination(window.location.search, window.location.pathname),
+      );
       window.location.href = authUrl;
     });
 

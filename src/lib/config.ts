@@ -408,6 +408,38 @@ export interface Config {
   slowRequestMs: number;
 
   /**
+   * Link previews: what an ANONYMOUS caller may buy by sharing a `/title/:tconst` URL.
+   *
+   * The preview page itself reads local SQLite and nothing else, so it is close to free
+   * and the per-IP number is generous. Resolving a poster we have never seen is the only
+   * expensive thing on that path -- it calls Radarr and Sonarr -- and it is bounded
+   * GLOBALLY rather than per IP, because the resource being protected is one NAS and an
+   * attacker with many addresses defeats a per-address bound trivially.
+   */
+  preview: {
+    /**
+     * Requests per minute per IP for the preview PAGE. Zero disables the limiter.
+     *
+     * Deliberately not the single-digit number the outbound path gets. Slack, Discord and
+     * Facebook unfurl from a handful of shared infrastructure addresses, so a tight per-IP
+     * bound silently stops previews working in a busy channel -- which is the case previews
+     * exist for. The page costs three indexed lookups; there is nothing here to ration.
+     */
+    ratePerMinute: number;
+    /**
+     * Poster resolutions per minute, PROCESS-WIDE, for anonymous previews. Zero disables
+     * resolution entirely and previews then draw only posters already in the cache.
+     *
+     * This is the volume bound. Burst is bounded separately and by a different mechanism:
+     * a fixed window would let a whole minute's worth fire in its first second, which is
+     * the pile-up that takes the arrs down, so the resolver also holds a bulkhead at
+     * concurrency 2 with NO queue. Both refuse instantly; a refusal renders a preview
+     * without an image and is never an error.
+     */
+    resolvePerMinute: number;
+  };
+
+  /**
    * Where facet provider plugins are loaded from. Empty means the built-in directory
    * that ships with the source (`src/plugins`), which is the normal case -- this exists
    * so a container can mount a directory of plugins without a rebuild.
@@ -497,6 +529,10 @@ const DEFAULTS: Config = {
   episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
   slowRequestMs: 500,
+  // 30/min per IP is loose enough that no real unfurl service ever trips it and tight
+  // enough that walking 1.27M titles from one address takes eighty years. 60/min global
+  // for the outbound half -- a steady stream of shared links, never a sweep.
+  preview: { ratePerMinute: 30, resolvePerMinute: 60 },
   pluginsDir: "",
   pluginModules: [],
 };
@@ -622,6 +658,10 @@ function envOverrides(): Record<string, unknown> {
     episodeRefreshBatch: envInt("FINDERR_EPISODE_REFRESH_BATCH"),
     resourceLogSeconds: envInt("FINDERR_RESOURCE_LOG_SECONDS"),
     slowRequestMs: envInt("FINDERR_SLOW_REQUEST_MS"),
+    preview: {
+      ratePerMinute: envInt("FINDERR_PREVIEW_RATE_PER_MINUTE"),
+      resolvePerMinute: envInt("FINDERR_PREVIEW_RESOLVE_PER_MINUTE"),
+    },
     pluginsDir: envStr("FINDERR_PLUGINS_DIR"),
     pluginModules: envStr("FINDERR_PLUGIN_MODULES")
       ?.split(",")

@@ -127,8 +127,17 @@ export async function registerPasskey(opts: {
   return done.user;
 }
 
-export function plexBegin(token?: string): Promise<{ pinId: string; authUrl: string }> {
-  return post("/api/auth/plex/begin", token ? { token } : {});
+/**
+ * `next` is where to land AFTER the round trip through plex.tv.
+ *
+ * It has to go through the server: the browser leaves this origin entirely and comes back
+ * to whatever `forwardUrl` Plex was given, so a destination held only in this tab is gone
+ * by then. The server validates it before embedding it (`safeReturnPath`), and the login
+ * screen validates it again on arrival -- neither end trusts the other with an open
+ * redirect.
+ */
+export function plexBegin(token?: string, next?: string): Promise<{ pinId: string; authUrl: string }> {
+  return post("/api/auth/plex/begin", { ...(token ? { token } : {}), ...(next ? { next } : {}) });
 }
 
 /** `{ pending: true }` while the user is still on plex.tv. The caller polls. */

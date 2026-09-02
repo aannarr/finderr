@@ -29,6 +29,7 @@ import {
   type Role,
   readCookie,
   SESSION_COOKIE,
+  safeReturnPath,
   secretEquals,
   sessionCookie,
   type User,
@@ -48,6 +49,7 @@ import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
+import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
 import { wrapRoutes } from "./route-wrap";
 
 type Handler = (req: Request, server?: unknown) => Response | Promise<Response>;
@@ -296,6 +298,15 @@ export class AuthService {
       "/api/auth/plex/begin",
       "/api/auth/plex/finish",
       "/api/auth/logout",
+      /*
+        The Open Graph poster, and the ONE image route an anonymous caller may reach.
+
+        It serves only what the artwork cache already holds and never resolves upstream --
+        see the route itself in `./index.ts`, where the distinction from `/img/t/:tconst`
+        is the whole reason two routes exist. Listed here as the route PATTERN because
+        `withAuth` matches on the table's key, not on the request path.
+      */
+      `${PREVIEW_IMAGE_PATH}/:tconst`,
     ];
   }
 
@@ -473,6 +484,7 @@ export class AuthService {
         if (!this.deps.cfg.plex.enabled) return json({ error: REFUSED }, { status: 404 });
         const b = await body(req);
         const token = str(b.token);
+        const next = safeReturnPath(str(b.next));
         const clientId = newToken(16);
         try {
           const pin = await createPin(this.fetchImpl, {
@@ -491,7 +503,29 @@ export class AuthService {
               clientId,
               code: pin.code,
               product: this.deps.cfg.plex.productName,
-              forwardUrl: `${this.originFor(req)}/login?plex=${encodeURIComponent(pin.id)}`,
+              /*
+                WHERE THE READER ENDS UP, carried across a round trip through plex.tv.
+
+                The path used to be hardcoded, so somebody following a shared
+                `/title/tt0096895` link left for Plex, came back to `/login`, signed in and
+                landed on the front page -- the destination was gone from the browser
+                before the ceremony finished, and no client-side fix can recover it.
+
+                It rides in OUR OWN forward URL rather than being bound to the PIN row, and
+                the distinction from the invite token beside it is deliberate. An invite is
+                a CAPABILITY, so which one is being redeemed must not be editable mid-flow;
+                a landing path is not, and a reader who edited it would arrive somewhere
+                they could have navigated to anyway. Binding it would have cost a schema
+                migration on a live table to buy nothing.
+
+                `safeReturnPath` runs HERE, before the value reaches a URL we hand to a
+                third party -- unvalidated it would make this an open redirect with Plex as
+                the bouncer, which is the exact failure `originFor` exists to prevent one
+                line up. The client validates again on the way back in.
+            */
+              forwardUrl:
+                `${this.originFor(req)}/login?plex=${encodeURIComponent(pin.id)}` +
+                (next ? `&next=${encodeURIComponent(next)}` : ""),
             }),
           });
         } catch (err) {
@@ -960,6 +994,32 @@ export class AuthService {
    */
   clientIp(req: Request): string {
     return this.ip(req);
+  }
+
+  /**
+   * The key a limiter on an APPLICATION route should count against: the account when we
+   * know one, the address otherwise.
+   *
+   * > [!IMPORTANT] An address is the wrong bucket for a caller we can actually name
+   * > aannarr, 2026-09-02: *"no one should be able to fuck around"*. Keying a signed-in
+   * > caller on their IP is wrong in both directions. A household behind one NAT shares a
+   * > bucket, so one person's tab storm throttles everybody else in the house; and one
+   * > account holding several sessions across several addresses gets a fresh budget per
+   * > address, which is the exact hole a limiter exists to close. An account id collapses
+   * > every session that account has into ONE bucket and is not something the caller can
+   * > mint -- unlike an address, and unlike `X-Forwarded-For`.
+   *
+   * The prefixes matter: without them a user whose id happened to look like an address
+   * would share a bucket with that address. They are cheap and the collision is silent.
+   *
+   * **The auth routes deliberately do NOT use this.** Their caller is anonymous by
+   * definition -- that is what they are for -- so the address is the only thing there is,
+   * and `limited()` keys on `ip()` directly. An `api-key` principal has no user and falls
+   * through to the address for the same reason.
+   */
+  limitKey(req: Request): string {
+    const p = this.principal(req);
+    return p?.user ? `u:${p.user.id}` : `ip:${this.ip(req)}`;
   }
 
   /**

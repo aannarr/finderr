@@ -17,7 +17,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
-import { isoIn, visibleRequest } from "../lib/auth";
+import { isoIn, publicOrigin, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
 import { OSCARS, personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
@@ -31,6 +31,7 @@ import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
 import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
+import { RateLimiter } from "../lib/rate-limit";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
@@ -51,6 +52,8 @@ import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { LiveIndex } from "./live-index";
+import { type PreviewDeps, previewResponse } from "./preview";
+import { PREVIEW_IMAGE_PATH, PREVIEW_PATH, PreviewResolver } from "./preview-resolver";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
@@ -233,6 +236,17 @@ const plugins = await loadPlugins({
 });
 const facets = new FacetResolver({ store, registry: plugins, log });
 log(`plugins: ${plugins.list().length} loaded`);
+
+/*
+  What a SHARED LINK is allowed to cost, in two parts.
+
+  `previewLimiter` is fairness -- per caller, on the preview page, which reads local SQLite
+  and is close to free. `previewResolver` is survival -- process-wide, on the one expensive
+  thing an anonymous caller can provoke, which is resolving a poster we have never seen.
+  See `./preview-resolver.ts` for why those are two mechanisms rather than one number.
+*/
+const previewLimiter = new RateLimiter(cfg.preview.ratePerMinute);
+const previewResolver = new PreviewResolver(cfg.preview.resolvePerMinute);
 
 /*
   How long every request took, and which of them were slow enough to keep the arguments of.
@@ -615,6 +629,44 @@ function entityFor(row: TitleRow): FacetEntity {
 }
 
 /**
+ * The Open Graph preview for a shared `/title/:tconst` link, or `null` to fall through to
+ * the ordinary sign-in shell.
+ *
+ * > [!CAUTION] This runs for ANONYMOUS callers. Every line is a disclosure decision
+ * > It is the only HTML in the product that describes anything to somebody with no
+ * > session. What it may say is stated in `src/lib/og-preview.ts` and pinned by a test:
+ * > facts about the FILM, never facts about this deployment holding it. Do not reach for
+ * > `store.libraryMap()`, `episodeStateFor` or `arrLink` here, however convenient.
+ *
+ * **Three reads and no network, in the common case.** The index row, the cached synopsis,
+ * the cached poster URL -- all local SQLite. `facets.warm()` is NEVER called: it starts
+ * every provider that owes this title an answer, which would turn one shared link into
+ * thirteen upstream calls bought by a stranger. The title page does call it, correctly,
+ * because a signed-in reader is looking at the result.
+ *
+ * **Resolving an unseen poster is the one exception and it is bounded.** It goes through
+ * `previewResolver`, which refuses instantly rather than queueing; a refusal renders the
+ * card without an image. Reaching `artwork.serve()` from here instead would hand an
+ * anonymous caller a Radarr AND Sonarr lookup per tconst, 1.27M of them.
+ */
+const previewDeps: PreviewDeps = {
+  rowFor: (tconst) => live.current.byTconst(tconst),
+  cachedSynopsis: (tconst) => {
+    const row = live.current.byTconst(tconst);
+    if (!row) return null;
+    // `read`, never `warm`. See `PreviewDeps.cachedSynopsis`.
+    const cached = facets.read(entityFor(row));
+    return cached.synopsis?.status === "ready" ? (cached.synopsis.data?.text ?? null) : null;
+  },
+  cachedPoster: (tconst) => store.getArtwork(tconst),
+  resolvePoster: (tconst, kind) => previewResolver.tryResolve(() => artwork.resolveUrl(tconst, kind)),
+  allow: (req) => previewLimiter.take(auth.limitKey(req)),
+  origin: (req) => publicOrigin(req.url, cfg.auth.origins),
+  siteName: cfg.auth.rpName,
+  headers: HTML_HEADERS,
+};
+
+/**
  * Attach library + request + artwork state to search hits, from local mirrors only.
  *
  * `posterUrl` always points at OUR proxy, never at image.tmdb.org or thetvdb --
@@ -963,10 +1015,11 @@ const appRoutes = {
         why the check is here rather than in the guard: authentication says who somebody
         is, not how much of the machine they may have.
       */
-    // The SAME key derivation the auth limiter uses, on purpose: a second copy here
-    // would go on counting the whole internet against the proxy's socket address the
-    // day proxy trust is turned on for the auth routes.
-    const key = auth.clientIp(req);
+    // The ACCOUNT when there is one, the address otherwise -- `auth.limitKey` owns that
+    // rule and says why an address is the wrong bucket for a caller we can name. A second
+    // derivation here would go on counting the whole internet against the proxy's socket
+    // address the day proxy trust is turned on for the auth routes.
+    const key = auth.limitKey(req);
     if (!auth.searchLimiter.take(key)) {
       return json(
         { error: "too many searches" },
@@ -1544,6 +1597,27 @@ const appRoutes = {
   [`${FACET_IMAGE_PATH}/:key`]: (req: Bun.BunRequest<`${typeof FACET_IMAGE_PATH}/:key`>) =>
     facetImages.serve(req.params.key, sizeOf(req)),
 
+  /**
+   * The poster an Open Graph card points at. ANONYMOUS-REACHABLE, and the only image route
+   * that is.
+   *
+   * > [!CAUTION] This is `/img/t/:tconst` with the amplifier taken out, not a duplicate of it
+   * > The two look alike and differ in the one way that matters. `/img/t` calls
+   * > `artwork.serve()`, which resolves an unknown tconst through Radarr and Sonarr -- fine
+   * > behind the login wall, catastrophic in front of it, where 1.27M ids are 1.27M
+   * > lookups a stranger can name. This route serves what the cache ALREADY holds and 404s
+   * > otherwise. The resolve happens, bounded, when the PAGE is rendered
+   * > (`previewPage`), which is also the only place it can be rate limited as one act.
+   *
+   * A 404 here is a normal outcome, not an error: the crawler already has the page, and a
+   * card without a picture is the intended degraded form.
+   */
+  [`${PREVIEW_IMAGE_PATH}/:tconst`]: (req: Bun.BunRequest<`${typeof PREVIEW_IMAGE_PATH}/:tconst`>) => {
+    const known = store.getArtwork(req.params.tconst);
+    if (!known?.url) return new Response("no artwork", { status: 404 });
+    return artwork.serveUrl(known.url, DEFAULT_IMAGE_SIZE);
+  },
+
   /** Legacy direct-TMDB-path proxy. Kept for anything addressing posters that way. */
   "/img/:size/:file": (req: Bun.BunRequest<"/img/:size/:file">) =>
     images.serve(req.params.size, req.params.file),
@@ -1656,7 +1730,37 @@ const server: Bun.Server<undefined> = Bun.serve({
         status: 503,
       });
 
-    const shell = auth.principal(req) ? "/index.html" : "/login.html";
+    const principal = auth.principal(req);
+
+    /*
+      A SHARED LINK, followed by somebody with no session -- usually a crawler unfurling it.
+
+      Signed in short-circuits before any of this and is served the app shell exactly as it
+      was before previews existed: the reader is going to the real page, so building a card
+      for them would be work nobody sees. That short-circuit is also what keeps this branch
+      honestly cheap, because the expensive caller is the one we can identify.
+
+      `previewPage` returns null for an unknown tconst or a rate-limited caller, and the
+      fall-through is the ordinary sign-in shell -- never an error. A crawler shown a 429
+      caches the 429.
+    */
+    const shared = principal ? null : PREVIEW_PATH.exec(u.pathname);
+    if (shared?.[1]) {
+      return previewResponse(req, shared[1], previewDeps).then(
+        (res) =>
+          res ??
+          new Response(Bun.file(`${staticDir}/login.html`), {
+            headers: {
+              "Content-Type": "text/html",
+              "Cache-Control": "no-cache",
+              Vary: "Cookie",
+              ...HTML_HEADERS,
+            },
+          }),
+      );
+    }
+
+    const shell = principal ? "/index.html" : "/login.html";
     const rel = u.pathname === "/" ? shell : u.pathname;
     // Reject traversal before touching the filesystem.
     if (rel.includes("..")) return new Response("bad path", { status: 400 });
@@ -1677,8 +1781,16 @@ const server: Bun.Server<undefined> = Bun.serve({
       // SPA fallback -- client-side routes are not files. Which shell depends on who is
       // asking, so a deep link followed while signed out lands on the sign-in page rather
       // than on an app that immediately 401s every call it makes.
+      // `Vary: Cookie` because WHICH shell this is depends on the session, and a shared
+      // cache that misses that can hand the app bundle to an anonymous visitor -- the one
+      // thing the two-shell split exists to prevent. Predates previews; fixed with them.
       return new Response(Bun.file(`${staticDir}${shell}`), {
-        headers: { "Content-Type": "text/html", "Cache-Control": "no-cache", ...HTML_HEADERS },
+        headers: {
+          "Content-Type": "text/html",
+          "Cache-Control": "no-cache",
+          Vary: "Cookie",
+          ...HTML_HEADERS,
+        },
       });
     });
   },
