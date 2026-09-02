@@ -21,7 +21,7 @@ import { ClearChip } from "../components/Chip";
 import { CollectionJump } from "../components/CollectionJump";
 import { FacetBar } from "../components/FacetBar";
 import { useKeyAction } from "../components/Kbd";
-import { Shelf, ShelfSkeleton, TitleGrid } from "../components/TitleGrid";
+import { GridSkeleton, Shelf, ShelfSkeleton, TitleGrid } from "../components/TitleGrid";
 import {
   cachedDiscover,
   cachedSearch,
@@ -32,7 +32,9 @@ import {
   subscribeTitleState,
   titleStateVersion,
 } from "../lib/api";
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from "../lib/debounce";
 import { collectionTokenOf, filtersOf, type SearchParams, toggleFilter } from "../lib/search-params";
+import { isSearching, searchPhase } from "../lib/search-view";
 
 const EMPTY_FACETS = { genre: [], decade: [], year: [], kind: [] };
 
@@ -69,6 +71,23 @@ export function SearchRoute() {
   // Deferred so typing never blocks on rendering a 25-card grid. The input stays
   // responsive at any speed; the results catch up a frame later.
   const deferredQuery = useDeferredValue(searchQuery);
+
+  /*
+    DEBOUNCED, and this is the one that stopped the server falling over.
+
+    `useDeferredValue` above defers RENDERING, not fetching -- it was already here and the
+    box still fired `/api/search` on every keystroke. Measured 2026-09-02 against the live
+    deployment: typing "the matrix" sent TEN requests in 3.1s, two of which were the 1033ms
+    stopword query, and because `bun:sqlite` is synchronous each of those held the entire
+    server. `/api/health` went from 90ms to 981ms beside one of them.
+
+    Aborting was not a fix and could not be: `AbortController` ends the browser's interest in
+    a response the server is already computing synchronously. The request has to not be SENT.
+
+    Only the fetch waits. The URL and the input are untouched -- see `debounce.ts` for why
+    debouncing the navigation instead would have put the lag in the caret.
+  */
+  const debouncedQuery = useDebouncedValue(deferredQuery, SEARCH_DEBOUNCE_MS);
   const abortRef = useRef<AbortController | null>(null);
 
   /**
@@ -81,19 +100,30 @@ export function SearchRoute() {
    */
   const seedKey = `${deferredQuery.trim()}|${JSON.stringify(filters)}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
+  /*
+    Which key the PAINTED result belongs to, so the view can tell "this is the answer" from
+    "this is the previous answer, still on screen while we fetch". Before the debounce there
+    was barely a window between those two; now there is always one, and a reader watching a
+    stale grid with nothing moving is how a fast search reads as a broken one.
+  */
+  const [resultFor, setResultFor] = useState<string | null>(null);
   if (seededFor !== seedKey) {
     const q = deferredQuery.trim();
     const hit = q.length > 0 ? cachedSearch(q, filters) : null;
     // Only ADOPT a hit here. A miss must not clear the current results, or every
     // keystroke of a new query would blank the grid it is refining.
-    if (hit || q.length === 0) setResult(hit ?? null);
+    if (hit || q.length === 0) {
+      setResult(hit ?? null);
+      setResultFor(hit ? seedKey : null);
+    }
     setSeededFor(seedKey);
     setError(null);
   }
 
   useEffect(() => {
-    const q = deferredQuery.trim();
+    const q = debouncedQuery.trim();
     if (q.length === 0) return;
+    const key = `${q}|${JSON.stringify(filters)}`;
     // Already painted from cache above.
     if (cachedSearch(q, filters)) return;
 
@@ -105,6 +135,7 @@ export function SearchRoute() {
       .then((r) => {
         if (!ctrl.signal.aborted) {
           setResult(r);
+          setResultFor(key);
           setError(null);
         }
       })
@@ -113,7 +144,7 @@ export function SearchRoute() {
       });
 
     return () => ctrl.abort();
-  }, [deferredQuery, filters]);
+  }, [debouncedQuery, filters]);
 
   useEffect(() => {
     // A cache hit already painted above, so there is nothing to fetch and nothing to
@@ -130,6 +161,8 @@ export function SearchRoute() {
   );
 
   const searching = searchQuery.trim().length > 0;
+  const phase = searchPhase(deferredQuery, resultFor, seedKey);
+  const working = isSearching(phase);
 
   /** One owner for "drop the refinements, keep the query", shared by the chip and `esc`. */
   const clearFilters = useCallback(
@@ -146,7 +179,22 @@ export function SearchRoute() {
 
   return (
     <>
-      {result && (
+      {/*
+        The one moving thing on screen while a query is in flight.
+
+        It replaces the stats line rather than sitting beside it, because those numbers
+        describe the PREVIOUS query and a count that disagrees with the grid is worse than
+        no count. `aria-live="polite"` so a screen reader is told the search is running
+        without interrupting whatever it is currently reading.
+      */}
+      {working && (
+        <div aria-live="polite" className="mb-2 flex items-center gap-2 text-xs text-muted">
+          <span className="size-2 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
+          Searching…
+        </div>
+      )}
+
+      {result && !working && (
         <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           <span>
             {result.hits.length} of {result.candidates} in{" "}
@@ -183,7 +231,10 @@ export function SearchRoute() {
         <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm">{error}</div>
       )}
 
-      {searching && result && result.hits.length === 0 && (
+      {/* "Nothing for X" must never be shown ABOUT A QUERY STILL RUNNING -- with the
+          debounce there is now a real window where the old empty result is on screen while
+          the new one is in flight, and claiming no match during it is simply false. */}
+      {searching && !working && result && result.hits.length === 0 && (
         <div className="py-16 text-center text-muted">
           <p>Nothing for “{query}”.</p>
           {/*
@@ -208,7 +259,26 @@ export function SearchRoute() {
       {collectionToken ? (
         <CollectionJump name={collectionToken.name} closed={collectionToken.closed} />
       ) : searching ? (
-        <TitleGrid titles={result?.hits ?? []} />
+        /*
+          `first` has nothing to keep, so it reserves the grid's space rather than showing a
+          blank screen. `refining` KEEPS the previous results and only fades them: replacing
+          a grid the reader is already reading with grey boxes on every settled keystroke is
+          the flicker this change exists to remove, not a new one to add.
+        */
+        phase === "first" ? (
+          <GridSkeleton />
+        ) : (
+          <div
+            aria-busy={phase === "refining"}
+            className={
+              phase === "refining"
+                ? "opacity-50 transition-opacity duration-150 motion-reduce:transition-none"
+                : undefined
+            }
+          >
+            <TitleGrid titles={result?.hits ?? []} />
+          </div>
+        )
       ) : /*
           Every shelf is a local index query costing zero external calls. The server
           decides which shelves exist and in what order; this just renders them, so a

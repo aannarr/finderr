@@ -13,16 +13,51 @@ import { useApp } from "../lib/app-context";
 import { Skeleton } from "./FacetPane";
 import { TitleCard } from "./TitleCard";
 
+/** The one grid class list, shared with `GridSkeleton` so the two cannot drift apart. */
+const GRID_CLASS = "card-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
+
 export const TitleGrid = memo(function TitleGrid({ titles }: { titles: Title[] }) {
   const { request } = useApp();
   return (
-    <div className="card-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+    <div className={GRID_CLASS}>
       {titles.map((t) => (
         <TitleCard key={t.tconst} title={t} onRequest={request} />
       ))}
     </div>
   );
 });
+
+/**
+ * What a search looks like before its FIRST results exist.
+ *
+ * Beside the real grid and sharing its class list for the reason `ShelfSkeleton` spells out
+ * at length: a placeholder whose geometry disagrees with the real thing is a layout SHIFT,
+ * which is worse than the blank screen it replaces.
+ *
+ * Only for the first query of a session, or the first after clearing the box. A search that
+ * is REFINING already has results on screen and keeps them -- replacing a grid the reader is
+ * reading with a wall of grey boxes on every keystroke is the flicker this whole change
+ * exists to remove.
+ */
+export function GridSkeleton({ count = 10 }: { count?: number }) {
+  return (
+    <output aria-label="Searching" className="block">
+      <div className={GRID_CLASS}>
+        {Array.from({ length: count }, (_, i) => i).map((i) => (
+          // Same frame as `TitleCard`: poster block, two title lines, one meta line.
+          <div key={i} className="overflow-hidden rounded-xl border border-line bg-surface">
+            <Skeleton className="aspect-2/3 w-full rounded-none" />
+            <div className="flex flex-col gap-1 p-2.5">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="mt-1 h-3 w-1/2" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </output>
+  );
+}
 
 /**
  * A named shelf: one HORIZONTALLY SCROLLING row of titles.
