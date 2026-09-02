@@ -6,6 +6,7 @@ import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
 import type { FetchLike } from "../lib/plex-auth";
 import type { MediaRequest, Store } from "../lib/store";
+import { ARR_WEBHOOK_PATH } from "./arr-webhook";
 import { AuthService, withAuth } from "./auth-routes";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
 
@@ -208,6 +209,20 @@ describe("the guard closes everything by default", () => {
         publiclyReachable: true,
       });
     }
+  });
+
+  /*
+    The arr callback is the ONE public route that changes state, and it has to be: Radarr
+    and Sonarr have no cookie and no way to be given one. Left off the list it would answer
+    401 to both arrs and look, from their side, exactly like a broken integration -- the
+    same silent pairing failure `/api/index-status` had between the two guards above.
+
+    Being public here is not being open: `ArrWebhookService` authenticates every caller with
+    its own basic-auth password and refuses everybody when none is configured. That is
+    asserted in `./arr-webhook.test.ts`; this only pins the allow-list entry.
+  */
+  test("the arr webhook is reachable without a session, because an arr has no cookie", () => {
+    expect(h.service.publicPaths()).toContain(ARR_WEBHOOK_PATH);
   });
 
   test("/api/index-status answers an anonymous caller, because a first install has no users", async () => {

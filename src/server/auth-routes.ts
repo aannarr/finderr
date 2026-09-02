@@ -48,6 +48,7 @@ import {
 import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
+import { ARR_WEBHOOK_PATH } from "./arr-webhook";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
 import { json } from "./json-response";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
@@ -301,6 +302,17 @@ export class AuthService {
         `withAuth` matches on the table's key, not on the request path.
       */
       `${PREVIEW_IMAGE_PATH}/:tconst`,
+      /*
+        The Radarr and Sonarr callback, and the ONE public route that CHANGES state.
+
+        It cannot be anything else: an arr has no cookie, no Plex account and no way to be
+        given one. So it is authenticated by its own basic-auth password instead -- see
+        `config.webhook` and `../server/arr-webhook.ts`, which refuses every caller when no
+        password is configured. Listing it here is the deliberate, visible edit the guard is
+        designed to require; leaving it out would answer 401 to the arrs and look exactly
+        like a broken integration from their side.
+      */
+      ARR_WEBHOOK_PATH,
     ];
   }
 

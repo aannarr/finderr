@@ -45,6 +45,7 @@ import { Store, syncLibrary } from "../lib/store";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
+import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
@@ -208,6 +209,21 @@ const auth = new AuthService({
   log: (m) => log(m),
   // Read at call time, so the closure can name `server` before Bun.serve has returned it.
   addressOf: (req: Request) => server.requestIP(req)?.address ?? null,
+});
+
+/*
+  The Radarr and Sonarr callback.
+
+  It shares `auth.trustProxy` rather than carrying a switch of its own, because there is one
+  fact here -- whether something is in front of us rewriting the source address -- and two
+  copies of it would let the rate limiter and the LAN check disagree about who is calling.
+*/
+const arrWebhooks = new ArrWebhookService({
+  store,
+  webhook: cfg.webhook,
+  trustProxy: cfg.auth.trustProxy,
+  addressOf: (req: Request) => server.requestIP(req)?.address ?? null,
+  log: (m) => log(m),
 });
 
 /*
@@ -1067,6 +1083,10 @@ const appRoutes = {
             noAuth: cfg.auth.noAuth,
           },
           push: { enabled: pushNotifier.enabled, devices: authStore.pushSubscriptionCount() },
+          // Counters held in memory, so this asks nobody anything -- the rule this endpoint
+          // runs on. `received: 0` is how an operator finds out the Webhook connection they
+          // configured on the arr side never saved; nothing else would say so.
+          webhook: arrWebhooks.stats(),
           queue: worker.stats(),
           artwork: artwork.stats(),
           /*
@@ -1878,6 +1898,28 @@ const appRoutes = {
       // delete keyed on it alone would be a stranger's off switch for your notifications.
       return json({ removed: authStore.deletePushSubscription(me, body.endpoint) });
     },
+  },
+
+  /**
+   * Radarr and Sonarr, pushing what they already know.
+   *
+   * PUBLIC, and the one public route that changes state -- it is listed in
+   * `AuthService.publicPaths()` and authenticated by its own basic-auth password instead.
+   * The whole policy lives in `./arr-webhook.ts`; this is only the wiring.
+   *
+   * POST and PUT, because a Webhook connection's `method` field offers both and an operator
+   * who picked the second would otherwise get a 404 from a route that is plainly there. GET
+   * is deliberately absent: this writes, and a state-changing GET is one off-site link away
+   * from being CSRF -- the same reason `/api/requests/:tconst/retry` below is POST-only.
+   *
+   * NOT exempt from the index gate, unlike `/api/health`. While a first install is building
+   * there are no requests for an event to be about, and the poller catches up on anything
+   * missed the moment there are -- so exempting it would mean carrying a path in two
+   * allow-lists to reach a state in which it has nothing to do.
+   */
+  [ARR_WEBHOOK_PATH]: {
+    POST: (req: Request) => arrWebhooks.handle(req),
+    PUT: (req: Request) => arrWebhooks.handle(req),
   },
 
   "/api/requests/:tconst/retry": {
