@@ -48,12 +48,21 @@ import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upc
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
+import {
+  cacheHeaders,
+  IMMUTABLE_PUBLIC,
+  NO_STORE,
+  PER_SESSION_REVALIDATED,
+  perSession,
+  REVALIDATED,
+} from "./cache-policy";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
+import { json } from "./json-response";
 import { LiveIndex } from "./live-index";
 import { type PreviewDeps, previewResponse } from "./preview";
 import { PREVIEW_IMAGE_PATH, PREVIEW_PATH, PreviewResolver } from "./preview-resolver";
@@ -600,17 +609,6 @@ setInterval(() => void refreshAwards(), 24 * 60 * 60 * 1000);
 
 // --- helpers ---------------------------------------------------------------
 
-const json = (data: unknown, init: ResponseInit = {}) =>
-  new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      // A JSON body must never be sniffed into something executable, whoever asked.
-      "X-Content-Type-Options": "nosniff",
-      ...(init.headers ?? {}),
-    },
-  });
-
 /**
  * The headers every HTML response carries. finderr will be internet-facing, and the app
  * ships no inline scripts, no external fonts and no cross-origin fetches (posters and
@@ -939,6 +937,24 @@ const webBuildPresent = (): boolean => {
   haveStatic = existsSync(staticDir);
   return haveStatic;
 };
+
+/**
+ * One of the two HTML shells, with the headers that say WHICH one this was.
+ *
+ * Three call sites want this -- a preview that fell through, `/` itself, and the SPA
+ * fallback -- and until they were one function the `/` one was the odd one out: it fell
+ * through to the ordinary static-file branch, which keys a cache on the URL alone. So the
+ * URL that most reliably serves two different documents was the one URL that did not say
+ * so. `PER_SESSION_REVALIDATED` carries the `Vary: Cookie` that fixes it.
+ */
+const shellResponse = (name: string): Response =>
+  new Response(Bun.file(`${staticDir}${name}`), {
+    headers: {
+      "Content-Type": "text/html",
+      ...cacheHeaders(PER_SESSION_REVALIDATED),
+      ...HTML_HEADERS,
+    },
+  });
 if (!haveStatic) log(`note: no web build at ${staticDir} -- API only. Run 'bun run build'.`);
 
 // --- routes ----------------------------------------------------------------
@@ -1155,7 +1171,7 @@ const appRoutes = {
       { ...res, hits: decorate(res.hits) },
       // Identical queries are extremely common while typing. A short private cache
       // means the back button and repeated keystrokes cost nothing at all.
-      { headers: { "Cache-Control": "private, max-age=60" } },
+      { cache: perSession(60) },
     );
   },
 
@@ -1282,9 +1298,15 @@ const appRoutes = {
           */
         awards: titleAwards(store, row.tconst, OSCARS),
       },
-      // Shorter than the 300s the local-only version used: this response now carries
-      // facets that fill in behind it, and a stale cache would hide them.
-      { headers: { "Cache-Control": "private, max-age=30" } },
+      /*
+        Shorter than the 300s the local-only version used: this response now carries
+        facets that fill in behind it, and a stale cache would hide them.
+
+        `perSession` and not a plain `private`, because `arrLink` above is an ADMIN's
+        answer and `null` for everybody else. Same URL, two bodies -- so the cache needs
+        the session in its key or it will hand an ordinary reader a Radarr address.
+      */
+      { cache: perSession(30) },
     );
   },
 
@@ -1309,10 +1331,7 @@ const appRoutes = {
       limit: Math.min(num("limit") ?? 60, 200),
       offset: num("offset") ?? 0,
     });
-    return json(
-      { ...res, rows: decorate(res.rows) },
-      { headers: { "Cache-Control": "private, max-age=300" } },
-    );
+    return json({ ...res, rows: decorate(res.rows) }, { cache: perSession(300) });
   },
 
   /**
@@ -1344,7 +1363,7 @@ const appRoutes = {
       // Shorter than browse's 300s: membership GROWS as more of the franchise is
       // viewed, since each member's own cached row names the others. A long cache
       // would hide a film that arrived a minute ago.
-      { headers: { "Cache-Control": "private, max-age=60" } },
+      { cache: perSession(60) },
     );
   },
 
@@ -1365,8 +1384,11 @@ const appRoutes = {
         thing here with a short shelf life -- and a cached one tells a reader for a whole
         minute that a franchise does not exist, seconds after they made it exist. It costs
         one indexed scan of the collection rows, which is not a thing worth caching.
+
+        Spelled as the DEFAULT rather than as an explicit policy: `json` sends `no-store`
+        unless a route asks for something else, so this is now the shape of not asking.
       */
-    return json({ matches }, { headers: { "Cache-Control": "no-store" } });
+    return json({ matches });
   },
 
   /**
@@ -1420,7 +1442,7 @@ const appRoutes = {
           */
         awards: personAwards(store, req.params.nconst, OSCARS),
       },
-      { headers: { "Cache-Control": "private, max-age=300" } },
+      { cache: perSession(300) },
     );
   },
 
@@ -1441,8 +1463,8 @@ const appRoutes = {
       // Long, because the underlying rows change once a year. The ownership counts ride on
       // the same response and move faster than that -- but they move on a library sync, and
       // a private 10-minute window on a page nobody watches for library changes is the
-      // right trade. `private` because the counts are about THIS instance's library.
-      { headers: { "Cache-Control": "private, max-age=600" } },
+      // right trade. Per-session because the counts are about THIS instance's library.
+      { cache: perSession(600) },
     ),
 
   /**
@@ -1457,7 +1479,7 @@ const appRoutes = {
     if (!Number.isFinite(ceremony)) return bad("unknown ceremony", 404);
     const page = ceremonyPayload(awardsDeps(), ceremony);
     if (!page) return bad("unknown ceremony", 404);
-    return json(page, { headers: { "Cache-Control": "private, max-age=600" } });
+    return json(page, { cache: perSession(600) });
   },
 
   /**
@@ -1470,7 +1492,7 @@ const appRoutes = {
   "/api/discover": () =>
     json(
       { shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) },
-      { headers: { "Cache-Control": "private, max-age=600" } },
+      { cache: perSession(600) },
     ),
 
   "/api/requests": {
@@ -1777,7 +1799,7 @@ const appRoutes = {
       // The key is stable for the life of the database, but a client caching it across a
       // regeneration would subscribe against a key this server cannot sign with -- and the
       // failure is silent. An hour is short enough to heal that and long enough to matter.
-      { headers: { "Cache-Control": "private, max-age=3600" } },
+      { cache: perSession(3600) },
     ),
 
   "/api/push/subscribe": {
@@ -2000,7 +2022,7 @@ const server: Bun.Server<undefined> = Bun.serve({
         status: 503,
         headers: {
           "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
+          ...cacheHeaders(NO_STORE),
           "Retry-After": "10",
           ...HTML_HEADERS,
         },
@@ -2025,24 +2047,20 @@ const server: Bun.Server<undefined> = Bun.serve({
       fall-through is the ordinary sign-in shell -- never an error. A crawler shown a 429
       caches the 429.
     */
+    const shell = principal ? "/index.html" : "/login.html";
+
     const shared = principal ? null : PREVIEW_PATH.exec(u.pathname);
     if (shared?.[1]) {
-      return previewResponse(req, shared[1], previewDeps).then(
-        (res) =>
-          res ??
-          new Response(Bun.file(`${staticDir}/login.html`), {
-            headers: {
-              "Content-Type": "text/html",
-              "Cache-Control": "no-cache",
-              Vary: "Cookie",
-              ...HTML_HEADERS,
-            },
-          }),
-      );
+      return previewResponse(req, shared[1], previewDeps).then((res) => res ?? shellResponse(shell));
     }
 
-    const shell = principal ? "/index.html" : "/login.html";
-    const rel = u.pathname === "/" ? shell : u.pathname;
+    // `/` serves a DIFFERENT document to a session than to a stranger, so it is answered
+    // by the shell helper rather than resolved to a filename and handed to the static
+    // branch below -- which keys its cache on the URL and would let one answer stand for
+    // both. Everything else is a path, and a path is the same file for everybody.
+    if (u.pathname === "/") return shellResponse(shell);
+
+    const rel = u.pathname;
     // Reject traversal before touching the filesystem.
     if (rel.includes("..")) return new Response("bad path", { status: 400 });
 
@@ -2053,7 +2071,7 @@ const server: Bun.Server<undefined> = Bun.serve({
         const html = rel.endsWith(".html");
         return new Response(file, {
           headers: {
-            "Cache-Control": hashed ? "public, max-age=31536000, immutable" : "no-cache",
+            ...cacheHeaders(hashed ? IMMUTABLE_PUBLIC : REVALIDATED),
             "X-Content-Type-Options": "nosniff",
             ...(html ? HTML_HEADERS : {}),
           },
@@ -2062,17 +2080,7 @@ const server: Bun.Server<undefined> = Bun.serve({
       // SPA fallback -- client-side routes are not files. Which shell depends on who is
       // asking, so a deep link followed while signed out lands on the sign-in page rather
       // than on an app that immediately 401s every call it makes.
-      // `Vary: Cookie` because WHICH shell this is depends on the session, and a shared
-      // cache that misses that can hand the app bundle to an anonymous visitor -- the one
-      // thing the two-shell split exists to prevent. Predates previews; fixed with them.
-      return new Response(Bun.file(`${staticDir}${shell}`), {
-        headers: {
-          "Content-Type": "text/html",
-          "Cache-Control": "no-cache",
-          Vary: "Cookie",
-          ...HTML_HEADERS,
-        },
-      });
+      return shellResponse(shell);
     });
   },
 

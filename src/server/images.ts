@@ -11,6 +11,7 @@
 import { mkdirSync } from "node:fs";
 import type { Config } from "./../lib/config";
 import { paths } from "./../lib/config";
+import { cacheHeaders, IMMUTABLE_PUBLIC } from "./cache-policy";
 
 const ALLOWED_SIZES = new Set(["w92", "w154", "w185", "w342", "w500", "w780", "original"]);
 
@@ -44,7 +45,7 @@ export class ImageCache {
         headers: {
           "Content-Type": cached.type || "image/jpeg",
           // Poster paths are content-addressed by TMDB; a given path never changes.
-          "Cache-Control": "public, max-age=31536000, immutable",
+          ...cacheHeaders(IMMUTABLE_PUBLIC),
           "X-Cache": "HIT",
         },
       });
@@ -94,7 +95,7 @@ export class ImageCache {
     return new Response(bytes, {
       headers: {
         "Content-Type": type,
-        "Cache-Control": "public, max-age=31536000, immutable",
+        ...cacheHeaders(IMMUTABLE_PUBLIC),
         "X-Cache": "MISS",
       },
     });

@@ -49,18 +49,12 @@ import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
+import { json } from "./json-response";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
 import { wrapRoutes } from "./route-wrap";
 
 type Handler = (req: Request, server?: unknown) => Response | Promise<Response>;
 type RouteEntry = Handler | Record<string, Handler>;
-
-function json(body: unknown, init: ResponseInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
-  });
-}
 
 /**
  * Every refusal an anonymous caller can provoke says the same thing.

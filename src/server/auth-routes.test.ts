@@ -172,6 +172,18 @@ describe("the guard closes everything by default", () => {
     expect((await h.call("/api/auth/passkey/login/begin", { method: "POST" })).status).toBe(200);
   });
 
+  /**
+   * The auth surface answers the same URL differently to every caller -- `/api/auth/state`
+   * is `{authenticated:false}` to a stranger and a named account to a session -- and it used
+   * to send no `Cache-Control` at all, which leaves an intermediary free to invent its own
+   * freshness. `json` now defaults to `no-store` for every route that does not ask for more;
+   * this checks the auth routes are actually on that shared helper rather than a second one.
+   */
+  test("an auth answer is stored by nobody", async () => {
+    const res = await h.call("/api/auth/state");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
   /*
     THE TWO GUARDS MUST AGREE, and this is the assertion that was missing.
 

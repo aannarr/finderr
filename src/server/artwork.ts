@@ -20,6 +20,7 @@ import type { RadarrClient, SonarrClient } from "../lib/arr";
 import type { Config } from "../lib/config";
 import { paths } from "../lib/config";
 import { posterFrom, type Store, studioFrom } from "../lib/store";
+import { cacheHeaders, IMMUTABLE_PUBLIC } from "./cache-policy";
 
 /**
  * Only these hosts may be fetched. The URL comes from Radarr/Sonarr rather than the
@@ -196,7 +197,7 @@ export class ArtworkService {
       return new Response(file, {
         headers: {
           "Content-Type": file.type || "image/jpeg",
-          "Cache-Control": "public, max-age=31536000, immutable",
+          ...cacheHeaders(IMMUTABLE_PUBLIC),
           "X-Cache": "HIT",
         },
       });
@@ -217,7 +218,7 @@ export class ArtworkService {
     return new Response(bytes, {
       headers: {
         "Content-Type": `image/${ext === "jpg" ? "jpeg" : ext}`,
-        "Cache-Control": "public, max-age=31536000, immutable",
+        ...cacheHeaders(IMMUTABLE_PUBLIC),
         "X-Cache": "MISS",
       },
     });

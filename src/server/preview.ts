@@ -1,4 +1,5 @@
 import { type PreviewTitle, renderPreviewPage } from "../lib/og-preview";
+import { cacheHeaders, sharedPerSession } from "./cache-policy";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
 
 /**
@@ -72,16 +73,19 @@ export async function previewResponse(
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         /*
-          `Vary: Cookie` is not optional and it is not tidiness.
+          The `Vary: Cookie` this policy carries is not optional and it is not tidiness.
 
           This URL serves TWO different bodies -- the app shell to a session, this page to
           everybody else -- and the app shell is deliberately withheld from anonymous
           visitors. Without `Vary`, Caddy or CloudFlare may store one and serve it to the
           other, which hands a stranger the bundle naming every route finderr has and
-          defeats the whole `login.html` split.
+          defeats the whole `login.html` split. `cache-policy.ts` is why the pair cannot
+          be separated by an edit to this file.
+
+          Ten minutes at the edge, because the caller worth optimising for is a crawler
+          fanning out over one shared link.
         */
-        Vary: "Cookie",
-        "Cache-Control": "public, max-age=0, s-maxage=600",
+        ...cacheHeaders(sharedPerSession(600)),
         ...deps.headers,
       },
     },
