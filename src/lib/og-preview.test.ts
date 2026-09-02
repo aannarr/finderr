@@ -143,6 +143,26 @@ describe("renderPreviewPage", () => {
     }
   });
 
+  /**
+   * The card printed "1989 · Crime" and then "Crime · 1989 · ★7.5" directly under it for
+   * any title whose synopsis has not been fetched -- which is the common case for a cold
+   * share, and the one where a reader is most likely to think the page is broken. Caught in
+   * a browser, not by a test, which is why there is now a test.
+   */
+  test("does not print the same facts twice when there is no synopsis", () => {
+    const html = render();
+    expect(html).toContain('<p class="meta">Action, Adventure · 1989 · ★7.5</p>');
+    // Scoped to the BODY: the meta tags carry the same string, correctly and invisibly.
+    const body = html.slice(html.indexOf("<body>"));
+    expect(body.match(/Action, Adventure · 1989 · ★7\.5/g)).toHaveLength(1);
+  });
+
+  test("prints the synopsis in the body when there is one", () => {
+    const html = render({ synopsis: "Gotham's protector." });
+    expect(html).toContain("<p>Gotham&#39;s protector.</p>");
+    expect(html).toContain('<p class="meta">Action, Adventure · 1989 · ★7.5</p>');
+  });
+
   test("references no hashed asset, so it cannot rot against a rebuilt bundle", () => {
     expect(render()).not.toContain("<script");
     expect(render()).not.toContain('rel="stylesheet"');

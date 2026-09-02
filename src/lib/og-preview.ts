@@ -106,6 +106,18 @@ export function previewDescription(t: PreviewTitle, synopsis: string | null, lim
   return parts.join(" · ");
 }
 
+/**
+ * The muted line under the heading: year, genre, rating.
+ *
+ * Shares `previewDescription`'s fallback exactly, which is what lets the card render the
+ * synopsis and only the synopsis in its body. Drawing both unconditionally printed the same
+ * three facts twice for any title whose synopsis has not been fetched -- the COMMON case for
+ * a cold share, and the one where the page looks most like it is broken.
+ */
+export function factLine(t: PreviewTitle): string {
+  return previewDescription(t, null);
+}
+
 function truncateWords(text: string, limit: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= limit) return flat;
@@ -132,6 +144,9 @@ export function renderPreviewPage(input: PreviewInput): string {
 
   const heading = previewTitle(t);
   const description = previewDescription(t, synopsis);
+  // The unfurl always carries a description, because an empty one is a worse card. The
+  // VISIBLE body is the synopsis alone -- see `factLine`.
+  const body = synopsis?.trim() ? truncateWords(synopsis, 400) : "";
   const canonical = `${origin}/title/${t.tconst}`;
   const signInHref = `/?next=${encodeURIComponent(returnPath)}`;
 
@@ -193,9 +208,8 @@ export function renderPreviewPage(input: PreviewInput): string {
       ${poster}
       <div>
         <h1>${escapeHtml(t.title)}</h1>
-        <p class="meta">${escapeHtml([t.year ? String(t.year) : "", t.genres.split(",")[0]?.trim() ?? ""].filter(Boolean).join(" · "))}</p>
-        <p>${escapeHtml(description)}</p>
-        <a href="${escapeHtml(signInHref)}">Sign in to ${escapeHtml(siteName)}</a>
+        <p class="meta">${escapeHtml(factLine(t))}</p>
+${body ? `        <p>${escapeHtml(body)}</p>\n` : ""}        <a href="${escapeHtml(signInHref)}">Sign in to ${escapeHtml(siteName)}</a>
       </div>
     </main>
   </body>
