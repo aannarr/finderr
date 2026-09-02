@@ -403,6 +403,7 @@ rebuild.
 | `FINDERR_AUTH_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Only behind a proxy you control |
 | `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
+| `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
 | `FINDERR_NO_AUTH` | `false` | **Turns authentication off.** Signs every caller in as an admin called `the_user`. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |

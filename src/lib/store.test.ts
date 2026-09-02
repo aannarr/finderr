@@ -525,6 +525,88 @@ describe("request seasons", () => {
   });
 });
 
+/**
+ * The counting half of the daily quota. The RULE is in `./request-quota.test.ts`.
+ *
+ * Every assertion here is about the same claim: the quota has no counter of its own, so
+ * whatever the request log says IS the count. `created_at` is written by `createRequest`
+ * from the wall clock, so a row that needs a specific timestamp is dated afterwards --
+ * which is also the only way to reach the day-rollover case at all.
+ */
+describe("counting a user's requests for the quota", () => {
+  const TODAY = "2026-09-02T00:00:00.000Z";
+  const asked = { title: "A Title", year: 2020, kind: "movie", service: "radarr" as const };
+
+  /** Write a request and date it, so "yesterday" and "today" are things a test can say. */
+  function requestAt(tconst: string, userId: string | null, createdAt: string): void {
+    store.createRequest({ ...asked, tconst, requestedBy: userId });
+    store.db.run("update request set created_at = ? where tconst = ?", [createdAt, tconst]);
+  }
+
+  test("counts only this user's rows", () => {
+    requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
+    requestAt("tt0000002", "u-ana", "2026-09-02T10:00:00.000Z");
+    requestAt("tt0000003", "u-ben", "2026-09-02T11:00:00.000Z");
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(2);
+    expect(store.countRequestsSince("u-ben", TODAY)).toBe(1);
+  });
+
+  test("a user who has asked for nothing counts zero, not null", () => {
+    // bun:sqlite's `count(*)` always returns a row; the guard is against a caller having
+    // to distinguish 0 from "no row", which is exactly the shape that broke `getArtwork`.
+    expect(store.countRequestsSince("u-nobody", TODAY)).toBe(0);
+  });
+
+  test("yesterday's requests are not counted today -- the reset needs no sweep", () => {
+    requestAt("tt0000001", "u-ana", "2026-09-01T23:59:59.999Z");
+    requestAt("tt0000002", "u-ana", "2026-09-02T00:00:00.000Z");
+    // The boundary row is INSIDE the day: `>=` midnight, so the first millisecond counts.
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
+  });
+
+  test("a keyless request belongs to nobody and is counted against nobody", () => {
+    // `requested_by` is null for the system API key. A quota keyed on null would pool every
+    // agent-made request into one bucket; the route never asks for that count, and neither
+    // can this query.
+    requestAt("tt0000001", null, "2026-09-02T09:00:00.000Z");
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(0);
+  });
+
+  /**
+   * The quota rule the card asked for -- "one request = one title" -- holding by
+   * construction. `request` is uniquely keyed on `tconst`, so neither a season selection
+   * nor a re-request can produce a second row to charge for.
+   */
+  test("a series with three seasons is one title", () => {
+    store.createRequest({
+      tconst: "tt0944947",
+      title: "Game of Thrones",
+      year: 2011,
+      kind: "tvSeries",
+      service: "sonarr",
+      seasons: [1, 2, 3],
+      requestedBy: "u-ana",
+    });
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
+  });
+
+  test("re-requesting the same title does not spend a second unit", () => {
+    requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
+    store.createRequest({ ...asked, tconst: "tt0000001", seasons: null, requestedBy: "u-ana" });
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
+  });
+
+  test("the first asker keeps the charge when somebody else re-requests", () => {
+    // `createRequest`'s conflict arm deliberately does not rewrite `requested_by`, so the
+    // second person neither steals the attribution nor is charged for a row they did not
+    // create. Both halves of that follow from the one rule, and this pins both.
+    requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
+    store.createRequest({ ...asked, tconst: "tt0000001", requestedBy: "u-ben" });
+    expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
+    expect(store.countRequestsSince("u-ben", TODAY)).toBe(0);
+  });
+});
+
 describe("request arr overrides", () => {
   const film = {
     tconst: "tt0111161",

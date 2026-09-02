@@ -1087,6 +1087,38 @@ export class Store {
           .all(limit) as MediaRequest[]);
   }
 
+  /**
+   * How many titles this user has asked for since `sinceIso`. The daily quota reads this.
+   *
+   * > [!IMPORTANT] The quota is DERIVED from the request log, and has no counter of its own
+   * > `request` already records who asked (`requested_by`) and when (`created_at`), no row
+   * > here is ever deleted, and the table is uniquely keyed on `tconst`. So counting rows
+   * > answers "how many titles has this person asked for today" exactly -- and a
+   * > `request_quota` table or a daily-count column on `user` would be a second copy of a
+   * > fact that already has an owner, free to drift from the log an admin actually reads,
+   * > and needing a nightly sweep nothing else in this schema has.
+   * >
+   * > It also makes the quota rule true by construction rather than by arithmetic: a series
+   * > requested with three seasons is ONE row, and re-requesting something already queued
+   * > upserts rather than inserting, so neither spends a second unit.
+   *
+   * `created_at` is the FIRST ask and the conflict arm of `createRequest` deliberately does
+   * not move it, so re-requesting a title first asked yesterday costs nothing today. That is
+   * the behaviour worth having: the title is already queued, and nothing new is being asked
+   * of the arrs.
+   *
+   * No index on `(requested_by, created_at)`: this table holds one row per title anybody has
+   * ever asked for -- thousands at the very most -- and every index in this schema is
+   * declared in `SCHEMA`, while `requested_by` arrives through `ADDED_COLUMNS` and does not
+   * exist yet when `SCHEMA` runs. One here would need a second place indexes are declared.
+   */
+  countRequestsSince(userId: string, sinceIso: string): number {
+    const row = this.db
+      .query("select count(*) c from request where requested_by = ? and created_at >= ?")
+      .get(userId, sinceIso) as { c: number };
+    return row.c;
+  }
+
   requestMap(): Map<string, MediaRequest> {
     const rows = this.db.query("select * from request").all() as MediaRequest[];
     return new Map(rows.map((r) => [r.tconst, r]));

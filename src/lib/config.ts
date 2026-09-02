@@ -342,6 +342,25 @@ export interface Config {
     noAuth: boolean;
   };
 
+  /** What one person may ask the library for. */
+  requests: {
+    /**
+     * Titles an ordinary user may request per UTC day. `0`, the default, is UNLIMITED.
+     *
+     * Zero rather than a number, because a limit that appears at an upgrade is a limit
+     * nobody chose: every existing install keeps behaving exactly as it did until an
+     * operator opts in. It is the same zero-is-unlimited reading `RateLimiter` already
+     * uses for its own limit, so there is one convention here rather than two.
+     *
+     * Counted in TITLES, not in HTTP calls, and admins are exempt -- the whole rule lives in
+     * `./request-quota.ts` and the count is derived from the request log by
+     * `Store.countRequestsSince`. It is a different thing from `auth.searchRatePerMinute`:
+     * that one defends CPU per IP per minute and forgets on restart, this one is a fact
+     * about a person over a day and survives one.
+     */
+    quotaPerDay: number;
+  };
+
   /** Mirror the arr libraries locally so "do we have it?" never hits the network. */
   libraryRefreshSeconds: number;
 
@@ -522,6 +541,9 @@ const DEFAULTS: Config = {
     // The login wall is ON unless an operator turns it off, and it is never off by accident.
     noAuth: false,
   },
+  // 0 = unlimited, which is what every version before the quota existed did. An operator
+  // opts in; nobody wakes up to a limit they did not choose.
+  requests: { quotaPerDay: 0 },
   libraryRefreshSeconds: 60,
   // Opt-in. See `shelves.keepFresh` -- off is the behaviour every version so far has had.
   shelves: { keepFresh: false },
@@ -652,6 +674,7 @@ function envOverrides(): Record<string, unknown> {
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
       noAuth: envBool("FINDERR_NO_AUTH"),
     },
+    requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
     shelves: { keepFresh: envBool("FINDERR_KEEP_SHELVES_FRESH") },
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),

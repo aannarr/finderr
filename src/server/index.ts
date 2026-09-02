@@ -17,7 +17,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
-import { isoIn, publicOrigin, visibleRequest } from "../lib/auth";
+import { isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
 import { OSCARS, personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
@@ -33,6 +33,7 @@ import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings 
 import { loadPlugins } from "../lib/plugins";
 import { RateLimiter } from "../lib/rate-limit";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
+import { quotaVerdict, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
@@ -597,6 +598,38 @@ const bad = (msg: string, status = 400) => json({ error: msg }, { status });
 /** The width an image route was asked for. One reader, so both routes accept the same thing. */
 function sizeOf(req: Request): string {
   return new URL(req.url).searchParams.get("size") ?? DEFAULT_IMAGE_SIZE;
+}
+
+/**
+ * The 429 for somebody who has spent their day's allowance, or null to let them through.
+ *
+ * The RULE is in `../lib/request-quota.ts` and the COUNT is in the request log; this
+ * function is only the join between them and the HTTP shape. It is deliberately not folded
+ * into the route body: "may this person ask for another title" is one question with one
+ * answer, and a route that spelled the limit, the day boundary and the admin exemption
+ * inline would be a second place each of them lives.
+ *
+ * A caller with no user id -- the system API key -- is not a person and has no daily
+ * allowance, so it is never counted and never refused. It is `admin` anyway; both readings
+ * agree, and the guard is here because `requested_by` is null for it and a quota keyed on
+ * null would pool every keyless request into one bucket.
+ */
+function quotaRefusal(asker: Principal | null): Response | null {
+  const userId = asker?.user?.id;
+  if (!userId) return null;
+
+  const verdict = quotaVerdict({
+    role: asker.role,
+    limit: cfg.requests.quotaPerDay,
+    usedToday: () => store.countRequestsSince(userId, utcDayStart()),
+  });
+  if (verdict.allowed) return null;
+
+  log(`quota: ${userId} refused, ${verdict.used}/${verdict.limit} titles today`);
+  return json(
+    { error: verdict.message },
+    { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } },
+  );
 }
 
 /** Decide which service a title belongs to. Everything episodic goes to Sonarr. */
@@ -1426,9 +1459,14 @@ const appRoutes = {
         service default quietly downloaded something else, and "we did what you asked"
         being false is worse than "you may not ask that".
       */
+      // Read ONCE and reused for the override check, the quota and the attribution below.
+      // `principal` touches the session row on every call, so asking it three times for one
+      // POST is three writes and three chances for the three answers to disagree.
+      const asker = auth.principal(req);
+
       const overrides = parseRequestOverrides(body);
       if ("error" in overrides) return bad(overrides.error);
-      if (hasOverrides(overrides.overrides) && auth.principal(req)?.role !== "admin") {
+      if (hasOverrides(overrides.overrides) && asker?.role !== "admin") {
         return bad("only an admin may choose a quality profile or root folder", 403);
       }
 
@@ -1446,7 +1484,22 @@ const appRoutes = {
 
       if (store.libraryMap().has(row.tconst)) return bad("already in your library", 409);
 
-      const asker = auth.principal(req);
+      /*
+        The daily quota, checked LAST -- immediately before the write it guards.
+
+        Two things follow from where this sits. An invalid or impossible request never gets
+        a quota-shaped error, so "you asked for a title that does not exist" is never
+        reported as "you have asked for too many"; and a title that ALREADY has a request row
+        is exempt, because `createRequest` upserts and this POST will not write a new one.
+        The quota is spent by rows, so only a POST that creates one is charged -- which is
+        what lets somebody at their limit still change the season selection on a series they
+        asked for this morning.
+      */
+      if (!store.getRequest(row.tconst)) {
+        const refused = quotaRefusal(asker);
+        if (refused) return refused;
+      }
+
       const request = store.createRequest({
         tconst: row.tconst,
         title: row.title,

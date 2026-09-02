@@ -138,6 +138,14 @@ services:
       # by an admin's own session.
       FINDERR_ADMIN_API_KEY: ${ADMIN_API_KEY:-}
 
+      # --- requests
+      # Titles one ordinary user may ask for per UTC day. 0 is unlimited, which is what
+      # every version before this setting did -- an operator opts in. Counted in TITLES, so
+      # a series is one however many seasons are picked; admins are exempt. This is a quota,
+      # not a rate limit: it is a fact about a person over a day and survives a restart,
+      # unlike the per-IP limiters above.
+      FINDERR_REQUEST_QUOTA_PER_DAY: ${REQUEST_QUOTA_PER_DAY:-0}
+
       # --- index
       # 09:00 UTC: after TMDB publishes (~07:20 UTC observed) and IMDb's daily drop.
       # Bun.cron is UTC-only, which is what we want -- the dumps publish on UTC.
