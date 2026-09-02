@@ -52,10 +52,26 @@ describe("deriving a verdict from status and evidence", () => {
       ["downloading", "downloading"],
       ["available", "imported"],
       ["failed", "failed"],
+      // The arr said so directly, over a webhook. No poll can see this state and no
+      // evidence refines it -- see `RequestStatus.manual_import`.
+      ["manual_import", "needs_manual_import"],
     ];
     for (const [status, verdict] of expected) {
       expect(verdictFor(req(status), null), status).toBe(verdict);
     }
+  });
+
+  /*
+    A blocked import is a TASK, not a state to keep waiting through: the download is on the
+    disk and nothing further will happen until a person files it. `working` would tell the
+    reader to sit tight, which is the one thing that cannot work here.
+  */
+  test("needing a manual import reads as a dead end, so the reader stops waiting", () => {
+    expect(VERDICT_COPY.needs_manual_import.tone).toBe("dead_end");
+  });
+
+  test("evidence never overrides it -- there is nothing to refine", () => {
+    expect(verdictFor(req("manual_import"), { releases_seen: 12 })).toBe("needs_manual_import");
   });
 
   test("a given-up request with releases on the indexers is NOT 'nothing exists'", () => {

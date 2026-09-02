@@ -17,6 +17,11 @@
  * here -- there is exactly one finderr process and a restart is not an attack -- and both
  * are the reason this is a floor rather than a wall. A public deployment should still have
  * CloudFlare in front of it.
+ *
+ * The two address helpers at the bottom live here rather than in a module of their own
+ * because they answer the same question the limiter asks -- *where is this caller* -- and
+ * `clientKey`'s `X-Forwarded-For` caution applies verbatim to both. Splitting them would put
+ * that caution in one file and its second reader in another.
  */
 
 interface Window {
@@ -114,4 +119,56 @@ export function clientKey(
     }
   }
   return socketAddress ?? "unknown";
+}
+
+/**
+ * The private IPv4 and IPv6 ranges, as `[first byte(s)]` tests, in one table.
+ *
+ * Written as predicates over the parsed octets rather than as CIDR strings, because there is
+ * no CIDR matcher in this codebase and adding one for six fixed ranges would be more code
+ * than the ranges. Loopback and link-local count as private for this purpose: the question
+ * being answered is "did this come from off the internet", not "is this RFC1918 exactly".
+ */
+const PRIVATE_V4: ReadonlyArray<(o: readonly number[]) => boolean> = [
+  (o) => o[0] === 10,
+  (o) => o[0] === 127,
+  (o) => o[0] === 172 && (o[1] ?? 0) >= 16 && (o[1] ?? 0) <= 31,
+  (o) => o[0] === 192 && o[1] === 168,
+  (o) => o[0] === 169 && o[1] === 254,
+];
+
+/**
+ * Is this source address one that cannot have come from the public internet?
+ *
+ * The second layer behind the arr webhook's password -- see `config.webhook.lanOnly`. It is
+ * a NARROWING and never an authentication: anyone already inside the network passes it, and
+ * behind a proxy the address it is given is only as honest as `clientKey` made it.
+ *
+ * IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is unwrapped and re-tested, because a dual-stack
+ * listener reports every IPv4 peer that way and a check that missed it would refuse the LAN
+ * on exactly the deployments this exists for.
+ */
+export function isPrivateAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  // Strip a `[...]` wrapper and an IPv6 zone id (`fe80::1%eth0`) before anything else.
+  const addr =
+    address
+      .trim()
+      .replace(/^\[|\]$/g, "")
+      .split("%")[0]
+      ?.toLowerCase() ?? "";
+  if (addr === "") return false;
+
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
+  if (mapped?.[1]) return isPrivateAddress(mapped[1]);
+
+  if (addr.includes(":")) {
+    // ::1 loopback, fc00::/7 unique-local, fe80::/10 link-local. Everything else routes.
+    if (addr === "::1") return true;
+    return /^f[cd]/.test(addr) || /^fe[89ab]/.test(addr);
+  }
+
+  const octets = addr.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  return PRIVATE_V4.some((test) => test(octets));
 }
