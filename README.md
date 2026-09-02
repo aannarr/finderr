@@ -109,6 +109,12 @@ sentence about why it is slow that the title page gives. Anything that arrived a
 not seen yet is counted in the header, and the count survives closing the app -- one per
 request, so a season pack finishing is one piece of news rather than twenty.
 
+Point Radarr and Sonarr back at finderr and they push those states as they happen instead
+of finderr noticing on its next poll -- including the one no poll can see, an import the
+arr has given up on. That one reads **"Needs a manual import"** rather than "Processing"
+forever. It is optional and the poller stays; see
+[Letting the arrs tell you](#letting-the-arrs-tell-you).
+
 It installs. Add it to a home screen and it opens as an app: its own window, the content
 inside the notch and above the home indicator, a service worker that keeps posters and
 bundles on the device and shows an offline page instead of a browser error, and the front
@@ -420,6 +426,10 @@ rebuild.
 | `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
 | `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
 | `FINDERR_PUSH_CONTACT` | `mailto:finderr@localhost` | The `sub` claim in every VAPID token — how a push service reaches **you** if something goes wrong. The default is well-formed and accepted by every service tested; set a real address if yours refuses it, or so somebody can actually reach you |
+| `FINDERR_WEBHOOK_USERNAME` | `finderr` | Basic-auth user Radarr and Sonarr send to `/api/webhook/arr`. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |
+| `FINDERR_WEBHOOK_PASSWORD` | | **Empty means the webhook route refuses everybody**, which is the default. It is the one public route that changes state, so this password is the whole of its authentication |
+| `FINDERR_WEBHOOK_LAN_ONLY` | `false` | Also refuse a webhook whose source address is not on a private network. Read through `FINDERR_AUTH_TRUST_PROXY`, so with a proxy in front and that off, every caller looks like the proxy and this is worthless |
+| `FINDERR_WEBHOOK_RATE_PER_MINUTE` | `300` | Per IP, on the webhook route. Generous because a season pack is a burst |
 | `FINDERR_ADMIN_API_KEY` | | Optional. Lets a script administer finderr (`Authorization: Bearer`) and unlocks the full `/api/health` payload. 24 characters minimum |
 | `FINDERR_NO_AUTH` | `false` | **Turns authentication off.** Signs every caller in as an admin called `the_user`. Single-user installs only — see [Running without any login at all](#running-without-any-login-at-all) |
 | `FINDERR_INDEX_REFRESH_CRON` | `0 9 * * *` | When the daily refresh runs |
@@ -447,6 +457,34 @@ in-place swap and its canary score, library, Plex and upcoming mirror counts, th
 import (row count and the commit it was parsed from), addon coverage of the front page,
 per-provider and per-host timings saying where a cold title's second actually went, user
 and session counts, and memory.
+
+### Letting the arrs tell you
+
+finderr reconciles every open request against Radarr's and Sonarr's queues on a
+thirty-second timer, and that keeps working whatever you do here. What it cannot see, at
+any interval, is an import the arr has given up on: the download finished, the file is on
+disk, and nothing will move it until a person opens Radarr and imports it by hand. Seerr
+shows that as "Processing" forever. Point the arrs at finderr and it says
+**"Needs a manual import"** instead, which is something you can act on.
+
+Set a password, then add the connection in each arr:
+
+1. `WEBHOOK_PASSWORD=` in `.env` (any long random string — `openssl rand -base64 24`).
+   Restart finderr.
+2. In Radarr: **Settings → Connect → + → Webhook**. In Sonarr: the same path.
+3. **URL** `http://finderr:7979/api/webhook/arr` — whatever address the *arr* can reach
+   finderr at, which on a shared Docker network is the service name. **Method** POST.
+   **Username** `finderr`, **Password** the one you just set.
+4. Tick **On Grab**, **On Import**, **On Import Complete** (Sonarr only) and
+   **On Manual Interaction Required**. The rest are accepted and ignored, so ticking them
+   costs nothing but noise.
+5. Press **Test**. finderr logs `arr webhook: test received -- the connection works`, and
+   `/api/health` starts counting: `webhook.received` staying at `0` after a real grab means
+   the connection was not saved.
+
+Nothing here is required and nothing breaks without it. A webhook that never arrives --
+finderr restarting, a network blip, a connection you disabled -- costs you the speed and
+the manual-import warning, and the poller finishes the job as it always did.
 
 ## How search works
 
@@ -568,8 +606,10 @@ do yet.
 
 ## API
 
-Everything except `/api/health` and the sign-in routes needs a session cookie or the admin
-bearer key.
+Everything except `/api/health`, `/api/index-status`, `/api/webhook/arr` and the sign-in
+routes needs a session cookie or the admin bearer key. The webhook is the exception that
+is not really one: it is authenticated, just by a password of its own rather than by a
+session, because Radarr and Sonarr have no cookie.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -589,6 +629,7 @@ bearer key.
 | `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
+| `POST` | `/api/webhook/arr` | public, and the only public route that CHANGES state. Radarr's and Sonarr's Webhook payloads; basic auth, and closed until a password is set. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |
 | `GET` | `/api/push/key` | whether push is on, and the VAPID public key to subscribe with |
 | `POST` | `/api/push/subscribe` | the browser's own `PushSubscription.toJSON()`, verbatim |
 | `POST` | `/api/push/unsubscribe` `{endpoint}` | scoped to the caller: an endpoint is not a secret, so it alone must not be anybody's off switch |
