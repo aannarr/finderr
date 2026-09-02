@@ -13,6 +13,9 @@ import { describe, expect, test } from "bun:test";
  */
 
 const CSS = await Bun.file(new URL("./styles.css", import.meta.url)).text();
+/** The two sources that consume `--safe-top`. See "every fixed overlay" at the bottom. */
+const ROOT_LAYOUT = await Bun.file(new URL("./routes/RootLayout.tsx", import.meta.url)).text();
+const TOASTS = await Bun.file(new URL("./lib/toasts.tsx", import.meta.url)).text();
 
 /** The declaration block following the first occurrence of `prelude`, braces balanced. */
 function ruleBody(css: string, prelude: RegExp): string | null {
@@ -105,5 +108,60 @@ describe("search fields have no native appearance", () => {
     // Safari honours the unprefixed property for many controls but NOT for the search
     // field's own decorations, so dropping the prefixed line silently restores the bug.
     expect(body).toContain("-webkit-appearance: none");
+  });
+});
+
+/**
+ * `viewport-fit=cover` and `env(safe-area-inset-*)` ARE TWO HALVES OF ONE DECISION.
+ *
+ * The viewport meta in both HTML entries opts this app into drawing under the status bar,
+ * the notch and the home indicator. That is what a full-bleed background wants and it is
+ * only correct while something puts the CONTENT back inside the visible rectangle. Delete
+ * the insets and nothing fails, nothing warns, and the header renders under the clock on
+ * every installed iPhone -- a defect invisible to every desktop browser and to this suite
+ * unless it is pinned here.
+ *
+ * These tests are about the STYLESHEET's half. The three consumers of `--safe-top` are
+ * ordinary Tailwind classes in TSX and are checked below, in the same spirit.
+ */
+describe("display-cutout insets", () => {
+  test("the top inset is named once, with a 0px fallback", () => {
+    const root = ruleBody(CSS, /^:root \{/m);
+    expect(root).not.toBeNull();
+    // The fallback is what makes every consumer inert on a screen with no cutout. Without
+    // it `var(--safe-top)` is still defined -- `env()` with no fallback resolves to an
+    // empty value in unsupported browsers, which makes the whole `calc()` invalid and
+    // silently drops the padding it was added to.
+    expect(root).toContain("--safe-top: env(safe-area-inset-top, 0px)");
+  });
+
+  test("normal-flow content is inset on the other three edges by one rule on body", () => {
+    const body = ruleBody(CSS, /^body \{/m);
+    expect(body).not.toBeNull();
+    // On `body` rather than on a shell class, because BOTH bundles import this stylesheet
+    // and the sign-in screen has no shell of its own. Landscape on a notched phone is
+    // where the horizontal pair earns itself.
+    expect(body).toContain("padding-left: env(safe-area-inset-left, 0px)");
+    expect(body).toContain("padding-right: env(safe-area-inset-right, 0px)");
+    expect(body).toContain("padding-bottom: env(safe-area-inset-bottom, 0px)");
+  });
+});
+
+/**
+ * The consumers of `--safe-top`, checked in the markup that carries them.
+ *
+ * Everything positioned `fixed` sits against the VIEWPORT, so the padding on `body` never
+ * reaches it -- each such element has to carry the top inset itself, and a new one added
+ * next month is the way this regresses. Reading the sources here rather than rendering
+ * them is the same trade `styles.test.ts` already takes for the zoom guard: the assertion
+ * is about a value in a class list, and a DOM would not make it truer.
+ */
+describe("every fixed overlay carries the top inset", () => {
+  test("the sticky header pads down by it instead of leaving the wordmark under the clock", () => {
+    expect(ROOT_LAYOUT).toContain("pt-[calc(1.25rem+var(--safe-top))]");
+  });
+
+  test("the toast stack does too -- it is the one overlay that is pure text", () => {
+    expect(TOASTS).toContain("top-[calc(0.75rem+var(--safe-top))]");
   });
 });

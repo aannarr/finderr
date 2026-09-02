@@ -78,7 +78,13 @@ function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: nu
   if (toasts.length === 0) return null;
   return (
     <div
-      className="fixed top-3 right-3 z-50 flex w-80 flex-col gap-2"
+      /*
+        `fixed` is positioned against the VIEWPORT, so the safe-area padding `body` carries
+        does not reach here -- see the `--safe-top` note in styles.css. Installed to a home
+        screen without these two the first toast lands under the status bar, which is the
+        one place in this app where the text is the whole point.
+      */
+      className="fixed top-[calc(0.75rem+var(--safe-top))] right-[calc(0.75rem+env(safe-area-inset-right,0px))] z-50 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-2"
       // Announced politely so a screen reader is told about outcomes without
       // interrupting whatever the user is typing.
       role="status"

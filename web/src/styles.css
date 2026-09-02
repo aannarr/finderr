@@ -18,6 +18,27 @@ body,
   height: 100%;
 }
 
+/* THE DISPLAY CUTOUTS, NAMED ONCE.
+
+   `index.html` and `login.html` both set `viewport-fit=cover` on the viewport meta, which
+   is what lets this app's background bleed to the physical edges of the screen. The other
+   half of that bargain is that the layout viewport then extends UNDERNEATH the status bar,
+   the notch and the home indicator, and honouring `env(safe-area-inset-*)` is the only way
+   to put content back where a human can see it. Set `cover` without the insets and the
+   header sits under the clock -- which is precisely the state this app shipped in until an
+   installed-to-home-screen pass went looking.
+
+   Three separate geometries need the TOP inset (the sticky header, the fixed toast stack,
+   and anything fixed added later), so it is named here rather than spelled `env(...)` at
+   each site. `0px` is the fallback for every browser and every window that has no cutout,
+   which is most of them -- the whole rule set is inert on a desktop.
+
+   The other three insets are applied directly to `body` below rather than named, because
+   normal-flow content is inset by that one rule and nothing else has to know. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-ink);
@@ -25,6 +46,17 @@ body {
   /* Search-as-you-type repaints constantly; stop the scrollbar appearing and
      disappearing and shifting the whole grid sideways. */
   scrollbar-gutter: stable;
+
+  /* Everything in normal flow, in one place: both bundles import this stylesheet, so the
+     sign-in screen gets the same treatment as the app without a second rule to keep in
+     step. Landscape on a notched phone is where the horizontal pair earns itself -- the
+     cutout is on the side there, and a card under it is a card nobody can read.
+
+     `fixed` descendants are positioned against the viewport and are NOT inset by this;
+     they carry their own, from `--safe-top`. */
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* The result grid updates on every keystroke. Without this the browser re-rasterizes

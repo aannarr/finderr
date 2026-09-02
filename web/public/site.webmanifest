@@ -1,4 +1,6 @@
 {
+  "id": "/",
+  "lang": "en",
   "name": "finderr",
   "short_name": "finderr",
   "description": "Fast media request UI for the arr stack",

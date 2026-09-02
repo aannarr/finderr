@@ -301,7 +301,16 @@ export function RootLayout() {
         the question rather than by whoever already knows the answer.
       */}
       <div className="mx-auto min-h-full max-w-7xl px-4 pb-24">
-        <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-5 pb-3 backdrop-blur">
+        {/*
+          `pt-[calc(1.25rem+var(--safe-top))]` REPLACES `pt-5`, it does not sit beside it.
+
+          Installed to a home screen the sticky bar comes to rest at the physical top of the
+          screen, which on a notched device is behind the status bar. The inset goes on the
+          padding rather than on `top`, so the translucent background still bleeds up under
+          the clock and only the wordmark and the search box move down. `--safe-top` is
+          `0px` everywhere without a cutout, so this is `pt-5` on every desktop.
+        */}
+        <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-[calc(1.25rem+var(--safe-top))] pb-3 backdrop-blur">
           <div className="flex items-baseline gap-3">
             <Link to="/" search={{}} className="text-lg font-semibold tracking-tight">
               finderr
