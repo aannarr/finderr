@@ -34,9 +34,10 @@ import {
   personPage,
 } from "./people";
 import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
+import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
-export type Tier = "fts" | "or" | "lev" | "fuzzy" | "empty";
+export type Tier = "fts" | "or" | "lev" | "fuzzy" | "stopword" | "empty";
 
 export interface TitleRow {
   tconst: string;
@@ -86,53 +87,11 @@ export interface SearchOptions {
 /**
  * Stopwords are a LATENCY bug as much as a quality one: `"the"*` prefix-matches
  * nearly every title in the index. Leaving it in an OR clause cost 1138ms.
+ *
+ * The set itself lives in `search-stopwords.ts`, which also owns the answer for a query
+ * made of nothing but stopwords -- the index builder needs the same vocabulary and must
+ * not import `SearchEngine` to get it.
  */
-const STOPWORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "of",
-  "and",
-  "in",
-  "on",
-  "to",
-  "is",
-  "it",
-  "for",
-  "at",
-  "by",
-  "der",
-  "die",
-  "das",
-  "den",
-  "dem",
-  "ein",
-  "eine",
-  "le",
-  "la",
-  "les",
-  "un",
-  "une",
-  "des",
-  "du",
-  "el",
-  "los",
-  "las",
-  "una",
-  "och",
-  "en",
-  "ett",
-  "som",
-  "pa",
-  "av",
-  "det",
-  "il",
-  "lo",
-  "gli",
-  "di",
-  "da",
-  "che",
-]);
 
 /** Number of rows pulled from FTS before ranking. Facet counts are computed over this. */
 const CANDIDATE_WINDOW = 400;
@@ -408,16 +367,67 @@ export class SearchEngine {
    *  - Tokens of <=2 chars get no `*`. `"io"*` alone cost 35ms.
    */
   private matchExpr(text: string, or: boolean): string | null {
-    let tokens = normalize(text).split(" ").filter(Boolean);
-    const meaningful = tokens.filter((t) => !STOPWORDS.has(t));
-    if (meaningful.length > 0) tokens = or ? meaningful.filter((t) => t.length > 2) : meaningful;
-    if (tokens.length === 0) {
-      // The query was nothing but stopwords ("the", "it"). Match them literally.
-      tokens = normalize(text).split(" ").filter(Boolean);
-    }
-    if (tokens.length === 0) return null;
+    const all = normalize(text).split(" ").filter(Boolean);
+    if (all.length === 0) return null;
+
+    const meaningful = all.filter((t) => !STOPWORDS.has(t));
+    /*
+      A query that is NOTHING BUT stopwords gets no FTS expression at all, and this is the
+      fix for the 1033ms `?q=the`. The branch that used to sit here put the stopwords back
+      WITH their prefix star -- the one construction the comment above warns about -- on the
+      only query shape that can never earn it back. `popularStopwordHits` answers instead;
+      `search()` checks for that case before it ever asks for an expression, so returning
+      null here is a second line of defence rather than the mechanism.
+    */
+    if (meaningful.length === 0) return null;
+
+    let tokens = or ? meaningful.filter((t) => t.length > 2) : meaningful;
+    // An OR pass whose meaningful tokens are ALL 1-2 chars still has to match something --
+    // "io" is a real title. It falls back to the meaningful tokens, deliberately NOT to
+    // every token: re-admitting the stopwords is what made this expensive.
+    if (tokens.length === 0) tokens = meaningful;
+
     const parts = tokens.map((t) => (t.length <= 2 ? `"${t}"` : `"${t}"*`));
     return or ? parts.join(" OR ") : parts.join(" ");
+  }
+
+  /**
+   * The most popular titles whose name STARTS with a stopword-only query.
+   *
+   * See `search-stopwords.ts` for why this exists, what it measured and why the floor and
+   * the partial index are both required. Two properties matter at this call site:
+   *
+   *  - **The `like` pattern is built from a closed set.** `stopwordTokens` only returns
+   *    tokens that are members of `STOPWORDS`, so no user text reaches the pattern and no
+   *    `%` or `_` can be smuggled into it.
+   *  - **The exact-title arm is a second `like`, NOT `=`, and that is not a style choice.**
+   *    "It" and "Up" are real titles and `title like 'it %'` does not match a title that IS
+   *    the word. But `title = 'it'` does not match it either: the token has been through
+   *    `normalize` and is lower-case, while `title` holds "It" -- and SQLite's `=` is
+   *    case-SENSITIVE where its `like` is not. Written as `=` first, and the test below
+   *    caught it: the arm was dead code and `?q=it` answered "It Follows" while the actual
+   *    film went unlisted.
+   *
+   * Rows come back in votes order and are NOT re-ranked. `rank()` scores text similarity,
+   * which for a query carrying no information would reorder the list on noise; popularity
+   * is the only honest signal here, so the SQL's order is the answer's order.
+   */
+  private popularStopwordHits(tokens: string[]): Hit[] {
+    const phrase = tokens.join(" ");
+    const rows = this.db
+      .query(
+        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+         from title
+         where votes >= ? and (title like ? or title like ?)
+         order by votes desc
+         limit ${CANDIDATE_WINDOW}`,
+      )
+      .all(STOPWORD_VOTE_FLOOR, `${phrase} %`, phrase) as TitleRow[];
+
+    // `coverage: 1` because the query text genuinely IS present, at the front of the title.
+    // The score keeps the same votes shaping the FTS ranker uses, so it stays monotonic with
+    // the order the rows arrived in and a reader comparing tiers is not shown two scales.
+    return rows.map((r) => ({ ...r, score: 1.6 * Math.log(r.votes + 10), coverage: 1 }));
   }
 
   private ftsCandidates(expr: string): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
@@ -619,10 +629,7 @@ export class SearchEngine {
     };
 
     let tier: Tier = "fts";
-    const andExpr = this.matchExpr(parsed.text, false);
-    if (andExpr) add(this.ftsCandidates(andExpr));
-
-    let ranked = this.rank([...candidates.values()], parsed);
+    let ranked: Hit[];
 
     /**
      * Escalate when the top hit is weak, ambiguous, barely covers the query, OR is
@@ -637,29 +644,50 @@ export class SearchEngine {
       hits[0].votes < 5000 ||
       (hits[1] !== undefined && hits[0].score - hits[1].score < 1.0 && hits[0].score < 26);
 
-    if (weak(ranked)) {
-      const orExpr = this.matchExpr(parsed.text, true);
-      if (orExpr && orExpr !== andExpr) {
-        const before = candidates.size;
-        add(this.ftsCandidates(orExpr));
-        if (candidates.size > before) {
-          ranked = this.rank([...candidates.values()], parsed);
-          tier = "or";
+    /*
+      A stopword-only query takes its own path and DOES NOT ESCALATE, which is the point.
+
+      Every tier below exists to find a better match for text the reader meant. There is no
+      better match for "the": the escalations would each run their own scan of a quarter of
+      the index looking for meaning that is not in the query, which is how one keystroke
+      came to cost the whole event loop for a second. `weak()` would be true here on every
+      single call -- coverage is 1 but the top score is pure votes shaping -- so leaving
+      this to fall through would guarantee the expensive path rather than risk it.
+    */
+    const stopwords = stopwordTokens(normalize(parsed.text));
+    if (stopwords) {
+      tier = "stopword";
+      ranked = this.popularStopwordHits(stopwords);
+    } else {
+      const andExpr = this.matchExpr(parsed.text, false);
+      if (andExpr) add(this.ftsCandidates(andExpr));
+
+      ranked = this.rank([...candidates.values()], parsed);
+
+      if (weak(ranked)) {
+        const orExpr = this.matchExpr(parsed.text, true);
+        if (orExpr && orExpr !== andExpr) {
+          const before = candidates.size;
+          add(this.ftsCandidates(orExpr));
+          if (candidates.size > before) {
+            ranked = this.rank([...candidates.values()], parsed);
+            tier = "or";
+          }
         }
       }
-    }
 
-    // One fuzzy tier, not two. The old `lev` and `fuzzy` tiers existed because an
-    // in-memory trigram index is blind under about six characters and needed a separate
-    // Levenshtein scan beside it. spellfix1 covers both cases in a single query, so the
-    // split has no meaning any more -- and a second escalation that could only ever add
-    // what the first already found is pure latency.
-    if (weak(ranked) && this.fuzzyReady) {
-      const before = candidates.size;
-      add(this.hydrate(this.fuzzyCandidates(parsed, FUZZY_WINDOW)));
-      if (candidates.size > before) {
-        ranked = this.rank([...candidates.values()], parsed);
-        tier = "fuzzy";
+      // One fuzzy tier, not two. The old `lev` and `fuzzy` tiers existed because an
+      // in-memory trigram index is blind under about six characters and needed a separate
+      // Levenshtein scan beside it. spellfix1 covers both cases in a single query, so the
+      // split has no meaning any more -- and a second escalation that could only ever add
+      // what the first already found is pure latency.
+      if (weak(ranked) && this.fuzzyReady) {
+        const before = candidates.size;
+        add(this.hydrate(this.fuzzyCandidates(parsed, FUZZY_WINDOW)));
+        if (candidates.size > before) {
+          ranked = this.rank([...candidates.values()], parsed);
+          tier = "fuzzy";
+        }
       }
     }
 

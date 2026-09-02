@@ -15,6 +15,7 @@ import { CROSSWALK_FILE, CROSSWALK_SCHEMA, loadCrosswalk, parseCrosswalkCsv } fr
 import { intOrNull, nullable, streamTsv } from "./dumps";
 import { INDEX_STAGES, stampStages } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
+import { POPULAR_TITLE_INDEX } from "./search-stopwords";
 import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
 export interface BuildStats {
@@ -361,6 +362,12 @@ export async function buildIndex(
   // 354ms to page on the live NAS index, because SQLite picked ix_kind, walked every
   // movie row to test `votes`, and then sorted. Both halves are now covered seeks.
   db.run("create index ix_kind on title(kind, votes desc)");
+  // The stopword-only query's whole cost, removed. PARTIAL so it holds ~24k rows of 1.27M
+  // (672 KB, 2.1s to build) and COVERING so `title like 'the %'` is answered from index
+  // pages without fetching a single row -- that fetch was a 51.8ms median and a 1461ms worst
+  // case. See `search-stopwords.ts`, which owns the DDL so its floor cannot drift from the
+  // floor the query asks for.
+  db.run(POPULAR_TITLE_INDEX);
   db.run("create index ix_tg_title on title_genre(title_rowid)");
   // ix_tg_genre(genre) is gone: ix_tg_rank leads with `genre`, so it serves every query
   // the narrower index served -- a leading-column prefix is the one case where two

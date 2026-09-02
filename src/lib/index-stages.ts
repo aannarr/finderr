@@ -43,6 +43,7 @@
 
 import { Database } from "bun:sqlite";
 import type { Config } from "./config";
+import { STOPWORD_VOTE_FLOOR } from "./search-stopwords";
 
 /**
  * The `meta` key holding the stamp, as a JSON object of `stage -> recipe`.
@@ -99,6 +100,22 @@ export const INDEX_STAGES = {
    * later is an edit to this line and not a change of shape.
    */
   ids: () => JSON.stringify({ v: 1 }),
+
+  /**
+   * `ix_pop_title`, the partial covering index that serves a stopword-only query.
+   *
+   * Like `rank`, this is a stage whose absence is INVISIBLE -- an index without it answers
+   * `?q=the` correctly and about twenty times slower, which is precisely the shape the
+   * crosswalk shipped in and had to be found by hand. Measured 2026-09-02 on the real
+   * 1.27M-row index: the floored scan it replaces was a 51.8ms median with a 1461ms worst
+   * case across the stopword set, and this is 2.0ms median / 2.4ms worst.
+   *
+   * The floor is IN the recipe because it is in the index's own `where` clause: moving
+   * `STOPWORD_VOTE_FLOOR` without rebuilding would leave a partial index that no longer
+   * covers the range the query asks for, and SQLite would silently fall back to the slow
+   * scan rather than fail.
+   */
+  popularTitles: () => JSON.stringify({ v: 1, floor: STOPWORD_VOTE_FLOOR }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.
