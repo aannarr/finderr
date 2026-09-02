@@ -174,6 +174,84 @@ export function verdictFor(
   }
 }
 
+/**
+ * Everything a surface needs to say why a request is taking as long as it is.
+ *
+ * ONE shape, sent on a title AND on a request-log row, so the component that draws a chip
+ * in a grid, the panel on a title page and any future request screen are the same
+ * component. `web/src/lib/api.ts` re-exports this rather than declaring its own copy: a
+ * hand-maintained mirror of a server shape is the definition of two things that drift.
+ *
+ * `requestError` is deliberately NOT here. A request row already carries its sanitised
+ * failure reason as `error`, and adding a second spelling of the same string to every row
+ * would be the drift this type exists to prevent -- so the panel takes it as a prop and
+ * each caller supplies whichever name it has.
+ */
+export interface RequestStateView {
+  /** Null on a title nobody has asked for. */
+  requestVerdict: RequestVerdict | null;
+  /** 0..1 while a release is downloading, null otherwise. */
+  requestProgress: number | null;
+  /** ISO instant the arr expects the download to land. Rendered relative, in the browser. */
+  requestEtaAt: string | null;
+  /** The one supporting fact, already worded. See `evidenceLine`. */
+  requestEvidence: string | null;
+}
+
+/** The view of one request, from its row and whatever evidence we hold about it. */
+export function requestStateOf(
+  request: Pick<MediaRequest, "status"> | null | undefined,
+  diagnostic: RequestDiagnostic | null,
+): RequestStateView {
+  if (!request) {
+    return {
+      requestVerdict: null,
+      requestProgress: null,
+      requestEtaAt: null,
+      requestEvidence: null,
+    };
+  }
+  const verdict = verdictFor(request, diagnostic);
+  return {
+    requestVerdict: verdict,
+    requestProgress: diagnostic?.download_progress ?? null,
+    requestEtaAt: diagnostic?.eta_at ?? null,
+    requestEvidence: evidenceLine(verdict, diagnostic),
+  };
+}
+
+/**
+ * The one line of supporting evidence a verdict is allowed to show, or null.
+ *
+ * Deliberately ONE line and deliberately not always there. The card that asked for this
+ * feature guessed that a bar plus a sentence was the whole thing, and that guess is mostly
+ * right -- so this adds the single fact that changes what a reader would DO, and only for
+ * the verdicts where such a fact exists:
+ *
+ * - a download is more trustworthy when it says WHAT was taken, and the quality name is the
+ *   one arr string that is safe to forward (see `ArrHistoryRecord`);
+ * - "no releases found" is a claim, and how many indexers were asked is what backs it.
+ *
+ * A COUNT of indexers and never their NAMES. finderr is internet-facing, and the names of
+ * somebody's private trackers are the same class of fact as the root folder paths
+ * `safeArrMessage` exists to keep off the wire.
+ */
+export function evidenceLine(
+  verdict: RequestVerdict,
+  diagnostic: Pick<RequestDiagnostic, "grabbed_quality" | "indexers_searched"> | null,
+): string | null {
+  if (!diagnostic) return null;
+  if (verdict === "downloading" || verdict === "imported") {
+    return diagnostic.grabbed_quality ? `Grabbed as ${diagnostic.grabbed_quality}` : null;
+  }
+  if (verdict === "no_releases" || verdict === "nothing_accepted") {
+    const n = diagnostic.indexers_searched ?? 0;
+    if (n === 0) return null;
+    return `Asked ${n} ${n === 1 ? "indexer" : "indexers"}`;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Live progress -- slice A1
 // ---------------------------------------------------------------------------

@@ -10,9 +10,12 @@ import type { QueueItem } from "./arr";
 import type { ProwlarrHistoryRecord } from "./prowlarr";
 import {
   downloadProgressOf,
+  evidenceLine,
   formatRemaining,
   matchesRequestedTitle,
+  type RequestDiagnostic,
   type RequestVerdict,
+  requestStateOf,
   searchEvidenceFor,
   VERDICT_COPY,
   verdictFor,
@@ -81,6 +84,74 @@ describe("deriving a verdict from status and evidence", () => {
   test("evidence never overrules a request that is still being worked on", () => {
     expect(verdictFor(req("sent"), { releases_seen: 40 })).toBe("searching");
     expect(verdictFor(req("sent"), { releases_seen: 0 })).toBe("searching");
+  });
+});
+
+describe("the one supporting fact under a verdict", () => {
+  const evidence = (over: Partial<RequestDiagnostic> = {}): RequestDiagnostic =>
+    ({ grabbed_quality: null, indexers_searched: null, ...over }) as RequestDiagnostic;
+
+  test("a download says what was taken", () => {
+    expect(evidenceLine("downloading", evidence({ grabbed_quality: "Bluray-1080p" }))).toBe(
+      "Grabbed as Bluray-1080p",
+    );
+    expect(evidenceLine("imported", evidence({ grabbed_quality: "WEBDL-1080p" }))).toBe(
+      "Grabbed as WEBDL-1080p",
+    );
+  });
+
+  /** "No releases found" is a claim; how many indexers were asked is what backs it. */
+  test("a dead end says how many indexers were asked, and counts one properly", () => {
+    expect(evidenceLine("no_releases", evidence({ indexers_searched: 3 }))).toBe("Asked 3 indexers");
+    expect(evidenceLine("nothing_accepted", evidence({ indexers_searched: 1 }))).toBe("Asked 1 indexer");
+  });
+
+  test("nothing to say is null, never an empty line", () => {
+    expect(evidenceLine("searching", evidence({ indexers_searched: 3 }))).toBeNull();
+    expect(evidenceLine("downloading", evidence())).toBeNull();
+    expect(evidenceLine("no_releases", evidence({ indexers_searched: 0 }))).toBeNull();
+    expect(evidenceLine("no_releases", null)).toBeNull();
+  });
+
+  /**
+   * A COUNT and never the NAMES. finderr is internet-facing and somebody's private
+   * trackers are the same class of fact as the root folder paths `safeArrMessage` keeps
+   * off the wire, so nothing here may grow a name.
+   */
+  test("the indexers are counted, never named", () => {
+    expect(evidenceLine("no_releases", evidence({ indexers_searched: 2 }))).not.toMatch(/[A-Z][a-z]+bits/);
+  });
+});
+
+describe("the whole view of one request", () => {
+  test("a title nobody asked for is all nulls, not an absent object", () => {
+    expect(requestStateOf(null, null)).toEqual({
+      requestVerdict: null,
+      requestProgress: null,
+      requestEtaAt: null,
+      requestEvidence: null,
+    });
+  });
+
+  test("verdict, bar, ETA and the supporting fact, in one shape", () => {
+    const diagnostic = {
+      download_progress: 0.62,
+      eta_at: "2026-09-02T14:06:00Z",
+      grabbed_quality: "Bluray-1080p",
+      indexers_searched: 2,
+      releases_seen: 7,
+    } as RequestDiagnostic;
+
+    expect(requestStateOf(req("downloading"), diagnostic)).toEqual({
+      requestVerdict: "downloading",
+      requestProgress: 0.62,
+      requestEtaAt: "2026-09-02T14:06:00Z",
+      requestEvidence: "Grabbed as Bluray-1080p",
+    });
+  });
+
+  test("a request with no evidence row still has a verdict", () => {
+    expect(requestStateOf(req("sent"), null).requestVerdict).toBe("searching");
   });
 });
 

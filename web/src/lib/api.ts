@@ -17,7 +17,7 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
-import type { RequestVerdict } from "../../../src/lib/request-diagnostics";
+import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
 import { isCacheableFacetSet } from "./facet-panes";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
@@ -45,21 +45,14 @@ export interface UpcomingInfo {
 /**
  * Why a request is taking as long as it is, as the server sends it.
  *
- * The same three fields ride on a `Title` and on a `MediaRequest`, which is what lets ONE
- * component draw the state on a card, on a title page and in the request log. The WORDS are
- * not here: `requestVerdict` is a code, and `VERDICT_COPY` in
- * `../../../src/lib/request-diagnostics` is the single owner of what each one says.
+ * RE-EXPORTED, never re-declared: `requestStateOf` on the server builds exactly this shape
+ * and a hand-kept copy here would drift the first time a field was added. The WORDS are not
+ * in it -- `requestVerdict` is a code, and `VERDICT_COPY` in the same module is the single
+ * owner of what each one says.
  */
-export interface RequestState {
-  /** Null on a title nobody has asked for. Always set on a request row. */
-  requestVerdict: RequestVerdict | null;
-  /** 0..1 while a release is downloading, null otherwise. */
-  requestProgress: number | null;
-  /** ISO instant the arr expects the download to land. Rendered relative, in the browser. */
-  requestEtaAt: string | null;
-}
+export type { RequestStateView as RequestState } from "../../../src/lib/request-diagnostics";
 
-export interface Title extends RequestState {
+export interface Title extends RequestStateView {
   tconst: string;
   title: string;
   orig: string | null;
@@ -139,7 +132,7 @@ export interface SearchResponse {
   };
 }
 
-export interface MediaRequest extends RequestState {
+export interface MediaRequest extends RequestStateView {
   id: number;
   tconst: string;
   title: string;

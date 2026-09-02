@@ -113,6 +113,13 @@ export function RequestVerdictPanel({
       )}
 
       <p className="mt-1.5 text-xs text-muted">{error ?? copy.sentence}</p>
+
+      {/*
+        One supporting fact and no more -- "Grabbed as Bluray-1080p", "Asked 3 indexers".
+        Which fact, and whether there is one at all, is `evidenceLine`'s call on the server;
+        this only decides that it goes last and quiet.
+      */}
+      {state.requestEvidence && <p className="mt-1 text-[0.7rem] text-muted/80">{state.requestEvidence}</p>}
     </div>
   );
 }

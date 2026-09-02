@@ -37,6 +37,7 @@ const TITLE: Title = {
   requestVerdict: null,
   requestProgress: null,
   requestEtaAt: null,
+  requestEvidence: null,
   service: "radarr",
   posterUrl: null,
   studio: null,

@@ -16,6 +16,7 @@ const state = (over: Partial<RequestState> = {}): RequestState => ({
   requestVerdict: "searching",
   requestProgress: null,
   requestEtaAt: null,
+  requestEvidence: null,
   ...over,
 });
 
@@ -103,6 +104,19 @@ describe("the verdict panel", () => {
     );
     expect(html).toContain("62%");
     expect(html).not.toContain("left");
+  });
+
+  test("the one supporting fact is drawn under the sentence when there is one", () => {
+    const html = renderToStaticMarkup(
+      <RequestVerdictPanel
+        state={state({ requestVerdict: "no_releases", requestEvidence: "Asked 3 indexers" })}
+      />,
+    );
+    expect(html).toContain("Asked 3 indexers");
+  });
+
+  test("no supporting fact draws no line", () => {
+    expect(renderToStaticMarkup(<RequestVerdictPanel state={state()} />)).not.toContain("Asked");
   });
 
   /**

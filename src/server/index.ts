@@ -33,7 +33,7 @@ import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings 
 import { loadPlugins } from "../lib/plugins";
 import { ProwlarrClient } from "../lib/prowlarr";
 import { RateLimiter } from "../lib/rate-limit";
-import { verdictFor } from "../lib/request-diagnostics";
+import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaVerdict, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
@@ -749,23 +749,20 @@ function decorate<T extends TitleRow>(rows: T[]) {
       progress: l?.progress ?? null,
       requestStatus: q?.status ?? null,
       /*
-        Why this request is taking as long as it is -- a CODE, never the sentence.
+        Why this request is taking as long as it is -- see `RequestStateView`.
 
-        The words live in `VERDICT_COPY` and the browser imports them, so a grid of forty
-        cards carries forty short strings rather than forty copies of a paragraph, and the
-        wording has one owner instead of one on the wire and one in the component.
+        The VERDICT goes over as a code and its sentence does not: the words live in
+        `VERDICT_COPY`, which the browser imports, so a grid of forty cards carries forty
+        short strings rather than forty copies of a paragraph.
       */
-      requestVerdict: q ? verdictFor(q, d) : null,
-      /** 0..1 while a release is downloading, null otherwise. */
-      requestProgress: d?.download_progress ?? null,
-      /** When the arr expects it to land, ISO. The browser turns that into "~4 min". */
-      requestEtaAt: d?.eta_at ?? null,
+      ...requestStateOf(q, d),
       /*
         Why a FAILED request failed, in more detail than the generic verdict sentence.
 
         Already through `safeArrMessage` before it was ever written to the row -- the
         request worker sanitises on the way in, precisely so this column can be served.
-        Null for every request that has not failed.
+        Null for every request that has not failed. Not part of `RequestStateView`, which
+        says why: a request-log row already carries this string under its own name.
       */
       requestError: q?.error ?? null,
       service: serviceFor(r.kind),
@@ -1457,24 +1454,19 @@ const appRoutes = {
       const role = auth.principal(req)?.role ?? null;
       const diagnostics = store.requestDiagnosticMap();
       return json({
-        requests: store.listRequests(undefined, 200).map((r) => {
-          const d = diagnostics.get(r.tconst) ?? null;
-          /*
-            The verdict and the bar ride along, on the same fields `decorate()` puts on a
-            title. One shape for "what is happening with this request" means the component
-            drawing a row and the one drawing a card are the same component.
+        /*
+          The verdict and the bar ride along, in the same `RequestStateView` shape
+          `decorate()` puts on a title -- so the component drawing a request row and the one
+          drawing a card are the same component.
 
-            Nothing from `request_diagnostic` is privileged: it is an observation of the
-            arrs' own queues, not of who asked. `visibleRequest` still owns the fields that
-            ARE privileged, and it is applied to the row before anything is added to it.
-          */
-          return {
-            ...visibleRequest(r, role),
-            requestVerdict: verdictFor(r, d),
-            requestProgress: d?.download_progress ?? null,
-            requestEtaAt: d?.eta_at ?? null,
-          };
-        }),
+          Nothing from `request_diagnostic` is privileged: it is an observation of the arrs'
+          own queues, not of who asked. `visibleRequest` still owns the fields that ARE
+          privileged, and it is applied to the row before anything is added to it.
+        */
+        requests: store.listRequests(undefined, 200).map((r) => ({
+          ...visibleRequest(r, role),
+          ...requestStateOf(r, diagnostics.get(r.tconst) ?? null),
+        })),
         queue: worker.stats(),
       });
     },
