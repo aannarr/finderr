@@ -426,6 +426,8 @@ rebuild.
 | `FINDERR_AGENT_CHEAP_RATE_PER_MINUTE` | `120` | Per **agent key**, on everything a local SQLite seek answers. In addition to the per-IP limits, never instead of them |
 | `FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE` | `20` | Per **agent key**, on `/api/search`, `GET /api/title/:tconst` and the request POSTs — the operations that cost real CPU, a blocking provider wait, or a download. Also the cap on how many blocking title reads one key can have in flight |
 | `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
+| `FINDERR_SEARCH_LOG` | `true` | Keep what people search for, so the ranking can be tuned against real queries instead of invented ones. A row is **the query, a timestamp and a result count** — no session, no user, no address — and a click report adds which title was opened and at what rank. Set it to `false` and nothing is buffered and nothing is written; the tables stay. Read it with `bun run search:report` |
+| `FINDERR_SEARCH_LOG_KEEP_ROWS` | `50000` | Rows kept per table, oldest deleted first. A disk bound rather than a retention policy: there is no identity in this data to expire |
 | `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
 | `FINDERR_PUSH_CONTACT` | `mailto:finderr@localhost` | The `sub` claim in every VAPID token — how a push service reaches **you** if something goes wrong. The default is well-formed and accepted by every service tested; set a real address if yours refuses it, or so somebody can actually reach you |
 | `FINDERR_WEBHOOK_USERNAME` | `finderr` | Basic-auth user Radarr and Sonarr send to `/api/webhook/arr`. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |
@@ -540,6 +542,34 @@ the text becomes scoring, not filtering.
 Franchise ordinals (`Rocky 4`) do not auto-resolve to one film, on purpose. A title-prefix
 guess sent `Rocky 4` to *Rocky III* and `Alien 3` to *Alien Nation*, so I ripped it out.
 The OR tier returns the whole franchise and you pick.
+
+### Tuning it against real queries
+
+Every constant in the scorer was picked to make the canary suite pass, and that suite was
+written by an agent. It is a suite grading its own homework: 100% means the cases agree
+with the numbers that were chosen to satisfy them, and says nothing about whether either
+matches how anyone searches. So finderr keeps a log of what people actually type.
+
+A search row is **the query, a timestamp and a result count**. A click report adds which
+title was opened and at what rank. There is no session id, no user id, no address and no
+cookie in either table — a click on rank 4 is a ranking failure whoever made it, and none
+of the questions worth asking needs to know who typed something. Writes are buffered in
+memory and flushed every 30 seconds, so nothing on the render path waits on SQLite, and a
+prefix somebody typed on the way to a longer query is dropped rather than stored as a
+search of its own.
+
+```bash
+bun run search:report                # replay every logged query against the live index
+bun run search:report -- --no-replay # counts only, no index needed
+```
+
+The report answers the questions the constants were guesses about: how many queries carry
+a year, which tier actually answers them, whether anyone searches in a non-English title,
+which queries found nothing — and it lists the real queries whose reader had to look past
+the top row. Those are the cases that have earned a place in the canary. Adding one is a
+person's decision; inventing more cases is the problem this replaces.
+
+`FINDERR_SEARCH_LOG=false` turns the whole thing off.
 
 ### The daily refresh
 

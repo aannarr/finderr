@@ -16,6 +16,7 @@
     "index:vocab": "bun src/jobs/build-vocab.ts",
     "logos:import": "bun src/jobs/import-logos.ts",
     "awards:import": "bun src/jobs/import-awards.ts",
+    "search:report": "bun src/jobs/search-report.ts",
     "icons:build": "bun src/jobs/build-icons.ts",
     "spellfix:build": "cc -O2 -fPIC -shared -I$(brew --prefix sqlite)/include vendor/sqlite-spellfix/spellfix.c -o vendor/sqlite-spellfix/spellfix1.dylib",
     "test": "bun test src",
