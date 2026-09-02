@@ -307,7 +307,6 @@ create table if not exists request_diagnostic (
   tconst            text primary key,
   download_progress real,
   eta_at            text,
-  grabbed_at        text,
   grabbed_quality   text,
   indexers_searched integer,
   releases_seen     integer,
@@ -1164,17 +1163,16 @@ export class Store {
    */
   upsertRequestDiagnostic(d: Omit<RequestDiagnostic, "updated_at">): void {
     this.db.run(
-      "insert into request_diagnostic (tconst,download_progress,eta_at,grabbed_at,grabbed_quality," +
-        "indexers_searched,releases_seen,updated_at) values (?,?,?,?,?,?,?,?) " +
+      "insert into request_diagnostic (tconst,download_progress,eta_at,grabbed_quality," +
+        "indexers_searched,releases_seen,updated_at) values (?,?,?,?,?,?,?) " +
         "on conflict(tconst) do update set download_progress=excluded.download_progress, " +
-        "eta_at=excluded.eta_at, grabbed_at=excluded.grabbed_at, grabbed_quality=excluded.grabbed_quality, " +
+        "eta_at=excluded.eta_at, grabbed_quality=excluded.grabbed_quality, " +
         "indexers_searched=excluded.indexers_searched, releases_seen=excluded.releases_seen, " +
         "updated_at=excluded.updated_at",
       [
         d.tconst,
         d.download_progress,
         d.eta_at,
-        d.grabbed_at,
         d.grabbed_quality,
         d.indexers_searched,
         d.releases_seen,

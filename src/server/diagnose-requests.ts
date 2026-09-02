@@ -38,13 +38,6 @@ export interface DiagnoseDeps {
   log: (...args: unknown[]) => void;
 }
 
-/** The grab an arr recorded for one library item. */
-interface Grab {
-  at: string;
-  /** The arr's own quality name, e.g. "Bluray-1080p". The one arr string safe to forward. */
-  quality: string | null;
-}
-
 /**
  * Read from a service that may not be configured and may not be up. `null` for either.
  *
@@ -98,24 +91,30 @@ export async function downloadsByArrId(deps: DiagnoseDeps): Promise<Map<number, 
 }
 
 /**
- * The most recent grab each library item has, from one page of each arr's history.
+ * The quality each library item's most recent grab came in at, from one page of each arr's
+ * history.
  *
- * History arrives newest first, so the FIRST record seen for an id is the one to keep --
- * a title grabbed, failed and grabbed again should report the latest attempt.
+ * History arrives newest first, so the FIRST record seen for an id is the one to keep -- a
+ * title grabbed, failed and grabbed again should report the latest attempt. A record with no
+ * date is skipped for that reason and not for its own: without one there is no way to tell
+ * whether it belongs at the front of that ordering.
+ *
+ * The quality NAME and nothing else off the record. `sourceTitle` is a release name and
+ * `data` is the arr's own prose -- see the caution on `ArrHistoryRecord`.
  */
-async function grabsByArrId(deps: DiagnoseDeps): Promise<Map<number, Grab>> {
+async function grabQualityByArrId(deps: DiagnoseDeps): Promise<Map<number, string | null>> {
   const pages = await Promise.all([
     readFrom(deps.radarr, "radarr history", deps.log, (c) => c.history()),
     readFrom(deps.sonarr, "sonarr history", deps.log, (c) => c.history()),
   ]);
 
-  const grabs = new Map<number, Grab>();
+  const grabs = new Map<number, string | null>();
   for (const page of pages) {
     for (const rec of page?.records ?? []) {
       if (rec.eventType !== ARR_GRAB_EVENT) continue;
       const arrId = rec.movieId ?? rec.seriesId;
       if (arrId === undefined || !rec.date || grabs.has(arrId)) continue;
-      grabs.set(arrId, { at: rec.date, quality: rec.quality?.quality?.name ?? null });
+      grabs.set(arrId, rec.quality?.quality?.name ?? null);
     }
   }
   return grabs;
@@ -139,15 +138,14 @@ export async function diagnoseRequests(
 ): Promise<Omit<RequestDiagnostic, "updated_at">[]> {
   if (open.length === 0) return [];
 
-  const [grabs, prowlarrHistory] = await Promise.all([
-    grabsByArrId(deps),
+  const [grabQuality, prowlarrHistory] = await Promise.all([
+    grabQualityByArrId(deps),
     readFrom(deps.prowlarr, "prowlarr history", deps.log, (c) => c.history()),
   ]);
   const searches = prowlarrHistory?.records ?? [];
 
   return open.map((r) => {
     const download = r.arr_id === null ? undefined : downloads.get(r.arr_id);
-    const grab = r.arr_id === null ? undefined : grabs.get(r.arr_id);
     // No Prowlarr configured means no evidence at all, which must stay distinct from
     // "asked and found nothing" -- so the counts are null rather than zero.
     const evidence = deps.prowlarr
@@ -158,8 +156,7 @@ export async function diagnoseRequests(
       tconst: r.tconst,
       download_progress: download?.progress ?? null,
       eta_at: download?.etaAt ?? null,
-      grabbed_at: grab?.at ?? null,
-      grabbed_quality: grab?.quality ?? null,
+      grabbed_quality: r.arr_id === null ? null : (grabQuality.get(r.arr_id) ?? null),
       indexers_searched: evidence.indexers,
       releases_seen: evidence.releasesSeen,
     };

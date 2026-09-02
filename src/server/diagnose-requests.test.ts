@@ -121,7 +121,6 @@ describe("building an evidence row per open request", () => {
       tconst: "tt0000001",
       download_progress: 0.6,
       eta_at: "2026-09-02T12:00:00Z",
-      grabbed_at: "2026-09-02T10:03:00Z",
       grabbed_quality: "Bluray-1080p",
       indexers_searched: 1,
       releases_seen: 4,
@@ -177,7 +176,6 @@ describe("building an evidence row per open request", () => {
       log: silent,
     };
     const [row] = await diagnoseRequests(deps, [request()], new Map());
-    expect(row?.grabbed_at).toBe("2026-09-02T18:00:00Z");
     expect(row?.grabbed_quality).toBe("WEBDL-1080p");
   });
 
@@ -190,7 +188,7 @@ describe("building an evidence row per open request", () => {
       log: silent,
     };
     const [row] = await diagnoseRequests(deps, [request()], new Map());
-    expect(row?.grabbed_at).toBeNull();
+    expect(row?.grabbed_quality).toBeNull();
   });
 
   test("a request never sent to an arr has no id to join on and gets a row of nulls", async () => {
@@ -204,7 +202,7 @@ describe("building an evidence row per open request", () => {
     const downloads = await downloadsByArrId(deps);
     const [row] = await diagnoseRequests(deps, [request({ arr_id: null })], downloads);
     expect(row?.download_progress).toBeNull();
-    expect(row?.grabbed_at).toBeNull();
+    expect(row?.grabbed_quality).toBeNull();
   });
 
   test("nothing open means nothing asked of anybody", async () => {

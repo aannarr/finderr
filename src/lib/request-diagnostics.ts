@@ -123,9 +123,13 @@ export interface RequestDiagnostic {
   download_progress: number | null;
   /** When the arr expects the download to finish, ISO. See `QueueItem.estimatedCompletionTime`. */
   eta_at: string | null;
-  /** When a release was grabbed for this title, ISO. */
-  grabbed_at: string | null;
-  /** The arr's own quality name for that grab, e.g. "Bluray-1080p". Safe to show; see `ArrHistoryRecord`. */
+  /**
+   * The arr's own quality name for the most recent grab, e.g. "Bluray-1080p".
+   *
+   * Safe to show -- see `ArrHistoryRecord`. The grab's TIMESTAMP is deliberately not kept
+   * beside it: nothing renders one, and "grabbed at 14:03" says little that the bar and the
+   * ETA sitting next to it do not already say.
+   */
   grabbed_quality: string | null;
   /** How many distinct indexers ran a query matching this title since it was requested. */
   indexers_searched: number | null;

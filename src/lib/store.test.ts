@@ -534,7 +534,6 @@ describe("request diagnostics", () => {
     tconst: "tt3659388",
     download_progress: 0.62,
     eta_at: "2026-09-02T14:06:00Z",
-    grabbed_at: "2026-09-02T14:03:00Z",
     grabbed_quality: "Bluray-1080p",
     indexers_searched: 2,
     releases_seen: 7,
