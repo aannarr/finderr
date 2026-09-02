@@ -24,7 +24,15 @@ import { Database } from "bun:sqlite";
 import type { Config } from "./config";
 import { type TitleIds, titleIds } from "./crosswalk";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
-import { nconstsByNameForTitle, type PersonCreditsOptions, type PersonPage, personPage } from "./people";
+import {
+  type Collaborator,
+  type CollaboratorOptions,
+  frequentCollaborators,
+  nconstsByNameForTitle,
+  type PersonCreditsOptions,
+  type PersonPage,
+  personPage,
+} from "./people";
 import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
@@ -908,6 +916,11 @@ export class SearchEngine {
   /** A person and their filmography. `null` for an unknown id, or an index without people. */
   personPage(nconst: string, opts: PersonCreditsOptions = {}): PersonPage | null {
     return this.hasPeople ? personPage(this.db, nconst, opts) : null;
+  }
+
+  /** Who this person keeps working with. Empty for an index built before the cast tables. */
+  frequentCollaborators(nconst: string, opts: CollaboratorOptions = {}): Collaborator[] {
+    return this.hasPeople ? frequentCollaborators(this.db, nconst, opts) : [];
   }
 
   /** Our own ids for the names credited on a title, so a cast list can become links. */

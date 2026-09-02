@@ -186,13 +186,32 @@ export function personPage(db: Database, nconst: string, opts: PersonCreditsOpti
 
   const credits: Credit[] = rows.map((r) => ({
     ...r,
-    // SQLite's group_concat has no separator argument in its DISTINCT form, so it is
-    // always a bare comma. Split on exactly that rather than on a guessed pattern.
-    categories: r.categories.split(",").filter(Boolean).sort(),
+    categories: splitConcat(r.categories).sort(),
     characters: normalizeCharacters(r.characters),
   }));
 
   return { person, credits, total, categories };
+}
+
+/**
+ * Split a `group_concat` column into its distinct, trimmed values, source order kept.
+ *
+ * SQLite's `group_concat` has no separator argument in its DISTINCT form, so the separator
+ * is always a bare comma -- split on exactly that rather than on a guessed pattern. The
+ * de-duplication is here rather than left to `distinct` in SQL because an aggregate OF an
+ * aggregate (collaborator roles, below) can repeat a value that each inner group held only
+ * once, and callers should not have to know which of the two shapes they were handed.
+ */
+function splitConcat(raw: string | null): string[] {
+  if (!raw) return [];
+  return [
+    ...new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 /**
@@ -202,18 +221,108 @@ export function personPage(db: Database, nconst: string, opts: PersonCreditsOpti
  * an actor and a director on one title yields just the acting character -- which is the
  * wanted result. An all-null group yields SQL NULL, which stays null here rather than
  * becoming an empty string a pane would then render as a blank line.
+ *
+ * Source order rather than sorted: "Hank Hall, Hawk" is how the title bills them.
  */
 function normalizeCharacters(raw: string | null): string | null {
-  if (!raw) return null;
-  const parts = [
-    ...new Set(
-      raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    ),
-  ];
+  const parts = splitConcat(raw);
   return parts.length > 0 ? parts.join(", ") : null;
+}
+
+/**
+ * Somebody this person keeps turning up beside, and how often.
+ *
+ * `shared` counts TITLES, never credit rows: Nolan directing and writing one film with
+ * DiCaprio in it is one shared title, and a count of rows would print "2 titles together"
+ * over a single poster's worth of shared work.
+ */
+export interface Collaborator {
+  nconst: string;
+  name: string;
+  /** Titles both are credited on. The rank key, and the number the pane prints. */
+  shared: number;
+  /** IMDb categories THEY held on the shared titles -- their job, not this person's. */
+  categories: string[];
+}
+
+export interface CollaboratorOptions {
+  /**
+   * How many shared titles it takes to be a collaborator at all. Defaults to 2.
+   *
+   * One shared credit is a coincidence rather than an edge -- everybody who ever stood in
+   * one film with a star would qualify -- and a page of coincidences is the dishonest half
+   * of "everything is clickable". Two is the smallest number that means "again".
+   */
+  minShared?: number;
+  limit?: number;
+}
+
+const DEFAULT_MIN_SHARED = 2;
+const DEFAULT_COLLABORATOR_LIMIT = 12;
+
+/**
+ * The people this person works with most, most-shared first.
+ *
+ * Local SQLite over the credits tables and nothing else, so a person page can carry this
+ * without leaving the render-path rule the rest of this file lives under. Measured against
+ * the real 1.27M-credit index: ~1ms for a lean filmography and ~4ms warm for one the size
+ * of Tom Hanks's, beside ~1ms for the filmography query itself. Same order of magnitude,
+ * which is what the rule asks -- traversing the graph stays as fast as searching it.
+ *
+ * **Every row is a live destination by construction.** A collaborator is only here because
+ * they hold credits in OUR tables, so their person page renders the same way this one
+ * does -- there is no "is it in the index" guess to get wrong, which is the trap the
+ * dead-end rule warns about for edges pointed at a filtered set.
+ *
+ * The inner query collapses each (collaborator, title) pair to one row, which is what
+ * makes both the count and the vote sum count titles: either person may hold several
+ * credits on one film, and a plain join would multiply the two.
+ *
+ * Ranked on shared titles, then on how much those titles are watched, then on name and id.
+ * The tail keys are what make the order TOTAL: two collaborators tied on both numbers must
+ * not swap between visits, and a list that reshuffles is worse than one that is merely
+ * imperfect.
+ */
+export function frequentCollaborators(
+  db: Database,
+  nconst: string,
+  opts: CollaboratorOptions = {},
+): Collaborator[] {
+  const rows = db
+    .query(
+      `select p.nconst, p.name, count(*) as shared, sum(s.votes) as votes,
+              group_concat(s.categories) as categories
+       from (
+         select mine.title_rowid as title_rowid, theirs.person_rowid as person_rowid,
+                coalesce(t.votes, 0) as votes,
+                group_concat(distinct theirs.category) as categories
+         from person me
+         join title_principal mine on mine.person_rowid = me.rowid_
+         join title_principal theirs
+           on theirs.title_rowid = mine.title_rowid and theirs.person_rowid <> me.rowid_
+         join title t on t.rowid_ = mine.title_rowid
+         where me.nconst = ?
+         group by mine.title_rowid, theirs.person_rowid
+       ) s
+       join person p on p.rowid_ = s.person_rowid
+       group by s.person_rowid
+       having shared >= ?
+       order by shared desc, votes desc, p.name, p.nconst
+       limit ?`,
+    )
+    .all(nconst, opts.minShared ?? DEFAULT_MIN_SHARED, opts.limit ?? DEFAULT_COLLABORATOR_LIMIT) as {
+    nconst: string;
+    name: string;
+    shared: number;
+    categories: string | null;
+  }[];
+
+  return rows.map((r) => ({
+    nconst: r.nconst,
+    name: r.name,
+    shared: r.shared,
+    categories: splitConcat(r.categories).sort(),
+  }));
 }
 
 /**

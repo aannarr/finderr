@@ -16,9 +16,12 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { NominationRow } from "../components/Awards";
 import { ToggleChip } from "../components/Chip";
+import { Pane } from "../components/FacetPane";
 import { useKeyAction } from "../components/Kbd";
 import { TitleGrid } from "../components/TitleGrid";
+import { PERSON_LINK_CLASS } from "../components/TitlePanes";
 import {
+  type Collaborator,
   cachedPerson,
   getPerson,
   type PersonAwards,
@@ -27,55 +30,10 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { prettyCategory } from "../lib/awards-format";
+import { creditLabels, mergedCategories } from "../lib/credits";
 import type { SearchParams } from "../lib/search-params";
 
 const PAGE = 60;
-
-/**
- * IMDb's vocabulary is not what a person would say out loud.
- *
- * Every value in `index.castCategories` needs a line here, or a composer's page draws a
- * chip reading `production_designer`. An unmapped category falls through to its raw name
- * rather than disappearing -- a filter that quietly dropped credits would be the worse
- * failure, and a chip that reads like a database column is at least self-reporting.
- */
-const CATEGORY_LABEL: Record<string, string> = {
-  actor: "Acting",
-  actress: "Acting",
-  casting_director: "Casting",
-  cinematographer: "Cinematography",
-  composer: "Music",
-  director: "Directing",
-  editor: "Editing",
-  producer: "Production",
-  production_designer: "Production Design",
-  writer: "Writing",
-};
-
-/**
- * `actor` and `actress` are one job.
- *
- * IMDb splits them and we do not: "Acting (41)" is the answer a filmography is asking
- * for, and two gendered chips is a distinction nobody browsing wants to make. Each merged
- * chip carries EVERY IMDb value behind it, and all of them travel to the API -- filtering
- * on just one would drop every actress credit from an Acting filter, which is a wrong
- * answer that looks right because the page still fills with plausible rows.
- */
-export function mergedCategories(
-  categories: PersonPage["categories"],
-): { label: string; values: string[]; count: number }[] {
-  const byLabel = new Map<string, { values: string[]; count: number }>();
-  for (const c of categories) {
-    const label = CATEGORY_LABEL[c.category] ?? c.category;
-    const entry = byLabel.get(label) ?? { values: [], count: 0 };
-    entry.values.push(c.category);
-    entry.count += c.count;
-    byLabel.set(label, entry);
-  }
-  return [...byLabel]
-    .map(([label, v]) => ({ label, values: v.values.sort(), count: v.count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-}
 
 /**
  * "Nominated 8 times, won 2" -- and every nomination behind a disclosure.
@@ -150,6 +108,54 @@ function PersonAwardsSummary({ awards }: { awards: PersonAwards | null }) {
         ))}
       </ol>
     </details>
+  );
+}
+
+/**
+ * The people they keep working with, each one a page of their own.
+ *
+ * The cheapest edge on the discovery graph and the only one that costs no provider: it is
+ * the credits table read the other way round, so it renders on the same local-SQLite terms
+ * as the filmography above it.
+ *
+ * **Nothing at all when there is nobody to name.** The server admits a collaborator only
+ * from the second shared title on, so a person with no repeat gets an empty list here and
+ * this draws no heading -- the same failure a collection pane was filed for when it headed
+ * an empty row. A pane is not an obligation to fill.
+ *
+ * Not a facet, not a provider, no skeleton: it arrives complete with the person payload,
+ * so it is on the same footing as the awards summary above and must not be routed through
+ * `paneView`.
+ */
+function CollaboratorsPane({ collaborators }: { collaborators: Collaborator[] }) {
+  if (collaborators.length === 0) return null;
+
+  return (
+    <Pane heading="Frequently works with">
+      <ul className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+        {collaborators.map((c) => (
+          <li key={c.nconst} className="leading-tight">
+            <Link
+              to="/person/$nconst"
+              params={{ nconst: c.nconst }}
+              search={{}}
+              className={PERSON_LINK_CLASS}
+            >
+              {c.name}
+            </Link>{" "}
+            <span className="text-xs text-muted">
+              {/* Their job on the shared work, which is what tells a reader whether this
+                  is a co-star or the director who keeps casting them. */}
+              {creditLabels(c.categories).join(" · ")}
+              {" · "}
+              <span className="tabular-nums">
+                {c.shared} title{c.shared === 1 ? "" : "s"}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Pane>
   );
 }
 
@@ -338,6 +344,12 @@ export function PersonRoute() {
           </button>
         </div>
       )}
+
+      {/*
+        Under the grid and its control, where "more like this" sits on a title page: the
+        filmography is what the reader came for, and this is where they go next.
+      */}
+      <CollaboratorsPane collaborators={page.collaborators ?? []} />
     </>
   );
 }

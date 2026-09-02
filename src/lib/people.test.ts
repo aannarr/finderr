@@ -14,7 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config";
 import { SCHEMA } from "./index-builder";
-import { nconstsByNameForTitle, personByNconst, personNameKey, personPage } from "./people";
+import {
+  frequentCollaborators,
+  nconstsByNameForTitle,
+  personByNconst,
+  personNameKey,
+  personPage,
+} from "./people";
 import { SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-people-"));
@@ -285,6 +291,119 @@ describe("personPage sort", () => {
   });
 });
 
+/**
+ * Who a person keeps working with -- the cheapest edge on the discovery graph, and the one
+ * with the most ways to lie. The fixture is built so every rank key is exercised by a pair
+ * that DISAGREES on it: `nm-crew` outranks everyone on shared titles, `nm-caine` and
+ * `nm-pfister` tie on both numbers and can only be separated by name, and `nm-early` ties
+ * the two of them on shared titles while losing on how watched that shared work is.
+ */
+describe("frequentCollaborators", () => {
+  const CAST = [
+    { nconst: "nm-nolan", name: "Christopher Nolan" },
+    { nconst: "nm-crew", name: "Lee Smith" },
+    { nconst: "nm-caine", name: "Michael Caine" },
+    { nconst: "nm-pfister", name: "Wally Pfister" },
+    { nconst: "nm-early", name: "Ana Early" },
+    { nconst: "nm-leo", name: "Leonardo DiCaprio" },
+  ];
+
+  const WORK: CreditFix[] = [
+    // Nolan holds TWO credits on Inception, so any count that measured credit rows rather
+    // than titles would inflate every collaborator he has on it.
+    { tconst: "tt-incep", nconst: "nm-nolan", category: "director" },
+    { tconst: "tt-incep", nconst: "nm-nolan", category: "writer" },
+    { tconst: "tt-dark", nconst: "nm-nolan", category: "director" },
+    { tconst: "tt-obscure", nconst: "nm-nolan", category: "director" },
+    { tconst: "tt-incep", nconst: "nm-crew", category: "editor" },
+    { tconst: "tt-dark", nconst: "nm-crew", category: "editor" },
+    { tconst: "tt-obscure", nconst: "nm-crew", category: "editor" },
+    { tconst: "tt-incep", nconst: "nm-caine", category: "actor" },
+    { tconst: "tt-dark", nconst: "nm-caine", category: "actor" },
+    { tconst: "tt-incep", nconst: "nm-pfister", category: "cinematographer" },
+    { tconst: "tt-dark", nconst: "nm-pfister", category: "cinematographer" },
+    // The same two shared titles as Caine on paper, but one of them is Early Short.
+    { tconst: "tt-incep", nconst: "nm-early", category: "actress" },
+    { tconst: "tt-obscure", nconst: "nm-early", category: "actor" },
+    { tconst: "tt-incep", nconst: "nm-leo", category: "actor" },
+  ];
+
+  const db = () => indexOf(TITLES, CAST, WORK);
+  const names = (c: { name: string }[]) => c.map((x) => x.name);
+
+  test("ranks on shared titles first -- who they keep coming back to", () => {
+    const collaborators = frequentCollaborators(db(), "nm-nolan");
+    expect(collaborators[0]).toMatchObject({ nconst: "nm-crew", shared: 3 });
+  });
+
+  test("ties on shared titles break on how watched the shared work is", () => {
+    // Caine and Early both share two titles with Nolan; Caine's second is The Dark Knight
+    // and Early's is a 900-vote short. Same number, very different answer to "who do I
+    // know them from together".
+    const collaborators = frequentCollaborators(db(), "nm-nolan");
+    expect(names(collaborators)).toEqual(["Lee Smith", "Michael Caine", "Wally Pfister", "Ana Early"]);
+  });
+
+  test("the order is TOTAL, so the pane does not reshuffle between visits", () => {
+    // Caine and Pfister tie on shared titles AND on votes -- only the name and the id
+    // separate them, and a list that reordered on every visit would be worse than one
+    // that is merely imperfect.
+    const fixture = db();
+    expect(names(frequentCollaborators(fixture, "nm-nolan"))).toEqual(
+      names(frequentCollaborators(fixture, "nm-nolan")),
+    );
+  });
+
+  test("one shared title is a coincidence, not an edge", () => {
+    // DiCaprio stood in exactly one Nolan film. Listing him would make "frequently works
+    // with" mean "was once in a room with".
+    expect(names(frequentCollaborators(db(), "nm-nolan"))).not.toContain("Leonardo DiCaprio");
+  });
+
+  test("counts TITLES, not credit rows", () => {
+    // Nolan wrote AND directed Inception. Caine shares two FILMS with him, and "3 titles"
+    // over two posters is the same lie a filmography total tells when it counts rows.
+    const caine = frequentCollaborators(db(), "nm-caine");
+    expect(caine.find((c) => c.nconst === "nm-nolan")?.shared).toBe(2);
+  });
+
+  test("never lists the person themself", () => {
+    expect(frequentCollaborators(db(), "nm-nolan").map((c) => c.nconst)).not.toContain("nm-nolan");
+  });
+
+  test("carries the collaborator's OWN job on the shared work", () => {
+    // What tells a reader whether this is a co-star or the director who keeps casting
+    // them. Distinct and merged, because the aggregate is one of aggregates: `actor` and
+    // `actress` arrive as two rows and are one person's one job.
+    const early = frequentCollaborators(db(), "nm-nolan").find((c) => c.nconst === "nm-early");
+    expect(early?.categories).toEqual(["actor", "actress"]);
+    const crew = frequentCollaborators(db(), "nm-nolan").find((c) => c.nconst === "nm-crew");
+    expect(crew?.categories).toEqual(["editor"]);
+  });
+
+  test("the floor is a parameter, so a caller can ask the looser question", () => {
+    const everyone = frequentCollaborators(db(), "nm-nolan", { minShared: 1 });
+    expect(names(everyone)).toContain("Leonardo DiCaprio");
+  });
+
+  test("limit caps the pane without changing the ranking", () => {
+    expect(names(frequentCollaborators(db(), "nm-nolan", { limit: 2 }))).toEqual([
+      "Lee Smith",
+      "Michael Caine",
+    ]);
+  });
+
+  test("nobody worth naming is an EMPTY list, which the pane draws as nothing", () => {
+    // The failure this guards is a heading over an empty row -- the same one a collection
+    // pane was filed for. A person with no repeat collaborator gets no pane at all.
+    expect(frequentCollaborators(db(), "nm-leo")).toEqual([]);
+  });
+
+  test("an unknown id is an empty list rather than an error", () => {
+    expect(frequentCollaborators(db(), "nm-nobody")).toEqual([]);
+  });
+});
+
 describe("nconstsByNameForTitle", () => {
   test("maps the names on a title to our own ids", () => {
     const map = nconstsByNameForTitle(indexOf(TITLES, PEOPLE, CREDITS), "tt-incep");
@@ -372,6 +491,9 @@ describe("SearchEngine against an index without cast tables", () => {
     // rollout would be the worst possible time for it.
     expect(engine.personPage("nm-leo")).toBeNull();
     expect(engine.nconstsByNameForTitle("tt-x").size).toBe(0);
+    // Empty rather than null: the person page draws no collaborator pane, exactly as it
+    // does for somebody who simply has no repeat collaborator.
+    expect(engine.frequentCollaborators("nm-leo")).toEqual([]);
   });
 
   test("hasPeople is true once the tables are there", () => {

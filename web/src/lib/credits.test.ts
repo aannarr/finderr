@@ -1,16 +1,16 @@
 /**
- * The one rule the person page owns that is not a render: how IMDb's categories become
- * the chips a reader picks from.
+ * How IMDb's categories become the words a reader sees -- the chips on a person page, and
+ * the roles printed beside a frequent collaborator.
  *
- * `mergedCategories` is pure, so it is tested directly. The second suite is the one that
- * matters over time -- it binds the label table to the builder's own category list, in
- * the same spirit as `ratingLogo`'s binding to `src/logos.json`: widen what the index
- * ingests and forget the label, and the suite goes red instead of a chip reading
- * `production_designer` reaching the browser.
+ * Both are pure, so they are tested directly. The last suite is the one that matters over
+ * time -- it binds the label table to the builder's own category list, in the same spirit
+ * as `ratingLogo`'s binding to `src/logos.json`: widen what the index ingests and forget
+ * the label, and the suite goes red instead of a chip reading `production_designer`
+ * reaching the browser.
  */
 
 import { describe, expect, test } from "bun:test";
-import { mergedCategories } from "./PersonRoute";
+import { creditLabels, mergedCategories } from "./credits";
 
 describe("mergedCategories", () => {
   test("actor and actress are one chip carrying both IMDb values", () => {
@@ -35,6 +35,26 @@ describe("mergedCategories", () => {
     // database column is ugly and self-reporting, which is the better failure.
     const roles = mergedCategories([{ category: "archive_footage", count: 3 }]);
     expect(roles).toEqual([{ label: "archive_footage", values: ["archive_footage"], count: 3 }]);
+  });
+});
+
+describe("creditLabels", () => {
+  test("actor and actress read as one job, not two", () => {
+    // A collaborator billed under both across several films is one job. Printing
+    // "Acting · Acting" beside their name would be the tell that nothing merged them.
+    expect(creditLabels(["actor", "actress"])).toEqual(["Acting"]);
+  });
+
+  test("keeps the given order, so the roles read as they were ranked", () => {
+    expect(creditLabels(["director", "writer"])).toEqual(["Directing", "Writing"]);
+  });
+
+  test("an unmapped category keeps its raw name here too", () => {
+    expect(creditLabels(["archive_footage"])).toEqual(["archive_footage"]);
+  });
+
+  test("no categories is no labels, never a stray separator", () => {
+    expect(creditLabels([])).toEqual([]);
   });
 });
 

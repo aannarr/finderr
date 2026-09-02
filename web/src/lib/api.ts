@@ -385,12 +385,34 @@ export interface Credit extends Title {
   ordering: number;
 }
 
+/**
+ * Somebody this person keeps turning up beside, and how often.
+ *
+ * `shared` counts TITLES, so it matches the cards a reader would find on either
+ * filmography rather than the credit rows behind them.
+ */
+export interface Collaborator {
+  nconst: string;
+  name: string;
+  shared: number;
+  /** The categories THEY held on the shared titles -- their job, not this person's. */
+  categories: string[];
+}
+
 export interface PersonPage {
   person: Person;
   credits: Credit[];
   total: number;
   /** Counts over ALL their credits, not this page -- so the number does not shrink. */
   categories: { category: string; count: number }[];
+  /**
+   * Who they work with most, over all their credits.
+   *
+   * Absent from an index built before the cast tables, and empty for anybody with no
+   * repeat collaborator -- both of which the pane draws as nothing at all rather than as
+   * a heading over an empty row.
+   */
+  collaborators?: Collaborator[];
   /**
    * Their award record, joined on the nconst. `null` for nearly everybody.
    *

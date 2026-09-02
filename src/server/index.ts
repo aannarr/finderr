@@ -1441,6 +1441,18 @@ const appRoutes = {
             draws nothing at all rather than "0 nominations". One indexed lookup.
           */
         awards: personAwards(store, req.params.nconst, OSCARS),
+        /*
+            WHO THEY KEEP WORKING WITH -- one more local query over the same credits
+            tables the filmography comes from.
+
+            Beside the credits and NOT filtered by `category` or reordered by `sort`, for
+            the same reason the category counts are not: this describes the person, while
+            the grid below is a page of one view of them. Recomputed on every page of the
+            filmography rather than only on the first, because the client merges the next
+            page over this payload -- omitting it past offset 0 would make the pane vanish
+            when a reader pressed "show more".
+          */
+        collaborators: live.current.frequentCollaborators(req.params.nconst),
       },
       { cache: perSession(300) },
     );
