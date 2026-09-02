@@ -94,6 +94,31 @@ export interface Session {
   userAgent: string | null;
 }
 
+/**
+ * One person's ONE agent key.
+ *
+ * `userId` is the primary key, so "one key per user" is the schema rather than a check
+ * somebody has to remember. Rotating is therefore an upsert: the new hash overwrites the
+ * old one in a single statement, which is what makes the old token dead the instant the
+ * new one exists -- no window where both work, and no way to end up with an orphan second
+ * key nobody knows about.
+ */
+export interface AgentKey {
+  userId: string;
+  /** sha256 of the token. The token itself exists only in the snippet shown once. */
+  tokenHash: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /**
+   * Read-only means GET and HEAD, and nothing else.
+   *
+   * The cost of one key per user is that this is a TOGGLE rather than a choice per token:
+   * a user cannot hold a read-only monitoring key and a write key at once. If that ever
+   * bites, the fix is a second key KIND, never a collection.
+   */
+  readOnly: boolean;
+}
+
 /** Who is making this request, and how we know. */
 export interface Principal {
   /**
@@ -103,12 +128,29 @@ export interface Principal {
    * than a forged `session` so that anything inspecting a principal can tell a real sign-in
    * from a bypassed one. It still carries a real `user`, so every consumer that only cares
    * about WHO is calling needs no branch for it.
+   *
+   * `agent` is the same shape for the same reason: it carries the real owner, so every
+   * consumer that only asks WHO is calling needs no branch -- and the things that DO differ
+   * (no admin authority, a bucket of its own, a blocking title read) can ask for the kind.
    */
-  kind: "session" | "api-key" | "dev";
+  kind: "session" | "api-key" | "dev" | "agent";
   /** Null for the system API key -- it is not a person and owns no requests. */
   user: User | null;
+  /**
+   * What this CALLER may do, which is not always what its owner may do.
+   *
+   * > [!CAUTION] An `agent` principal is always `user`, whatever role its owner holds
+   * > A leaked admin agent key mints invites, changes roles and deletes accounts; a leaked
+   * > ordinary one asks for films. The blast radius difference is enormous and the
+   * > convenience gain is nil, because nothing an agent key is for is an admin operation.
+   * > Everything downstream that branches on the role -- `visibleRequest`, `arrLink`,
+   * > `adminPrincipal`, the per-request arr overrides, the daily quota -- inherits that from
+   * > this one field rather than each carrying a check of its own.
+   */
   role: Role;
   session?: Session;
+  /** Set only for `kind: "agent"`. What that one key may do, beyond who it belongs to. */
+  agent?: { readOnly: boolean };
 }
 
 // --- secrets ---------------------------------------------------------------
@@ -184,6 +226,11 @@ export function isExpired(expiresAt: string, now: Date = new Date()): boolean {
  * `quality_profile_id` and `search_on_add` go with it because all three are one decision an
  * admin made, and a row that shows two thirds of it invites somebody to add the third back.
  *
+ * **`via_agent_key` is audit metadata beside `requested_by`, so it is stripped WITH it.**
+ * It says HOW a request arrived; the row still says WHO asked, and an agent key does not
+ * create a second requester. Splitting the two audiences -- who may see the person, who may
+ * see the mechanism -- would be a second privacy rule with a second owner.
+ *
  * It returns a new object rather than deleting in place, so a caller cannot accidentally
  * hand the same row to two audiences and have the second one mutated.
  */
@@ -193,15 +240,18 @@ export function visibleRequest<
     quality_profile_id?: number | null;
     root_folder_path?: string | null;
     search_on_add?: number | null;
+    via_agent_key?: number | null;
   },
 >(
   row: T,
   role: Role | null,
-): Omit<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add"> &
-  Partial<Pick<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add">> {
+): Omit<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add" | "via_agent_key"> &
+  Partial<
+    Pick<T, "requested_by" | "quality_profile_id" | "root_folder_path" | "search_on_add" | "via_agent_key">
+  > {
   // Destructured out by NAME rather than deleted from a copy: a spread that forgets one
   // field is exactly how this leaks, and the compiler can see this shape.
-  const { requested_by, quality_profile_id, root_folder_path, search_on_add, ...rest } = row;
+  const { requested_by, quality_profile_id, root_folder_path, search_on_add, via_agent_key, ...rest } = row;
   if (role !== "admin") return rest;
   return {
     ...rest,
@@ -209,6 +259,7 @@ export function visibleRequest<
     quality_profile_id: (quality_profile_id ?? null) as T["quality_profile_id"],
     root_folder_path: (root_folder_path ?? null) as T["root_folder_path"],
     search_on_add: (search_on_add ?? null) as T["search_on_add"],
+    via_agent_key: (via_agent_key ?? null) as T["via_agent_key"],
   };
 }
 

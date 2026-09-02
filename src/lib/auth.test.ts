@@ -107,7 +107,21 @@ describe("who may see what", () => {
       quality_profile_id: null,
       root_folder_path: null,
       search_on_add: null,
+      via_agent_key: null,
     });
+  });
+
+  /*
+    HOW an ask arrived is audit metadata beside WHO asked, so it is stripped by the same
+    function for the same audience. Splitting them -- letting a user see the mechanism but
+    not the person -- would be a second privacy rule with a second owner, and the second
+    owner is always the one that gets forgotten.
+  */
+  test("via_agent_key rides with requested_by, not on its own", () => {
+    const row = { tconst: "tt0111161", title: "x", requested_by: "u9", via_agent_key: 1 };
+
+    expect(visibleRequest(row, "user")).toEqual({ tconst: "tt0111161", title: "x" });
+    expect(visibleRequest(row, "admin").via_agent_key).toBe(1);
   });
 
   test("the arr overrides are admin-only too -- a root folder is a filesystem path", () => {
@@ -126,7 +140,9 @@ describe("who may see what", () => {
       tconst: "tt0111161",
       title: "The Shawshank Redemption",
     });
-    expect(visibleRequest(row, "admin")).toEqual(row);
+    // Normalised to null for the key this row does not carry, like every other admin-only
+    // field -- so a client can read it without checking that it exists.
+    expect(visibleRequest(row, "admin")).toEqual({ ...row, via_agent_key: null });
   });
 
   test("the key is GONE for a user, not merely null", () => {

@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { ShowOnceSecret } from "../components/ShowOnceSecret";
 import {
   type AdminInvite,
   type AdminUser,
@@ -125,17 +126,10 @@ export function AdminRoute() {
         </div>
 
         {freshLink && (
-          <div className="mt-3 rounded-lg border border-line bg-surface px-3 py-2">
-            <p className="text-xs text-muted">Send this now -- it is not stored and cannot be shown again.</p>
-            <code className="mt-1 block break-all text-sm">{freshLink}</code>
-            <button
-              type="button"
-              onClick={() => void navigator.clipboard?.writeText(freshLink)}
-              className={LINK_BUTTON}
-            >
-              Copy
-            </button>
-          </div>
+          <ShowOnceSecret
+            note="Send this now -- it is not stored and cannot be shown again."
+            value={freshLink}
+          />
         )}
       </section>
 

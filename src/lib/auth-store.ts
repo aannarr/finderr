@@ -13,6 +13,7 @@
 
 import type { Database } from "bun:sqlite";
 import {
+  type AgentKey,
   type Credential,
   hashToken,
   type Invite,
@@ -154,6 +155,29 @@ create table if not exists push_subscription (
   last_sent_at text
 );
 create index if not exists ix_push_user on push_subscription(user_id);
+
+-- ONE agent key per user, and the SCHEMA is what makes that true.
+--
+-- NOTE: no backticks anywhere in this comment. AUTH_SCHEMA is a template literal.
+--
+-- user_id is the PRIMARY KEY rather than a column beside an id of its own, so there is no
+-- collection to list, nothing to label, and no revocation-by-id: creating a key when one
+-- exists REPLACES it, in one statement, which kills the old token in the same write that
+-- mints the new one. A table of keys would have needed a uniqueness check somebody has to
+-- remember, and the failure mode of forgetting it is an orphan credential nobody can see.
+--
+-- token_hash is UNIQUE because it is the lookup key on every authenticated request: a
+-- caller presents a token, we hash it, and the row it finds decides who they are. The
+-- token itself is never stored -- same rule as sessions and invites.
+--
+-- read_only is a TOGGLE, not a scope list. See AgentKey in ./auth.ts for what it costs.
+create table if not exists agent_key (
+  user_id      text primary key references app_user(id) on delete cascade,
+  token_hash   text not null unique,
+  created_at   text not null,
+  last_used_at text,
+  read_only    integer not null default 0
+);
 `;
 
 interface UserRow {
@@ -216,6 +240,14 @@ interface SessionRow {
   user_agent: string | null;
 }
 
+interface AgentKeyRow {
+  user_id: string;
+  token_hash: string;
+  created_at: string;
+  last_used_at: string | null;
+  read_only: number;
+}
+
 export interface Challenge {
   id: string;
   challenge: string;
@@ -270,6 +302,16 @@ function toInvite(r: InviteRow): Invite {
     expiresAt: r.expires_at,
     redeemedAt: r.redeemed_at,
     redeemedBy: r.redeemed_by,
+  };
+}
+
+function toAgentKey(r: AgentKeyRow): AgentKey {
+  return {
+    userId: r.user_id,
+    tokenHash: r.token_hash,
+    createdAt: r.created_at,
+    lastUsedAt: r.last_used_at,
+    readOnly: r.read_only === 1,
   };
 }
 
@@ -668,6 +710,85 @@ export class AuthStore {
 
   sessionCount(): number {
     const r = this.db.query("select count(*) as n from session").get() as { n: number };
+    return r.n;
+  }
+
+  // --- agent keys ----------------------------------------------------------
+
+  /**
+   * Mint this user's agent key, replacing whatever they had. Returns the TOKEN.
+   *
+   * ROTATION IS THIS CALL, and there is no separate one. The upsert overwrites the hash of
+   * the previous key, so it stops authenticating in the same statement that mints its
+   * replacement -- no window where both work, and nothing left behind to revoke.
+   *
+   * `created_at` is rewritten too: the row records the age of the key it currently holds,
+   * not of the first one this user ever had. A stamp that survived a rotation would tell
+   * somebody auditing "this credential is nine months old" about a credential that is nine
+   * minutes old.
+   */
+  putAgentKey(k: { userId: string; readOnly: boolean; now?: Date }): { token: string; key: AgentKey } {
+    const token = newToken();
+    const tokenHash = hashToken(token);
+    const createdAt = isoNow(k.now);
+    this.db
+      .query(
+        `insert into agent_key (user_id, token_hash, created_at, last_used_at, read_only)
+         values (?, ?, ?, null, ?)
+         on conflict(user_id) do update set
+           token_hash = excluded.token_hash, created_at = excluded.created_at,
+           last_used_at = null, read_only = excluded.read_only`,
+      )
+      .run(k.userId, tokenHash, createdAt, k.readOnly ? 1 : 0);
+    return {
+      token,
+      key: { userId: k.userId, tokenHash, createdAt, lastUsedAt: null, readOnly: k.readOnly },
+    };
+  }
+
+  /**
+   * Resolve a presented token's hash to the key that owns it, or null.
+   *
+   * By HASH rather than by user, because this is the lookup on the authentication path: the
+   * caller offers a secret and the row is what says who they are. Comparing in SQL on the
+   * hash is safe where comparing the token itself would not be -- the hash is what we
+   * store, and an attacker who could time this learns only which hash exists.
+   */
+  getAgentKeyByHash(tokenHash: string): AgentKey | null {
+    const r = this.db.query("select * from agent_key where token_hash = ?").get(tokenHash) as
+      | AgentKeyRow
+      | undefined;
+    return r ? toAgentKey(r) : null;
+  }
+
+  /** The key this user holds, for the account page. Never the token -- that is gone. */
+  agentKeyFor(userId: string): AgentKey | null {
+    const r = this.db.query("select * from agent_key where user_id = ?").get(userId) as
+      | AgentKeyRow
+      | undefined;
+    return r ? toAgentKey(r) : null;
+  }
+
+  deleteAgentKey(userId: string): boolean {
+    return this.db.query("delete from agent_key where user_id = ?").run(userId).changes > 0;
+  }
+
+  /**
+   * Record activity, at minute granularity -- the same condition and the same reason as
+   * `touchSession`. This runs on EVERY agent-authenticated request, and "when was this key
+   * last used" is a question a value under a minute old already answers.
+   */
+  touchAgentKey(userId: string, now?: Date): void {
+    const t = now ?? new Date();
+    this.db
+      .query(
+        "update agent_key set last_used_at = ? where user_id = ? and (last_used_at is null or last_used_at <= ?)",
+      )
+      .run(isoNow(t), userId, isoIn(-SWEEP_INTERVAL_MS, t));
+  }
+
+  agentKeyCount(): number {
+    const r = this.db.query("select count(*) as n from agent_key").get() as { n: number };
     return r.n;
   }
 

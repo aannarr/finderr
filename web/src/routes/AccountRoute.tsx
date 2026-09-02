@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { AgentKeyPanel } from "../components/AgentKeyPanel";
 import { PushToggle } from "../components/PushToggle";
 import { clearPersistedCaches } from "../lib/api";
 import {
@@ -365,6 +366,13 @@ export function AccountRoute() {
         own. It draws nothing at all where push cannot work.
       */}
       <PushToggle />
+
+      {/*
+        After the devices and the notification switch, because it is the least common thing
+        on this page and the one that hands out a credential. It draws its own section and
+        loads its own state -- nothing above it needs to know an agent key exists.
+      */}
+      <AgentKeyPanel />
 
       <section>
         <button type="button" onClick={signOut} className={LINK_BUTTON}>

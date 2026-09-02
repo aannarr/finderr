@@ -35,7 +35,7 @@ import { ProwlarrClient } from "../lib/prowlarr";
 import { RateLimiter } from "../lib/rate-limit";
 import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
-import { quotaVerdict, utcDayStart } from "../lib/request-quota";
+import { quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
 import { parseSeasonsInput } from "../lib/seasons";
@@ -45,6 +45,14 @@ import { Store, syncLibrary } from "../lib/store";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
+import {
+  AGENT_MANIFEST_PATH,
+  type AgentBucketView,
+  agentWaitMs,
+  renderManifest,
+  routeSummaries,
+  withAgentApi,
+} from "./agent-api";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
@@ -672,6 +680,57 @@ function quotaRefusal(asker: Principal | null): Response | null {
   );
 }
 
+/**
+ * The self-describing manifest, for the agent key that asked.
+ *
+ * It gathers, and renders nothing itself: every number comes from the thing that already
+ * owns it -- the live route table, the limiter instances, the quota config and the key's
+ * own row -- and `renderManifest` turns that data into markdown. So the document cannot
+ * drift from the server, because there is no second copy of anything in it to drift.
+ *
+ * NEVER CACHED. `remaining` is true for the instant it was read and for no longer.
+ */
+function agentManifest(req: Request): Response {
+  const p = auth.principal(req);
+  // Only an agent key. A session HAS no key to describe, and inventing a hypothetical
+  // manifest for one would be a second document with different contents from the real one.
+  if (p?.kind !== "agent" || !p.user) {
+    return bad("this endpoint answers to an agent key", 403);
+  }
+  const key = authStore.agentKeyFor(p.user.id);
+  if (!key) return bad("this endpoint answers to an agent key", 403);
+
+  const buckets: AgentBucketView[] = (["cheap", "expensive"] as const).map((bucket) => {
+    const limiter = auth.agentLimiter(bucket);
+    return {
+      bucket,
+      limitPerMinute: limiter.limit > 0 ? limiter.limit : null,
+      remaining: limiter.remaining(`agent:${bucket}:${p.user?.id}`),
+      windowSeconds: Math.round(limiter.windowMs / 1000),
+    };
+  });
+
+  const markdown = renderManifest({
+    origin: publicOrigin(req.url, cfg.auth.origins),
+    key,
+    buckets,
+    quota: {
+      limitPerDay: cfg.requests.quotaPerDay,
+      usedToday: store.countRequestsSince(p.user.id, utcDayStart()),
+      resetsAt: utcDayReset(),
+    },
+    reachable: routeSummaries(liveRouteTable()),
+  });
+
+  return new Response(markdown, {
+    headers: {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      ...cacheHeaders(NO_STORE),
+    },
+  });
+}
+
 /** Decide which service a title belongs to. Everything episodic goes to Sonarr. */
 function serviceFor(kind: string): "radarr" | "sonarr" {
   // Same "is this episodic?" question the facet vocabulary answers, so it has one owner.
@@ -1117,6 +1176,14 @@ const appRoutes = {
     );
   },
 
+  /**
+   * What an agent can do here, generated from this very table. See `./agent-api.ts`.
+   *
+   * The entry point is a fixed, publicly known path and the KEY is what is secret --
+   * discoverability never required putting the token in the URL.
+   */
+  [AGENT_MANIFEST_PATH]: (req: Request) => agentManifest(req),
+
   "/api/search": (req: Request) => {
     /*
         The one route with its own limiter on top of the login wall.
@@ -1178,22 +1245,47 @@ const appRoutes = {
   /**
    * A title, plus whatever facets are already cached.
    *
-   * The handler NEVER awaits a provider: it reads the facet cache and kicks the
-   * resolver in the background. A facet nobody has answered yet comes back `pending`,
+   * For a BROWSER the handler never awaits a provider: it reads the facet cache and kicks
+   * the resolver in the background. A facet nobody has answered yet comes back `pending`,
    * which the page renders as a skeleton, and it is there on the next view.
+   *
+   * > [!CAUTION] FOR AN AGENT KEY IT BLOCKS, and that suspends this file's governing rule
+   * > The rule at the top of this file says a handler that can block on a network call
+   * > while a user waits is a bug. The line below awaits providers, so anybody meeting it
+   * > cold is right to be suspicious -- this comment is what tells them it was decided
+   * > rather than missed.
+   * >
+   * > The rule exists because a human staring at a skeleton is the failure this product was
+   * > built to end. **An agent has no skeleton to stare at.** No page is blank, nothing
+   * > re-renders, and asking again costs strictly more than waiting once. So the exception
+   * > is the rule being read for what it protects, and it holds ONLY for a caller
+   * > authenticated by an agent key: a browser session takes exactly the path it always did.
+   * >
+   * > It costs nothing extra upstream. `resolve` awaits the same promises `warm` would have
+   * > started, and `ask` joins a call already in flight -- so an agent arriving while a
+   * > browser is rendering the same title shares one fetch rather than buying a second.
+   * >
+   * > The wait is bounded well under the 15s provider deadline (see `AGENT_WAIT_MS`), and a
+   * > provider still running at the deadline is NOT abandoned: its answer still lands in the
+   * > cache, which is what makes asking again later cheap rather than a repeat of the wait.
    */
-  "/api/title/:tconst": (req: Bun.BunRequest<"/api/title/:tconst">) => {
+  "/api/title/:tconst": async (req: Bun.BunRequest<"/api/title/:tconst">) => {
     const row = live.current.byTconst(req.params.tconst);
     if (!row) return bad("unknown title", 404);
 
     const entity = entityFor(row);
+    if (auth.principal(req)?.kind === "agent") {
+      await facets.resolve(entity, { deadlineMs: agentWaitMs(new URL(req.url)) });
+    }
     // Rewritten before it leaves: every image a provider sent points at this origin, so
     // no upstream hostname appears in the JSON and `localImageUrl()` in the browser
     // passes it. Reads and writes local SQLite only.
     const cached = facetImages.rewrite(facets.read(entity));
     // Read the work state BEFORE warming: `workState` asks nobody, and taking it after
     // `warm()` would report the providers this very request just started as outstanding
-    // even when they answer instantly from a coalesced in-flight call.
+    // even when they answer instantly from a coalesced in-flight call. After a blocking
+    // resolve it is therefore exactly the honest answer an agent needs -- whoever STILL
+    // owes this title a facet, by name, so a timed-out partial cannot be read as complete.
     const work = facets.workState(entity);
     facets.warm(entity);
 
@@ -1653,6 +1745,9 @@ const appRoutes = {
         // Null when the system key made the request: an agent is not a person and owns
         // nothing. Attribution is a fact about a human or it is absent.
         requestedBy: asker?.user?.id ?? null,
+        // HOW it arrived, beside WHO asked and never instead of it. An agent key carries one
+        // person's authority, so the person above is still the requester.
+        viaAgentKey: asker?.kind === "agent",
         overrides: overrides.overrides,
       });
       worker.enqueue(row.tconst);
@@ -1959,6 +2054,27 @@ const appRoutes = {
   },
 };
 
+/**
+ * Every route this server answers: the app's, plus identity's.
+ *
+ * A named const rather than a spread inlined into `Bun.serve`, because the agent manifest
+ * DESCRIBES this table. "A route added later appears in the manifest by having been added"
+ * is only true while there is exactly one table and one place that owns it.
+ */
+const allRoutes = { ...appRoutes, ...auth.routes() };
+
+/**
+ * The table, read at CALL time rather than closed over.
+ *
+ * `/api/agent/manifest` is itself in the table and has to read it, so its handler -- defined
+ * above this line -- cannot name `allRoutes` directly: at module evaluation the binding does
+ * not exist yet. By the time a request arrives it does, and a hoisted function is the
+ * cheapest honest way to say "later".
+ */
+function liveRouteTable(): Record<string, unknown> {
+  return allRoutes;
+}
+
 // Annotated, not inferred. `addressOf` and `/api/search` both read `server.requestIP`, so
 // an inferred type here is a cycle: the server's type would depend on handlers that
 // depend on the server.
@@ -1972,15 +2088,23 @@ const server: Bun.Server<undefined> = Bun.serve({
   // response, a few KB -- so 256 KB is generous headroom, not a constraint anyone hits.
   maxRequestBodySize: 256 * 1024,
 
-  // Three wrappers, and the ORDER is deliberate. The index gate is OUTSIDE the auth guard,
+  // Four wrappers, and the ORDER is deliberate. The index gate is OUTSIDE the auth guard,
   // so a caller during a first build gets one 503 about the index rather than a 401 about
   // credentials for a server that has no data yet (see `withIndexGate`) -- and the TIMER is
   // outside both, so what it records is the whole request as the client experienced it,
   // including a refusal. A 401 that takes two seconds is a fact worth having.
+  //
+  // The agent guard is INNERMOST, inside `withAuth`: it decides what a caller we have
+  // already NAMED may do, so it must never be the thing that answers an anonymous request.
+  // An unauthenticated call gets one 401 about credentials, never a 429 about a budget.
   routes: withTiming(
     withIndexGate(
       withAuth(
-        { ...appRoutes, ...auth.routes() },
+        withAgentApi(allRoutes, {
+          principal: (req) => auth.principal(req),
+          limiter: (bucket) => auth.agentLimiter(bucket),
+          log,
+        }),
         {
           authService: auth,
           publicPaths: auth.publicPaths(),

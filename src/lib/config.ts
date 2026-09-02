@@ -330,6 +330,29 @@ export interface Config {
     /** Requests per minute per IP on /api/search, which is genuinely CPU-bound. */
     searchRatePerMinute: number;
     /**
+     * Calls per minute per AGENT KEY on everything that costs a local SQLite seek.
+     *
+     * > [!IMPORTANT] Per KEY, and IN ADDITION to the per-IP limits rather than instead of them
+     * > An agent on a shared address still consumes the address's bucket; this one exists
+     * > because a key is a thing we can name, and an unattended client that decides to poll
+     * > every second is the ordinary failure rather than the malicious one.
+     *
+     * Generous on purpose. The render path touches nothing but local SQLite and local disk
+     * (the governing rule in `src/server/index.ts`), so this bucket is defending against a
+     * runaway loop, not against expense.
+     */
+    agentCheapRatePerMinute: number;
+    /**
+     * Calls per minute per AGENT KEY on the three operations that cost more than a seek.
+     *
+     * `/api/search` is real CPU over a 1.27M-row index -- the same reason
+     * `searchRatePerMinute` exists. `GET /api/title/:tconst` BLOCKS on providers for an
+     * agent caller and holds a server connection for its whole deadline, so this number is
+     * also the cap on how many of those one key can have in flight. `POST /api/requests`
+     * starts a real download.
+     */
+    agentExpensiveRatePerMinute: number;
+    /**
      * `FINDERR_NO_AUTH=1` -- run with no login wall at all. Off by default.
      *
      * > [!CAUTION] THIS REMOVES AUTHENTICATION ENTIRELY. Anyone who can reach the port is an admin.
@@ -591,6 +614,10 @@ const DEFAULTS: Config = {
     trustProxy: false,
     authRatePerMinute: 20,
     searchRatePerMinute: 120,
+    // Generous for reads a local index answers in under a millisecond; tight for the three
+    // operations that cost real work. See the fields for the reasoning behind each number.
+    agentCheapRatePerMinute: 120,
+    agentExpensiveRatePerMinute: 20,
     // The login wall is ON unless an operator turns it off, and it is never off by accident.
     noAuth: false,
   },
@@ -735,6 +762,8 @@ function envOverrides(): Record<string, unknown> {
       adminApiKey: envStr("FINDERR_ADMIN_API_KEY"),
       authRatePerMinute: envInt("FINDERR_AUTH_RATE_PER_MINUTE"),
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
+      agentCheapRatePerMinute: envInt("FINDERR_AGENT_CHEAP_RATE_PER_MINUTE"),
+      agentExpensiveRatePerMinute: envInt("FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE"),
       noAuth: envBool("FINDERR_NO_AUTH"),
     },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },

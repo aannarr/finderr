@@ -29,9 +29,15 @@ export class RateLimiter {
   private readonly windows = new Map<string, Window>();
   private lastSweep = 0;
 
+  /**
+   * `limit` and `windowMs` are PUBLIC because a limiter that refuses a caller without ever
+   * telling them the shape of the wall is a limiter they can only discover by hitting it.
+   * The agent manifest states both, and reading them off the instance is what keeps that
+   * document from becoming a second, drifting copy of the configured numbers.
+   */
   constructor(
-    private readonly limit: number,
-    private readonly windowMs = 60_000,
+    readonly limit: number,
+    readonly windowMs = 60_000,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -54,6 +60,25 @@ export class RateLimiter {
     if (w.count >= this.limit) return false;
     w.count += 1;
     return true;
+  }
+
+  /**
+   * How many more calls this key may make before the current window closes. `null` when the
+   * limiter is disabled, which is the readable spelling of "no wall to pace against".
+   *
+   * IT CONSUMES NOTHING, which is the whole reason it is separate from `take`: the manifest
+   * reports it, and a document that spent a unit of the budget to describe the budget would
+   * be wrong about it by exactly one every time it was read.
+   *
+   * A window older than `windowMs` has already rolled over even though the entry is still in
+   * the map -- the sweep is lazy, and `take` treats a stale entry as a fresh window. This
+   * reads it the same way, or a key that went quiet for an hour would report zero remaining.
+   */
+  remaining(key: string): number | null {
+    if (this.limit <= 0) return null;
+    const w = this.windows.get(key);
+    if (!w || this.now() - w.startedAt >= this.windowMs) return this.limit;
+    return Math.max(0, this.limit - w.count);
   }
 
   /** Seconds until the caller's window rolls over. For `Retry-After`. */

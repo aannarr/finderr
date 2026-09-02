@@ -65,6 +65,14 @@ export interface MediaRequest {
    */
   requested_by: string | null;
   /**
+   * 1 when this ask arrived through the requester's agent key, 0 when it came from a
+   * browser. SQLite has no boolean.
+   *
+   * ADMIN-ONLY, and stripped by the same `visibleRequest` for the same reason:
+   * `requested_by` says who, this says how, and they are one audit fact seen twice.
+   */
+  via_agent_key: number;
+  /**
    * Quality profile the arr should use, or null for the service default.
    *
    * ADMIN-CHOSEN, and null is the ordinary case. An ordinary user's request carries null
@@ -665,6 +673,24 @@ const ADDED_COLUMNS: {
     ddl: "alter table request add column available_seen_at text",
     backfill: "update request set available_seen_at = updated_at where status = 'available'",
   },
+  /*
+    DID THIS ASK ARRIVE THROUGH AN AGENT KEY? Integer, because SQLite has no boolean.
+
+    No backfill and none possible: every request written before agent keys existed came from
+    a browser, and the default of 0 says exactly that. It is a fact about the MECHANISM and
+    not a second requester -- `requested_by` still names the person, because an agent key
+    carries one person's authority and nobody else's.
+
+    > [!CAUTION] Admin-only on the way out, with `requested_by`
+    > `visibleRequest` in `./auth.ts` strips both for anybody who is not an admin. They are
+    > one audit fact seen from two angles, and splitting the audiences would be a second
+    > privacy rule with a second owner.
+  */
+  {
+    table: "request",
+    column: "via_agent_key",
+    ddl: "alter table request add column via_agent_key integer not null default 0",
+  },
 ];
 
 export class Store {
@@ -1078,6 +1104,14 @@ export class Store {
     /** Who asked. Null only for a request the system makes on nobody's behalf. */
     requestedBy?: string | null;
     /**
+     * Did this arrive through the asker's AGENT KEY rather than from a browser?
+     *
+     * Audit metadata beside `requested_by`, never a second requester: the row still records
+     * a PERSON, because an agent key carries one person's authority and nobody else's. It is
+     * stripped for non-admins by `visibleRequest` for exactly that reason.
+     */
+    viaAgentKey?: boolean;
+    /**
      * Arr settings for this one request. ADMIN-ONLY -- the route is what enforces that,
      * because "who may choose" is an authorisation question and this layer has no
      * principal. Absent for every ordinary request, which is the overwhelming majority.
@@ -1101,11 +1135,15 @@ export class Store {
       The asymmetry is not an inconsistency. `requested_by` records something that ALREADY
       HAPPENED and cannot be un-happened; the others are instructions for work not yet done,
       and the newest instruction is the one to follow.
+
+      `via_agent_key` is on the first side of that line, with `requested_by`: it records how
+      the ask arrived, and re-asking from a browser did not change how it arrived the first
+      time.
     */
     this.db.run(
-      "insert into request (tconst,title,year,kind,service,status,seasons,requested_by," +
+      "insert into request (tconst,title,year,kind,service,status,seasons,requested_by,via_agent_key," +
         "quality_profile_id,root_folder_path,search_on_add,created_at,updated_at) " +
-        "values (?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+        "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
         "on conflict(tconst) do update set updated_at=excluded.updated_at, seasons=excluded.seasons, " +
         "quality_profile_id=excluded.quality_profile_id, root_folder_path=excluded.root_folder_path, " +
         "search_on_add=excluded.search_on_add",
@@ -1118,6 +1156,7 @@ export class Store {
         "queued",
         seasons,
         r.requestedBy ?? null,
+        r.viaAgentKey ? 1 : 0,
         o.qualityProfileId ?? null,
         o.rootFolderPath ?? null,
         searchOnAdd,

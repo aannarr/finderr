@@ -48,6 +48,7 @@ import {
 import { clientKey, RateLimiter } from "../lib/rate-limit";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
+import { AGENT_KEY_PATH, type AgentBucket, bootstrapSnippet } from "./agent-api";
 import { INDEX_GATE_PUBLIC_PATHS } from "./index-build";
 import { json } from "./json-response";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
@@ -101,6 +102,13 @@ export class AuthService {
   private readonly passkeys: PasskeyService;
   private readonly authLimiter: RateLimiter;
   readonly searchLimiter: RateLimiter;
+  /**
+   * One limiter per agent bucket, held HERE beside the other two so every limiter in the
+   * product has one owner and one lifetime. `withAgentApi` and the manifest both read them
+   * through `agentLimiter`, which is what keeps the document's numbers and the wall's
+   * numbers the same numbers.
+   */
+  private readonly agentLimiters: Record<AgentBucket, RateLimiter>;
   private readonly fetchImpl: FetchLike;
   /** Set once by `ensureDevUser`, so the lookup is not repeated on every request. */
   private devUserId: string | null = null;
@@ -109,7 +117,15 @@ export class AuthService {
     this.passkeys = new PasskeyService(deps.auth, deps.cfg, deps.log);
     this.authLimiter = new RateLimiter(deps.cfg.auth.authRatePerMinute);
     this.searchLimiter = new RateLimiter(deps.cfg.auth.searchRatePerMinute);
+    this.agentLimiters = {
+      cheap: new RateLimiter(deps.cfg.auth.agentCheapRatePerMinute),
+      expensive: new RateLimiter(deps.cfg.auth.agentExpensiveRatePerMinute),
+    };
     this.fetchImpl = deps.fetchImpl ?? ((u, i) => fetch(u, i));
+  }
+
+  agentLimiter(bucket: AgentBucket): RateLimiter {
+    return this.agentLimiters[bucket];
   }
 
   private get secureCookie(): boolean {
@@ -121,17 +137,21 @@ export class AuthService {
   /**
    * Resolve a request to a principal, or null.
    *
-   * Two credentials, checked in this order: the session cookie (a person) and the
-   * `Authorization: Bearer` system key (an agent). The key is compared in constant time
-   * because it is a bearer token an attacker can retry, and `a === b` leaks the length and
-   * then the first differing byte.
+   * Three credentials, checked in this order: the `Authorization: Bearer` system key (the
+   * operator's own key), a bearer AGENT key (one person's automation), and the session
+   * cookie (a person in a browser). The system key is compared in constant time because it
+   * is a literal secret in config and `a === b` leaks the length and then the first
+   * differing byte; the agent key is looked up by HASH, so there is nothing to compare in
+   * the first place.
    */
   principal(req: Request): Principal | null {
     const bearer = req.headers.get("authorization");
     const key = this.deps.cfg.auth.adminApiKey;
-    if (bearer && key) {
+    if (bearer) {
       const offered = bearer.replace(/^Bearer\s+/i, "");
-      if (secretEquals(offered, key)) return { kind: "api-key", user: null, role: "admin" };
+      if (key && secretEquals(offered, key)) return { kind: "api-key", user: null, role: "admin" };
+      const agent = this.agentPrincipal(offered);
+      if (agent) return agent;
     }
 
     const token = readCookie(req.headers.get("cookie"), SESSION_COOKIE);
@@ -158,6 +178,30 @@ export class AuthService {
       checking for itself.
     */
     return this.devPrincipal();
+  }
+
+  /**
+   * The owner of a presented agent key, as a principal, or null.
+   *
+   * > [!CAUTION] The role is `user`, ALWAYS, even when the owner is an admin
+   * > A leaked admin agent key mints invites, changes roles and deletes accounts; a leaked
+   * > ordinary one asks for films. The blast radius difference is enormous and the
+   * > convenience gain is nil. Every role-gated surface in the product -- `adminPrincipal`,
+   * > `visibleRequest`, `arrLink`, the per-request arr overrides, the daily quota -- reads
+   * > this one field, so the rule is enforced in each of them without any of them carrying a
+   * > check for it. `withAgentApi` closes the admin PATHS as well; the two are different
+   * > statements ("no admin authority" and "not that surface") and both are wanted.
+   *
+   * A disabled owner has no principal, exactly as a disabled owner's session does not: the
+   * key is a way in, and an account that may not sign in may not be reached through one.
+   */
+  private agentPrincipal(offered: string): Principal | null {
+    const key = this.deps.auth.getAgentKeyByHash(hashToken(offered));
+    if (!key) return null;
+    const user = this.deps.auth.getUser(key.userId);
+    if (!user || user.disabledAt !== null) return null;
+    this.deps.auth.touchAgentKey(key.userId);
+    return { kind: "agent", user, role: "user", agent: { readOnly: key.readOnly } };
   }
 
   /**
@@ -800,6 +844,75 @@ export class AuthService {
         },
       },
 
+      /**
+       * Your ONE agent key: look at it, replace it, or take it away.
+       *
+       * > [!IMPORTANT] There is no list and no id, because there is no collection
+       * > `agent_key.user_id` is the primary key, so "one per user" is the schema rather
+       * > than a rule somebody has to enforce. `POST` is therefore both creation and
+       * > rotation -- it overwrites the row, which kills the previous token in the same
+       * > statement that mints its replacement. There is no window in which both work and
+       * > nothing left over to revoke by id.
+       *
+       * **A PERSON ONLY.** An agent key cannot reach this route, so it cannot rotate or
+       * revoke itself -- a credential that can renew itself is one that survives its owner
+       * noticing it leaked. `withAgentApi` closes the whole `/api/auth/` prefix to agent
+       * keys and owns that rule; the check below is this route stating what it needs on its
+       * own account, because it is the one route that mints a credential and it must be
+       * correct even when read alone.
+       */
+      [AGENT_KEY_PATH]: {
+        GET: (req) => {
+          const p = this.personalPrincipal(req);
+          if (p instanceof Response) return p;
+          const key = this.deps.auth.agentKeyFor(p.id);
+          // Never the hash either. It is not a secret, but it is not anything a person can
+          // act on, and a field nobody uses is a field somebody eventually renders.
+          return json({
+            key: key
+              ? { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly }
+              : null,
+          });
+        },
+
+        POST: async (req) => {
+          const p = this.personalPrincipal(req);
+          if (p instanceof Response) return p;
+          const b = await body(req);
+          if (b.readOnly !== undefined && typeof b.readOnly !== "boolean") {
+            return json({ error: "readOnly must be a boolean" }, { status: 400 });
+          }
+          const readOnly = b.readOnly === true;
+          const existed = this.deps.auth.agentKeyFor(p.id) !== null;
+          const { token, key } = this.deps.auth.putAgentKey({ userId: p.id, readOnly });
+          this.deps.log(`agent key ${existed ? "rotated" : "created"} for ${p.id}`);
+          return json({
+            /*
+              THE ONE TIME THE PLAINTEXT EXISTS OUTSIDE THE HOLDER'S HANDS. Only the sha256
+              is stored, so this is not recoverable -- a lost snippet is rotated, never
+              looked up.
+
+              The SNIPPET is the deliverable rather than the bare token: it is what a person
+              hands to an agent, and building it here means the origin comes from the live
+              request. A constant would render the wrong host on exactly one of the two
+              addresses this app answers on.
+            */
+            token,
+            snippet: bootstrapSnippet(this.originFor(req), token),
+            rotated: existed,
+            key: { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly },
+          });
+        },
+
+        DELETE: (req) => {
+          const p = this.personalPrincipal(req);
+          if (p instanceof Response) return p;
+          const ok = this.deps.auth.deleteAgentKey(p.id);
+          if (ok) this.deps.log(`agent key revoked for ${p.id}`);
+          return json({ ok }, { status: ok ? 200 : 404 });
+        },
+      },
+
       "/api/auth/sessions/:id": {
         DELETE: (req) => {
           const p = this.principal(req);
@@ -1014,6 +1127,21 @@ export class AuthService {
   limitKey(req: Request): string {
     const p = this.principal(req);
     return p?.user ? `u:${p.user.id}` : `ip:${this.ip(req)}`;
+  }
+
+  /**
+   * The USER behind a request, when the caller is a person rather than a credential acting
+   * on its own. A Response is the refusal to return.
+   *
+   * Three callers are refused and each for its own reason: an anonymous one has no account,
+   * the system API key is not a person and owns nothing, and an AGENT KEY must not be able
+   * to manage credentials -- its own least of all. It answers 401 for all three, because
+   * the distinction is not one the caller can act on.
+   */
+  private personalPrincipal(req: Request): User | Response {
+    const p = this.principal(req);
+    if (!p?.user || p.kind === "agent") return json({ error: "not signed in" }, { status: 401 });
+    return p.user;
   }
 
   /**

@@ -232,6 +232,48 @@ export async function unlinkPlex(): Promise<void> {
   }
 }
 
+// --- agent key ---------------------------------------------------------------
+
+/**
+ * Your ONE agent key, as the account page sees it. Never the token: only the sha256 is
+ * stored, so the plaintext exists exactly once, in the snippet returned at creation.
+ */
+export interface AgentKeySummary {
+  createdAt: string;
+  lastUsedAt: string | null;
+  readOnly: boolean;
+}
+
+const AGENT_KEY_PATH = "/api/auth/agent-key";
+
+export function getAgentKey(): Promise<{ key: AgentKeySummary | null }> {
+  return get(AGENT_KEY_PATH);
+}
+
+/**
+ * Create the key, or REPLACE the one you have -- the same call, because there is one key
+ * per user and the row is overwritten. `rotated` says which of the two just happened, so
+ * the UI can tell somebody their previous key has stopped working.
+ *
+ * `snippet` is the deliverable: a copyable block that points an agent at the manifest and
+ * carries the credential. It is built on the server so the origin comes from the live
+ * request rather than from a constant that is wrong on one of the addresses this app
+ * answers on.
+ */
+export function createAgentKey(opts: {
+  readOnly: boolean;
+}): Promise<{ token: string; snippet: string; rotated: boolean; key: AgentKeySummary }> {
+  return post(AGENT_KEY_PATH, opts);
+}
+
+export async function revokeAgentKey(): Promise<void> {
+  const res = await fetch(AGENT_KEY_PATH, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "could not revoke that key");
+  }
+}
+
 // --- admin -----------------------------------------------------------------
 
 export interface AdminUser extends PublicUser {
