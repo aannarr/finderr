@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { EpisodeState } from "../lib/api";
 import type { Episode, FacetName, ResolvedFacets, Season } from "../lib/facets";
 import { SeriesPane } from "./SeriesPane";
 
@@ -45,8 +46,9 @@ const GOT_EPISODES: Episode[] = [
 function render(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] = ["seasons", "episodes"],
+  episodeState?: readonly EpisodeState[],
 ): string {
-  return renderToStaticMarkup(<SeriesPane facets={facets} working={working} />);
+  return renderToStaticMarkup(<SeriesPane facets={facets} working={working} episodeState={episodeState} />);
 }
 
 describe("a film", () => {
@@ -137,6 +139,54 @@ describe("a series with both facets resolved", () => {
     });
     expect(html).not.toContain("thetvdb.com");
     expect(html).not.toContain("<img");
+  });
+});
+
+/**
+ * "Get me the rest of this show" is the request people actually make, and this line is the
+ * answer to it. The counting rules are tested against fixed dates in `../lib/season-gap.test.ts`;
+ * these assertions are about whether the sentence reaches the page and where it lands.
+ *
+ * The air dates below are 2011's on purpose -- the pane asks the real clock what today is,
+ * and a fixture dated in this decade would eventually start deciding its own outcome.
+ */
+describe("the season-gap line", () => {
+  const facets: ResolvedFacets = {
+    seasons: { status: "ready", data: GOT_SEASONS },
+    episodes: { status: "ready", data: GOT_EPISODES },
+  };
+
+  /** Season 1 downloaded in full; season 2 has aired an episode we do not have. */
+  const HELD: EpisodeState[] = [
+    { season: 1, episode: 1, arrEpisodeId: 11, hasFile: true, monitored: true, airDate: "2011-04-17" },
+    { season: 1, episode: 2, arrEpisodeId: 12, hasFile: true, monitored: true, airDate: "2011-04-24" },
+    { season: 2, episode: 1, arrEpisodeId: 21, hasFile: false, monitored: true, airDate: "2012-04-01" },
+  ];
+
+  test("says what is complete and what is short, in one line", () => {
+    expect(render(facets, ["seasons", "episodes"], HELD)).toContain(
+      "Downloaded: Season 1 complete, Season 2 missing 1 episode",
+    );
+  });
+
+  /** It is about the series, so it belongs above the chip that picks one season of it. */
+  test("sits above the selector", () => {
+    const html = render(facets, ["seasons", "episodes"], HELD);
+    expect(html.indexOf("Downloaded:")).toBeLessThan(html.indexOf('role="group"'));
+  });
+
+  /** Most series on this page are ones nobody has asked for. They get no sentence at all. */
+  test("is absent for a series Sonarr does not hold", () => {
+    expect(render(facets)).not.toContain("Downloaded:");
+  });
+
+  /**
+   * The summary needs the episode list to count. Drawing it off the seasons facet alone
+   * would mean printing a sentence and then correcting it a moment later.
+   */
+  test("waits for the episodes facet rather than guessing from the seasons one", () => {
+    const seasonsOnly: ResolvedFacets = { ...facets, episodes: { status: "pending" } };
+    expect(render(seasonsOnly, ["episodes"], HELD)).not.toContain("Downloaded:");
   });
 });
 

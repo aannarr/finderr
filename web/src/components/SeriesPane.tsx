@@ -1,5 +1,6 @@
 /**
- * The series pane: a season selector, and the chosen season's episodes under it.
+ * The series pane: what we hold of this show, a season selector, and the chosen season's
+ * episodes under it.
  *
  * TWO facets, not one. `seasons` draws the selector, `episodes` draws the table, and the
  * two resolve independently -- so the selector appears the moment seasons land and the
@@ -15,6 +16,12 @@
  *
  * Air dates are the reason this screen exists: they are the fact Seerr makes you wait
  * for, and everything else on a row is context around them.
+ *
+ * The season-gap line at the top is the same information as the dots on the rows, rolled
+ * up -- "get me the rest of this show" is the request people actually make, and answering
+ * it a dot at a time across nine seasons is not answering it. It lives HERE rather than in
+ * a pane of its own because this pane already owns season state and a second owner of it
+ * would be a second thing to keep in step. `../lib/season-gap` does the counting.
  */
 
 import { type ReactNode, useState } from "react";
@@ -31,12 +38,14 @@ import {
   formatCalendarDate,
   localImageUrl,
   orderSeasons,
+  type PaneView,
   paneView,
   seasonAirRange,
   seasonLabel,
   todayUtc,
 } from "../lib/facet-panes";
 import type { Episode, FacetName, ResolvedFacets, Season } from "../lib/facets";
+import { seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
 import { FacetPane, type PaneVariant, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
@@ -105,6 +114,12 @@ function SeasonBrowser({
   const selected = ordered.some((s) => s.number === chosen) ? chosen : defaultSeasonNumber(ordered);
   const season = ordered.find((s) => s.number === selected) ?? null;
 
+  // Asked ONCE for the whole pane, then handed down. The summary above the chips and the
+  // dots under them are the same fact at two grains, so they must not be free to disagree
+  // -- either about which episodes exist, or about where "today" fell.
+  const episodes = paneView(facets, "episodes", working);
+  const today = todayUtc();
+
   // A single-season show has nothing to step between, so it gets no keys and no glyphs.
   const stepable = ordered.length > 1;
   const step = (direction: 1 | -1) => setChosen(adjacentSeasonNumber(ordered, selected, direction));
@@ -113,6 +128,13 @@ function SeasonBrowser({
 
   return (
     <>
+      <SeasonStandingLine
+        seasons={ordered}
+        episodes={episodes.data}
+        episodeState={episodeState}
+        today={today}
+      />
+
       {/*
         A named group, which this row did NOT have before the arrow keys.
 
@@ -155,14 +177,44 @@ function SeasonBrowser({
       {season && (
         <SeasonEpisodes
           season={season}
-          facets={facets}
-          working={working}
+          episodes={episodes}
           episodeState={episodeState}
+          today={today}
           onRequestEpisode={onRequestEpisode}
         />
       )}
     </>
   );
+}
+
+/**
+ * "Downloaded: Seasons 1-2 complete, Season 3 missing 4 episodes", or nothing at all.
+ *
+ * ABOVE the chips, because it is about the series rather than about the season on screen,
+ * and a reader deciding whether to ask for the rest of a show should not have to click
+ * through nine seasons to find out where the hole is.
+ *
+ * It draws nothing for a series Sonarr does not hold, which is most of them -- `seriesGap`
+ * returns an empty list without `episodeState` and the sentence is then null. Nothing is
+ * also the right answer while the `episodes` facet is still landing: a summary that
+ * appeared saying one thing and then corrected itself would be worse than a short wait.
+ */
+function SeasonStandingLine({
+  seasons,
+  episodes,
+  episodeState,
+  today,
+}: {
+  seasons: readonly Season[];
+  episodes: Episode[] | undefined;
+  episodeState: readonly EpisodeState[] | undefined;
+  today: string;
+}) {
+  if (!episodes) return null;
+  const sentence = summariseSeriesGap(seriesGap(seasons, episodes, episodeState, today));
+  if (!sentence) return null;
+
+  return <p className="mb-3 text-xs text-muted">{sentence}</p>;
 }
 
 /**
@@ -203,21 +255,24 @@ function SeasonHeader({ season }: { season: Season }) {
  * this skeleton is near-unreachable. It is still here because the two facets are declared
  * independent and a later provider is free to serve only one of them -- and because a
  * selector sitting above nothing, with no explanation, reads as broken.
+ *
+ * The `episodes` view arrives as a prop rather than being asked for here: the summary line
+ * above the chips reads the same facet, and two `paneView` calls would be two chances to
+ * disagree about what this pane is drawing.
  */
 function SeasonEpisodes({
   season,
-  facets,
-  working,
+  episodes: view,
   episodeState,
+  today,
   onRequestEpisode,
 }: {
   season: Season;
-  facets: ResolvedFacets | undefined;
-  working: readonly FacetName[] | undefined;
+  episodes: PaneView<"episodes">;
   episodeState?: readonly EpisodeState[];
+  today: string;
   onRequestEpisode?: (season: number, episode: number) => void;
 }) {
-  const view = paneView(facets, "episodes", working);
   if (view.state === "hidden") return null;
 
   // Said out loud, because the pane's own `aria-busy` is already false by now: the
@@ -238,7 +293,6 @@ function SeasonEpisodes({
   // Built once per season rather than per row: `episodeState` is the whole series, and a
   // find() per row is quadratic on a show with 73 of them.
   const state = episodeStateIndex(episodeState);
-  const today = todayUtc();
 
   return (
     <EpisodeRows>
