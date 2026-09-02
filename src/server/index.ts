@@ -1451,8 +1451,24 @@ const appRoutes = {
      * > rule -- and a test in `auth.test.ts` pins it.
      */
     GET: (req: Request) => {
-      const role = auth.principal(req)?.role ?? null;
+      const principal = auth.principal(req);
+      const role = principal?.role ?? null;
+      const me = principal?.user?.id ?? null;
       const diagnostics = store.requestDiagnosticMap();
+      /*
+        `?mine=1` NARROWS THE SAME ROUTE, rather than adding a second one.
+
+        The rows, the strip and the decoration are identical either way -- only WHICH rows
+        differ -- so this is a filter on one endpoint rather than a fork of it. It also has
+        to be a server-side filter and cannot be done in the client: `visibleRequest` strips
+        `requested_by` for everybody but an admin, so an ordinary reader has nothing to
+        filter on by the time the rows reach them.
+
+        Anonymous (`me === null`) asking for `mine` gets an empty list, which is the true
+        answer: nobody has asked for anything.
+      */
+      const mine = new URL(req.url).searchParams.get("mine") === "1";
+      const rows = mine ? (me ? store.listRequestsFor(me) : []) : store.listRequests(undefined, 200);
       return json({
         /*
           The verdict and the bar ride along, in the same `RequestStateView` shape
@@ -1463,11 +1479,29 @@ const appRoutes = {
           own queues, not of who asked. `visibleRequest` still owns the fields that ARE
           privileged, and it is applied to the row before anything is added to it.
         */
-        requests: store.listRequests(undefined, 200).map((r) => ({
+        requests: rows.map((r) => ({
           ...visibleRequest(r, role),
           ...requestStateOf(r, diagnostics.get(r.tconst) ?? null),
+          /*
+            IS THIS NEWS TO THE PERSON READING IT?
+
+            Derived here rather than sent as `available_seen_at`, because the raw stamp is
+            about the ROW and this is about the READER: it is only ever true for your own
+            request, and it is what the badge counts and what the list marks. Sending the
+            column instead would leave every client re-deriving the same rule, and a
+            second reader of one fact is a second chance to get it wrong.
+          */
+          isNew: r.status === "available" && r.available_seen_at === null && r.requested_by === me,
         })),
         queue: worker.stats(),
+        /*
+          The unread count, on the endpoint the header ALREADY polls.
+
+          `RootLayout` reads this route every 8 seconds for the queue badge, so the ready
+          badge costs no second timer and no second request -- one poll, both answers, and
+          they can never disagree about a moment.
+        */
+        unseen: me ? store.countUnseenAvailable(me) : 0,
       });
     },
 
@@ -1657,6 +1691,28 @@ const appRoutes = {
       radarr: radarr ? { qualityProfiles: radarrProfiles ?? [], rootFolders: radarrFolders ?? [] } : null,
       sonarr: sonarr ? { qualityProfiles: sonarrProfiles ?? [], rootFolders: sonarrFolders ?? [] } : null,
     });
+  },
+
+  /**
+   * "I have seen everything of mine that arrived."
+   *
+   * POST rather than GET for the same reason `retry` is: it writes, and a state-changing
+   * GET rides a `SameSite=Lax` cookie on any cross-site navigation. The damage a forged
+   * call could do here is small -- somebody else clears your badge -- but "small" is not a
+   * reason to leave the door open on the one route whose whole job is to write.
+   *
+   * It takes no body and names no request. The caller is the session, and the set is
+   * everything of theirs that is unread: the reader is looking at the list, so the list has
+   * been seen. Letting a client name rows would be trusting a claim the server cannot check.
+   */
+  "/api/requests/seen": {
+    POST: (req: Request) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      // Nobody signed in owns nothing, so there is nothing to mark. Not an error: the
+      // desired state -- "no unread arrivals for you" -- is already true.
+      if (!me) return json({ seen: 0 });
+      return json({ seen: store.markAvailableSeen(me) });
+    },
   },
 
   "/api/requests/:tconst/retry": {

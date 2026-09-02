@@ -60,6 +60,7 @@ function summariseSent(t: Title, seasons?: readonly number[] | null): string {
 const NAV_LINKS: { to: string; label: string }[] = [
   { to: "/lists", label: "Lists" },
   { to: "/awards/oscars", label: "Awards" },
+  { to: "/requests", label: "Requests" },
 ];
 
 /**
@@ -89,6 +90,14 @@ export function RootLayout() {
   const navigate = useNavigate();
   const toasts = useToasts();
   const [pendingCount, setPendingCount] = useState(0);
+  /**
+   * How many of YOUR requests have arrived that you have not been shown.
+   *
+   * It rides the queue poll below rather than having a timer of its own: the server puts
+   * both numbers on the same response, so they always describe the same moment and the
+   * badge costs no extra request.
+   */
+  const [unseenCount, setUnseenCount] = useState(0);
   const searchBox = useRef<HTMLInputElement>(null);
   /**
    * Who is signed in, read once.
@@ -213,6 +222,11 @@ export function RootLayout() {
    *
    * The POST returned 202 immediately, so this is how outcomes get back to the user.
    * Polling slows to a crawl when the queue is empty -- no idle chatter.
+   *
+   * It also carries the unread count. A title arriving is a slow event -- the reconcile
+   * timer notices it within thirty seconds of the arr importing the file -- so the idle
+   * eight-second cadence is already far faster than the thing it is watching, and giving
+   * that badge its own timer would be a second poll of the same endpoint.
    */
   useEffect(() => {
     let stop = false;
@@ -221,8 +235,9 @@ export function RootLayout() {
     const tick = async () => {
       if (stop) return;
       try {
-        const { queue } = await getRequests();
+        const { queue, unseen } = await getRequests();
         setPendingCount(queue.pending);
+        setUnseenCount(unseen);
         timer = setTimeout(tick, queue.pending > 0 ? 1500 : 8000);
       } catch {
         timer = setTimeout(tick, 8000);
@@ -343,6 +358,24 @@ export function RootLayout() {
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
                 {pendingCount} queued
               </span>
+            )}
+            {/*
+              THE READY BADGE. Coloured, and a LINK rather than a chip, because unlike
+              "queued" it is news the reader is meant to act on -- and a count with nowhere
+              to go is the dead end this product refuses to draw.
+
+              Hidden while the reader is ON `/requests`: opening that page marks everything
+              seen, and the poll would go on drawing the old number for up to eight seconds
+              afterwards -- a badge insisting there is unread news on the page that is
+              showing it.
+            */}
+            {unseenCount > 0 && pathname !== "/requests" && (
+              <Link
+                to="/requests"
+                className="rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent hover:bg-accent/25"
+              >
+                {unseenCount} ready
+              </Link>
             )}
             <span className="ml-auto flex items-baseline gap-3 text-xs text-muted">
               {/*

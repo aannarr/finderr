@@ -84,6 +84,19 @@ export interface MediaRequest {
    * "nobody chose" and "somebody chose yes" are different facts about the request.
    */
   search_on_add: number | null;
+  /**
+   * When the person who asked was shown that this arrived, or null for "not yet".
+   *
+   * The unread marker, and it is a COLUMN rather than a `(user, request)` table because
+   * `requested_by` is single-valued: `createRequest` keeps the first asker on a re-request,
+   * so exactly one person is ever owed this news about a given row. A join table would be a
+   * second way to express a one-to-one fact.
+   *
+   * Only meaningful while `status = 'available'`. It is set for every row that was already
+   * available when the column arrived (see `ADDED_COLUMNS`), so shipping it does not
+   * announce a year of history as new.
+   */
+  available_seen_at: string | null;
 }
 
 /**
@@ -545,7 +558,20 @@ create index if not exists ix_award_nominee_nconst on award_nominee(nconst);
  * `create table if not exists` is a no-op on a live DB, so a new column needs an
  * explicit ALTER or every deployed instance silently keeps the old shape.
  */
-const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+const ADDED_COLUMNS: {
+  table: string;
+  column: string;
+  ddl: string;
+  /**
+   * One statement run ONCE, immediately after the column is added, and never again.
+   *
+   * For a column whose correct value on an existing row is not its default. Without this a
+   * migration can only say "unknown" about history, and the reader pays for it -- see
+   * `request.available_seen_at`, where the default would announce every request the
+   * instance has ever completed as unread news.
+   */
+  backfill?: string;
+}[] = [
   { table: "artwork", column: "studio", ddl: "alter table artwork add column studio text" },
   // The episode's own name ("And the Toy Phone"), and whether we HOLD that episode.
   // Both ride free on Sonarr's calendar entry. A row written before these existed reads
@@ -624,6 +650,21 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     column: "search_on_add",
     ddl: "alter table request add column search_on_add integer",
   },
+  /*
+    WHEN THE ASKER WAS TOLD IT ARRIVED. Null means they have not been.
+
+    THE BACKFILL IS THE WHOLE POINT OF THE COLUMN LANDING QUIETLY. Every request this
+    instance has ever completed is already `available`, and without the update below all of
+    them would read as unseen the moment this build starts -- a badge counting a year of
+    history, on an instance where nothing has changed. `updated_at` is the closest honest
+    stamp for "this was already old news".
+  */
+  {
+    table: "request",
+    column: "available_seen_at",
+    ddl: "alter table request add column available_seen_at text",
+    backfill: "update request set available_seen_at = updated_at where status = 'available'",
+  },
 ];
 
 export class Store {
@@ -650,9 +691,14 @@ export class Store {
 
   /** Idempotent: adds any column this build expects that the file does not have. */
   private migrate(): void {
-    for (const { table, column, ddl } of ADDED_COLUMNS) {
+    for (const { table, column, ddl, backfill } of ADDED_COLUMNS) {
       const cols = this.db.query(`pragma table_info(${table})`).all() as { name: string }[];
-      if (!cols.some((c) => c.name === column)) this.db.run(ddl);
+      if (cols.some((c) => c.name === column)) continue;
+      this.db.run(ddl);
+      // Inside the same branch, so it runs exactly once -- on the boot that adds the
+      // column and never on any boot after it. A backfill outside this guard would be a
+      // statement re-run against live data every restart.
+      if (backfill) this.db.run(backfill);
     }
   }
 
@@ -1091,7 +1137,9 @@ export class Store {
 
   updateRequest(
     tconst: string,
-    patch: Partial<Pick<MediaRequest, "status" | "arr_id" | "error" | "search_attempts">>,
+    patch: Partial<
+      Pick<MediaRequest, "status" | "arr_id" | "error" | "search_attempts" | "available_seen_at">
+    >,
   ): void {
     const sets: string[] = ["updated_at = ?"];
     const args: unknown[] = [new Date().toISOString()];
@@ -1111,6 +1159,56 @@ export class Store {
       : (this.db
           .query("select * from request order by updated_at desc limit ?")
           .all(limit) as MediaRequest[]);
+  }
+
+  // --- what one person asked for, and what they have not been told about yet ----------
+  //
+  // The three below are the whole of the unread-marker feature's storage. They are the only
+  // queries in this file that filter on `requested_by`, other than the quota's count, and
+  // they exist because the ANSWER differs per reader: `listRequests` is the log, and "is
+  // mine ready" is a question about one person.
+
+  /** One person's own requests, newest activity first. */
+  listRequestsFor(userId: string, limit = 200): MediaRequest[] {
+    return this.db
+      .query("select * from request where requested_by = ? order by updated_at desc limit ?")
+      .all(userId, limit) as MediaRequest[];
+  }
+
+  /**
+   * How many of this person's requests have arrived without them being shown.
+   *
+   * BATCHED PER REQUEST, WHICH IS FREE HERE AND IS THE RULE THAT MATTERS. A `request` row is
+   * one title however many seasons or episodes it turns into, so a season pack finishing
+   * counts once. Counting files would count twenty times, which is the failure mode a
+   * notification feature has to be designed away from rather than filtered after.
+   */
+  countUnseenAvailable(userId: string): number {
+    const row = this.db
+      .query(
+        "select count(*) c from request where requested_by = ? and status = 'available' and available_seen_at is null",
+      )
+      .get(userId) as { c: number };
+    return row.c;
+  }
+
+  /**
+   * Mark every arrival this person has not been shown, and say how many that was.
+   *
+   * All of them at once rather than one at a time: the reader is looking at the list, so
+   * everything on it has been seen. A per-row acknowledgement would need the client to
+   * report what was on screen, which is a claim the server cannot check.
+   */
+  markAvailableSeen(userId: string): number {
+    const now = new Date().toISOString();
+    // `run` reports its own row count, which is the honest number for "how many were
+    // still unread when you opened the list" -- a count taken before the update would be a
+    // second read that another reconcile pass could change in between.
+    const { changes } = this.db.run(
+      "update request set available_seen_at = ? where requested_by = ? and status = 'available' and available_seen_at is null",
+      [now, userId],
+    );
+    return Number(changes);
   }
 
   /**

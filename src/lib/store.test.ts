@@ -733,6 +733,74 @@ describe("request arr overrides", () => {
  * from SCHEMA; an existing one only gets it from ADDED_COLUMNS, and nothing else in the
  * suite would notice that entry being missing.
  */
+/**
+ * The unread marker: which of MY requests have arrived that I have not been shown.
+ *
+ * It is a column on `request` rather than a `(user, request)` table because
+ * `requested_by` is single-valued -- `createRequest` keeps the first asker on a
+ * re-request, so exactly one person is ever owed this news about a given row.
+ */
+describe("unseen arrivals", () => {
+  /** One request, owned by `who`, moved straight to `status`. */
+  function ask(tconst: string, who: string | null, status: "sent" | "available"): void {
+    store.createRequest({
+      tconst,
+      title: tconst,
+      year: 2000,
+      kind: "movie",
+      service: "radarr",
+      requestedBy: who,
+    });
+    store.updateRequest(tconst, { status });
+  }
+
+  test("an arrival nobody has been shown counts, and only for its own asker", () => {
+    ask("tt1", "ana", "available");
+    ask("tt2", "ben", "available");
+    ask("tt3", "ana", "sent");
+    expect(store.countUnseenAvailable("ana")).toBe(1);
+    expect(store.countUnseenAvailable("ben")).toBe(1);
+    // A request that has not arrived is not news, however long it has been waiting.
+    expect(store.countUnseenAvailable("nobody")).toBe(0);
+  });
+
+  test("marking clears only the caller's own, and reports how many", () => {
+    ask("tt1", "ana", "available");
+    ask("tt2", "ana", "available");
+    ask("tt3", "ben", "available");
+
+    expect(store.markAvailableSeen("ana")).toBe(2);
+    expect(store.countUnseenAvailable("ana")).toBe(0);
+    // Somebody else opening their list must not clear yours.
+    expect(store.countUnseenAvailable("ben")).toBe(1);
+
+    // Idempotent: opening the page twice is not two pieces of news read.
+    expect(store.markAvailableSeen("ana")).toBe(0);
+  });
+
+  /**
+   * A title can travel this way twice: it arrives, the asker is shown it, an admin removes
+   * the file, they re-request, and it arrives again. The reconcile pass clears the stamp
+   * with the transition, so the second arrival is news again -- see `request-worker.ts`.
+   */
+  test("a second arrival is unread again once the stamp is cleared", () => {
+    ask("tt1", "ana", "available");
+    store.markAvailableSeen("ana");
+    store.updateRequest("tt1", { status: "available", available_seen_at: null });
+    expect(store.countUnseenAvailable("ana")).toBe(1);
+  });
+
+  test("a person's own requests come back newest first", () => {
+    ask("tt1", "ana", "available");
+    ask("tt2", "ana", "sent");
+    ask("tt3", "ben", "sent");
+    const mine = store.listRequestsFor("ana");
+    expect(mine.map((r) => r.tconst).sort()).toEqual(["tt1", "tt2"]);
+    // Never somebody else's, whatever the limit.
+    expect(store.listRequestsFor("ana", 100).some((r) => r.tconst === "tt3")).toBe(false);
+  });
+});
+
 describe("migrating a database written before request.seasons", () => {
   test("adds the column and leaves existing rows reading as 'all'", () => {
     const old = mkdtempSync(`${tmpdir()}/finderr-old-`);
@@ -767,6 +835,46 @@ describe("migrating a database written before request.seasons", () => {
           seasons: [1],
         }).seasons,
       ).toBe("1");
+    } finally {
+      upgraded.close();
+      rmSync(old, { recursive: true, force: true });
+      process.env.FINDERR_DATA_DIR = dir;
+    }
+  });
+
+  /**
+   * THE BACKFILL, WHICH IS THE WHOLE REASON THE UNREAD MARKER CAN SHIP QUIETLY.
+   *
+   * Every request a live instance has ever completed is already `available`. Add the column
+   * with its natural default and all of them read as unread on the first boot of the new
+   * build -- a badge counting a year of history, on an instance where nothing happened.
+   * `updated_at` is the closest honest stamp for "this was already old news".
+   */
+  test("requests that had already arrived are not announced as new", () => {
+    const old = mkdtempSync(`${tmpdir()}/finderr-old-seen-`);
+    const db = new Database(`${old}/finderr.db`, { create: true });
+    db.run(`create table request (
+      id integer primary key autoincrement,
+      tconst text not null, title text not null, year integer, kind text not null,
+      service text not null, status text not null, arr_id integer, error text,
+      search_attempts integer not null default 0,
+      requested_by text,
+      created_at text not null, updated_at text not null
+    );
+    create unique index ix_request_tconst on request(tconst);`);
+    const insert =
+      "insert into request (tconst,title,year,kind,service,status,requested_by,created_at,updated_at) values (?,?,?,?,?,?,?,?,?)";
+    db.run(insert, ["tt1", "Arrived long ago", 1999, "movie", "radarr", "available", "ana", "then", "then"]);
+    db.run(insert, ["tt2", "Still looking", 1999, "movie", "radarr", "sent", "ana", "then", "then"]);
+    db.close();
+
+    process.env.FINDERR_DATA_DIR = old;
+    const upgraded = new Store(loadConfig(true));
+    try {
+      expect(upgraded.countUnseenAvailable("ana")).toBe(0);
+      expect(upgraded.getRequest("tt1")?.available_seen_at).toBe("then");
+      // The one that has NOT arrived keeps a null stamp, so it becomes news when it does.
+      expect(upgraded.getRequest("tt2")?.available_seen_at).toBeNull();
     } finally {
       upgraded.close();
       rmSync(old, { recursive: true, force: true });

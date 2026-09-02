@@ -31,6 +31,7 @@ import { CeremonyRoute } from "./routes/CeremonyRoute";
 import { CollectionRoute } from "./routes/CollectionRoute";
 import { ListsRoute } from "./routes/ListsRoute";
 import { PersonRoute } from "./routes/PersonRoute";
+import { RequestsRoute } from "./routes/RequestsRoute";
 import { RootLayout } from "./routes/RootLayout";
 import { SearchRoute } from "./routes/SearchRoute";
 import { TitleRoute } from "./routes/TitleRoute";
@@ -114,6 +115,21 @@ const listsRoute = createRoute({
 });
 
 /**
+ * `/requests` -- your own requests, and which of them have arrived.
+ *
+ * Scoped to the caller by the SERVER (`?mine=1`), not by this route: `requested_by` is
+ * stripped from the response for anybody who is not an admin, so a client-side filter would
+ * have nothing to filter on. It is also where the header's ready badge goes, which is why
+ * the route has to exist at all -- a badge with no destination is the dead end this product
+ * refuses to draw.
+ */
+const requestsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/requests",
+  component: RequestsRoute,
+});
+
+/**
  * `/account` -- your own devices and sessions.
  *
  * In THIS bundle rather than the sign-in one, because managing a passkey is something a
@@ -176,6 +192,7 @@ const routeTree = rootRoute.addChildren([
   awardsRoute,
   ceremonyRoute,
   listsRoute,
+  requestsRoute,
   accountRoute,
   adminRoute,
 ]);

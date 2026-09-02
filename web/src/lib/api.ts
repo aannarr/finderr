@@ -169,6 +169,14 @@ export interface MediaRequest extends RequestStateView {
   quality_profile_id?: number | null;
   root_folder_path?: string | null;
   search_on_add?: number | null;
+  /**
+   * This arrived and YOU have not been shown it yet.
+   *
+   * Derived by the server per reader, never the stored `available_seen_at` column: the
+   * stamp is a fact about the row, this is a fact about the person holding the session.
+   * False on somebody else's request and false on your own once you have opened the list.
+   */
+  isNew?: boolean;
 }
 
 /** One selectable quality profile, as an arr reports it. */
@@ -877,13 +885,41 @@ export async function browse(filters: Filters, opts: BrowseOpts = {}): Promise<B
   });
 }
 
-export async function getRequests(): Promise<{
+export interface RequestsResponse {
   requests: MediaRequest[];
   queue: { pending: number };
-}> {
-  const res = await fetch("/api/requests");
+  /**
+   * How many of the CALLER's requests have arrived without them being shown.
+   *
+   * On this response rather than on one of its own, because `RootLayout` already polls
+   * this route every few seconds for the queue badge. One poll, both badges, and no way
+   * for the two numbers to describe different moments.
+   */
+  unseen: number;
+}
+
+/**
+ * The request log. `mine` narrows it to the caller's own, which is a SERVER-side filter --
+ * `requested_by` is stripped from the response for anybody who is not an admin, so there is
+ * nothing here to filter on.
+ */
+export async function getRequests(opts: { mine?: boolean } = {}): Promise<RequestsResponse> {
+  const res = await fetch(opts.mine ? "/api/requests?mine=1" : "/api/requests");
   if (!res.ok) throw new Error(`requests failed: ${res.status}`);
   return res.json();
+}
+
+/**
+ * Clear the caller's unread arrivals, and say how many there were.
+ *
+ * Called by the requests page on arrival: the reader is looking at the list, so the list
+ * has been seen. There is nothing to name -- the server marks everything of theirs that was
+ * unread, because a client claiming which rows were on screen is a claim it cannot check.
+ */
+export async function markRequestsSeen(): Promise<number> {
+  const res = await fetch("/api/requests/seen", { method: "POST" });
+  if (!res.ok) throw new Error(`marking requests seen failed: ${res.status}`);
+  return ((await res.json()) as { seen: number }).seen;
 }
 
 /**

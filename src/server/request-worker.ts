@@ -243,11 +243,20 @@ export class RequestWorker {
 
     const lib = store.libraryMap();
 
-    // Anything that now has a file is done.
+    /*
+      Anything that now has a file is done.
+
+      THIS IS THE ONE PLACE A REQUEST BECOMES NEWS. `available_seen_at` is cleared with the
+      transition rather than left alone, because a title can travel this way twice: it
+      arrives, the asker is shown it, an admin removes the file, they re-request, and it
+      arrives again. Leaving the old stamp would mean the second arrival was already marked
+      as read before it happened. It is null on a first arrival anyway, so this costs
+      nothing in the ordinary case and is correct in the other one.
+    */
     for (const r of open) {
       const l = lib.get(r.tconst);
       if (l?.has_file === 1) {
-        store.updateRequest(r.tconst, { status: "available", error: null });
+        store.updateRequest(r.tconst, { status: "available", error: null, available_seen_at: null });
         log(`request: "${r.title}" is now available`);
       }
     }
