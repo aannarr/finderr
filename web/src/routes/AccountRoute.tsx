@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { clearPersistedCaches } from "../lib/api";
 import {
   type CredentialSummary,
   deleteCredential,
@@ -181,6 +182,15 @@ export function AccountRoute() {
 
   const signOut = async () => {
     await logout();
+    /*
+      The session is gone; the CACHE ON DISK is not, and only this call ends it.
+
+      Title rows record what the library holds and which of them this reader asked for, and
+      a snapshot outlives the page load. On a shared iPad the next person to sign in would
+      otherwise be handed the last one's front page for a frame. Awaited before navigating,
+      because a reload mid-delete would leave it half-written.
+    */
+    await clearPersistedCaches();
     window.location.href = "/";
   };
 

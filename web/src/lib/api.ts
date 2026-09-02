@@ -19,6 +19,13 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
+import { Cache } from "./cache";
+import {
+  CachePersistence,
+  indexedDbSnapshotStore,
+  type PersistedCacheSpec,
+  withDeadline,
+} from "./cache-persistence";
 import { isCacheableFacetSet } from "./facet-panes";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
@@ -203,47 +210,21 @@ export interface Filters {
 
 // ---------------------------------------------------------------------------
 
-/**
- * LRU-ish cache. Entries never expire during a session -- the index only changes
- * once a day, and library state is patched in separately rather than invalidating
- * the whole search cache.
- */
-class Cache<T> {
-  private map = new Map<string, T>();
-  constructor(private max = 500) {}
-
-  get(key: string): T | undefined {
-    const v = this.map.get(key);
-    // Re-insert so the most recently used entry is last, making eviction correct.
-    if (v !== undefined) {
-      this.map.delete(key);
-      this.map.set(key, v);
-    }
-    return v;
-  }
-  set(key: string, value: T): void {
-    if (this.map.has(key)) this.map.delete(key);
-    this.map.set(key, value);
-    if (this.map.size > this.max) {
-      const oldest = this.map.keys().next().value;
-      if (oldest !== undefined) this.map.delete(oldest);
-    }
-  }
-  clear(): void {
-    this.map.clear();
-  }
-  get size(): number {
-    return this.map.size;
-  }
-}
-
 const searchCache = new Cache<SearchResponse>(600);
 const titleCache = new Cache<Title>(1000);
 /** Only ever holds facet sets with nothing still pending -- see `getTitleDetail`. */
 const facetsCache = new Cache<ResolvedFacets>(500);
 const browseCache = new Cache<BrowseResponse>(200);
-/** One value, not a keyed set: `/api/discover` takes no arguments. */
-let discoverCache: { shelves: DiscoverShelf[] } | undefined;
+/**
+ * One value, not a keyed set: `/api/discover` takes no arguments.
+ *
+ * Still a `Cache` of capacity one rather than a bare `let`, so it restores from disk
+ * through the same path as every other cache -- and the front page is the entry that
+ * matters most for that, because it is where a reload lands. A second, hand-written
+ * persistence path for one variable is the shape this avoids.
+ */
+const discoverCache = new Cache<{ shelves: DiscoverShelf[] }>(1);
+const DISCOVER_KEY = "discover";
 
 /**
  * Requests already in flight, so two identical keystrokes share one fetch.
@@ -273,7 +254,7 @@ export function cachedSearch(q: string, f: Filters): SearchResponse | undefined 
 
 export async function search(q: string, f: Filters = {}, signal?: AbortSignal): Promise<SearchResponse> {
   const key = filterKey(q, f);
-  const hit = searchCache.get(key);
+  const hit = searchCache.fresh(key);
   if (hit) return hit;
 
   return dedupe(`search:${key}`, async () => {
@@ -446,7 +427,7 @@ export function cachedPerson(nconst: string, opts: PersonQuery = {}): PersonPage
 
 export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise<PersonPage> {
   const key = personKey(nconst, opts);
-  const hit = personCache.get(key);
+  const hit = personCache.fresh(key);
   if (hit) return hit;
 
   return dedupe(`person:${key}`, async () => {
@@ -593,7 +574,7 @@ export function cachedAwards(): AwardsTimeline | undefined {
 }
 
 export async function getAwards(): Promise<AwardsTimeline> {
-  const hit = timelineCache.get("oscars");
+  const hit = timelineCache.fresh("oscars");
   if (hit) return hit;
   return dedupe("awards", async () => {
     const res = await fetch("/api/awards/oscars");
@@ -613,7 +594,7 @@ export function cachedCeremony(ceremony: number): CeremonyPage | undefined {
 
 export async function getCeremony(ceremony: number): Promise<CeremonyPage> {
   const key = String(ceremony);
-  const hit = ceremonyCache.get(key);
+  const hit = ceremonyCache.fresh(key);
   if (hit) return hit;
   return dedupe(`ceremony:${key}`, async () => {
     const res = await fetch(`/api/awards/oscars/${ceremony}`);
@@ -701,8 +682,12 @@ export function cachedTitle(tconst: string): Title | undefined {
  * for the life of the session while the answer sat in the server's cache unread.
  */
 export async function getTitleDetail(tconst: string): Promise<TitleDetail> {
-  const row = titleCache.get(tconst);
-  const facets = facetsCache.get(tconst);
+  // `fresh`, not `get`: a row restored from a previous session paints the header (see
+  // `useTitleDetail`, which reads `cachedTitle`) but must never be the reason this request
+  // is skipped. Its library state, request status and download progress all moved while
+  // the app was closed.
+  const row = titleCache.fresh(tconst);
+  const facets = facetsCache.fresh(tconst);
   // A cache hit only happens for a FULLY RESOLVED set, so by construction nobody is still
   // working on it and there is nothing to poll for. Synthesised rather than cached: `work`
   // describes a moment on the server, and a stored copy would be a claim about right now
@@ -742,7 +727,7 @@ export async function getTitleDetail(tconst: string): Promise<TitleDetail> {
  * on a hover.
  */
 export function prefetchTitle(tconst: string): void {
-  if (titleCache.get(tconst) && facetsCache.get(tconst)) return;
+  if (titleCache.fresh(tconst) && facetsCache.fresh(tconst)) return;
   if (inFlight.has(`title:${tconst}`)) return;
   void getTitleDetail(tconst).catch(() => {});
 }
@@ -767,20 +752,28 @@ export interface DiscoverShelf {
  * `shelves` state resets to `null` on the way back. Without a synchronous read the route
  * paints an empty page and then repaints when the refetch lands -- which is exactly what
  * "clicking Back reloads the page" felt like.
+ *
+ * It is also what makes a RESTORED front page visible: `SearchRoute` reads this in a
+ * `useState` initialiser, which runs exactly once, so a snapshot that arrives after the
+ * first render is a snapshot nobody ever sees. That is why `main.tsx` waits for hydration
+ * before rendering at all.
  */
 export function cachedDiscover(): { shelves: DiscoverShelf[] } | undefined {
-  return discoverCache;
+  return discoverCache.get(DISCOVER_KEY);
 }
 
 export async function getDiscover(): Promise<{ shelves: DiscoverShelf[] }> {
-  if (discoverCache) return discoverCache;
+  // `fresh`: a restored front page is drawn immediately by `cachedDiscover` and is still
+  // refetched here, because a shelf is a claim about what the library holds NOW.
+  const hit = discoverCache.fresh(DISCOVER_KEY);
+  if (hit) return hit;
   return dedupe("discover", async () => {
     const res = await fetch("/api/discover");
     if (!res.ok) throw new Error(`discover failed: ${res.status}`);
     const data = (await res.json()) as { shelves: DiscoverShelf[] };
     // Only a SUCCESSFUL response is cached: caching the throw would make one flaky
     // request poison the front page for the life of the session.
-    discoverCache = data;
+    discoverCache.set(DISCOVER_KEY, data);
     for (const shelf of data.shelves) {
       for (const t of shelf.titles) titleCache.set(t.tconst, t);
     }
@@ -869,7 +862,7 @@ export function cachedBrowseRun(
 
 export async function browse(filters: Filters, opts: BrowseOpts = {}): Promise<BrowseResponse> {
   const qs = browseQuery(filters, opts);
-  const hit = browseCache.get(qs);
+  const hit = browseCache.fresh(qs);
   if (hit) return hit;
 
   return dedupe(`browse:${qs}`, async () => {
@@ -1029,25 +1022,22 @@ export function titleStateVersion(): number {
   return titleVersion;
 }
 
-// Small escape hatch so patchTitleState can walk a cache without exposing it.
-function entriesOf<T>(cache: Cache<T>): IterableIterator<T> {
-  // biome-ignore lint/complexity/useLiteralKeys: reaching into the private field deliberately
-  const map = (cache as unknown as { map: Map<string, T> })["map"];
-  return map.values();
-}
-
 /**
  * Every mutable `Title[]` we are holding, as arrays to be patched in place.
  *
  * One generator rather than three loops in `patchTitleState`, so adding a fourth cache
  * of rows is an entry here instead of a silent gap in the optimistic badge.
+ *
+ * It used to reach into each cache's private `Map` through a cast and a lint suppression.
+ * `Cache.values()` is that escape hatch made ordinary -- the same access, named, with the
+ * compiler still able to see what it returns.
  */
 function* cachedRowSets(): Generator<Title[]> {
-  for (const r of entriesOf(searchCache)) yield r.hits;
-  for (const r of entriesOf(browseCache)) yield r.rows;
-  for (const r of entriesOf(personCache)) yield r.credits;
-  for (const r of entriesOf(collectionCache)) yield r.titles;
-  for (const shelf of discoverCache?.shelves ?? []) yield shelf.titles;
+  for (const r of searchCache.values()) yield r.hits;
+  for (const r of browseCache.values()) yield r.rows;
+  for (const r of personCache.values()) yield r.credits;
+  for (const r of collectionCache.values()) yield r.titles;
+  for (const d of discoverCache.values()) for (const shelf of d.shelves) yield shelf.titles;
 }
 
 export function cacheStats(): { searches: number; titles: number } {
@@ -1065,8 +1055,73 @@ export function resetCaches(): void {
   browseCache.clear();
   personCache.clear();
   collectionCache.clear();
-  discoverCache = undefined;
+  discoverCache.clear();
   inFlight.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+//
+// Wired HERE rather than in `./cache-persistence.ts` because this module owns the cache
+// instances and that one owns none of them: the dependency points one way, and the storage
+// code knows nothing about titles or shelves. See that file's header for the rule that
+// makes it safe -- everything restored is for painting, never for answering.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two caches worth keeping, and what a reload actually needs from each.
+ *
+ * THE FRONT PAGE, because a reload lands on it and `SearchRoute` reads `cachedDiscover()`
+ * in a `useState` initialiser -- one shelf payload, and the page is drawn.
+ *
+ * TITLE ROWS, because they are what paints a title page's header before its fetch lands,
+ * and because every shelf and every search result is one. Two hundred rather than the
+ * in-memory thousand: what survives a reload should be the pages the reader was just on,
+ * and each extra row is bytes to read back at the one moment this is trying to be fast.
+ *
+ * NOT the facet cache, and that is worth stating because it looks like the expensive one.
+ * Facets only ever short-circuit `getTitleDetail` alongside the ROW, and a restored row
+ * never short-circuits anything -- so a persisted facet set would be read from disk on
+ * every boot and could not save a single request. Not search or browse either: both are
+ * answered from local SQLite in about a millisecond, and neither is where a reload lands.
+ */
+const PERSISTED_CACHES: PersistedCacheSpec[] = [
+  { name: "discover", cache: discoverCache, keep: 1 },
+  { name: "titles", cache: titleCache, keep: 200 },
+];
+
+const persistence = new CachePersistence(indexedDbSnapshotStore(), PERSISTED_CACHES);
+
+/**
+ * How long the first render will wait for the snapshot before going without it.
+ *
+ * A budget rather than a measurement: two hundred title rows come back as a structured
+ * clone with no parsing, which is single-digit milliseconds on the hardware this runs on.
+ * The number exists for the pathological case -- another tab mid-upgrade, a device
+ * thrashing -- where the right answer is to start the app.
+ */
+export const HYDRATE_DEADLINE_MS = 250;
+
+/** Fill the caches from the last session. Called once, before the first render. */
+export function hydrateCaches(): Promise<void> {
+  return withDeadline(persistence.hydrate(), HYDRATE_DEADLINE_MS);
+}
+
+/** Write back what changed. Called when the page is going away -- see `main.tsx`. */
+export function flushCaches(): Promise<void> {
+  return persistence.flush();
+}
+
+/**
+ * Forget the on-disk copy.
+ *
+ * Called on sign-out. The in-memory caches die with the page load that follows, but a
+ * snapshot outlives it -- and a title row records what the library holds and what this
+ * reader asked for, which is not something to leave on a shared iPad for whoever signs in
+ * next.
+ */
+export function clearPersistedCaches(): Promise<void> {
+  return persistence.clear();
 }
 
 /**
