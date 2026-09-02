@@ -45,14 +45,7 @@ import { Store, syncLibrary } from "../lib/store";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
-import {
-  AGENT_MANIFEST_PATH,
-  type AgentBucketView,
-  agentWaitMs,
-  renderManifest,
-  routeSummaries,
-  withAgentApi,
-} from "./agent-api";
+import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
@@ -681,55 +674,25 @@ function quotaRefusal(asker: Principal | null): Response | null {
 }
 
 /**
- * The self-describing manifest, for the agent key that asked.
+ * The self-describing manifest, wired to the things that own its facts.
  *
- * It gathers, and renders nothing itself: every number comes from the thing that already
- * owns it -- the live route table, the limiter instances, the quota config and the key's
- * own row -- and `renderManifest` turns that data into markdown. So the document cannot
- * drift from the server, because there is no second copy of anything in it to drift.
- *
- * NEVER CACHED. `remaining` is true for the instant it was read and for no longer.
+ * Nothing but wiring: `agentManifestRoute` gathers through these callbacks and renders, so
+ * the document cannot drift from the server -- there is no second copy of anything in it to
+ * drift from. The callbacks are what let the route be tested without a database, a limiter
+ * or a running server.
  */
-function agentManifest(req: Request): Response {
-  const p = auth.principal(req);
-  // Only an agent key. A session HAS no key to describe, and inventing a hypothetical
-  // manifest for one would be a second document with different contents from the real one.
-  if (p?.kind !== "agent" || !p.user) {
-    return bad("this endpoint answers to an agent key", 403);
-  }
-  const key = authStore.agentKeyFor(p.user.id);
-  if (!key) return bad("this endpoint answers to an agent key", 403);
-
-  const buckets: AgentBucketView[] = (["cheap", "expensive"] as const).map((bucket) => {
-    const limiter = auth.agentLimiter(bucket);
-    return {
-      bucket,
-      limitPerMinute: limiter.limit > 0 ? limiter.limit : null,
-      remaining: limiter.remaining(`agent:${bucket}:${p.user?.id}`),
-      windowSeconds: Math.round(limiter.windowMs / 1000),
-    };
-  });
-
-  const markdown = renderManifest({
-    origin: publicOrigin(req.url, cfg.auth.origins),
-    key,
-    buckets,
-    quota: {
-      limitPerDay: cfg.requests.quotaPerDay,
-      usedToday: store.countRequestsSince(p.user.id, utcDayStart()),
-      resetsAt: utcDayReset(),
-    },
-    reachable: routeSummaries(liveRouteTable()),
-  });
-
-  return new Response(markdown, {
-    headers: {
-      "Content-Type": "text/markdown; charset=utf-8",
-      "X-Content-Type-Options": "nosniff",
-      ...cacheHeaders(NO_STORE),
-    },
-  });
-}
+const agentManifest = agentManifestRoute({
+  principal: (req) => auth.principal(req),
+  keyFor: (userId) => authStore.agentKeyFor(userId),
+  limiter: (bucket) => auth.agentLimiter(bucket),
+  origin: (req) => publicOrigin(req.url, cfg.auth.origins),
+  quota: (userId) => ({
+    limitPerDay: cfg.requests.quotaPerDay,
+    usedToday: store.countRequestsSince(userId, utcDayStart()),
+    resetsAt: utcDayReset(),
+  }),
+  routes: () => liveRouteTable(),
+});
 
 /** Decide which service a title belongs to. Everything episodic goes to Sonarr. */
 function serviceFor(kind: string): "radarr" | "sonarr" {

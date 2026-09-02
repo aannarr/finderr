@@ -21,6 +21,7 @@ import {
   AGENT_OPERATIONS,
   AGENT_WAIT_MS,
   agentBucket,
+  agentManifestRoute,
   agentMayCall,
   agentMayReach,
   agentWaitMs,
@@ -324,6 +325,102 @@ describe("two buckets, split on what the work costs", () => {
     const cookie = `${SESSION_COOKIE}=${local.auth.createSession({ userId: user.id, expiresAt: isoIn(60_000) })}`;
     expect((await local.call("/api/search?q=a", { cookie })).status).toBe(200);
     expect((await local.call("/api/search?q=a", { cookie })).status).toBe(200);
+  });
+});
+
+describe("the token travels in a header and nowhere else", () => {
+  /*
+    D3, and the reason this project refused the sketch's `GET /agent/{token}`. A token in a
+    URL lands in Caddy's access log, in any proxy in front, in the browser history of anyone
+    who pastes it, and in a `Referer`. The same lesson `safeUrl` and `X-Plex-Token` already
+    bought here twice.
+  */
+  test("the same token in a query string authenticates nobody", async () => {
+    const { token } = keyFor();
+    const res = await h.call(`/api/discover?token=${encodeURIComponent(token)}`);
+    expect(res.status).toBe(401);
+  });
+
+  test("nor in a path segment", async () => {
+    const { token } = keyFor();
+    expect((await h.call(`/api/title/${encodeURIComponent(token)}`)).status).toBe(401);
+  });
+});
+
+describe("the manifest route answers the key that asked", () => {
+  /** The real route, wired to stubs -- no database, no limiter state, no server. */
+  function route(over: Partial<Parameters<typeof agentManifestRoute>[0]> = {}) {
+    return agentManifestRoute({
+      principal: (req) => h.service.principal(req),
+      keyFor: (userId) => h.auth.agentKeyFor(userId),
+      limiter: (bucket) => h.service.agentLimiter(bucket),
+      origin: () => "https://finderr.example",
+      quota: () => ({ limitPerDay: 0, usedToday: 0, resetsAt: "2026-09-03T00:00:00.000Z" }),
+      routes: () => h.routes,
+      ...over,
+    });
+  }
+
+  const ask = (headers: Record<string, string> = {}) =>
+    new Request(`https://finderr.example${AGENT_MANIFEST_PATH}`, { headers });
+
+  test("a valid key gets markdown, never JSON", async () => {
+    const { token } = keyFor();
+    const res = route()(ask({ authorization: `Bearer ${token}` }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+    // Uncacheable: `remaining` is true for the instant it was read and no longer.
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.text()).toContain("# finderr agent API");
+  });
+
+  test("a browser session is refused -- it holds no key to describe", () => {
+    const user = h.auth.createUser({ displayName: "person", role: "user" });
+    const cookie = `${SESSION_COOKIE}=${h.auth.createSession({ userId: user.id, expiresAt: isoIn(60_000) })}`;
+    expect(route()(ask({ cookie })).status).toBe(403);
+  });
+
+  test("an anonymous caller is refused, and is told nothing", async () => {
+    const res = route()(ask());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "this endpoint answers to an agent key" });
+  });
+
+  test("the origin is the one the caller reached, not a constant", async () => {
+    const { token } = keyFor();
+    const md = await route({ origin: () => "http://localhost:7979" })(
+      ask({ authorization: `Bearer ${token}` }),
+    ).text();
+    expect(md).toContain("http://localhost:7979/api/discover");
+    expect(md).not.toContain("finderr.example");
+  });
+
+  /*
+    The document reports the SAME counter the guard spends, through one key derivation. Two
+    spellings would make the manifest confidently wrong about a budget it was not reading --
+    and an agent pacing itself against a wrong number is worse off than one with no number.
+  */
+  test("`remaining` reflects calls the guard has actually taken", async () => {
+    const local = harness(config({ agentExpensiveRatePerMinute: 10 }));
+    const user = local.auth.createUser({ displayName: "a", role: "user" });
+    const { token } = local.auth.putAgentKey({ userId: user.id, readOnly: false });
+    await local.call("/api/search?q=a", { bearer: token });
+    await local.call("/api/search?q=b", { bearer: token });
+
+    const md = await agentManifestRoute({
+      principal: (req) => local.service.principal(req),
+      keyFor: (id) => local.auth.agentKeyFor(id),
+      limiter: (bucket) => local.service.agentLimiter(bucket),
+      origin: () => "http://localhost:7979",
+      quota: () => ({ limitPerDay: 0, usedToday: 0, resetsAt: "2026-09-03T00:00:00.000Z" }),
+      routes: () => local.routes,
+    })(
+      new Request(`http://localhost:7979${AGENT_MANIFEST_PATH}`, {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    ).text();
+
+    expect(md).toContain("| `expensive` | 10 | 60s | 8 |");
   });
 });
 

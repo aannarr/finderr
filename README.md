@@ -417,6 +417,8 @@ rebuild.
 | `FINDERR_AUTH_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Only behind a proxy you control |
 | `FINDERR_AUTH_RATE_PER_MINUTE` | `20` | Per IP, on the sign-in routes |
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
+| `FINDERR_AGENT_CHEAP_RATE_PER_MINUTE` | `120` | Per **agent key**, on everything a local SQLite seek answers. In addition to the per-IP limits, never instead of them |
+| `FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE` | `20` | Per **agent key**, on `/api/search`, `GET /api/title/:tconst` and the request POSTs — the operations that cost real CPU, a blocking provider wait, or a download. Also the cap on how many blocking title reads one key can have in flight |
 | `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
 | `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
 | `FINDERR_PUSH_CONTACT` | `mailto:finderr@localhost` | The `sub` claim in every VAPID token — how a push service reaches **you** if something goes wrong. The default is well-formed and accepted by every service tested; set a real address if yours refuses it, or so somebody can actually reach you |
@@ -568,12 +570,14 @@ do yet.
 
 ## API
 
-Everything except `/api/health` and the sign-in routes needs a session cookie or the admin
-bearer key.
+Everything except `/api/health` and the sign-in routes needs a session cookie, an agent key,
+or the admin bearer key.
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/health` | `{"ok":true}` anonymously; the full payload to an admin |
+| `GET` | `/api/agent/manifest` | agent keys only. This API described to the key that asked, as markdown, generated from the live route table |
+| `GET`/`POST`/`DELETE` | `/api/auth/agent-key` | your one agent key. A person in a browser only — a key cannot manage credentials, its own included |
 | `GET` | `/api/index-status` | public. What the boot build is doing, for the progress page |
 | `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered |
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
@@ -603,6 +607,39 @@ finderr, because the arrs and the metadata providers sit on your LAN and the per
 looking at the page might not. Links out are derived from ids rather than stored, with two
 exceptions that have no id to derive from: TMDB's per-country watch page and a rating
 source's own page.
+
+### Agent keys
+
+Anybody with an account can create **one** agent key from their account page, and gets back a
+block to hand to a script or an AI agent:
+
+```
+You have access to finderr, a media request tool. Run this to learn what you can do:
+
+curl -H "Authorization: Bearer <key>" https://finderr.example/api/agent/manifest
+```
+
+That one call returns markdown describing the operations, copy-paste `curl` examples, both
+rate-limit buckets with what is left of each, and the daily quota. It is **generated from the
+live route table on every view**, so it describes the server you are actually talking to
+rather than one somebody documented once.
+
+Four things are true of every key and worth knowing before you hand one over:
+
+- **The token is in a header, never a URL.** No route accepts it as a query parameter or a
+  path segment. A token in a URL ends up in an access log, a proxy and a `Referer`.
+- **It carries your access minus administration.** `/api/admin/*` answers `404` to it even
+  when the owner is an admin, and `/api/auth/*` is closed too — a key cannot rotate or revoke
+  a credential, its own least of all. Replacing it from the account page is one click, and the
+  old token stops working in the same instant.
+- **Read-only is a choice at creation**, and means `GET` and `HEAD`. A read-only key cannot
+  request anything, and its manifest does not mention writing.
+- **`GET /api/title/:tconst` waits for an agent** rather than making it poll: one call, one
+  answer, up to a bounded deadline. A partial answer names what is still outstanding, so
+  "nobody has answered yet" can never be read as "there is nothing".
+
+The plaintext is shown exactly once, at creation. Only its `sha256` is stored, so a lost key
+is replaced rather than recovered.
 
 ## Known gaps and non-goals
 

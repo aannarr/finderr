@@ -28,6 +28,7 @@
 
 import type { AgentKey, Principal } from "../lib/auth";
 import type { RateLimiter } from "../lib/rate-limit";
+import { cacheHeaders, NO_STORE } from "./cache-policy";
 import { json } from "./json-response";
 import { type HandlerWrap, wrapRoutes } from "./route-wrap";
 
@@ -467,7 +468,87 @@ ${other.length === 0 ? "_Nothing._" : other.map((r) => `- \`${r.methods ? r.meth
 `;
 }
 
+// --- the route ---------------------------------------------------------------
+
+/**
+ * What the manifest route needs, as functions rather than as services.
+ *
+ * Every one of these is a question somebody else already owns the answer to -- who is
+ * calling, what key they hold, how much budget is left, what this origin is called, what the
+ * quota says, what routes exist. Taking them as callbacks is what lets the route be tested
+ * without a database, a limiter or a running server, and it is why nothing in this file
+ * imports `Store` or `AuthStore`.
+ */
+export interface AgentManifestDeps {
+  principal: (req: Request) => Principal | null;
+  keyFor: (userId: string) => AgentKey | null;
+  limiter: (bucket: AgentBucket) => RateLimiter;
+  /** The origin as the CALLER reached it, so a dev checkout and production differ. */
+  origin: (req: Request) => string;
+  quota: (userId: string) => AgentManifestView["quota"];
+  /** The live route table, read at call time -- this route is IN it. */
+  routes: () => Record<string, unknown>;
+}
+
+/**
+ * `GET /api/agent/manifest`: this server, described to the key that asked.
+ *
+ * ONLY an agent key. A browser session holds no key, so there is no budget to report and no
+ * `read_only` to honour -- rendering a hypothetical manifest for one would be a second
+ * document with different contents from the real one, which is the drift this endpoint
+ * exists to have none of.
+ *
+ * NEVER CACHED: `remaining` is true for the instant it was read and no longer.
+ */
+export function agentManifestRoute(deps: AgentManifestDeps): (req: Request) => Response {
+  return (req) => {
+    const p = deps.principal(req);
+    const user = p?.kind === "agent" ? p.user : null;
+    const key = user ? deps.keyFor(user.id) : null;
+    if (!user || !key) return json({ error: "this endpoint answers to an agent key" }, { status: 403 });
+
+    const buckets: AgentBucketView[] = (["cheap", "expensive"] as const).map((bucket) => {
+      const limiter = deps.limiter(bucket);
+      return {
+        bucket,
+        // Zero is the limiter's own spelling of "unlimited"; `null` is this document's.
+        limitPerMinute: limiter.limit > 0 ? limiter.limit : null,
+        remaining: limiter.remaining(bucketKeyFor(bucket, user.id)),
+        windowSeconds: Math.round(limiter.windowMs / 1000),
+      };
+    });
+
+    const markdown = renderManifest({
+      origin: deps.origin(req),
+      key,
+      buckets,
+      quota: deps.quota(user.id),
+      reachable: routeSummaries(deps.routes()),
+    });
+
+    return new Response(markdown, {
+      headers: {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+        ...cacheHeaders(NO_STORE),
+      },
+    });
+  };
+}
+
 // --- the guard ---------------------------------------------------------------
+
+/**
+ * The limiter key for one bucket and one account.
+ *
+ * One owner, because the GUARD spends it and the MANIFEST reports what is left of it. Two
+ * spellings would make the document confidently wrong about a budget it was not reading.
+ * The prefixes matter: without them an account id that happened to look like an address
+ * would share a bucket with that address.
+ */
+function bucketKeyFor(bucket: AgentBucket, userId: string): string {
+  return `agent:${bucket}:${userId}`;
+}
 
 export interface AgentApiDeps {
   /** Resolves a request to a principal. The one owner of who is calling. */
@@ -513,7 +594,7 @@ export function withAgentApi<T extends Record<string, unknown>>(routes: T, deps:
       const limiter = deps.limiter(bucket);
       // The KEY, never the address: one account behind several addresses would otherwise get
       // a fresh budget per address, which is the exact hole a limiter exists to close.
-      const bucketKey = `agent:${bucket}:${p.user.id}`;
+      const bucketKey = bucketKeyFor(bucket, p.user.id);
       if (!limiter.take(bucketKey)) {
         deps.log(`agent key ${p.user.id} rate limited on the ${bucket} bucket`);
         return json(
