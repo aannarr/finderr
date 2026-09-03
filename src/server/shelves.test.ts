@@ -16,10 +16,6 @@ function row(tconst: string, title = tconst, kind = "movie"): TitleRow {
   };
 }
 
-/**
- * Every source answers with something identifiable, so a shelf's contents say which
- * query produced them. Overridden per test for the case under examination.
- */
 /** One row per source, so a shelf's contents say which source produced them. */
 const UPCOMING: Record<string, string[]> = {
   radarr: ["up-radarr"],
@@ -28,21 +24,49 @@ const UPCOMING: Record<string, string[]> = {
   "tmdb-series": ["up-tmdb-series"],
 };
 
-function depsWith(
-  over: Partial<ShelfDeps["engine"]> = {},
-  owned: string[] = [],
-  added: string[] = [],
-  upcoming: Record<string, string[]> = UPCOMING,
-  trending: string[] = [],
-): ShelfDeps {
-  const upcomingIds = new Set([...Object.values(upcoming).flat(), ...trending]);
+/** What one test wants to differ from the default world; everything omitted keeps its default. */
+interface DepsOptions {
+  /** Engine methods overridden for the case under examination. */
+  engine?: Partial<ShelfDeps["engine"]>;
+  /** Ids in the library mirror, which the recommendation shelves must exclude. */
+  owned?: string[];
+  /** Ids the library mirror reports as recently acquired, in its own order. */
+  added?: string[];
+  /** Ids the request log reports as recently asked for, in its own order. */
+  requested?: string[];
+  /** Ids the upcoming mirror reports, per source. */
+  upcoming?: Record<string, string[]>;
+  /** Ids the trending mirror reports, in its order. Empty is the keyless case. */
+  trending?: string[];
+}
+
+/**
+ * Every source answers with something identifiable, so a shelf's contents say which query
+ * produced them.
+ *
+ * An OPTIONS OBJECT rather than positionals: there are six sources now, and
+ * `depsWith({}, [], ["owned-1"], UPCOMING, ["tr-1"])` said nothing about which list was
+ * which. A seventh source is a named key here and no change at any call site.
+ *
+ * `byTconst` resolves any id a mirror reports and nothing else, which is what makes "the
+ * index does not carry this id" testable as well as the happy path.
+ */
+function depsWith({
+  engine: over = {},
+  owned = [],
+  added = [],
+  requested = [],
+  upcoming = UPCOMING,
+  trending = [],
+}: DepsOptions = {}): ShelfDeps {
+  const mirrored = new Set([...Object.values(upcoming).flat(), ...trending, ...added, ...requested]);
   return {
     engine: {
       topRated: (opts = {}) => [row(`top-${opts.kind}`, `top ${opts.kind}`, opts.kind ?? "movie")],
       newThisDecade: () => [row("decade")],
       topGenres: () => ["Horror"],
       topRatedInGenre: (genre) => [row(`genre-${genre}`)],
-      byTconst: (id) => (added.includes(id) || upcomingIds.has(id) ? row(id) : null),
+      byTconst: (id) => (mirrored.has(id) ? row(id) : null),
       // The Top 250 shelf. It goes through `browse` rather than a bespoke engine method
       // precisely so the shelf and the "see all" link behind it cannot order differently,
       // which is why the fake answers in the same shape a real browse does.
@@ -53,6 +77,7 @@ function depsWith(
     store: {
       libraryMap: () => new Map(owned.map((id) => [id, {}])),
       recentlyAddedIds: () => added,
+      recentlyRequestedIds: () => requested,
       upcomingBySource: (source: string) =>
         (upcoming[source] ?? []).map((tconst) => ({
           tconst,
@@ -73,9 +98,10 @@ function depsWith(
 
 describe("discoveryShelves", () => {
   test("the front page is every shelf the client renders, in order", () => {
-    const ids = discoveryShelves(depsWith({}, [], ["owned-1"])).map((s) => s.id);
+    const ids = discoveryShelves(depsWith({ added: ["owned-1"], requested: ["asked-1"] })).map((s) => s.id);
     expect(ids).toEqual([
       "recently-added",
+      "recently-requested",
       "top-250",
       "top-movies",
       "top-series",
@@ -90,15 +116,18 @@ describe("discoveryShelves", () => {
 
   /**
    * "What is new to ME, then what is new to everyone" is the pairing the placement exists
-   * for, and an all-time canonical list between the two halves breaks it.
+   * for, and an all-time canonical list between the two halves breaks it. The two personal
+   * rows are the first half; trending is the second, and the Top 250 comes after both.
    *
    * The order test above runs KEYLESS -- the trending mirror is empty, so the one shelf
    * whose position was an editorial decision is the one it cannot see. That blind spot is
    * how "Popular right now" shipped third under a comment claiming second.
    */
-  test("a populated trending shelf sits second, under recently-added", () => {
-    const ids = discoveryShelves(depsWith({}, [], ["owned-1"], UPCOMING, ["tr-1"])).map((s) => s.id);
-    expect(ids.slice(0, 3)).toEqual(["recently-added", "trending", "top-250"]);
+  test("a populated trending shelf sits under the personal rows and above the Top 250", () => {
+    const ids = discoveryShelves(
+      depsWith({ added: ["owned-1"], requested: ["asked-1"], trending: ["tr-1"] }),
+    ).map((s) => s.id);
+    expect(ids.slice(0, 4)).toEqual(["recently-added", "recently-requested", "trending", "top-250"]);
   });
 
   test("an index with no rank column drops the Top 250 rather than mislabelling a votes list", () => {
@@ -106,7 +135,7 @@ describe("discoveryShelves", () => {
     // next nightly refresh. `engine.browse` degrades a ranked sort to votes, which is right
     // for a generic grid and WRONG under a heading that names a ranked list -- it would put
     // the most popular films on screen as "finderr Top 250".
-    const shelves = discoveryShelves(depsWith({ hasRank: false }, [], ["owned-1"]));
+    const shelves = discoveryShelves(depsWith({ engine: { hasRank: false }, added: ["owned-1"] }));
     expect(shelves.map((s) => s.id)).not.toContain("top-250");
     // Everything else on the front page is unaffected.
     expect(shelves.map((s) => s.id)).toContain("top-movies");
@@ -114,12 +143,14 @@ describe("discoveryShelves", () => {
 
   /** A blank row is worse than no row, and the warm loop must not count titles nobody sees. */
   test("a shelf that came back empty is dropped rather than rendered", () => {
-    const shelves = discoveryShelves(depsWith({}, [], [], {}));
+    const shelves = discoveryShelves(depsWith({ upcoming: {} }));
     for (const id of ["airing-soon-series", "airing-soon-movies", "coming-soon-movies"]) {
       expect(shelves.map((s) => s.id)).not.toContain(id);
     }
     // With no library mirror there is nothing recently added either.
     expect(shelves.map((s) => s.id)).not.toContain("recently-added");
+    // Same for an empty request log: nobody has asked for anything yet.
+    expect(shelves.map((s) => s.id)).not.toContain("recently-requested");
   });
 
   /**
@@ -129,7 +160,7 @@ describe("discoveryShelves", () => {
    */
   test("owned titles leave the TMDB rows and stay on the arr rows", () => {
     const owned = ["up-tmdb-movie", "up-tmdb-series", "up-radarr", "up-sonarr"];
-    const ids = discoveryShelves(depsWith({}, owned)).map((s) => s.id);
+    const ids = discoveryShelves(depsWith({ owned })).map((s) => s.id);
     expect(ids).not.toContain("coming-soon-movies");
     expect(ids).not.toContain("coming-soon-series");
     expect(ids).toContain("airing-soon-movies");
@@ -160,16 +191,16 @@ describe("discoveryShelves", () => {
    */
   test("what the library already holds is dropped from the recommendation shelves", () => {
     const shelves = discoveryShelves(
-      depsWith(
-        {
+      depsWith({
+        engine: {
           // Two candidates, one of them owned, so the filter has something to do and
           // something to leave behind.
           topRated: (opts = {}) => [row("owned-1"), row(`top-${opts.kind}`)],
           topRatedInGenre: () => [row("owned-1"), row("genre-Horror")],
           newThisDecade: () => [row("owned-1"), row("decade")],
         },
-        ["owned-1"],
-      ),
+        owned: ["owned-1"],
+      }),
     );
     const rowsOf = (id: string) => shelves.find((s) => s.id === id)?.rows.map((r) => r.tconst);
     expect(rowsOf("top-movies")).toEqual(["top-movie"]);
@@ -185,18 +216,48 @@ describe("discoveryShelves", () => {
    */
   test("a canonical list keeps what you own", () => {
     const shelves = discoveryShelves(
-      depsWith({ browse: () => ({ rows: [row("owned-1")], total: 1 }) }, ["owned-1"], [], UPCOMING, [
-        "owned-1",
-      ]),
+      depsWith({
+        engine: { browse: () => ({ rows: [row("owned-1")], total: 1 }) },
+        owned: ["owned-1"],
+        trending: ["owned-1"],
+      }),
     );
     expect(shelves.find((s) => s.id === "top-250")?.rows.map((r) => r.tconst)).toEqual(["owned-1"]);
     expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual(["owned-1"]);
   });
 
   test("recently-added is read out of the mirror, in the mirror's order", () => {
-    const shelves = discoveryShelves(depsWith({}, [], ["tt2", "tt1"]));
+    const shelves = discoveryShelves(depsWith({ added: ["tt2", "tt1"] }));
     const recent = shelves.find((s) => s.id === "recently-added");
     expect(recent?.rows.map((r) => r.tconst)).toEqual(["tt2", "tt1"]);
+  });
+
+  test("recently-requested is read out of the request log, in the log's order", () => {
+    const shelves = discoveryShelves(depsWith({ requested: ["tt9", "tt8"] }));
+    const requested = shelves.find((s) => s.id === "recently-requested");
+    expect(requested?.rows.map((r) => r.tconst)).toEqual(["tt9", "tt8"]);
+  });
+
+  /**
+   * A request the reader has since received is still something they asked for, so it stays
+   * on this shelf -- the two rows answer different questions and are allowed to overlap.
+   */
+  test("a requested title that has arrived stays on recently-requested", () => {
+    const shelves = discoveryShelves(depsWith({ owned: ["tt7"], added: ["tt7"], requested: ["tt7"] }));
+    const requested = shelves.find((s) => s.id === "recently-requested");
+    expect(requested?.rows.map((r) => r.tconst)).toEqual(["tt7"]);
+  });
+
+  /** The index is rebuilt independently of the request log, so an id can go missing from it. */
+  test("a requested id the index cannot resolve is skipped rather than rendered blank", () => {
+    const shelves = discoveryShelves(
+      depsWith({
+        requested: ["tt-dropped", "tt-known"],
+        engine: { byTconst: (id) => (id === "tt-known" ? row(id) : null) },
+      }),
+    );
+    const requested = shelves.find((s) => s.id === "recently-requested");
+    expect(requested?.rows.map((r) => r.tconst)).toEqual(["tt-known"]);
   });
 
   /** The decade chip must point at the decade we are in, not at whenever this shipped. */
@@ -211,7 +272,7 @@ describe("discoveryShelves", () => {
    * exact shelf this one exists instead of.
    */
   test("trending is drawn in the mirror's order, not re-sorted", () => {
-    const shelves = discoveryShelves(depsWith({}, [], [], UPCOMING, ["tr-3", "tr-1", "tr-2"]));
+    const shelves = discoveryShelves(depsWith({ trending: ["tr-3", "tr-1", "tr-2"] }));
     expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual([
       "tr-3",
       "tr-1",
@@ -235,7 +296,7 @@ describe("discoveryShelves", () => {
    * same reason. The grid already marks an owned title.
    */
   test("trending keeps titles you already own", () => {
-    const shelves = discoveryShelves(depsWith({}, ["tr-owned"], [], UPCOMING, ["tr-owned", "tr-new"]));
+    const shelves = discoveryShelves(depsWith({ owned: ["tr-owned"], trending: ["tr-owned", "tr-new"] }));
     expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual([
       "tr-owned",
       "tr-new",
@@ -245,10 +306,10 @@ describe("discoveryShelves", () => {
   /** The mirror and the index refresh on different timers, so a swap can retire a row. */
   test("a trending row the index cannot draw is skipped, not rendered blank", () => {
     const shelves = discoveryShelves(
-      depsWith({ byTconst: (id) => (id === "tr-gone" ? null : row(id)) }, [], [], UPCOMING, [
-        "tr-here",
-        "tr-gone",
-      ]),
+      depsWith({
+        engine: { byTconst: (id) => (id === "tr-gone" ? null : row(id)) },
+        trending: ["tr-here", "tr-gone"],
+      }),
     );
     expect(shelves.find((s) => s.id === "trending")?.rows.map((r) => r.tconst)).toEqual(["tr-here"]);
   });

@@ -1346,6 +1346,31 @@ export class Store implements SearchLogSink {
     return row.c;
   }
 
+  /**
+   * IMDb ids of the most recently requested titles, newest first.
+   *
+   * Ordered by `created_at` -- when it was ASKED FOR -- and never by `updated_at`, which the
+   * worker rewrites on every status change: a request retrying its way through a stalled
+   * download would otherwise keep jumping back to the head of the shelf and read as newer
+   * than requests made after it. `id` breaks the tie, because ISO timestamps collide for two
+   * requests made in the same millisecond and a shelf whose order reshuffles between loads is
+   * worse than one that is merely imperfect.
+   *
+   * EVERY status is included, deliberately. `failed` and `no_release` are exactly the
+   * requests worth surfacing again -- a title with no copy last week may have one now -- and
+   * they appear nowhere else on the front page.
+   *
+   * Not filtered by `requested_by` either: this answers "what has been asked for", which is
+   * what the front page shows, and `listRequestsFor` above is the per-person question.
+   */
+  recentlyRequestedIds(limit = 24): string[] {
+    return (
+      this.db.query("select tconst from request order by created_at desc, id desc limit ?").all(limit) as {
+        tconst: string;
+      }[]
+    ).map((r) => r.tconst);
+  }
+
   requestMap(): Map<string, MediaRequest> {
     const rows = this.db.query("select * from request").all() as MediaRequest[];
     return new Map(rows.map((r) => [r.tconst, r]));

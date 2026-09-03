@@ -20,11 +20,15 @@
  * from one of three things that already refresh on their own schedule, and each one calls
  * `refresh()` for its own tier when it has finished writing:
  *
- * | tier    | written by             | cadence            |
- * |---------|------------------------|--------------------|
- * | `arr`   | `refreshLibrary()`     | 60s                |
- * | `tmdb`  | `refreshTmdbLists()`   | 6h                 |
- * | `index` | the index swap         | daily, 09:00 UTC   |
+ * | tier    | written by                          | cadence               |
+ * |---------|-------------------------------------|-----------------------|
+ * | `arr`   | `refreshLibrary()`, the request log | 60s, and on each ask  |
+ * | `tmdb`  | `refreshTmdbLists()`                | 6h                    |
+ * | `index` | the index swap                      | daily, 09:00 UTC      |
+ *
+ * The request log is the one arr-tier source a PERSON writes rather than a timer, so
+ * `POST /api/requests` refreshes the tier itself -- "Recently requested" would otherwise be
+ * up to 60 seconds behind the click that filled it.
  *
  * A 60-second refresh of "Recently added" therefore re-runs two mirror lookups and leaves
  * the five genre queries alone, because they cannot have changed. The staleness this adds

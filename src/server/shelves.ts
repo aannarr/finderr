@@ -39,21 +39,28 @@ export interface ShelfDeps {
     SearchEngine,
     "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse" | "hasRank"
   >;
-  store: Pick<Store, "libraryMap" | "recentlyAddedIds" | "upcomingBySource" | "trending">;
+  store: Pick<
+    Store,
+    "libraryMap" | "recentlyAddedIds" | "recentlyRequestedIds" | "upcomingBySource" | "trending"
+  >;
   /** Injected so which decade counts as "this" one is pinnable rather than ambient. */
   now?: () => number;
 }
 
 /**
- * The newest titles in the library, as index rows.
+ * Index rows for a list of ids, in the order given, skipping any the index cannot resolve.
  *
- * The mirror stores ids and the arr's `added` date; the index has everything a card
- * needs. Order is preserved from the mirror because the index lookup does not carry one
- * -- losing it would make the shelf "some things you own" rather than "new".
+ * The library mirror and the request log both store ids and a date; the index has everything
+ * a card needs to draw. The CALLER owns the order, because the index lookup carries none --
+ * losing it would make a shelf "some titles" rather than "the newest".
+ *
+ * `byTconst` is allowed to answer null for the same reason `fromUpcoming` tolerates it: the
+ * mirrors and the index are refreshed on different timers, so a swap can retire a row
+ * between them.
  */
-function recentlyAdded(deps: ShelfDeps, limit: number): TitleRow[] {
+function indexRows(deps: ShelfDeps, ids: readonly string[]): TitleRow[] {
   const out: TitleRow[] = [];
-  for (const id of deps.store.recentlyAddedIds(limit)) {
+  for (const id of ids) {
     const row = deps.engine.byTconst(id);
     if (row) out.push(row);
   }
@@ -111,14 +118,10 @@ function fromUpcoming(deps: ShelfDeps, source: UpcomingSource, limit: number): U
  * an owned title, so nothing is lost by leaving them in.
  */
 function trendingRows(deps: ShelfDeps, limit: number): TitleRow[] {
-  const out: TitleRow[] = [];
-  for (const row of deps.store.trending(limit)) {
-    // The mirror and the index refresh on different timers, so a swap can retire a row
-    // between them -- the same reason `fromUpcoming` tolerates a null here.
-    const title = deps.engine.byTconst(row.tconst);
-    if (title) out.push(title);
-  }
-  return out;
+  return indexRows(
+    deps,
+    deps.store.trending(limit).map((r) => r.tconst),
+  );
 }
 
 /** An index row plus what the upcoming mirror knows about it. */
@@ -177,9 +180,10 @@ export interface ShelfSpec {
   /**
    * Whether what you already have is dropped from this shelf.
    *
-   * False is a real editorial choice on three shelves rather than an oversight -- the Top
-   * 250 and "Popular right now" are canonical LISTS that would be lying with holes in them,
-   * and "Recently added" is your library by definition.
+   * False is a real editorial choice on four shelves rather than an oversight -- the Top 250
+   * and "Popular right now" are canonical LISTS that would be lying with holes in them,
+   * "Recently added" is your library by definition, and "Recently requested" is a record of
+   * what you asked for, which an arrival does not undo.
    */
   excludeOwned?: boolean;
   /** Candidates, WITHOUT the owned filter. Cheap to hold, expensive to compute. */
@@ -218,7 +222,39 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       subtitle: "newest in Radarr and Sonarr",
       tier: "arr",
       limit: 24,
-      rows: () => recentlyAdded(deps, 24),
+      rows: () => indexRows(deps, deps.store.recentlyAddedIds(24)),
+    },
+    /*
+      WHAT WAS ASKED FOR, WHETHER OR NOT IT HAS ARRIVED.
+
+      "Recently added" only shows a title once the download has FINISHED, so everything a
+      reader is waiting on -- queued, downloading, stalled, failed, no release found -- is
+      invisible on the front page until the moment it stops being interesting. This row reads
+      the request log instead of the library mirror and answers the other question: what did
+      I ask for, and where has it got to.
+
+      Beside "recently added" because they are the two halves of "what is new to ME", which
+      is what the row below is under: the reader gets their library, then their requests,
+      then what everybody else is watching.
+
+      It does NOT exclude what you own, and unlike the canonical lists below that is not an
+      editorial call -- a request that has since arrived is still a thing you asked for, and
+      dropping it would empty the shelf of exactly the requests that went well. A title on
+      both this row and "recently added" is correct: they answer different questions, and
+      `frontPageTitles` sees to it that it is only warmed once.
+
+      `arr` tier, which is the closest true statement rather than an exact one: the request
+      log is written by the request route and the reconcile pass, not by `refreshLibrary()`.
+      It shares the arr tier's 60-second cadence, and the request route primes that tier
+      itself so a reader never has to wait a minute to see their own ask.
+    */
+    {
+      id: "recently-requested",
+      title: "Recently requested",
+      subtitle: "what has been asked for, newest first",
+      tier: "arr",
+      limit: 24,
+      rows: () => indexRows(deps, deps.store.recentlyRequestedIds(24)),
     },
     /*
       POPULAR RIGHT NOW, AND IT IS THE ONE SHELF NO LOCAL QUERY COULD PRODUCE.
@@ -228,12 +264,13 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       EVER rated a title, so a votes-ordered "popular" shelf is a list of the same great
       films every week. That is not a shortcoming of the query, it is the wrong number.
 
-      Second, under "recently added", because it answers the other half of the question a
+      Directly under the "yours" rows, because it answers the other half of the question a
       reader opens the front page with -- what is new to ME, then what is new to everyone.
       It shipped THIRD, under the Top 250, while this comment already claimed second: an
       all-time canonical list wedged between "new to me" and "new to everyone" breaks the
       pairing the placement exists for, so the code was moved to the comment rather than
-      the other way round, and the order is pinned by a test now.
+      the other way round. "Recently requested" then landed above it, which is the same half
+      of the pairing rather than a break in it, and the order is pinned by a test either way.
 
       Empty is the ordinary state without a TMDB key: the sync never runs, the table stays
       empty, and the filter at the bottom of this function drops the shelf entirely. A
