@@ -1043,15 +1043,40 @@ export async function postRequest(
  * no `MediaRequest` because the episode mirror is the record.
  */
 export async function postEpisodeRequest(tconst: string, season: number, episode: number): Promise<void> {
-  const res = await fetch("/api/requests/episode", {
+  await postRequestGrain("/api/requests/episode", { tconst, season, episode }, "episode request");
+}
+
+/**
+ * Ask Sonarr for the REST of one season of a series it already holds.
+ *
+ * The body names a SEASON and never a list of episodes: the server picks them off the
+ * episode mirror, which is the only thing that knows what aired and what we hold. That is
+ * also why the count comes back rather than being assumed -- the mirror may have moved on
+ * since the page drew its "missing 4 episodes" line, and the toast should say what was
+ * actually queued.
+ */
+export async function postSeasonRequest(tconst: string, season: number): Promise<{ episodes: number }> {
+  const body = await postRequestGrain("/api/requests/season", { tconst, season }, "season request");
+  return { episodes: (body as { queued?: { episodes?: number } }).queued?.episodes ?? 0 };
+}
+
+/**
+ * POST one of the request grains and turn a refusal into the server's own sentence.
+ *
+ * Shared by the two grains that write no `MediaRequest`, because their whole client half is
+ * this: a JSON body out, an error message back. `postRequest` is deliberately NOT folded in
+ * -- it returns a request row, takes admin overrides through `requestBody`, and its 202 is a
+ * different shape.
+ */
+async function postRequestGrain(path: string, body: unknown, what: string): Promise<unknown> {
+  const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tconst, season, episode }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `episode request failed: ${res.status}`);
-  }
+  const parsed = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(parsed.error ?? `${what} failed: ${res.status}`);
+  return parsed;
 }
 
 /**

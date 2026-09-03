@@ -90,6 +90,7 @@ const EXPENSIVE_OPERATIONS: ReadonlySet<string> = new Set([
   // Starts a real download.
   "POST /api/requests",
   "POST /api/requests/episode",
+  "POST /api/requests/season",
 ]);
 
 export function agentBucket(path: string, method: string): AgentBucket {

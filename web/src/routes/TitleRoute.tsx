@@ -21,7 +21,7 @@ import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
-import { postEpisodeRequest, type RequestOverrides, type Title } from "../lib/api";
+import { postEpisodeRequest, postSeasonRequest, type RequestOverrides, type Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
@@ -120,6 +120,30 @@ export function TitleRoute() {
     const id = toasts.push(`Requesting ${title.title} ${label}`);
     void postEpisodeRequest(title.tconst, season, episode)
       .then(() => toasts.resolve(id, "success", `Sonarr is looking for ${label}`))
+      .catch((e: Error) => toasts.resolve(id, "error", e.message));
+  };
+
+  /*
+    The same operation one grain up, and the same optimism rule: no local copy of what was
+    clicked, because the mirror is the record.
+
+    The COUNT in the success line is the server's, not the button's. The button was drawn
+    from a summary of a mirror that may have moved since -- an episode can have landed
+    between the render and the click -- and reporting what was actually queued is the only
+    number that is true when it is read.
+  */
+  const requestSeason = (season: number) => {
+    if (!title) return;
+    const label = `Season ${season}`;
+    const id = toasts.push(`Requesting ${title.title} ${label}`);
+    void postSeasonRequest(title.tconst, season)
+      .then(({ episodes }) =>
+        toasts.resolve(
+          id,
+          "success",
+          `Sonarr is looking for ${episodes} episode${episodes === 1 ? "" : "s"} of ${label}`,
+        ),
+      )
       .catch((e: Error) => toasts.resolve(id, "error", e.message));
   };
 
@@ -371,6 +395,7 @@ export function TitleRoute() {
         episodeState={episodeState}
         awards={awards}
         onRequestEpisode={requestEpisode}
+        onRequestSeason={requestSeason}
       />
     </>
   );

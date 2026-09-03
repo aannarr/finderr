@@ -11,8 +11,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { EpisodeState } from "../lib/api";
-import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
-import { SeriesPane } from "./SeriesPane";
+import type { Episode, ResolvedFacets, Season } from "../lib/facets";
+import { SeriesPane, type SeriesPaneProps } from "./SeriesPane";
 
 function season(over: Partial<Season> & { number: number }): Season {
   return { name: null, episodeCount: 10, premiereDate: null, endDate: null, image: null, ...over };
@@ -43,15 +43,15 @@ const GOT_EPISODES: Episode[] = [
   }),
 ];
 
-function render(
-  facets: ResolvedFacets | undefined,
-  working: readonly FacetName[] = ["seasons", "episodes"],
-  episodeState?: readonly EpisodeState[],
-  problems?: readonly FacetProblem[],
-): string {
-  return renderToStaticMarkup(
-    <SeriesPane facets={facets} working={working} problems={problems} episodeState={episodeState} />,
-  );
+/**
+ * The pane with both facets working, and anything else the case under test needs.
+ *
+ * An override OBJECT rather than a row of positional extras: this component has grown a
+ * prop per grain of request it offers, and a helper taking five optional positionals is one
+ * a reader has to count commas in.
+ */
+function render(facets: ResolvedFacets | undefined, over: Partial<SeriesPaneProps> = {}): string {
+  return renderToStaticMarkup(<SeriesPane facets={facets} working={["seasons", "episodes"]} {...over} />);
 }
 
 describe("a film", () => {
@@ -73,13 +73,13 @@ describe("before the providers have answered", () => {
 
   test("gives up quietly once no provider is working on either facet", () => {
     const pending: ResolvedFacets = { seasons: { status: "pending" }, episodes: { status: "pending" } };
-    expect(render(pending, [])).toBe("");
+    expect(render(pending, { working: [] })).toBe("");
   });
 
   /** The pane is built on TWO facets, so each half follows the work state of its own. */
   test("keeps the seasons skeleton while only seasons is still being worked", () => {
     const pending: ResolvedFacets = { seasons: { status: "pending" }, episodes: { status: "pending" } };
-    expect(render(pending, ["seasons"])).toContain("animate-pulse");
+    expect(render(pending, { working: ["seasons"] })).toContain("animate-pulse");
   });
 });
 
@@ -167,14 +167,14 @@ describe("the season-gap line", () => {
   ];
 
   test("says what is complete and what is short, in one line", () => {
-    expect(render(facets, ["seasons", "episodes"], HELD)).toContain(
+    expect(render(facets, { episodeState: HELD })).toContain(
       "Downloaded: Season 1 complete, Season 2 missing 1 episode",
     );
   });
 
   /** It is about the series, so it belongs above the chip that picks one season of it. */
   test("sits above the selector", () => {
-    const html = render(facets, ["seasons", "episodes"], HELD);
+    const html = render(facets, { episodeState: HELD });
     expect(html.indexOf("Downloaded:")).toBeLessThan(html.indexOf('role="group"'));
   });
 
@@ -189,7 +189,113 @@ describe("the season-gap line", () => {
    */
   test("waits for the episodes facet rather than guessing from the seasons one", () => {
     const seasonsOnly: ResolvedFacets = { ...facets, episodes: { status: "pending" } };
-    expect(render(seasonsOnly, ["episodes"], HELD)).not.toContain("Downloaded:");
+    expect(render(seasonsOnly, { working: ["episodes"], episodeState: HELD })).not.toContain("Downloaded:");
+  });
+});
+
+/**
+ * The one click that answers the sentence above the chips.
+ *
+ * Every fixture here is a ONE-SEASON show, so the season the pane opens on is the season
+ * under test: choosing another needs a click, and these assertions are about what is drawn
+ * for a holding rather than about the selector.
+ *
+ * Air dates are 2011's for the same reason the gap line's are -- the pane asks the real
+ * clock what today is.
+ */
+describe("the season request button", () => {
+  const oneSeason = (episodes: Episode[]): ResolvedFacets => ({
+    seasons: { status: "ready", data: [season({ number: 1, episodeCount: episodes.length })] },
+    episodes: { status: "ready", data: episodes },
+  });
+
+  const AIRED: Episode[] = [
+    episode({ season: 1, number: 1, title: "Winter Is Coming", airDate: "2011-04-17" }),
+    episode({ season: 1, number: 2, title: "The Kingsroad", airDate: "2011-04-24" }),
+    episode({ season: 1, number: 3, title: "Lord Snow", airDate: "2011-05-01" }),
+  ];
+
+  const held = (over: Partial<EpisodeState> & { episode: number }): EpisodeState => ({
+    season: 1,
+    arrEpisodeId: over.episode,
+    hasFile: false,
+    monitored: false,
+    airDate: "2011-04-17",
+    ...over,
+  });
+
+  const requestSeason = () => {};
+
+  test("offers the gap in one click, counted by the same rule as the sentence", () => {
+    const html = render(oneSeason(AIRED), {
+      episodeState: [held({ episode: 1, hasFile: true }), held({ episode: 2 }), held({ episode: 3 })],
+      onRequestSeason: requestSeason,
+    });
+    expect(html).toContain("Downloaded: Season 1 missing 2 episodes");
+    expect(html).toContain("Request the 2 missing episodes");
+  });
+
+  test("counts the episodes Sonarr is already searching for, and says so", () => {
+    // `wanted` draws no per-row button, but it IS a hole in the season, so the summary and
+    // this button agree about it -- and the tooltip is where the reader is told.
+    const html = render(oneSeason(AIRED), {
+      episodeState: [
+        held({ episode: 1, hasFile: true }),
+        held({ episode: 2, monitored: true }),
+        held({ episode: 3 }),
+      ],
+      onRequestSeason: requestSeason,
+    });
+    expect(html).toContain("Request the 2 missing episodes");
+    expect(html).toContain("including any it is already looking for");
+  });
+
+  test("says episode rather than episodes when there is one", () => {
+    const html = render(oneSeason(AIRED), {
+      episodeState: [
+        held({ episode: 1, hasFile: true }),
+        held({ episode: 2, hasFile: true }),
+        held({ episode: 3 }),
+      ],
+      onRequestSeason: requestSeason,
+    });
+    expect(html).toContain("Request the missing episode");
+  });
+
+  test("is absent for a season we hold in full", () => {
+    const html = render(oneSeason(AIRED), {
+      episodeState: AIRED.map((e) => held({ episode: e.number, hasFile: true })),
+      onRequestSeason: requestSeason,
+    });
+    expect(html).toContain("Downloaded: Season 1 complete");
+    expect(html).not.toContain("Request the");
+  });
+
+  test("is absent for a season still airing that we are up to date on", () => {
+    // `current` is not a hole: holding everything broadcast so far is the best a reader can
+    // be, and a button offering to fetch next week's episode is a dead control.
+    const airing = [...AIRED, episode({ season: 1, number: 4, title: "Cripples", airDate: "2099-01-01" })];
+    const html = render(oneSeason(airing), {
+      episodeState: [
+        ...AIRED.map((e) => held({ episode: e.number, hasFile: true })),
+        held({ episode: 4, airDate: "2099-01-01" }),
+      ],
+      onRequestSeason: requestSeason,
+    });
+    expect(html).toContain("Downloaded: Season 1 up to date");
+    expect(html).not.toContain("Request the");
+  });
+
+  test("is absent for a series Sonarr does not hold -- there is nothing to be short of", () => {
+    expect(render(oneSeason(AIRED), { onRequestSeason: requestSeason })).not.toContain("Request the");
+  });
+
+  test("is absent when the page offers no handler at all", () => {
+    const html = render(oneSeason(AIRED), {
+      episodeState: [held({ episode: 1, hasFile: true }), held({ episode: 2 }), held({ episode: 3 })],
+    });
+    expect(html).toContain("Downloaded: Season 1 missing 2 episodes");
+    expect(html).not.toContain("Request the");
   });
 });
 
@@ -247,9 +353,13 @@ describe("the two facets resolving apart", () => {
     // The episode half is the BODY of the seasons pane rather than a pane of its own, so it
     // cannot reach this sentence through `FacetPane` -- but a selector sitting over silence
     // is the exact gap this exists to close, and the wording has one owner either way.
-    const html = render({ ...seasonsOnly, episodes: { status: "failed" } }, [], undefined, [
-      { pluginId: "servarr-metadata", facet: "episodes", reason: "timeout" },
-    ]);
+    const html = render(
+      { ...seasonsOnly, episodes: { status: "failed" } },
+      {
+        working: [],
+        problems: [{ pluginId: "servarr-metadata", facet: "episodes", reason: "timeout" }],
+      },
+    );
     expect(html).toContain("Season 1 · Winter is Coming");
     expect(html).toContain("Unavailable: servarr-metadata timed out");
   });

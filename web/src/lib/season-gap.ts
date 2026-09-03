@@ -19,8 +19,8 @@
  * of `episodeStanding`, so a season summary can never contradict the dots beneath it.
  */
 
-import type { EpisodeState } from "../../../src/lib/episodes";
-import { episodeStanding, episodeStateIndex, episodesForSeason, SPECIALS_SEASON } from "./facet-panes";
+import { airedWithoutFile, type EpisodeState, episodeStanding } from "../../../src/lib/episodes";
+import { episodeStateIndex, episodesForSeason, SPECIALS_SEASON } from "./facet-panes";
 import type { Episode, Season } from "./facets";
 import { summariseSeasons } from "./season-select";
 
@@ -87,19 +87,12 @@ function seasonGap(
   let unaired = 0;
 
   for (const episode of episodes) {
-    switch (episodeStanding(state.get(`${episode.season}:${episode.number}`), today)) {
-      case "owned":
-        owned += 1;
-        break;
-      // `wanted` and `missing` differ only in whether Sonarr is already looking. Both mean
-      // the episode aired and we do not have it, which is the whole question here.
-      case "wanted":
-      case "missing":
-        missing += 1;
-        break;
-      default:
-        unaired += 1;
-    }
+    const standing = episodeStanding(state.get(`${episode.season}:${episode.number}`), today);
+    if (standing === "owned") owned += 1;
+    // `airedWithoutFile` owns the wanted/missing pair, so this count and the ids the
+    // season request actually enqueues can never mean two different things.
+    else if (airedWithoutFile(standing)) missing += 1;
+    else unaired += 1;
   }
 
   if (owned + missing === 0) return null;

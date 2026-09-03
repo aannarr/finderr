@@ -20,6 +20,7 @@ import {
   cachedDiscover,
   getDiscover,
   getTitleDetail,
+  postSeasonRequest,
   prefetchTitle,
   resetCaches,
 } from "./api";
@@ -215,5 +216,51 @@ describe("cachedBrowseRun", () => {
     pagedFetch([["a", "b"]]);
     await browse(filters, { limit: 2, offset: 0 });
     expect(cachedBrowseRun({ genre: "Comedy" }, { limit: 2 })).toBeUndefined();
+  });
+});
+
+/**
+ * The whole reason the season grain exists on the server rather than in the browser: a
+ * ten-episode gap must cost ONE request, and the episodes must be the server's choice.
+ */
+describe("postSeasonRequest", () => {
+  let bodies: string[] = [];
+
+  function stubSeasonFetch(res: { ok: boolean; status?: number; body?: unknown }) {
+    bodies = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push(String(url));
+      bodies.push(String(init?.body));
+      return {
+        ok: res.ok,
+        status: res.status ?? 202,
+        json: async () => res.body ?? {},
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  test("sends ONE post naming a season, and no episode list", async () => {
+    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", season: 3, episodes: 4 } } });
+    await postSeasonRequest("tt1", 3);
+
+    expect(calls).toEqual(["/api/requests/season"]);
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ tconst: "tt1", season: 3 });
+  });
+
+  test("reports the count the SERVER queued, not the one the button was drawn from", async () => {
+    // The mirror can move between the render and the click, and the toast has to be true
+    // when it is read rather than when the page was assembled.
+    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", season: 3, episodes: 2 } } });
+    expect(await postSeasonRequest("tt1", 3)).toEqual({ episodes: 2 });
+  });
+
+  test("surfaces the server's own sentence on a refusal", async () => {
+    stubSeasonFetch({ ok: false, status: 409, body: { error: "request the series first" } });
+    await expect(postSeasonRequest("tt1", 3)).rejects.toThrow("request the series first");
+  });
+
+  test("falls back to the status when a refusal carries no sentence", async () => {
+    stubSeasonFetch({ ok: false, status: 503 });
+    await expect(postSeasonRequest("tt1", 3)).rejects.toThrow("season request failed: 503");
   });
 });

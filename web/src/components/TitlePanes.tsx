@@ -118,6 +118,8 @@ export interface TitlePanesProps {
   episodeState?: readonly EpisodeState[];
   /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
   onRequestEpisode?: (season: number, episode: number) => void;
+  /** Ask Sonarr for the rest of one season. Absent means the season control is not offered. */
+  onRequestSeason?: (season: number) => void;
   /**
    * What the Academy gave this film, from our own imported tables.
    *
@@ -339,6 +341,7 @@ export function TitleLowerPanes({
   episodeState,
   awards,
   onRequestEpisode,
+  onRequestSeason,
 }: TitlePanesProps) {
   const shared = { facets, working, problems };
   const slot = slotFor(panes);
@@ -355,6 +358,7 @@ export function TitleLowerPanes({
         variant="panel"
         episodeState={episodeState}
         onRequestEpisode={onRequestEpisode}
+        onRequestSeason={onRequestSeason}
       />
       {slot("title.after-seasons")}
 

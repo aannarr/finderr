@@ -677,6 +677,7 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/requests?mine=1` | the same shape, narrowed to the caller. A server-side filter, because `requested_by` is stripped before a non-admin ever sees it |
 | `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
 | `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |
+| `POST` | `/api/requests/season` `{tconst, season}` | every aired episode of that season we hold no file for, including any Sonarr is already searching for. The server picks them off the mirror; the client never sends a list |
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
 | `POST` | `/api/webhook/arr` | public, and the only public route that CHANGES state. Radarr's and Sonarr's Webhook payloads; basic auth, and closed until a password is set. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |

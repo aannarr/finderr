@@ -25,14 +25,13 @@
  */
 
 import { type ReactNode, useState } from "react";
+import { type EpisodeStanding, episodeStanding, todayUtc } from "../../../src/lib/episodes";
 import type { EpisodeState } from "../lib/api";
 import {
   adjacentSeasonNumber,
   defaultSeasonNumber,
-  type EpisodeStanding,
   episodeLabel,
   episodeSkeletonRows,
-  episodeStanding,
   episodeStateIndex,
   episodesForSeason,
   formatCalendarDate,
@@ -42,10 +41,9 @@ import {
   paneView,
   seasonAirRange,
   seasonLabel,
-  todayUtc,
 } from "../lib/facet-panes";
 import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
-import { seriesGap, summariseSeriesGap } from "../lib/season-gap";
+import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
 import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
@@ -64,6 +62,8 @@ export interface SeriesPaneProps {
   episodeState?: readonly EpisodeState[];
   /** Ask Sonarr for one episode. Absent means the control is not offered at all. */
   onRequestEpisode?: (season: number, episode: number) => void;
+  /** Ask Sonarr for the rest of one season. Absent means the control is not offered at all. */
+  onRequestSeason?: (season: number) => void;
 }
 
 export function SeriesPane({
@@ -73,6 +73,7 @@ export function SeriesPane({
   variant,
   episodeState,
   onRequestEpisode,
+  onRequestSeason,
 }: SeriesPaneProps) {
   return (
     <FacetPane
@@ -91,6 +92,7 @@ export function SeriesPane({
           problems={problems}
           episodeState={episodeState}
           onRequestEpisode={onRequestEpisode}
+          onRequestSeason={onRequestSeason}
         />
       )}
     />
@@ -114,6 +116,7 @@ function SeasonBrowser({
   problems,
   episodeState,
   onRequestEpisode,
+  onRequestSeason,
 }: {
   seasons: Season[];
   facets: ResolvedFacets | undefined;
@@ -121,6 +124,7 @@ function SeasonBrowser({
   problems: readonly FacetProblem[] | undefined;
   episodeState?: readonly EpisodeState[];
   onRequestEpisode?: (season: number, episode: number) => void;
+  onRequestSeason?: (season: number) => void;
 }) {
   const ordered = orderSeasons(seasons);
   const [chosen, setChosen] = useState<number | null>(null);
@@ -133,6 +137,11 @@ function SeasonBrowser({
   const episodes = paneView(facets, "episodes", working, problems);
   const today = todayUtc();
 
+  // Counted ONCE for the pane, for the same reason `episodes` is fetched once: the sentence
+  // above the chips and the button on the season header are the same arithmetic, and two
+  // calls would be two chances for the header to offer a number the line does not show.
+  const gap = episodes.state === "content" ? seriesGap(ordered, episodes.data, episodeState, today) : [];
+
   // A single-season show has nothing to step between, so it gets no keys and no glyphs.
   const stepable = ordered.length > 1;
   const step = (direction: 1 | -1) => setChosen(adjacentSeasonNumber(ordered, selected, direction));
@@ -141,12 +150,7 @@ function SeasonBrowser({
 
   return (
     <>
-      <SeasonStandingLine
-        seasons={ordered}
-        episodes={episodes.state === "content" ? episodes.data : undefined}
-        episodeState={episodeState}
-        today={today}
-      />
+      <SeasonStandingLine gap={gap} />
 
       {/*
         A named group, which this row did NOT have before the arrow keys.
@@ -186,7 +190,13 @@ function SeasonBrowser({
         </div>
       </div>
 
-      {season && <SeasonHeader season={season} />}
+      {season && (
+        <SeasonHeader
+          season={season}
+          gap={gap.find((g) => g.season === season.number) ?? null}
+          onRequestSeason={onRequestSeason}
+        />
+      )}
       {season && (
         <SeasonEpisodes
           season={season}
@@ -209,22 +219,12 @@ function SeasonBrowser({
  *
  * It draws nothing for a series Sonarr does not hold, which is most of them -- `seriesGap`
  * returns an empty list without `episodeState` and the sentence is then null. Nothing is
- * also the right answer while the `episodes` facet is still landing: a summary that
- * appeared saying one thing and then corrected itself would be worse than a short wait.
+ * also the right answer while the `episodes` facet is still landing: an empty gap is what
+ * the browser hands down until then, so a summary can never appear saying one thing and
+ * then correct itself.
  */
-function SeasonStandingLine({
-  seasons,
-  episodes,
-  episodeState,
-  today,
-}: {
-  seasons: readonly Season[];
-  episodes: Episode[] | undefined;
-  episodeState: readonly EpisodeState[] | undefined;
-  today: string;
-}) {
-  if (!episodes) return null;
-  const sentence = summariseSeriesGap(seriesGap(seasons, episodes, episodeState, today));
+function SeasonStandingLine({ gap }: { gap: readonly SeasonGap[] }) {
+  const sentence = summariseSeriesGap(gap);
   if (!sentence) return null;
 
   return <p className="mb-3 text-xs text-muted">{sentence}</p>;
@@ -239,7 +239,15 @@ function SeasonStandingLine({
  * perfectly without art, and an always-empty grey box would be a permanent apology for a
  * feature that is not here. It starts drawing itself when the facet image proxy lands.
  */
-function SeasonHeader({ season }: { season: Season }) {
+function SeasonHeader({
+  season,
+  gap,
+  onRequestSeason,
+}: {
+  season: Season;
+  gap: SeasonGap | null;
+  onRequestSeason?: (season: number) => void;
+}) {
   const poster = localImageUrl(season.image);
   const range = seasonAirRange(season);
 
@@ -257,7 +265,42 @@ function SeasonHeader({ season }: { season: Season }) {
         <h4 className="text-sm font-medium text-ink">{seasonLabel(season)}</h4>
         {range && <p className="text-xs tabular-nums text-muted">{range}</p>}
       </div>
+      <SeasonGapButton gap={gap} onRequest={onRequestSeason && (() => onRequestSeason(season.number))} />
     </div>
+  );
+}
+
+/**
+ * "Request the 4 missing episodes" -- the one click the standing line above has been
+ * describing.
+ *
+ * Drawn ONLY where that line says there is a hole: `partial` is the single holding with
+ * anything to fetch, and the count is `SeasonGap.missing` rather than a second tally, so the
+ * button can never offer a number the sentence does not show.
+ *
+ * NOT quiet-until-hover like the per-row button. That one hides because it repeats down 73
+ * rows and would be a wall of controls; there is exactly one of these on screen, and it is
+ * the answer to the sentence a reader has just read.
+ *
+ * It re-searches the episodes Sonarr is already looking for, and the tooltip says so. The
+ * alternative -- fetching only the unmonitored ones -- would mean a button reading "4" that
+ * asks for two, and disagreeing with the summary is worse than one redundant indexer search.
+ */
+function SeasonGapButton({ gap, onRequest }: { gap: SeasonGap | null; onRequest?: () => void }) {
+  if (!onRequest || gap?.holding !== "partial") return null;
+
+  const label =
+    gap.missing === 1 ? "Request the missing episode" : `Request the ${gap.missing} missing episodes`;
+
+  return (
+    <button
+      type="button"
+      onClick={onRequest}
+      title="Sonarr will search for every aired episode of this season it has no file for, including any it is already looking for."
+      className="ml-auto shrink-0 rounded border border-line px-2 py-1 text-xs text-muted transition hover:border-ink hover:text-ink"
+    >
+      {label}
+    </button>
   );
 }
 

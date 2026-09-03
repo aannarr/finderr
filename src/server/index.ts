@@ -22,7 +22,7 @@ import { AuthStore } from "../lib/auth-store";
 import { OSCARS, personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
-import type { EpisodeState } from "../lib/episodes";
+import { type EpisodeState, missingEpisodeIds, todayUtc } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
@@ -909,6 +909,23 @@ function episodeStateFor(tconst: string): EpisodeState[] {
     monitored: e.monitored === 1,
     airDate: e.air_date,
   }));
+}
+
+/**
+ * The refusal both episode-grain requests make before they look at anything else, or null
+ * when the caller may proceed.
+ *
+ * ONE owner, because the two routes are the same precondition at two grains and a second
+ * copy would be free to drift into offering an episode of a series we do not hold. Refusing
+ * rather than adding the series: adding one is a different, heavier operation with a season
+ * selection of its own, and the button for it is on the same page.
+ */
+function refuseUnlessSonarrHolds(tconst: string): Response | null {
+  if (!sonarr) return bad("Sonarr is not configured", 503);
+  if (store.libraryMap().get(tconst)?.service !== "sonarr") {
+    return bad("request the series first -- Sonarr does not hold it yet", 409);
+  }
+  return null;
 }
 
 /**
@@ -1930,8 +1947,6 @@ const appRoutes = {
    */
   "/api/requests/episode": {
     POST: async (req: Request) => {
-      if (!sonarr) return bad("Sonarr is not configured", 503);
-
       let body: { tconst?: string; season?: unknown; episode?: unknown };
       try {
         body = (await req.json()) as typeof body;
@@ -1943,14 +1958,8 @@ const appRoutes = {
       if (!Number.isInteger(season) || !Number.isInteger(episode)) {
         return bad("season and episode must be integers");
       }
-
-      const entry = store.libraryMap().get(tconst);
-      // The series has to be in Sonarr before one of its episodes can be. Refusing rather
-      // than adding it: adding a series is a different, heavier operation with a season
-      // selection of its own, and the button for it is on the same page.
-      if (entry?.service !== "sonarr") {
-        return bad("request the series first -- Sonarr does not hold it yet", 409);
-      }
+      const refused = refuseUnlessSonarrHolds(tconst);
+      if (refused) return refused;
 
       const known = store.getEpisode(tconst, season as number, episode as number);
       if (!known) return bad("Sonarr does not list that episode", 404);
@@ -1958,6 +1967,58 @@ const appRoutes = {
 
       worker.enqueueEpisodes(tconst, [known.arr_episode_id]);
       return json({ queued: { tconst, season, episode } }, { status: 202 });
+    },
+  },
+
+  /**
+   * Ask for the REST of one season of a series Sonarr already holds.
+   *
+   * The fourth grain, and the one the series pane's "Downloaded: ... Season 3 missing 4
+   * episodes" line needs to be actionable: without it a reader who can SEE the hole has to
+   * hover four rows and press four buttons, and the browser has to fire four POSTs to say
+   * one thing.
+   *
+   * > [!IMPORTANT] THE SERVER PICKS THE EPISODES, and it picks the ones the summary counted
+   * > The client sends a season, never a list of ids -- a client-supplied list is a claim
+   * > this route would have to re-check against the mirror anyway, and the mirror is the
+   * > authority on what aired and what we hold. `missingEpisodeIds` is the same rule the
+   * > browser drew the sentence with (`src/lib/episodes.ts`), so the count in the button and
+   * > the episodes actually enqueued come from one owner.
+   *
+   * That rule INCLUDES the episodes Sonarr is already searching for, which is where this
+   * differs from the per-row button above -- see `missingEpisodeIds` for why.
+   *
+   * Like the per-episode grain it writes no `request` row, and every refusal is a fact about
+   * our own mirror, so none of them costs a network call. No `request` row also means no
+   * daily quota, by the rule stated on `/api/requests`: the quota is spent by ROWS, so only
+   * a POST that creates one is charged. This route asks for more at once than the per-row
+   * button does, but it asks for nothing a reader could not already get by pressing that
+   * button once per row.
+   */
+  "/api/requests/season": {
+    POST: async (req: Request) => {
+      let body: { tconst?: string; season?: unknown };
+      try {
+        body = (await req.json()) as typeof body;
+      } catch {
+        return bad("body must be JSON");
+      }
+      const { tconst, season } = body;
+      if (!tconst) return bad("tconst is required");
+      if (!Number.isInteger(season)) return bad("season must be an integer");
+      const refused = refuseUnlessSonarrHolds(tconst);
+      if (refused) return refused;
+
+      const episodes = missingEpisodeIds(episodeStateFor(tconst), season as number, todayUtc());
+      // Nothing to do is a refusal rather than an empty 202: the button that sent this was
+      // drawn from a count, so an empty answer means the page is looking at a mirror that
+      // has moved on, and saying so is more use than a silent success.
+      if (episodes.length === 0) {
+        return bad("nothing to fetch -- that season has no aired episode we are missing", 409);
+      }
+
+      worker.enqueueEpisodes(tconst, episodes);
+      return json({ queued: { tconst, season, episodes: episodes.length } }, { status: 202 });
     },
   },
 
