@@ -525,6 +525,49 @@ describe("request seasons", () => {
   });
 });
 
+describe("recentlyRequestedIds", () => {
+  const ask = (tconst: string) =>
+    store.createRequest({ tconst, title: tconst, year: 2010, kind: "movie", service: "radarr" });
+
+  test("newest first, and never more than asked for", () => {
+    ask("tt1");
+    ask("tt2");
+    ask("tt3");
+    // Requests made inside one millisecond share a created_at, so the id tie-break is what
+    // makes this order a fact rather than whatever SQLite felt like returning.
+    expect(store.recentlyRequestedIds()).toEqual(["tt3", "tt2", "tt1"]);
+    expect(store.recentlyRequestedIds(2)).toEqual(["tt3", "tt2"]);
+  });
+
+  /**
+   * The shelf's whole purpose: a request that failed or found no release is the one worth
+   * showing again, and it appears nowhere else on the front page.
+   */
+  test("every status is included, not just the ones still in progress", () => {
+    ask("tt-failed");
+    ask("tt-none");
+    store.updateRequest("tt-failed", { status: "failed" });
+    store.updateRequest("tt-none", { status: "no_release" });
+    expect(store.recentlyRequestedIds()).toEqual(["tt-none", "tt-failed"]);
+  });
+
+  /**
+   * `updateRequest` rewrites `updated_at` on every status change, so ordering on it would
+   * let a request retrying its way through a stalled download outrank requests made after
+   * it -- the shelf would reshuffle on activity rather than on when anybody asked.
+   */
+  test("a later status change does not move a request back to the front", () => {
+    ask("tt-old");
+    ask("tt-new");
+    store.updateRequest("tt-old", { status: "downloading" });
+    expect(store.recentlyRequestedIds()).toEqual(["tt-new", "tt-old"]);
+  });
+
+  test("an empty request log yields nothing, so the shelf is dropped", () => {
+    expect(store.recentlyRequestedIds()).toEqual([]);
+  });
+});
+
 /**
  * The evidence behind "why is this taking so long". The VOCABULARY it feeds is pinned in
  * `./request-diagnostics.test.ts`; this is only about the round trip.

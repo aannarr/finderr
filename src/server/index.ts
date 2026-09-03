@@ -442,8 +442,9 @@ async function refreshLibrary(): Promise<void> {
     log(`upcoming sync error -- ${(err as Error).message}`);
   }
 
-  // The arr tier's three shelves -- recently-added and the two arr calendars -- are built
-  // from exactly what the lines above just wrote, so this is where they stop being stale.
+  // The arr tier's shelves -- recently-added, the two arr calendars, and recently-requested
+  // whose statuses the reconcile pass moves -- are built from exactly what the lines above
+  // just wrote, so this is where they stop being stale.
   primeShelves("arr");
 }
 void refreshLibrary();
@@ -1843,6 +1844,10 @@ const appRoutes = {
         overrides: overrides.overrides,
       });
       worker.enqueue(row.tconst);
+      // "Recently requested" reads the row that was just written, and it is the one arr-tier
+      // shelf a PERSON can change: waiting for the 60-second library refresh would mean
+      // asking for something and not finding it on a shelf named after having asked.
+      primeShelves("arr");
       // Echoed back through the same strip: the asker sees their own request, but the
       // response shape must not depend on who is reading it in one place and not another.
       return json({ request: visibleRequest(request, asker?.role ?? null) }, { status: 202 });

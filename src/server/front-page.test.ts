@@ -47,6 +47,7 @@ function world() {
   const state = {
     owned: [] as string[],
     added: ["added-1"],
+    requested: ["asked-1"],
     genres: ["Horror"],
     topRated: ["top-1", "top-2"],
     upcoming: {
@@ -88,6 +89,7 @@ function world() {
     store: {
       libraryMap: () => new Map(state.owned.map((id) => [id, {}])),
       recentlyAddedIds: () => state.added,
+      recentlyRequestedIds: () => state.requested,
       upcomingBySource: (source: string) =>
         (state.upcoming[source] ?? []).map((tconst) => ({
           tconst,
