@@ -1,16 +1,18 @@
 /**
- * TMDB: streaming availability, and the keywords a series cannot get anywhere else.
+ * TMDB: streaming availability, and the two facts a series cannot get anywhere else.
  *
  * The only plugin in the tree that needs an API key, and the only one that goes dark
  * without one -- `init` registers nothing when `tmdb.apiKey` is unset, so a checkout with
- * no key loads a finderr that simply knows two fewer facts. Nothing else changes.
+ * no key loads a finderr that simply knows three fewer facts. Nothing else changes.
  *
- * Two facets, chosen because nothing keyless can serve them:
+ * Three facets, chosen because nothing keyless can serve them:
  *
  *   - `watchProviders` is JustWatch's catalogue relayed by TMDB. No Servarr proxy carries
  *     availability and neither does the IMDb corpus, so this facet had no provider at all
  *     until now and resolved empty on every title.
  *   - `keywords` for a SERIES. `api.radarr.video` already returns them for a film.
+ *   - `cast` for a SERIES, with person ids. Skyhook's actors carry no id in any space, so
+ *     this is the only route to a clickable series cast -- see `./tmdb/cast`.
  *
  * THE KEY IS A SECRET AND TMDB TAKES IT AS A QUERY PARAMETER. It is never logged, never
  * put in an error and never written into a fixture; `src/lib/tmdb-api.ts` is the only module
@@ -20,7 +22,7 @@
 import { AsyncCache } from "../lib/async-cache";
 import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
-import type { PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
+import type { FacetProvider, PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
 import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
 import { fetchDocument, type TmdbDocument } from "./tmdb/document";
 
@@ -41,6 +43,10 @@ export const meta = {
 const FRESHNESS = {
   watchProviders: "volatile",
   keywords: "settled",
+  // Claimed, not effective: `cast` is declared `immutable` in the vocabulary, so core
+  // overrides whatever is said here. It is stated anyway so the row is not silently
+  // relying on the default, and so the claim is right if that declaration ever changes.
+  cast: "settled",
 } as const satisfies Record<string, FreshnessClass>;
 
 /**
@@ -52,9 +58,9 @@ const FRESHNESS = {
  * existed. There is no `meta.provides` to disagree with, which is the point of the shape.
  */
 export function init(c: PluginContext): PluginExports {
-  const { apiKey, watchProviderRegions } = loadConfig().tmdb;
+  const { apiKey, imageBase, watchProviderRegions } = loadConfig().tmdb;
   if (!apiKey) {
-    c.log("no TMDB API key configured -- watchProviders and series keywords stay unanswered");
+    c.log("no TMDB API key configured -- watchProviders and a series' keywords and cast stay unanswered");
     return { facets: {} };
   }
 
@@ -70,7 +76,26 @@ export function init(c: PluginContext): PluginExports {
   async function documentFor(entity: FacetEntity): Promise<TmdbDocument | null> {
     const tmdbId = await resolveTmdbId(api, ids, entity);
     if (tmdbId === null) return null;
-    return documents.getOrAdd(entity.tconst, () => fetchDocument(api, entity, tmdbId, watchProviderRegions));
+    return documents.getOrAdd(entity.tconst, () =>
+      fetchDocument(api, entity, tmdbId, { imageBase, regions: watchProviderRegions }),
+    );
+  }
+
+  /**
+   * A facet cut from the series document, answered for a SERIES and nobody else.
+   *
+   * Both of these already arrive for a film from `api.radarr.video`, keyless -- a film's
+   * chips, and a film's credits with TMDB person ids already on them. Contributing a second
+   * copy would cost a call and put every chip and every actor on the page twice, so the
+   * answer for a film is "nothing here", decided on KIND before any id is resolved and
+   * therefore costing no call either.
+   */
+  function seriesFacet<F extends "keywords" | "cast">(facet: F): FacetProvider<F> {
+    return async (entity) => {
+      if (entity.kind !== "series") return null;
+      const data = (await documentFor(entity))?.[facet] ?? null;
+      return data === null ? null : { data, freshness: FRESHNESS[facet] };
+    };
   }
 
   return {
@@ -80,15 +105,8 @@ export function init(c: PluginContext): PluginExports {
         return data === null ? null : { data, freshness: FRESHNESS.watchProviders };
       },
 
-      keywords: async (entity) => {
-        // A film's keywords already arrive from `servarr-metadata`, keyless. Contributing a
-        // second copy would cost a call and render every chip twice -- `keywords` merges as a
-        // list and nothing dedupes it -- so the answer for a film is "nothing here", decided
-        // before any id is resolved so it costs no call either.
-        if (entity.kind !== "series") return null;
-        const data = (await documentFor(entity))?.keywords ?? null;
-        return data === null ? null : { data, freshness: FRESHNESS.keywords };
-      },
+      keywords: seriesFacet("keywords"),
+      cast: seriesFacet("cast"),
     },
   };
 }

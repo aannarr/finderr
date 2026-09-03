@@ -196,7 +196,7 @@ the reason the surface is shaped this way.
 |---|---|---|---|
 | `synopsis` | movie, series, episode | single | a translated plot summary, a spoiler-free blurb |
 | `ratings` | movie, series | list | Letterboxd, MyAnimeList, Douban, IMDb, Trakt |
-| `cast` | movie, series | list | any credits source, with headshots |
+| `cast` | movie, series | list, with precedence | any credits source, with headshots -- see the note below |
 | `crew` | movie, series | list | directors, writers, composers |
 | `certification` | movie, series | list | BBFC, FSK, Kijkwijzer, MPAA |
 | `trailer` | movie, series | list | TMDB videos, Vimeo, a local file |
@@ -211,6 +211,26 @@ the reason the surface is shaped this way.
 | `externalIds` | movie, series, episode | object | any id space core does not already hold |
 | `links` | movie, series, episode | list | an official site, a wiki, a fan page -- see the note below |
 | `availability` | movie, series | single | **core-only.** Comes from the local library mirror; an addon could only make it wrong. |
+
+> [!IMPORTANT] `cast` is the one facet where contributions COMPETE, so put ids on your credits
+> Every other list facet concatenates: RT's audience score lands beside IMDb's and both are
+> wanted. Cast does not work that way -- two sources naming the same actor render that actor
+> twice, and nothing downstream can tell one source's entry from another's.
+>
+> So `cast` declares a **precedence** rule and the strongest contribution supersedes the rest
+> before they merge. Strength is scored from the DATA, never from a list of plugin ids: the
+> share of your entries carrying a `personId` is what ranks you, because that is what decides
+> whether a reader can click a name. The scorer is `linkableShare` in `src/lib/facets.ts` and
+> that file is the only place the rule is written down.
+>
+> Three consequences worth knowing before you write a cast provider:
+>
+> - **Send a `personId` wherever you have one.** A list of names with no ids loses to any
+>   list that has them, and is itself only reachable through the title-scoped name join.
+> - **A tie merges.** Two equally-linkable lists both render, so if you are matching another
+>   provider's coverage you are adding duplicates rather than replacing anything.
+> - **Losing is not failing.** Your contribution is still fetched, still cached under your own
+>   plugin id, and starts rendering the moment the provider above you goes dark.
 
 > [!IMPORTANT] `language` is a CODE, and core folds whichever ISO you send
 > Send `{ code: "hi" }` or `{ code: "hin" }` -- `languageCode` in `src/lib/facets.ts` folds

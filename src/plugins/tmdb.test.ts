@@ -3,12 +3,19 @@
  *
  * Nothing here touches the network. `fetchImpl` is injected and serves TMDB responses
  * recorded live into `tmdb/fixtures/`, keyed by the v3 path so a fixture is exactly what
- * that path returns. The `watch/providers` documents are trimmed to four countries -- the
- * real ones carry 112 and 138, which is a lot of repetition to keep in git; every country
- * kept is byte-for-byte what TMDB sent, and COUNTRIES are the only thing trimmed. The
- * series fixture is the whole appended detail document, most of which nothing reads, and
- * that is deliberate: a fixture pruned to the fields today's code happens to touch stops
- * being evidence of what the endpoint returns.
+ * that path returns. The series fixture is the whole appended detail document, most of
+ * which nothing reads, and that is deliberate: a fixture pruned to the FIELDS today's code
+ * happens to touch stops being evidence of what the endpoint returns.
+ *
+ * LIST LENGTHS are trimmed, and nothing else. Every entry kept is byte-for-byte what TMDB
+ * sent, in the order it sent them; what is dropped is repetition that would cost hundreds
+ * of kilobytes of git to prove a shape one entry already proves:
+ *
+ *   - `watch/providers` down to four countries, from the real 112 and 138.
+ *   - `aggregate_credits.cast` down to the 60 TOP-BILLED of 587, which is the whole cast
+ *     for the top of the list and enough to exercise the fifty the provider keeps.
+ *   - `aggregate_credits.crew` down to 2 of 348. Nothing reads a series' crew; the block
+ *     is kept non-empty so the shape of what arrives is still on file.
  *
  * NO FIXTURE MAY CONTAIN THE API KEY. TMDB takes it as a query parameter, so it rides in
  * the URL rather than the body; the recorder asserted its absence on the way in and
@@ -25,6 +32,9 @@ import { getJson, type PluginFetch, safeUrl } from "../lib/plugin-fetch";
 import { BUILTIN_PLUGINS_DIR, loadPlugins } from "../lib/plugins";
 import { Store } from "../lib/store";
 import { TMDB_HOST } from "../lib/tmdb-api";
+import { SKYHOOK_HOST } from "./servarr/skyhook";
+import { MAX_SERIES_CAST, parseSeriesCast, type TmdbAggregateCreditsResponse } from "./tmdb/cast";
+import { SERIES_APPEND } from "./tmdb/document";
 import { parseWatchProviders } from "./tmdb/watch-providers";
 
 const PLUGIN_ID = "tmdb";
@@ -85,6 +95,12 @@ const FIXTURES: Record<string, string> = {
   "/3/tv/1399": "tv-1399-append",
 };
 
+/** skyhook's own recording, borrowed from the sibling plugin's fixtures. See `withSkyhook`. */
+const SKYHOOK_FIXTURES: Record<string, string> = {
+  "/v1/tvdb/search/en/": "skyhook-search-tt0944947.json",
+  "/v1/tvdb/shows/en/121361": "skyhook-121361.json",
+};
+
 describe("the tmdb plugin, driven as the API route drives it", () => {
   let dataDir: string;
   let store: Store;
@@ -122,6 +138,25 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     const name = url.hostname === TMDB_HOST ? FIXTURES[url.pathname] : undefined;
     if (!name) return new Response("not found", { status: 404 });
     return new Response(await Bun.file(new URL(`./tmdb/fixtures/${name}.json`, import.meta.url)).text(), {
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  /**
+   * The same, plus skyhook's recorded series document.
+   *
+   * Deliberately a SECOND fetch rather than more entries in `FIXTURES`: every other test
+   * here reads this plugin's own contribution and relies on the siblings 404ing, so waking
+   * `servarr-metadata` for all of them would make those assertions depend on a payload they
+   * are not about. Only the precedence test needs two providers answering `cast` at once.
+   */
+  const withSkyhook: PluginFetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname !== SKYHOOK_HOST) return fromFixtures(input, init);
+    askedUrls.push(url.href);
+    const name = SKYHOOK_FIXTURES[url.pathname];
+    if (!name) return new Response("not found", { status: 404 });
+    return new Response(await Bun.file(new URL(`./servarr/fixtures/${name}`, import.meta.url)).text(), {
       headers: { "Content-Type": "application/json" },
     });
   };
@@ -212,6 +247,58 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     expect(tmdbCalls().some((url) => url.includes("/keywords"))).toBe(false);
   });
 
+  /**
+   * The whole point of the card: skyhook's actors carry no id in any space, so before this
+   * a series cast was plain text unless the title-scoped name join happened to find it.
+   */
+  test("a series' cast arrives top-billed first, with a person id on every entry", async () => {
+    const { mine } = await resolve(GAME_OF_THRONES);
+    const cast = mine.data("cast");
+
+    expect(cast[0]).toEqual({
+      name: "Peter Dinklage",
+      character: "Tyrion 'The Halfman' Lannister",
+      order: 0,
+      personId: "tmdb:22970",
+      image: "https://image.tmdb.org/t/p/original/9CAd7wr8QZyIN0E7nm8v1B6WkGn.jpg",
+    });
+    expect(cast.every((member) => member.personId !== null)).toBe(true);
+
+    // SORTED, because the array is not: TMDB sends `0,1,5,6,8,...` and puts Sean Bean at
+    // billing 2 forty entries in, so taking them as they arrive drops leads for bit parts.
+    expect(cast.map((m) => m.order)).toEqual([...cast.map((m) => m.order)].sort((a, b) => a - b));
+    expect(cast.slice(0, 3).map((m) => m.name)).toEqual(["Peter Dinklage", "Kit Harington", "Sean Bean"]);
+  });
+
+  test("the tail is dropped rather than cached -- nobody scrolls to the 300th guest part", async () => {
+    const { mine } = await resolve(GAME_OF_THRONES);
+    expect(mine.data("cast")).toHaveLength(MAX_SERIES_CAST);
+  });
+
+  /**
+   * The merge, end to end, with BOTH cast providers awake. This is what `precedence` in the
+   * vocabulary buys: skyhook still answers, its answer is still cached under its own plugin
+   * id, and the page renders TMDB's alone -- so nobody appears twice and every name links.
+   */
+  test("skyhook's id-less cast is superseded, not concatenated", async () => {
+    const { facets } = await resolve(GAME_OF_THRONES, withSkyhook);
+    const cast = facets.cast?.data ?? [];
+
+    // Both providers answered: skyhook's 44 would have made this 94 under a plain merge.
+    const rows = store.facetContributions(GAME_OF_THRONES.tconst).filter((r) => r.facet === "cast");
+    expect(rows.map((r) => r.plugin_id).sort()).toEqual(["servarr-metadata", "tmdb"]);
+
+    expect(cast).toHaveLength(MAX_SERIES_CAST);
+    expect(cast.every((member) => member.personId !== null)).toBe(true);
+    expect(cast.filter((m) => m.name === "Kit Harington")).toHaveLength(1);
+  });
+
+  test("a film is served no cast at all, for the same reason it is served no keywords", async () => {
+    const { mine } = await resolve(INCEPTION);
+    // `api.radarr.video` already returns a film's credits with TMDB person ids on them.
+    expect(mine.outcome("cast")).toBe("empty");
+  });
+
   test("the crosswalk is bought once and remembered, so a refresh costs one call", async () => {
     await resolve(GAME_OF_THRONES);
     // Two providers, one `/find`: they start in the resolver's one synchronous burst and
@@ -243,12 +330,12 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
    * Three serial calls to ONE host used to cost three round trips plus two 250 ms pacer
    * gaps. With the id local and the two blocks appended, a cold series costs one call.
    */
-  test("a cold series with a known id costs exactly one TMDB call for both facets", async () => {
+  test("a cold series with a known id costs exactly one TMDB call for every facet", async () => {
     await resolve({ ...GAME_OF_THRONES, ids: { imdb: "tt0944947", tmdb: 1399 } });
     expect(tmdbCalls()).toHaveLength(1);
-    expect(new URL(tmdbCalls()[0] ?? "").searchParams.get("append_to_response")).toBe(
-      "keywords,watch/providers",
-    );
+    // Three appended blocks now, and still one round trip -- which is why `cast` was worth
+    // adding here rather than through the dedicated `/tv/{id}/aggregate_credits` endpoint.
+    expect(new URL(tmdbCalls()[0] ?? "").searchParams.get("append_to_response")).toBe(SERIES_APPEND);
   });
 
   test("a film does not drag the whole detail document along for one facet", async () => {
@@ -280,7 +367,7 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     expect(mine.data("watchProviders")).toEqual([]);
   });
 
-  test("no key means no providers, and the two facets go back to being unanswered", async () => {
+  test("no key means no providers, and the facets go back to being unanswered", async () => {
     delete process.env.FINDERR_TMDB_API_KEY;
     loadConfig(true);
 
@@ -289,6 +376,23 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     expect(mine.outcome("watchProviders")).toBeUndefined();
     expect(tmdbCalls()).toEqual([]);
     expect(logs.some((m) => m.includes("no TMDB API key configured"))).toBe(true);
+  });
+
+  /**
+   * The constraint that rules out simply deleting skyhook's cast: with no key its 44 id-less
+   * actors are all a series has, and the name join still links some of them. Precedence over
+   * an absent contribution needs no special case -- a dark provider contributes nothing.
+   */
+  test("without a key a series still renders skyhook's cast, exactly as before", async () => {
+    delete process.env.FINDERR_TMDB_API_KEY;
+    loadConfig(true);
+
+    const { facets } = await resolve(GAME_OF_THRONES, withSkyhook);
+    const cast = facets.cast?.data ?? [];
+
+    expect(facets.cast?.status).toBe("ready");
+    expect(cast).toHaveLength(44);
+    expect(cast.every((member) => member.personId === null)).toBe(true);
   });
 
   test("the key never leaks -- not into a log line, and not into an error", async () => {
@@ -373,6 +477,83 @@ describe("parseWatchProviders region filter", () => {
 
   test("a region the title is not offered in yields an empty list, not every country", () => {
     expect(countries(["JP"])).toEqual([]);
+  });
+});
+
+/**
+ * The shapes the fixture cannot reach. Game of Thrones' 60 top-billed happen to carry a
+ * name, a role and a billing rank each, so the cases that decide whether a credit is
+ * DROPPED or merely thin are only checkable against the shape.
+ */
+describe("parseSeriesCast", () => {
+  const IMAGE_BASE = "https://image.tmdb.org/t/p";
+  const parse = (cast: NonNullable<TmdbAggregateCreditsResponse["cast"]>) =>
+    parseSeriesCast({ cast }, IMAGE_BASE) ?? [];
+
+  test("an absent block is null -- TMDB does not have this show", () => {
+    expect(parseSeriesCast(null, IMAGE_BASE)).toBeNull();
+    expect(parseSeriesCast(undefined, IMAGE_BASE)).toBeNull();
+  });
+
+  /** A show TMDB knows with nobody credited is a real answer, and caches as an empty facet. */
+  test("a show with no credits is an empty list, not a null", () => {
+    expect(parseSeriesCast({}, IMAGE_BASE)).toEqual([]);
+  });
+
+  /**
+   * A person can hold several roles across a run. `character` is one line under a 96px
+   * tile, so the part they played most is the honest single answer.
+   */
+  test("the most-episodes role is the one shown", () => {
+    const [member] = parse([
+      {
+        id: 1,
+        name: "Kristian Nairn",
+        order: 0,
+        roles: [
+          { character: "Bar Patron", episode_count: 1 },
+          { character: "Hodor", episode_count: 41 },
+        ],
+      },
+    ]);
+    expect(member.character).toBe("Hodor");
+  });
+
+  test("a credit with no role at all is still a credit, with nothing to say about it", () => {
+    expect(parse([{ id: 1, name: "Somebody", order: 3, roles: [] }])[0].character).toBeNull();
+    expect(parse([{ id: 1, name: "Somebody", order: 3 }])[0].character).toBeNull();
+  });
+
+  /** A nameless credit is not a credit. Everything else has a defensible empty form. */
+  test("a credit with no name is dropped", () => {
+    expect(
+      parse([
+        { id: 1, name: "   ", order: 0 },
+        { id: 2, name: "Real", order: 1 },
+      ]),
+    ).toHaveLength(1);
+  });
+
+  test("no headshot is a null image, so the tile draws initials rather than a broken request", () => {
+    expect(parse([{ id: 1, name: "Somebody", order: 0 }])[0].image).toBeNull();
+  });
+
+  /**
+   * The only field that decides whether the answer is linkable at all, so an entry without
+   * one says so rather than inventing an id -- and that missing id is exactly what
+   * `precedence` measures.
+   */
+  test("a credit with no TMDB id carries no person id", () => {
+    expect(parse([{ name: "Somebody", order: 0 }])[0].personId).toBeNull();
+  });
+
+  /** `order` is a rank from zero, so anything that looks like a number would promote it. */
+  test("an unranked credit sorts last rather than first", () => {
+    const parsed = parse([
+      { id: 1, name: "Unranked" },
+      { id: 2, name: "Lead", order: 0 },
+    ]);
+    expect(parsed.map((m) => m.name)).toEqual(["Lead", "Unranked"]);
   });
 });
 
