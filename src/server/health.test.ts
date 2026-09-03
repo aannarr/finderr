@@ -78,7 +78,62 @@ function deps(onCoverage: () => void): HealthDeps {
   };
 }
 
+/**
+ * Where every `HealthDeps` key must land in the detailed payload, as a dotted path.
+ *
+ * This table exists because `push` was declared, documented at length and collected on
+ * every probe for weeks without ever being RETURNED. `healthPayload` spells its response
+ * out field by field, so a field is dropped by the return literal saying nothing about it
+ * -- and no assertion about the fields that ARE there can see that kind of hole.
+ *
+ * Two halves, and both are needed. `Record<keyof HealthDeps, ...>` makes adding a dep key
+ * a TYPE error until somebody states where it goes; the walk below proves the value
+ * actually arrives at the path claimed here. `null` means "deliberately not in the
+ * payload" -- `coverage` is the opt-in thunk this whole file exists to keep unread.
+ */
+const LANDS_AT: Record<keyof HealthDeps, string | null> = {
+  index: "index",
+  library: "library",
+  plex: "plex",
+  upcoming: "upcoming",
+  trending: "trending",
+  awards: "awards",
+  services: "services",
+  auth: "auth",
+  push: "push",
+  webhook: "webhook",
+  queue: "queue",
+  artwork: "artwork",
+  shelves: "shelves",
+  searchLog: "searchLog",
+  timings: "timings",
+  runtime: "runtime",
+  plugins: "plugins.loaded",
+  facetRows: "facets.rows",
+  facetImages: "facets.images",
+  facetRowsPruned: "facets.pruned",
+  coverage: null,
+};
+
+function valueAt(payload: Record<string, unknown>, path: string): unknown {
+  return path
+    .split(".")
+    .reduce<unknown>((held, key) => (held as Record<string, unknown> | undefined)?.[key], payload);
+}
+
 describe("healthPayload", () => {
+  test("returns every dep it collects -- nothing is dropped by omission", () => {
+    const d = deps(() => {});
+    const out = healthPayload(d, { coverage: false, detailed: true });
+
+    for (const [key, path] of Object.entries(LANDS_AT) as [keyof HealthDeps, string | null][]) {
+      if (path === null) continue;
+      // Keyed rather than bare, so a failure names the field that went missing instead of
+      // printing two anonymous values.
+      expect({ [key]: valueAt(out, path) }).toEqual({ [key]: d[key] });
+    }
+  });
+
   test("does NOT run the shelf queries unless coverage is asked for", () => {
     let calls = 0;
     const out = healthPayload(
@@ -158,6 +213,7 @@ describe("healthPayload", () => {
       "index",
       "runtime",
       "auth",
+      "push",
       "services",
       "plugins",
       "facets",

@@ -278,6 +278,7 @@ export function healthPayload(
     timings: deps.timings,
     services: deps.services,
     auth: deps.auth,
+    push: deps.push,
     webhook: deps.webhook,
     queue: deps.queue,
     artwork: deps.artwork,
