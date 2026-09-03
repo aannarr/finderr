@@ -129,6 +129,23 @@ describe("decadeOf", () => {
   });
 });
 
+describe("validateSearch, country", () => {
+  /**
+   * A service term page is a different set of films per country, so the country is part of
+   * what the URL MEANS -- a link without it would resolve somewhere else for whoever it was
+   * shared with.
+   */
+  test("kept, and upper-cased so one page is one cache entry", () => {
+    expect(validateSearch({ country: "th" })).toEqual({ country: "TH" });
+    expect(validateSearch({ country: "TH" })).toEqual({ country: "TH" });
+  });
+
+  test("junk drops out like every other param", () => {
+    expect(validateSearch({ country: "  " })).toEqual({});
+    expect(validateSearch({ country: 42 })).toEqual({});
+  });
+});
+
 describe("filtersOf", () => {
   test("strips the query, leaving what the search API takes", () => {
     expect(filtersOf({ q: "fargo", genre: "Drama", decade: 1990 })).toEqual({
@@ -156,6 +173,10 @@ describe("filtersOf", () => {
     // `minVotes` and names it in the request identity itself; letting it through here would
     // send `/api/browse?sort=...` a key the server reads as a filter.
     expect(filtersOf({ genre: "Horror", sort: "rank" })).toEqual({ genre: "Horror" });
+  });
+
+  test("`country` is not a filter -- the title index has no country column", () => {
+    expect(filtersOf({ genre: "Horror", country: "TH" })).toEqual({ genre: "Horror" });
   });
 });
 

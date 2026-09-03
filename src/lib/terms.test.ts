@@ -6,6 +6,7 @@ import {
   type TermPair,
   termKey,
   termPage,
+  termsForTitle,
   termsOf,
 } from "./terms";
 
@@ -101,6 +102,37 @@ describe("termsOf", () => {
       ["netflix", 2],
       ["hulu", 1],
     ]);
+  });
+});
+
+describe("termsForTitle", () => {
+  const all = [pair("tt1", "Heist"), pair("tt2", "heist"), pair("tt3", "Dream"), pair("tt1", "Dream")];
+
+  /**
+   * Two pair sets, two questions: `mine` says which terms this title has, `all` says how
+   * populated each is. Only the second can decide whether a chip becomes a link.
+   */
+  test("this title's terms, counted across the whole corpus", () => {
+    const terms = termsForTitle("keyword", [pair("tt1", "Heist"), pair("tt1", "Dream")], all);
+    // Both hold two titles, so the tie breaks alphabetically on the label.
+    expect(terms.map((t) => [t.key, t.titles])).toEqual([
+      ["dream", 2],
+      ["heist", 2],
+    ]);
+  });
+
+  test("a term this title does not carry is not returned, however populated", () => {
+    expect(termsForTitle("keyword", [pair("tt3", "Dream")], all).map((t) => t.key)).toEqual(["dream"]);
+  });
+
+  /** A thin term still comes back -- the caller draws it as text rather than hiding it. */
+  test("a term with one title is returned, not filtered out", () => {
+    const terms = termsForTitle("studio", [pair("tt9", "A24")], [pair("tt9", "A24")]);
+    expect(terms).toEqual([{ dimension: "studio", key: "a24", label: "A24", titles: 1 }]);
+  });
+
+  test("a title with no terms in this dimension gets nothing", () => {
+    expect(termsForTitle("keyword", [], all)).toEqual([]);
   });
 });
 

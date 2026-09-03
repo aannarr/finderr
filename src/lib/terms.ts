@@ -132,6 +132,27 @@ export function termsOf(dimension: TermDimension, pairs: readonly TermPair[]): T
 }
 
 /**
+ * The terms ONE title carries, each counted across the whole corpus.
+ *
+ * Two pair sets rather than one, because the two questions are genuinely different: `mine`
+ * says WHICH terms this title has, and `all` says how populated each of them is. Only the
+ * second can decide whether a chip is a link, and only the first can keep the answer about
+ * this title -- so a function given one of them could answer neither question honestly.
+ *
+ * A term below `MIN_TERM_TITLES` is still returned. The caller draws it as plain text, so
+ * the reader sees the same facts either way and only the destination differs.
+ */
+export function termsForTitle(
+  dimension: TermDimension,
+  mine: readonly TermPair[],
+  all: readonly TermPair[],
+): Term[] {
+  const keys = new Set(groupPairs(dimension, mine).keys());
+  if (keys.size === 0) return [];
+  return termsOf(dimension, all).filter((term) => keys.has(term.key));
+}
+
+/**
  * One term and the titles we hold for it, or `null` for a key nothing names.
  *
  * `null` rather than an empty term, and the two are genuinely different answers: a term

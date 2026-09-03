@@ -1,11 +1,12 @@
 /**
  * The chip look, owned once.
  *
- * A chip that goes somewhere is `BrowseChip`; a chip that goes nowhere is `InertChip`;
- * a chip that changes what you are looking at, without leaving, is `ToggleChip`; a chip
- * that drops every refinement at once is `ClearChip`. They must be visually identical
- * minus the hover and the pressed state, so the class lists live here rather than being
- * re-typed in each -- two copies would drift the moment either is restyled.
+ * A chip that goes to the grid is `BrowseChip`; one that goes to a term page, or does not
+ * go at all, is `TermChip`; a chip that goes nowhere at all is `InertChip`; one that
+ * changes what you are looking at without leaving is `ToggleChip`; one that drops every
+ * refinement at once is `ClearChip`. They must be visually identical minus the hover and
+ * the pressed state, so the class lists live here rather than being re-typed in each --
+ * two copies would drift the moment either is restyled.
  */
 
 import type { KeyAction } from "./Kbd";
@@ -15,10 +16,10 @@ export const CHIP_PILL = "rounded-full bg-surface-2 px-2 py-0.5 text-xs text-mut
 /**
  * A chip with no destination.
  *
- * Keywords are inert TEXT, deliberately: `/browse` accepts genre, year, decade and kind
- * and nothing else, so a keyword link would land on an empty grid. If it looks clickable
- * it must land on results -- so this one does not look clickable. Making keywords real
- * links needs a browse index that does not exist yet, and is its own card.
+ * If it looks clickable it must land on results, so this one does not look clickable. It is
+ * what `TermChip` falls back to for a term whose page would hold nothing but the title you
+ * are already on -- and what every keyword chip was before term pages existed, when
+ * `/browse` accepted genre, year, decade and kind and nothing else.
  */
 export function InertChip({ label }: { label: string }) {
   return <span className={CHIP_PILL}>{label}</span>;

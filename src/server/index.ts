@@ -57,7 +57,7 @@ import {
   type TermDimension,
   type TermPair,
   termPage,
-  termsOf,
+  termsForTitle,
 } from "../lib/terms";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
@@ -1044,26 +1044,17 @@ function termPairs(dimension: TermDimension, opts: { country?: string; tconst?: 
 }
 
 /**
- * The terms one title carries, each with how many titles its page would hold.
+ * Every dimension's terms for one title, each with how many titles its page would hold.
  *
  * What turns a chip into a link, and the count is measured HERE rather than guessed in the
- * browser: only the server can see how much of the corpus has been cached. A term below
- * `MIN_TERM_TITLES` still comes back -- the client draws it as plain text, so the reader
- * sees the same facts either way and only the destination differs.
- *
- * The two-step is unavoidable and is the cost of this endpoint: the narrow read says WHICH
- * terms this title has, and the wide one says how populated each of them is.
+ * browser: only the server can see how much of the corpus has been cached. The two reads
+ * per dimension are the cost of the endpoint, and `termsForTitle` states why both are
+ * needed -- this function is only the wiring.
  */
-function termsForTitle(tconst: string, country: string | undefined): Term[] {
-  const out: Term[] = [];
-  for (const dimension of TERM_DIMENSIONS) {
-    const mine = new Set(
-      termsOf(dimension, termPairs(dimension, { country, tconst })).map((term) => term.key),
-    );
-    if (mine.size === 0) continue;
-    out.push(...termsOf(dimension, termPairs(dimension, { country })).filter((t) => mine.has(t.key)));
-  }
-  return out;
+function titleTerms(tconst: string, country: string | undefined): Term[] {
+  return TERM_DIMENSIONS.flatMap((dimension) =>
+    termsForTitle(dimension, termPairs(dimension, { country, tconst }), termPairs(dimension, { country })),
+  );
 }
 
 /**
@@ -1757,7 +1748,7 @@ const appRoutes = {
   "/api/terms/:tconst": (req: Bun.BunRequest<"/api/terms/:tconst">) => {
     const country = new URL(req.url).searchParams.get("country") ?? undefined;
     return json(
-      { terms: termsForTitle(req.params.tconst, country) },
+      { terms: titleTerms(req.params.tconst, country) },
       // Same 60s as a term page and for the same reason: a chip becomes a link the moment
       // a second title carrying it is cached, and that can be a minute after this render.
       { cache: perSession(60) },
