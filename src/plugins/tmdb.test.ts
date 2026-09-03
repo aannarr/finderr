@@ -16,6 +16,12 @@
  *     for the top of the list and enough to exercise the fifty the provider keeps.
  *   - `aggregate_credits.crew` down to 2 of 348. Nothing reads a series' crew; the block
  *     is kept non-empty so the shape of what arrives is still on file.
+ *   - `recommendations.results` down to 6 of 20. The paging envelope around it is untouched.
+ *
+ * `videos` is whole, all seven, and that is not an oversight: four of them are the kinds
+ * `parseSeriesTrailers` DROPS -- two behind-the-scenes shorts, a featurette and the opening
+ * credits -- so trimming it would delete the evidence that this endpoint answers with far
+ * more than trailers.
  *
  * NO FIXTURE MAY CONTAIN THE API KEY. TMDB takes it as a query parameter, so it rides in
  * the URL rather than the body; the recorder asserted its absence on the way in and
@@ -35,6 +41,9 @@ import { TMDB_HOST } from "../lib/tmdb-api";
 import { SKYHOOK_HOST } from "./servarr/skyhook";
 import { MAX_SERIES_CAST, parseSeriesCast, type TmdbAggregateCreditsResponse } from "./tmdb/cast";
 import { SERIES_APPEND } from "./tmdb/document";
+import { parseHomepageLink } from "./tmdb/links";
+import { parseSeriesRelated, type TmdbRecommendationsResponse } from "./tmdb/recommendations";
+import { parseSeriesTrailers, type TmdbVideosResponse } from "./tmdb/videos";
 import { parseWatchProviders } from "./tmdb/watch-providers";
 
 const PLUGIN_ID = "tmdb";
@@ -89,9 +98,10 @@ const FIXTURES: Record<string, string> = {
   "/3/find/tt0000000": "find-tt0000000",
   "/3/movie/27205/watch/providers": "movie-27205-watch-providers",
   "/3/movie/160/watch/providers": "movie-160-watch-providers",
-  // A SERIES asks once and gets both blocks appended, which is why there is no
-  // `/3/tv/1399/keywords` entry any more -- see `tmdb/document.ts`. Keyed on the PATHNAME,
-  // so `?append_to_response=...` does not need spelling out here.
+  // A SERIES asks once and gets every block appended, which is why there is no
+  // `/3/tv/1399/keywords`, `/videos` or `/recommendations` entry here -- see
+  // `tmdb/document.ts`. Keyed on the PATHNAME, so `?append_to_response=...` does not need
+  // spelling out.
   "/3/tv/1399": "tv-1399-append",
 };
 
@@ -299,6 +309,62 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
     expect(mine.outcome("cast")).toBe("empty");
   });
 
+  /**
+   * The card's whole point: skyhook answers a series' `trailer` with an explicit empty list
+   * and carries neither `related` nor a homepage, so all three panes were absent on every
+   * show whatever the reader did.
+   */
+  test("a series gets a trailer, a more-like-this list and its official site", async () => {
+    const { mine } = await resolve(GAME_OF_THRONES);
+
+    // Trailers only. TMDB sent seven videos and four of them are behind-the-scenes shorts,
+    // a featurette and the opening credits -- none of which belongs in a trailer pane.
+    expect(mine.data("trailer")).toEqual([
+      {
+        site: "youtube",
+        key: "KPLWWIOCOOQ",
+        name: "Game of Thrones | Official Series Trailer",
+        kind: "Trailer",
+      },
+      { site: "youtube", key: "BpJYNVhGf1s", name: "Official Trailer", kind: "Trailer" },
+      // Last, though TMDB sent it fifth: a teaser is a lesser trailer, so both trailers
+      // come first and their own arrival order is untouched.
+      { site: "youtube", key: "hhqRmcsWqac", name: "Iron Throne Preview", kind: "Teaser" },
+    ]);
+
+    // `tconst` is null and the TMDB id is carried: the crosswalk is core's, at render time,
+    // against ids we already hold -- see `relatedRows` in `src/server/index.ts`.
+    expect(mine.data("related").slice(0, 2)).toEqual([
+      { tconst: null, title: "House of the Dragon", reason: "recommended", tmdbId: 94997 },
+      { tconst: null, title: "The Witcher", reason: "recommended", tmdbId: 71912 },
+    ]);
+    expect(mine.data("related").every((r) => r.tconst === null && r.tmdbId !== null)).toBe(true);
+
+    expect(mine.data("links")).toEqual([{ kind: "homepage", url: "https://www.hbo.com/game-of-thrones" }]);
+  });
+
+  test("the three series facets ride the same rung the film provider claims for them", async () => {
+    const { mine } = await resolve(GAME_OF_THRONES);
+    // `settled` on all three, matching `servarr-metadata` -- one fact, one expiry rule,
+    // whichever provider happened to answer it. See the FRESHNESS table in `tmdb.ts`.
+    expect([mine.freshness("trailer"), mine.freshness("related"), mine.freshness("links")]).toEqual([
+      "settled",
+      "settled",
+      "settled",
+    ]);
+  });
+
+  test("a film is served none of the three, and pays nothing to find that out", async () => {
+    const { mine } = await resolve(INCEPTION);
+
+    // Radarr's lookup already serves a film all three, keyless. A second copy would print
+    // the trailer link, the row and the site link twice -- all three merge as lists.
+    expect(mine.outcome("trailer")).toBe("empty");
+    expect(mine.outcome("related")).toBe("empty");
+    expect(mine.outcome("links")).toBe("empty");
+    expect(tmdbCalls().some((url) => url.includes("/videos"))).toBe(false);
+  });
+
   test("the crosswalk is bought once and remembered, so a refresh costs one call", async () => {
     await resolve(GAME_OF_THRONES);
     // Two providers, one `/find`: they start in the resolver's one synchronous burst and
@@ -333,8 +399,8 @@ describe("the tmdb plugin, driven as the API route drives it", () => {
   test("a cold series with a known id costs exactly one TMDB call for every facet", async () => {
     await resolve({ ...GAME_OF_THRONES, ids: { imdb: "tt0944947", tmdb: 1399 } });
     expect(tmdbCalls()).toHaveLength(1);
-    // Three appended blocks now, and still one round trip -- which is why `cast` was worth
-    // adding here rather than through the dedicated `/tv/{id}/aggregate_credits` endpoint.
+    // Five appended blocks now, and still one round trip -- which is why `cast`, `trailer`
+    // and `related` were all worth adding here rather than through their own endpoints.
     expect(new URL(tmdbCalls()[0] ?? "").searchParams.get("append_to_response")).toBe(SERIES_APPEND);
   });
 
@@ -554,6 +620,101 @@ describe("parseSeriesCast", () => {
       { id: 2, name: "Lead", order: 0 },
     ]);
     expect(parsed.map((m) => m.name)).toEqual(["Lead", "Unranked"]);
+  });
+});
+
+/**
+ * The shapes Game of Thrones' seven videos cannot reach -- a video with no key, a site
+ * TMDB spells some other way, an untyped clip.
+ */
+describe("parseSeriesTrailers", () => {
+  const parse = (results: NonNullable<TmdbVideosResponse["results"]>) =>
+    parseSeriesTrailers({ results }) ?? [];
+
+  test("an absent block is null -- TMDB does not have this show", () => {
+    expect(parseSeriesTrailers(null)).toBeNull();
+    expect(parseSeriesTrailers(undefined)).toBeNull();
+  });
+
+  /** A show TMDB knows with nothing filmed for it caches as an empty facet. */
+  test("a show with no videos is an empty list, not a null", () => {
+    expect(parseSeriesTrailers({})).toEqual([]);
+  });
+
+  /**
+   * The site id is what `trailerLinks()` looks the URL builder up by, and its table is
+   * keyed on the lower-cased form `radarr.ts` emits. TMDB says `YouTube`.
+   */
+  test("the site is folded to the spelling the client's link table uses", () => {
+    expect(parse([{ site: "YouTube", key: "abc", type: "Trailer" }])[0].site).toBe("youtube");
+  });
+
+  /**
+   * A site with no builder yields no link rather than a guessed URL, so it is passed
+   * through rather than dropped here: whether an unopenable entry is worth showing is the
+   * renderer's question, and a provider that filtered on the client's table would be a
+   * second copy of it.
+   */
+  test("a site the client has no builder for is still contributed", () => {
+    expect(parse([{ site: "Vimeo", key: "abc", type: "Trailer" }])[0].site).toBe("vimeo");
+  });
+
+  test("a video with no key is dropped -- there is nothing to open", () => {
+    expect(parse([{ site: "YouTube", key: "  ", type: "Trailer" }])).toEqual([]);
+    expect(parse([{ site: "  ", key: "abc", type: "Trailer" }])).toEqual([]);
+  });
+
+  test("a clip that is not a trailer or a teaser is not in this facet", () => {
+    const kinds = ["Behind the Scenes", "Featurette", "Opening Credits", "Clip", null];
+    expect(parse(kinds.map((type) => ({ site: "YouTube", key: "abc", type })))).toEqual([]);
+  });
+
+  test("a nameless trailer is still a trailer, and the pane falls back to its kind", () => {
+    expect(parse([{ site: "YouTube", key: "abc", type: "Trailer", name: "   " }])[0].name).toBeNull();
+  });
+});
+
+describe("parseSeriesRelated", () => {
+  const parse = (results: NonNullable<TmdbRecommendationsResponse["results"]>) =>
+    parseSeriesRelated({ results }) ?? [];
+
+  test("an absent block is null -- TMDB does not have this show", () => {
+    expect(parseSeriesRelated(null)).toBeNull();
+    expect(parseSeriesRelated(undefined)).toBeNull();
+  });
+
+  test("a show TMDB recommends nothing beside is an empty list, not a null", () => {
+    expect(parseSeriesRelated({})).toEqual([]);
+  });
+
+  /**
+   * An entry with no TMDB id can never be crosswalked to a tconst, so it would be a card
+   * with nowhere to go -- the dead end `RelatedTitle.tmdbId` was added to end.
+   */
+  test("a recommendation with no id is dropped rather than kept as a bare title", () => {
+    expect(parse([{ name: "Unreachable" }, { id: 1, name: "Reachable" }])).toEqual([
+      { tconst: null, title: "Reachable", reason: "recommended", tmdbId: 1 },
+    ]);
+  });
+
+  test("a nameless recommendation is dropped", () => {
+    expect(parse([{ id: 1, name: "   " }, { id: 2 }])).toEqual([]);
+  });
+});
+
+describe("parseHomepageLink", () => {
+  test("a site is one link, labelled by its kind", () => {
+    expect(parseHomepageLink("https://www.hbo.com/game-of-thrones")).toEqual([
+      { kind: "homepage", url: "https://www.hbo.com/game-of-thrones" },
+    ]);
+  });
+
+  /** TMDB sends `""` far more often than it omits the field, so this is the common case. */
+  test("an empty homepage is no link at all", () => {
+    expect(parseHomepageLink("")).toEqual([]);
+    expect(parseHomepageLink("   ")).toEqual([]);
+    expect(parseHomepageLink(null)).toEqual([]);
+    expect(parseHomepageLink(undefined)).toEqual([]);
   });
 });
 

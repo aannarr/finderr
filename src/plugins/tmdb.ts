@@ -1,11 +1,11 @@
 /**
- * TMDB: streaming availability, and the two facts a series cannot get anywhere else.
+ * TMDB: streaming availability, and the five facts a series cannot get anywhere else.
  *
  * The only plugin in the tree that needs an API key, and the only one that goes dark
  * without one -- `init` registers nothing when `tmdb.apiKey` is unset, so a checkout with
- * no key loads a finderr that simply knows three fewer facts. Nothing else changes.
+ * no key loads a finderr that simply knows six fewer facts. Nothing else changes.
  *
- * Three facets, chosen because nothing keyless can serve them:
+ * Six facets, chosen because nothing keyless can serve them:
  *
  *   - `watchProviders` is JustWatch's catalogue relayed by TMDB. No Servarr proxy carries
  *     availability and neither does the IMDb corpus, so this facet had no provider at all
@@ -13,6 +13,10 @@
  *   - `keywords` for a SERIES. `api.radarr.video` already returns them for a film.
  *   - `cast` for a SERIES, with person ids. Skyhook's actors carry no id in any space, so
  *     this is the only route to a clickable series cast -- see `./tmdb/cast`.
+ *   - `trailer`, `related` and `links` for a SERIES. Radarr's lookup hands a film all three
+ *     for free; skyhook answers a series with an empty trailer list and carries neither of
+ *     the other two, so these resolved empty on every show -- see `./tmdb/videos`,
+ *     `./tmdb/recommendations` and `./tmdb/links`.
  *
  * THE KEY IS A SECRET AND TMDB TAKES IT AS A QUERY PARAMETER. It is never logged, never
  * put in an error and never written into a fixture; `src/lib/tmdb-api.ts` is the only module
@@ -47,6 +51,24 @@ const FRESHNESS = {
   // overrides whatever is said here. It is stated anyway so the row is not silently
   // relying on the default, and so the claim is right if that declaration ever changes.
   cast: "settled",
+  // The three series-only facets, all `settled`, and each for its own reason rather than
+  // by copying the row above it.
+  //
+  // `trailer` is a fact about a finished production: a show gets its trailer once and the
+  // set does not churn afterwards.
+  //
+  // `links` is an ADDRESS, which is exactly why it is not `immutable` -- a network's show
+  // page gets rebuilt or taken down -- but 90 days on a settled show is the right rung and
+  // the age ladder gives a running one far less on its own.
+  //
+  // `related` is the one worth arguing about, because TMDB's recommendation set genuinely
+  // moves. It is still `settled`, for two reasons: `servarr-metadata` claims the same class
+  // for the same facet on a film, so the same fact expires by the same rule whoever answered
+  // it; and a shorter class would re-buy the whole appended document -- cast, keywords,
+  // availability and all -- on a schedule nobody needs a "more like this" row to keep.
+  trailer: "settled",
+  related: "settled",
+  links: "settled",
 } as const satisfies Record<string, FreshnessClass>;
 
 /**
@@ -60,7 +82,10 @@ const FRESHNESS = {
 export function init(c: PluginContext): PluginExports {
   const { apiKey, imageBase, watchProviderRegions } = loadConfig().tmdb;
   if (!apiKey) {
-    c.log("no TMDB API key configured -- watchProviders and a series' keywords and cast stay unanswered");
+    c.log(
+      "no TMDB API key configured -- watchProviders, and a series' keywords, cast, trailer, " +
+        "related and links, stay unanswered",
+    );
     return { facets: {} };
   }
 
@@ -84,13 +109,15 @@ export function init(c: PluginContext): PluginExports {
   /**
    * A facet cut from the series document, answered for a SERIES and nobody else.
    *
-   * Both of these already arrive for a film from `api.radarr.video`, keyless -- a film's
-   * chips, and a film's credits with TMDB person ids already on them. Contributing a second
-   * copy would cost a call and put every chip and every actor on the page twice, so the
-   * answer for a film is "nothing here", decided on KIND before any id is resolved and
-   * therefore costing no call either.
+   * Every one of these already arrives for a film from `api.radarr.video`, keyless -- a
+   * film's chips, its credits with TMDB person ids already on them, its YouTube trailer id,
+   * its recommendations and its `Homepage`. Contributing a second copy would cost a call
+   * and put every chip, actor, trailer link and site link on the page twice, because all
+   * five merge as lists and nothing downstream can tell one source's entry from another's.
+   * So the answer for a film is "nothing here", decided on KIND before any id is resolved
+   * and therefore costing no call either.
    */
-  function seriesFacet<F extends "keywords" | "cast">(facet: F): FacetProvider<F> {
+  function seriesFacet<F extends SeriesOnlyFacet>(facet: F): FacetProvider<F> {
     return async (entity) => {
       if (entity.kind !== "series") return null;
       const data = (await documentFor(entity))?.[facet] ?? null;
@@ -107,9 +134,21 @@ export function init(c: PluginContext): PluginExports {
 
       keywords: seriesFacet("keywords"),
       cast: seriesFacet("cast"),
+      trailer: seriesFacet("trailer"),
+      related: seriesFacet("related"),
+      links: seriesFacet("links"),
     },
   };
 }
+
+/**
+ * The facets this plugin answers for a series and declines for a film.
+ *
+ * Derived from `FRESHNESS` rather than typed out again, so adding a row above is the only
+ * edit an author has to remember: `watchProviders` is the one facet asked for both kinds,
+ * and everything else in the table is by definition series-only.
+ */
+type SeriesOnlyFacet = Exclude<keyof typeof FRESHNESS, "watchProviders">;
 
 /** Core's entity kinds, in TMDB's vocabulary. `episode` never reaches here -- see `meta`. */
 function mediaTypeOf(entity: FacetEntity): TmdbMediaType {

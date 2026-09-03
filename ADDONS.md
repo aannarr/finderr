@@ -274,16 +274,18 @@ Concretely, addons that would be worth writing today and are not blocked on anyt
   embedding lookup, or somebody's API -- all swappable without touching a component.
 - **Non-English `synopsis` or `certification`.** The vocabulary already carries `language`
   and `country`; nothing in the UI assumes English or the MPAA.
-- **TV trailers.** Films get one from Radarr's lookup for free; series resolve `trailer` as
-  empty because neither Sonarr nor skyhook carries the field. TMDB's `/tv/{id}/videos` has
-  it, and that is an addon, not a core change.
+- **A keyless TV trailer.** Films get one from Radarr's lookup for free, and the `tmdb`
+  addon now serves a series off `/tv/{id}/videos` — so the pane draws, but only with an API
+  key. A source that needs none would merge beside it. (This bullet used to read "series
+  resolve `trailer` as empty"; that stopped being true when the addon landed.)
 - **A second `watchProviders`.** The `tmdb` addon serves it off JustWatch's catalogue, so
   the pane draws -- but only where TMDB has coverage, and it goes dark without an API key.
   A keyless or regional source merges beside it. (This bullet used to read "nothing provides
   it, and it needs a TMDB key, which is a decision"; the key landed at `9f7eb2f` and the
   addon that spends it landed the same day.)
-- **`links`.** An official site arrives from `servarr-metadata` for a film and nothing at all
-  for a series. A wiki, a fan page or a soundtrack listing is one small addon.
+- **`links` beyond the official site.** That one arrives from `servarr-metadata` for a film
+  and from `tmdb` for a series. A wiki, a fan page or a soundtrack listing is one small
+  addon, and `links` merges as a list so it lands beside them.
 
 ### The three rules that make it composable
 

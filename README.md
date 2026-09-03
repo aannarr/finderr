@@ -432,7 +432,7 @@ rebuild.
 | `FINDERR_SONARR_*` | | The same five keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
 | `FINDERR_EPISODE_REFRESH_SECONDS` | `21600` | How stale one series' episode list may get before it is walked again. Sonarr answers per series, so this is a load dial, not a freshness one |
 | `FINDERR_EPISODE_REFRESH_BATCH` | `25` | Series walked per library refresh, neediest first. `0` turns the episode mirror off, and with it the per-episode marks and requests |
-| `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability, and a series' keywords and cast |
+| `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability, and a series' keywords, cast, trailer, "more like this" and official site |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
 | `FINDERR_AUTH_RP_ID` | `localhost` | The bare domain passkeys are bound to. Permanent, see above |
@@ -643,7 +643,7 @@ Three addons ship:
 |---|---|---|---|
 | `servarr-metadata` | `api.radarr.video`, `skyhook.sonarr.tv` | none | cast, crew, ratings from five sources, certification, keywords, trailer, collection, related, synopsis, release dates, seasons, episodes |
 | `rotten-tomatoes` | RT's public index | none | the audience score, which nothing else carries |
-| `tmdb` | `api.themoviedb.org` | yes | streaming availability per country, keywords for series, and a series' cast with person ids on it |
+| `tmdb` | `api.themoviedb.org` | yes | streaming availability per country, and for a series: keywords, a cast with person ids on it, the trailer, "more like this" and the official site |
 
 The first two are somebody else's servers being generous: Servarr's own metadata proxies,
 paid for by them, meant for Radarr and Sonarr clients. finderr caches hard, honours their
@@ -764,10 +764,11 @@ Every line here is a real limitation. It is not a roadmap.
   is not keyless.
 - The rate limiter is in memory, per process, and resets on restart. See
   [Putting it on the internet](#putting-it-on-the-internet).
-- Series get no trailer, no "more like this" and no official-site link. Films get all
-  three from Radarr's lookup for free; neither Sonarr's lookup nor skyhook carries any of
-  them, so a series resolves those facets as empty. Source gaps, and each is an addon over
-  TMDB rather than a core change.
+- A series gets its trailer, its "more like this" and its official-site link **only with a
+  TMDB key**. Films get all three from Radarr's lookup for free; neither Sonarr's lookup nor
+  skyhook carries any of them, so the `tmdb` addon serves them — and without
+  `FINDERR_TMDB_API_KEY` those three panes are absent on every show. They ride the detail
+  document that addon already fetches, so they cost no extra call.
 - A person in the search results has no face. Typing a name finds people now — they come
   back in their own row above the titles, ranked by the votes on their best-known title —
   but the tile draws initials, because the only headshots we hold are cached against a
