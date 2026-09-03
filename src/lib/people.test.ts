@@ -13,10 +13,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config";
+import { loadPersonCrosswalk } from "./crosswalk";
+import type { PersonCredit } from "./facets";
 import { SCHEMA } from "./index-builder";
 import {
   frequentCollaborators,
   nconstsByNameForTitle,
+  nconstsForCredits,
   personByNconst,
   personNameKey,
   personPage,
@@ -456,6 +459,58 @@ describe("nconstsByNameForTitle", () => {
   });
 });
 
+describe("nconstsForCredits", () => {
+  /** The fixture index plus a crosswalk, which is how a real index carries both. */
+  function indexWithCrosswalk(pairs: { nconst: string; tmdb: number }[]): Database {
+    const db = indexOf(TITLES, PEOPLE, CREDITS);
+    loadPersonCrosswalk(db, pairs);
+    return db;
+  }
+
+  const credit = (name: string, personId: string | null): PersonCredit => ({
+    name,
+    personId,
+    image: null,
+  });
+
+  test("keys the answer by the credit's own personId string", () => {
+    const db = indexWithCrosswalk([{ nconst: "nm-leo", tmdb: 6193 }]);
+    expect(nconstsForCredits(db, [credit("Leonardo DiCaprio", "tmdb:6193")])).toEqual(
+      new Map([["tmdb:6193", "nm-leo"]]),
+    );
+  });
+
+  /**
+   * The reason this card exists. Both Peter Mileses are real IMDb people and the NAME join
+   * cannot tell them apart -- an id can, and does, without ever looking at the string. The
+   * name here is deliberately the wrong person's.
+   */
+  test("the id decides, not the name", () => {
+    const db = indexWithCrosswalk([{ nconst: "nm-nolan", tmdb: 525 }]);
+    expect(nconstsForCredits(db, [credit("Leonardo DiCaprio", "tmdb:525")])).toEqual(
+      new Map([["tmdb:525", "nm-nolan"]]),
+    );
+  });
+
+  test("a credit with no id, or an id we do not hold, yields no entry", () => {
+    const db = indexWithCrosswalk([{ nconst: "nm-leo", tmdb: 6193 }]);
+    expect(nconstsForCredits(db, [credit("Somebody", null), credit("Stranger", "tmdb:99")]).size).toBe(0);
+  });
+
+  /**
+   * A provider we hold no crosswalk for is not an error and not a guess: `tvdb:12` is a real
+   * id in an id space we cannot cross, so the credit falls through to the name half.
+   */
+  test("an id in a namespace we cannot cross yields no entry", () => {
+    const db = indexWithCrosswalk([{ nconst: "nm-leo", tmdb: 6193 }]);
+    expect(nconstsForCredits(db, [credit("Leonardo DiCaprio", "tvdb:6193")]).size).toBe(0);
+  });
+
+  test("no credits is an empty map and no query", () => {
+    expect(nconstsForCredits(indexWithCrosswalk([]), []).size).toBe(0);
+  });
+});
+
 describe("SearchEngine against an index without cast tables", () => {
   /** The pre-cast schema: everything `SCHEMA` had before `person`/`title_principal`. */
   const OLD_SCHEMA = SCHEMA.slice(0, SCHEMA.indexOf("-- People,"));
@@ -490,7 +545,7 @@ describe("SearchEngine against an index without cast tables", () => {
     // `no such table: person` against exactly the index most likely to be live during a
     // rollout would be the worst possible time for it.
     expect(engine.personPage("nm-leo")).toBeNull();
-    expect(engine.nconstsByNameForTitle("tt-x").size).toBe(0);
+    expect(engine.personLinks("tt-x", [])).toEqual({ byId: {}, byName: {} });
     // Empty rather than null: the person page draws no collaborator pane, exactly as it
     // does for somebody who simply has no repeat collaborator.
     expect(engine.frequentCollaborators("nm-leo")).toEqual([]);
@@ -502,6 +557,30 @@ describe("SearchEngine against an index without cast tables", () => {
     db.run(SCHEMA);
     db.close();
     expect(new SearchEngine(path, cfg).hasPeople).toBe(true);
+  });
+
+  /**
+   * The two halves are two STAGES, and the window between them is real: an index built
+   * before the person crosswalk shipped has cast tables and no `person_external`. Asking it
+   * for the id half must return nothing rather than `no such table`.
+   */
+  test("an index with people but no person crosswalk still answers the name half", () => {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(SCHEMA);
+    db.run("drop table person_external");
+    db.run("insert into title (tconst, kind, title) values ('tt-x', 'movie', 'X')");
+    db.run("insert into person (rowid_, nconst, name) values (1, 'nm-leo', 'Leonardo DiCaprio')");
+    db.run(
+      "insert into title_principal (title_rowid, person_rowid, category, ordering) values (1,1,'actor',0)",
+    );
+    db.close();
+
+    const engine = new SearchEngine(path, cfg);
+    expect(engine.hasPersonIds).toBe(false);
+    expect(
+      engine.personLinks("tt-x", [{ name: "Leonardo DiCaprio", personId: "tmdb:6193", image: null }]),
+    ).toEqual({ byId: {}, byName: { "leonardo dicaprio": "nm-leo" } });
   });
 });
 

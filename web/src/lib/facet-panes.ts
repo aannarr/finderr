@@ -7,6 +7,7 @@
  * content, hidden -- testable in one place instead of re-argued in every component.
  */
 
+import type { PersonLinks } from "../../../src/lib/people";
 import type {
   Certification,
   CrewMember,
@@ -17,6 +18,7 @@ import type {
   FacetName,
   FacetShapes,
   Language,
+  PersonCredit,
   Rating,
   ReleaseDates,
   ResolvedFacets,
@@ -282,6 +284,28 @@ export function sourceName(source: string): string {
  */
 export function personNameKey(name: string): string {
   return name.trim().toLowerCase();
+}
+
+/**
+ * Our person id for one credit, BY ID FIRST AND BY NAME SECOND.
+ *
+ * The single owner of that precedence, used by every cast tile and every crew line. The
+ * order is not a preference: an id match is one identity resolved to another, while a name
+ * match is a string that happens to be unique among the ten people IMDb bills on this title.
+ * The name half is measurably wrong 1.7% of the time on the population it is the only answer
+ * for -- IMDb holds two Peter Mileses, and no matcher can separate them -- so it is what we
+ * fall back TO, never what we check first.
+ *
+ * **Null is a real answer and the correct one.** A credit resolves to nothing when the index
+ * predates the tables, when the person is below the cast vote floor, when Wikidata's mapping
+ * for them is ambiguous, or when two people on this title share a name. In every one of
+ * those there is no page worth sending anyone to, and the dead-end rule says do not make it
+ * look like there is.
+ */
+export function nconstForCredit(credit: PersonCredit, links: PersonLinks | undefined): string | null {
+  if (!links) return null;
+  const byId = credit.personId ? links.byId[credit.personId] : undefined;
+  return byId ?? links.byName[personNameKey(credit.name)] ?? null;
 }
 
 /** `86%` for a /100 score, `7.4` for a /10 one, `4.2/5` for anything else. */

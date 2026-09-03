@@ -102,6 +102,16 @@ export const INDEX_STAGES = {
   ids: () => JSON.stringify({ v: 1 }),
 
   /**
+   * `person_external`, the bulk `TMDB person id -> nconst` crosswalk.
+   *
+   * Constant for the same reason `ids` is -- there is no knob, only present or absent. It
+   * needs its own entry rather than riding on `ids` because the two load from different
+   * files and either can be on disk without the other, so one stamp for both would report
+   * an index as current while half of it was missing.
+   */
+  personIds: () => JSON.stringify({ v: 1 }),
+
+  /**
    * `ix_pop_title`, the partial covering index that serves a stopword-only query.
    *
    * Like `rank`, this is a stage whose absence is INVISIBLE -- an index without it answers

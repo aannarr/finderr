@@ -17,6 +17,7 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
+import type { PersonLinks } from "../../../src/lib/people";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
 import { Cache } from "./cache";
@@ -29,7 +30,7 @@ import {
 import { isCacheableFacetSet } from "./facet-panes";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
-export type { ArrLink, CollectionSummary, EpisodeState, HiddenByFloor, PaneBlock, RenderedPane };
+export type { ArrLink, CollectionSummary, EpisodeState, HiddenByFloor, PaneBlock, PersonLinks, RenderedPane };
 
 /**
  * What the upcoming mirror knows about a title, present only on the four upcoming shelves.
@@ -337,14 +338,16 @@ export interface TitleDetail extends Title {
   facets: ResolvedFacets;
   work: FacetWork;
   /**
-   * Our own person ids for the names credited on this title, keyed by folded name.
+   * Our own person ids for the credits on this title, under both keys a credit can carry.
    *
    * Separate from `facets` on purpose: the cast facet is a provider's payload and
    * identifies people by TMDB id, while this is our index answering a different question.
-   * Empty on an index built before the cast tables existed, in which case names render as
-   * plain text rather than as links to nowhere.
+   * Either half is empty on an index built before the stage that fills it, in which case
+   * names render as plain text rather than as links to nowhere.
+   *
+   * Read it with `nconstForCredit`, never by hand -- it owns the id-first, name-second rule.
    */
-  people?: Record<string, string>;
+  people?: PersonLinks;
   /**
    * The other films in this title's collection, as OUR rows, in release order.
    *

@@ -11,7 +11,16 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { type Config, paths } from "./config";
-import { CROSSWALK_FILE, CROSSWALK_SCHEMA, loadCrosswalk, parseCrosswalkCsv } from "./crosswalk";
+import {
+  CROSSWALK_SCHEMA,
+  loadCrosswalk,
+  loadPersonCrosswalk,
+  PERSON_CROSSWALK,
+  PERSON_CROSSWALK_SCHEMA,
+  parseCrosswalkCsv,
+  parsePersonCrosswalkCsv,
+  TITLE_CROSSWALK,
+} from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
 import { INDEX_STAGES, stampStages } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
@@ -29,6 +38,8 @@ export interface BuildStats {
   people: number;
   /** Titles carrying a bulk-loaded TMDB or TVDB id. 0 when the crosswalk was unavailable. */
   idRows: number;
+  /** People carrying a bulk-loaded TMDB person id. 0 when that crosswalk was unavailable. */
+  personIdRows: number;
   bytes: number;
   ms: number;
 }
@@ -109,7 +120,7 @@ create table title_principal (
   -- The role as IMDb records it, already unwrapped from its JSON array form.
   characters   text
 );
-${CROSSWALK_SCHEMA}`;
+${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}`;
 
 /**
  * Derive `title_genre` from the comma-separated `title.genres` column.
@@ -352,6 +363,9 @@ export async function buildIndex(
 
   const cast = await castStage(db, cfg, dumpDir, log);
   const idRows = crosswalkStage(db, dumpDir, log);
+  // AFTER the cast stage, not beside it: this one keeps only people `person` already holds,
+  // so running it first would restrict against an empty table and keep nothing.
+  const personIdRows = personCrosswalkStage(db, dumpDir, log);
 
   log("building secondary indexes ...");
   db.run("create index ix_votes on title(votes desc)");
@@ -391,6 +405,7 @@ export async function buildIndex(
   setMeta.run("people", String(cast.people));
   setMeta.run("cast_min_votes", String(cfg.index.castMinVotes));
   setMeta.run("id_rows", String(idRows));
+  setMeta.run("person_id_rows", String(personIdRows));
   // How the lists were ranked, so a list page can say it rather than restate a constant
   // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
   setMeta.run("rank_prior_votes", String(prior.c));
@@ -417,6 +432,7 @@ export async function buildIndex(
     creditRows: cast.creditRows,
     people: cast.people,
     idRows,
+    personIdRows,
     bytes,
     ms,
   };
@@ -437,7 +453,7 @@ export async function buildIndex(
  * caught exactly that.
  */
 function crosswalkStage(db: Database, dumpDir: string, log: (m: string) => void): number {
-  const path = `${dumpDir}/${CROSSWALK_FILE}`;
+  const path = `${dumpDir}/${TITLE_CROSSWALK.file}`;
   if (!existsSync(path)) {
     log("no id crosswalk on disk -- providers will resolve their own ids, as before");
     return 0;
@@ -447,6 +463,33 @@ function crosswalkStage(db: Database, dumpDir: string, log: (m: string) => void)
   const rows = parseCrosswalkCsv(readFileSync(path, "utf8"));
   const kept = loadCrosswalk(db, rows);
   log(`  ${kept.toLocaleString()} of our titles carry an id (${rows.length.toLocaleString()} in the source)`);
+  return kept;
+}
+
+/**
+ * Bulk-load the `TMDB person id -> nconst` crosswalk, so a cast tile can link by id.
+ *
+ * ADDITIVE AND OPTIONAL like every stage above it, and the degraded answer is the one the
+ * product already shipped for months: with no `person_external` a cast name is linked by the
+ * title-scoped name join or not at all. Nothing breaks, fewer names are live.
+ *
+ * DEPENDS ON THE CAST STAGE having run -- `loadPersonCrosswalk` keeps only people `person`
+ * holds. On a build with no people dumps that is nobody, which is correct rather than
+ * unfortunate: without `person` there are no person pages to link to either.
+ */
+function personCrosswalkStage(db: Database, dumpDir: string, log: (m: string) => void): number {
+  const path = `${dumpDir}/${PERSON_CROSSWALK.file}`;
+  if (!existsSync(path)) {
+    log("no person crosswalk on disk -- cast names link by the title-scoped name join, as before");
+    return 0;
+  }
+
+  log("loading the person crosswalk ...");
+  const rows = parsePersonCrosswalkCsv(readFileSync(path, "utf8"));
+  const kept = loadPersonCrosswalk(db, rows);
+  log(
+    `  ${kept.toLocaleString()} of our people carry a TMDB id (${rows.length.toLocaleString()} in the source)`,
+  );
   return kept;
 }
 

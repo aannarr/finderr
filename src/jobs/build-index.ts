@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { loadConfig, paths } from "../lib/config";
-import { CROSSWALK_FILE, fetchCrosswalk } from "../lib/crosswalk";
+import { CROSSWALK_SOURCES, fetchCrosswalk } from "../lib/crosswalk";
 import { DumpStateStore, fetchDump, SchemaDriftError } from "../lib/dumps";
 import { buildIndex, gateVolume, promote } from "../lib/index-builder";
 import { describeStale, staleStagesOf } from "../lib/index-stages";
@@ -64,14 +64,15 @@ async function main(): Promise<number> {
     }
 
     /*
-      The id crosswalk is a dump like the four above, and is fetched like one.
+      The id crosswalks are dumps like the four above, and are fetched like them.
 
-      It does NOT set `anyChanged`: a fresher crosswalk is not a reason to spend six
-      minutes rebuilding an index whose titles have not moved. It rides along with the
-      next build that happens for its own reasons, which for a week-long cache window is
-      every build.
+      Neither sets `anyChanged`: a fresher crosswalk is not a reason to spend six minutes
+      rebuilding an index whose titles have not moved. They ride along with the next build
+      that happens for its own reasons, which for a week-long cache window is every build --
+      and the stage stamp a few lines below is what makes a build happen at all on the day
+      a crosswalk is the ONLY thing that moved.
     */
-    await fetchCrosswalk(`${p.dumps}/${CROSSWALK_FILE}`, { log });
+    for (const source of CROSSWALK_SOURCES) await fetchCrosswalk(source, p.dumps, { log });
   } else {
     anyChanged = true;
     log("--no-fetch: building from the dumps already on disk");

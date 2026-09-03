@@ -31,6 +31,7 @@ export type {
   FailureReason,
   Keyword,
   Language,
+  PersonCredit,
   Rating,
   RelatedTitle,
   ReleaseDates,

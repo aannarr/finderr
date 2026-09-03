@@ -22,7 +22,7 @@
 
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import type { EpisodeState, RenderedPane, Title, TitleAwards } from "../lib/api";
+import type { EpisodeState, PersonLinks, RenderedPane, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
 import {
@@ -39,8 +39,8 @@ import {
   localImageUrl,
   localImdbRating,
   mergeRatings,
+  nconstForCredit,
   paneView,
-  personNameKey,
   pickCertification,
   pickWatchProviders,
   preferredCountries,
@@ -60,6 +60,7 @@ import type {
   FacetName,
   Keyword,
   Language,
+  PersonCredit,
   Rating,
   ReleaseDates,
   ResolvedFacets,
@@ -79,14 +80,14 @@ export interface TitlePanesProps {
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
   /**
-   * Our own person ids for this title's credited names, keyed by folded name.
+   * Our own person ids for this title's credits, by provider id and by folded name.
    *
    * Comes from the index rather than from a provider, so it is a separate prop rather
    * than another facet. Absent or empty means every name renders as plain text -- which
    * is the correct output for an index built before the cast tables existed, and for a
-   * name we cannot resolve unambiguously.
+   * name we cannot resolve unambiguously. `nconstForCredit` reads it.
    */
-  people?: Record<string, string>;
+  people?: PersonLinks;
   /**
    * The rest of this title's collection, already decorated and already filtered to what
    * we hold. Separate from `facets` for the same reason `people` is: the facet is the
@@ -885,7 +886,7 @@ const CAST_IMAGE_CLASS = "aspect-2/3 w-full rounded-lg";
  */
 const MAX_CAST = 30;
 
-function CastRow({ cast, people }: { cast: CastMember[]; people?: Record<string, string> }) {
+function CastRow({ cast, people }: { cast: CastMember[]; people?: PersonLinks }) {
   const billed = byBillingOrder(cast).slice(0, MAX_CAST);
   return (
     <ul className={CAST_ROW_CLASS}>
@@ -894,7 +895,7 @@ function CastRow({ cast, people }: { cast: CastMember[]; people?: Record<string,
           {/* The portrait is part of the link when there is one -- a face is the most
               clickable thing on the tile, and a name that navigates beside a picture
               that does not is the kind of inconsistency people notice by feel. */}
-          <PersonLink name={member.name} people={people} className="block">
+          <PersonLink credit={member} people={people} className="block">
             <PersonPortrait name={member.name} image={member.image} />
             <p className="mt-1.5 text-xs font-medium leading-tight text-ink">{member.name}</p>
           </PersonLink>
@@ -908,14 +909,13 @@ function CastRow({ cast, people }: { cast: CastMember[]; people?: Record<string,
 /**
  * A person's name, as a link when we can say WHICH person it is.
  *
- * The single owner of that decision, used by the cast tiles and the crew list alike --
- * two copies would drift on the first restyle, and this one carries a rule rather than
- * just a class list.
+ * The single owner of that RENDERING, used by the cast tiles and the crew list alike --
+ * two copies would drift on the first restyle. Which person it is, if any, is
+ * `nconstForCredit`'s answer and not this component's: it takes the whole credit rather
+ * than a bare name precisely so the id can win over the name.
  *
- * **Plain text is the correct output, not a fallback.** A name goes unlinked when the
- * index predates the cast tables, when the person is below the vote floor, or when two
- * different people share that name on this title. In every case there is no page worth
- * sending anyone to, and the dead-end rule says do not make it look like there is.
+ * **Plain text is the correct output, not a fallback**, for the reasons listed on
+ * `nconstForCredit`.
  *
  * **Nothing at rest, underline on hover.** A crew list is a wall of names and underlining
  * them all turns a readable block into noise -- but with no affordance at all the reader
@@ -933,18 +933,18 @@ export const PERSON_LINK_CLASS =
   "underline-offset-2 hover:text-accent hover:underline focus-visible:text-accent focus-visible:underline";
 
 function PersonLink({
-  name,
+  credit,
   people,
   className = "",
   children,
 }: {
-  name: string;
-  people?: Record<string, string>;
+  credit: PersonCredit;
+  people?: PersonLinks;
   className?: string;
   children?: React.ReactNode;
 }) {
-  const nconst = people?.[personNameKey(name)];
-  const body = children ?? name;
+  const nconst = nconstForCredit(credit, people);
+  const body = children ?? credit.name;
   if (!nconst) return <span className={className}>{body}</span>;
   return (
     <Link
@@ -1005,7 +1005,7 @@ function PersonPortrait({ name, image }: { name: string; image: string | null })
  *
  * A definition list because that is what this is: a job, and the people who did it.
  */
-function CrewList({ crew, people }: { crew: CrewMember[]; people?: Record<string, string> }) {
+function CrewList({ crew, people }: { crew: CrewMember[]; people?: PersonLinks }) {
   const { leads, rest } = groupCrewByJob(crew);
   if (leads.length === 0 && rest.length === 0) return null;
 
@@ -1024,7 +1024,7 @@ function CrewGroups({
 }: {
   groups: { job: string; members: CrewMember[] }[];
   className: string;
-  people?: Record<string, string>;
+  people?: PersonLinks;
 }) {
   if (groups.length === 0) return null;
   return (
@@ -1041,7 +1041,7 @@ function CrewGroups({
             {group.members.map((m, i) => (
               <span key={`${m.name}|${m.job}`}>
                 {i > 0 && ", "}
-                <PersonLink name={m.name} people={people} />
+                <PersonLink credit={m} people={people} />
               </span>
             ))}
           </dd>

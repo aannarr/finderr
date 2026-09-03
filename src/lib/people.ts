@@ -13,6 +13,8 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { nconstsByTmdbPersonId } from "./crosswalk";
+import { type PersonCredit, tmdbPersonIdOf } from "./facets";
 import type { TitleRow } from "./search";
 
 export interface Person {
@@ -326,12 +328,71 @@ export function frequentCollaborators(
 }
 
 /**
+ * Our own person ids for the credits on one title, under both keys a credit can carry.
+ *
+ * TWO MAPS RATHER THAN ONE, because they are answers of different quality and the reader
+ * has to be able to prefer the better one. `byId` resolves identity from an ID and is
+ * authoritative; `byName` resolves it from a STRING and is the fallback for a credit that
+ * arrived with no id at all, which is what a series cast list is.
+ *
+ * Not merged into one map keyed by "whichever the credit has": two key spaces in one
+ * object is a collision waiting for somebody named `tmdb:1295`, and it would also mean the
+ * reader could no longer tell an authoritative answer from a fallback one.
+ *
+ * THE ID HALF IS THE ANSWER AND THE NAME HALF IS THE LEFTOVER. Matching a cast name against
+ * the whole index is wrong 1.7% of the time and cannot be made right -- IMDb holds two
+ * Peter Mileses (`nm0587213`, `nm0587215`) and no string can separate them. So the name
+ * join stays TITLE-SCOPED, which is what makes it safe, and the crosswalk is what reaches
+ * the people the scoped join cannot see: `title.principals` is IMDb's curated top-ten per
+ * title, so anybody billed below about tenth has no row to join against however famous they
+ * are. Measured 2026-09-03 over 211 warmed titles and 5,127 cast entries: 33.8% linked by
+ * name alone, 56.8% with the crosswalk beside it.
+ *
+ * Either half is empty on an index built before the stage that fills it, which renders as
+ * plain text -- the dead-end rule's answer for a name with nowhere to go.
+ */
+export interface PersonLinks {
+  /** Keyed by the credit's own `personId` string, e.g. `tmdb:1295`. Authoritative. */
+  byId: Record<string, string>;
+  /** Keyed by `personNameKey(name)`, scoped to this title. The fallback. */
+  byName: Record<string, string>;
+}
+
+/**
+ * Our nconsts for a batch of credits, keyed by the credit's own `personId` string.
+ *
+ * Keyed by the STRING the credit carries rather than by the decoded number, so the caller
+ * that reads this map -- ultimately a browser -- never has to know how a `personId` is
+ * spelled. Decoding lives in `tmdbPersonIdOf` and nowhere else.
+ *
+ * A credit with no id, an id in a namespace we hold no crosswalk for, and an id nobody in
+ * our index answers to all yield the same thing: no entry. That is deliberate -- an nconst
+ * we cannot render a filmography for is a dead end wearing a link.
+ */
+export function nconstsForCredits(db: Database, credits: readonly PersonCredit[]): Map<string, string> {
+  const wanted = new Map<number, string>();
+  for (const c of credits) {
+    const id = tmdbPersonIdOf(c.personId);
+    // `c.personId` is non-null whenever `id` is -- `tmdbPersonIdOf` returns null otherwise.
+    if (id !== null && c.personId) wanted.set(id, c.personId);
+  }
+
+  const resolved = nconstsByTmdbPersonId(db, [...wanted.keys()]);
+  const out = new Map<string, string>();
+  for (const [id, key] of wanted) {
+    const nconst = resolved.get(id);
+    if (nconst) out.set(key, nconst);
+  }
+  return out;
+}
+
+/**
  * Map the names a metadata provider gave us for one title onto our own person ids.
  *
- * Needed because the `cast` facet identifies people by TMDB id (`tmdb:6193`) while the
- * index speaks IMDb nconsts, so a cast list arrives with no id we can link. Rather than
- * crosswalk two id spaces, this joins on the one thing both sides agree on -- the name,
- * within a title whose credits we already hold.
+ * The FALLBACK half of `personLinks`, and the only one available for a credit that carries
+ * no person id in any space -- skyhook's series cast is exactly that. Rather than crosswalk
+ * two id spaces, this joins on the one thing both sides agree on: the name, within a title
+ * whose credits we already hold.
  *
  * Scoping to the title is what makes a name safe to match on. "John Williams" is several
  * people across the corpus and one person on any given film.

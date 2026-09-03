@@ -24,7 +24,7 @@ import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import type { EpisodeState } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
-import { entityKindFor, type FacetEntity } from "../lib/facets";
+import { entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
@@ -905,6 +905,23 @@ function collectionRows(resolvedFacets: ResolvedFacets): TitleRow[] {
 }
 
 /**
+ * Every credit a provider named on this title, cast and crew together.
+ *
+ * BOTH, because a crew name links exactly as a cast name does and the map that resolves
+ * them is one map -- asking for the cast alone would leave the director unlinked on a title
+ * whose director is not in IMDb's curated top ten. A facet that is still pending yields
+ * nothing, which is correct: the client re-asks when it lands.
+ */
+function creditsIn(resolvedFacets: ResolvedFacets): PersonCredit[] {
+  const cast = resolvedFacets.cast;
+  const crew = resolvedFacets.crew;
+  return [
+    ...(cast?.status === "ready" ? (cast.data ?? []) : []),
+    ...(crew?.status === "ready" ? (crew.data ?? []) : []),
+  ];
+}
+
+/**
  * The same, for `related` -- "more like this".
  *
  * A recommendation whose tconst never resolved, or which we simply do not index, yields
@@ -1408,17 +1425,20 @@ const appRoutes = {
           */
         work,
         /*
-            Our own ids for the people credited on this title, keyed by folded name.
+            Our own ids for the people credited on this title, under BOTH keys a credit can
+            carry: the provider's own person id, and the folded name.
+
             Sent alongside the facets rather than merged into them: the cast facet is a
             PROVIDER's data and identifies people by TMDB id, while this is OUR index
             answering a different question. Writing nconsts into the facet would make the
             cached provider payload depend on which index built it.
 
-            One indexed lookup, and empty on an index without cast tables -- the client
-            then renders names as plain text, which is what the dead-end rule wants when
-            there is nowhere to go.
+            The credits are read back OUT of the resolved facets to build it, which is why
+            this sits after `cached`: the id half can only answer for people the providers
+            actually named. `nconstForCredit` in the browser is the single owner of the
+            precedence between the two halves.
           */
-        people: Object.fromEntries(live.current.nconstsByNameForTitle(row.tconst)),
+        people: live.current.personLinks(row.tconst, creditsIn(cached)),
         /*
             The collection's other films as OUR rows, decorated like any search hit.
 

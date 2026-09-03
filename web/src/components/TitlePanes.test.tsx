@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Title } from "../lib/api";
+import type { PersonLinks, Title } from "../lib/api";
 import type { FacetName, ResolvedFacets } from "../lib/facets";
 import {
   PERSON_LINK_CLASS,
@@ -55,7 +55,7 @@ const TITLE: Title = {
 function render(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] | undefined = undefined,
-  people?: Record<string, string>,
+  people?: PersonLinks,
   rows?: { collectionTitles?: Title[]; relatedTitles?: Title[] },
 ): string {
   return renderToStaticMarkup(
@@ -495,7 +495,7 @@ describe("panes that are one fact", () => {
     // do not make it look like there is. Rendered through the whole pane rather than
     // through PersonLink directly, because the map has to survive two components to
     // reach the name.
-    const html = render(CREW, [], {});
+    const html = render(CREW, [], { byId: {}, byName: {} });
     expect(html).toContain("Emma Thomas");
     expect(html).toContain("Hans Zimmer");
     expect(html).not.toContain("/person/");

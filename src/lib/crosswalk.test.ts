@@ -4,10 +4,15 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   CROSSWALK_MAX_AGE_MS,
+  CROSSWALK_SOURCES,
   type CrosswalkRow,
   fetchCrosswalk,
   loadCrosswalk,
+  loadPersonCrosswalk,
+  nconstsByTmdbPersonId,
   parseCrosswalkCsv,
+  parsePersonCrosswalkCsv,
+  TITLE_CROSSWALK,
   titleIds,
 } from "./crosswalk";
 import { EXPLODE_GENRES, SCHEMA } from "./index-builder";
@@ -140,13 +145,15 @@ describe("loadCrosswalk", () => {
 });
 
 describe("fetchCrosswalk", () => {
-  const path = () => `${dir}/wikidata-ids.csv`;
+  const path = () => `${dir}/${TITLE_CROSSWALK.file}`;
   const ok = (body: string) => async () => new Response(body);
 
   test("downloads and writes when there is nothing on disk", async () => {
-    expect(await fetchCrosswalk(path(), { fetchImpl: ok("imdb,a,b,c\n") as unknown as typeof fetch })).toBe(
-      true,
-    );
+    expect(
+      await fetchCrosswalk(TITLE_CROSSWALK, dir, {
+        fetchImpl: ok("imdb,a,b,c\n") as unknown as typeof fetch,
+      }),
+    ).toBe(true);
     expect(await Bun.file(path()).text()).toBe("imdb,a,b,c\n");
   });
 
@@ -158,7 +165,7 @@ describe("fetchCrosswalk", () => {
       return new Response("fresh");
     }) as unknown as typeof fetch;
 
-    expect(await fetchCrosswalk(path(), { fetchImpl: spy })).toBe(true);
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
     expect(called).toBe(false);
     expect(await Bun.file(path()).text()).toBe("cached");
   });
@@ -168,7 +175,7 @@ describe("fetchCrosswalk", () => {
     const old = new Date(Date.now() - CROSSWALK_MAX_AGE_MS - 60_000);
     utimesSync(path(), old, old);
 
-    await fetchCrosswalk(path(), { fetchImpl: ok("fresh") as unknown as typeof fetch });
+    await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok("fresh") as unknown as typeof fetch });
     expect(await Bun.file(path()).text()).toBe("fresh");
   });
 
@@ -182,7 +189,7 @@ describe("fetchCrosswalk", () => {
     utimesSync(path(), old, old);
     const dead = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
 
-    expect(await fetchCrosswalk(path(), { fetchImpl: dead })).toBe(true);
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(true);
     expect(await Bun.file(path()).text()).toBe("cached");
   });
 
@@ -190,6 +197,142 @@ describe("fetchCrosswalk", () => {
     const dead = (async () => {
       throw new Error("dns");
     }) as unknown as typeof fetch;
-    expect(await fetchCrosswalk(path(), { fetchImpl: dead })).toBe(false);
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(false);
+  });
+
+  /**
+   * Two sources, two files, one downloader. The failure this pins is a source whose
+   * `file` was copied from its sibling and never changed: both crosswalks would land on one
+   * path, the second overwriting the first, and the index would carry the wrong table for
+   * one of them with nothing to say so.
+   */
+  test("each source writes to its own file", async () => {
+    for (const source of CROSSWALK_SOURCES) {
+      await fetchCrosswalk(source, dir, { fetchImpl: ok(source.label) as unknown as typeof fetch });
+    }
+    for (const source of CROSSWALK_SOURCES) {
+      expect(await Bun.file(`${dir}/${source.file}`).text()).toBe(source.label);
+    }
+    expect(new Set(CROSSWALK_SOURCES.map((s) => s.file)).size).toBe(CROSSWALK_SOURCES.length);
+  });
+});
+
+describe("parsePersonCrosswalkCsv", () => {
+  test("reads the two columns", () => {
+    const rows = parsePersonCrosswalkCsv(["imdb,tmdb", "nm0000138,6193", "nm0001664,525"].join("\n"));
+    expect(rows).toEqual([
+      { nconst: "nm0000138", tmdb: 6193 },
+      { nconst: "nm0001664", tmdb: 525 },
+    ]);
+  });
+
+  /** P345 is shared with titles and companies, exactly as it is on the title side. */
+  test("anything that is not an nconst is dropped", () => {
+    const rows = parsePersonCrosswalkCsv(["imdb,tmdb", "tt1375666,27205", "co0144901,7"].join("\n"));
+    expect(rows).toEqual([]);
+  });
+
+  /** A pair is only useful whole: half of one cannot link anybody. */
+  test("a row with no usable id is dropped rather than half-read", () => {
+    const rows = parsePersonCrosswalkCsv(
+      ["imdb,tmdb", "nm1,notanumber", "nm2,", "nm3,0", "nm4,-5", "nm5,7"].join("\n"),
+    );
+    expect(rows).toEqual([{ nconst: "nm5", tmdb: 7 }]);
+  });
+});
+
+describe("loadPersonCrosswalk", () => {
+  /** Shaped from the real SCHEMA, so the fixture cannot disagree with the real index. */
+  function indexWith(people: string[]): Database {
+    const db = new Database(`${dir}/titles.db`, { create: true });
+    db.run(SCHEMA);
+    const insert = db.prepare("insert into person (nconst, name) values (?,?)");
+    for (const nconst of people) insert.run(nconst, nconst);
+    return db;
+  }
+
+  test("a clean pair for somebody we hold is stored", () => {
+    const db = indexWith(["nm0000138"]);
+    expect(loadPersonCrosswalk(db, [{ nconst: "nm0000138", tmdb: 6193 }])).toBe(1);
+    expect(nconstsByTmdbPersonId(db, [6193])).toEqual(new Map([[6193, "nm0000138"]]));
+    db.close();
+  });
+
+  /**
+   * The dead-end rule. The crosswalk resolves this nconst perfectly and there is still no
+   * filmography behind it, so a link would be a link to an empty page -- 31.3% of unlinked
+   * cast are exactly this, and plain text is the right answer for all of them.
+   */
+  test("somebody absent from our index is not stored", () => {
+    const db = indexWith(["nm0000138"]);
+    expect(loadPersonCrosswalk(db, [{ nconst: "nm9999999", tmdb: 42 }])).toBe(0);
+    expect(nconstsByTmdbPersonId(db, [42]).size).toBe(0);
+    db.close();
+  });
+
+  /**
+   * THE WHOLE POINT OF THE CARD, on the id axis. Wikidata's merge artefacts leave one TMDB
+   * id pointing at two nconsts; there is no way to choose and a coin toss sends one reader
+   * in sixty to a stranger's filmography. Both sides go.
+   */
+  test("a TMDB id claiming two people resolves to nobody", () => {
+    const db = indexWith(["nm1", "nm2"]);
+    expect(
+      loadPersonCrosswalk(db, [
+        { nconst: "nm1", tmdb: 7 },
+        { nconst: "nm2", tmdb: 7 },
+      ]),
+    ).toBe(0);
+    expect(nconstsByTmdbPersonId(db, [7]).size).toBe(0);
+    db.close();
+  });
+
+  /** The same artefact seen from the other end, and it poisons the pair just as hard. */
+  test("one person claiming two TMDB ids resolves to nobody", () => {
+    const db = indexWith(["nm1"]);
+    expect(
+      loadPersonCrosswalk(db, [
+        { nconst: "nm1", tmdb: 7 },
+        { nconst: "nm1", tmdb: 8 },
+      ]),
+    ).toBe(0);
+    db.close();
+  });
+
+  /**
+   * Ambiguity is judged over the WHOLE source and only then restricted to people we hold.
+   * The other way round, a collision whose second half is merely below our vote floor would
+   * look unambiguous -- and the surviving half is a coin toss, not an answer.
+   */
+  test("a collision with somebody outside our index still poisons the pair", () => {
+    const db = indexWith(["nm1"]);
+    expect(
+      loadPersonCrosswalk(db, [
+        { nconst: "nm1", tmdb: 7 },
+        { nconst: "nm9999999", tmdb: 7 },
+      ]),
+    ).toBe(0);
+    db.close();
+  });
+
+  /** The same pair twice is a duplicate row, not a disagreement -- see `select distinct`. */
+  test("an exactly repeated pair is not treated as ambiguity", () => {
+    const db = indexWith(["nm1"]);
+    expect(
+      loadPersonCrosswalk(db, [
+        { nconst: "nm1", tmdb: 7 },
+        { nconst: "nm1", tmdb: 7 },
+      ]),
+    ).toBe(1);
+    expect(nconstsByTmdbPersonId(db, [7])).toEqual(new Map([[7, "nm1"]]));
+    db.close();
+  });
+
+  test("ids nobody answers to are simply absent from the batch", () => {
+    const db = indexWith(["nm1"]);
+    loadPersonCrosswalk(db, [{ nconst: "nm1", tmdb: 7 }]);
+    expect(nconstsByTmdbPersonId(db, [7, 8, 9])).toEqual(new Map([[7, "nm1"]]));
+    expect(nconstsByTmdbPersonId(db, []).size).toBe(0);
+    db.close();
   });
 });

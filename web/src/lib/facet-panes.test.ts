@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { PersonLinks } from "../../../src/lib/people";
 import {
   adjacentSeasonNumber,
   byBillingOrder,
@@ -22,8 +23,10 @@ import {
   localImageUrl,
   localImdbRating,
   mergeRatings,
+  nconstForCredit,
   orderSeasons,
   paneView,
+  personNameKey,
   pickCertification,
   pickWatchProviders,
   preferredCountries,
@@ -42,7 +45,16 @@ import {
   trailerLogo,
   watchServices,
 } from "./facet-panes";
-import type { CastMember, CrewMember, Episode, Rating, ResolvedFacets, Season, Trailer } from "./facets";
+import type {
+  CastMember,
+  CrewMember,
+  Episode,
+  PersonCredit,
+  Rating,
+  ResolvedFacets,
+  Season,
+  Trailer,
+} from "./facets";
 
 describe("paneView", () => {
   /** The facets the server says a provider still owes. `[]` means nobody owes anything. */
@@ -648,6 +660,62 @@ describe("byBillingOrder", () => {
     ];
     expect(byBillingOrder(cast).map((c) => c.name)).toEqual(["First", "Second"]);
     expect(cast[0].name).toBe("Second");
+  });
+});
+
+describe("nconstForCredit", () => {
+  const credit = (name: string, personId: string | null = null): PersonCredit => ({
+    name,
+    personId,
+    image: null,
+  });
+
+  test("an id match wins, and does not consult the name at all", () => {
+    const links: PersonLinks = {
+      byId: { "tmdb:6193": "nm0000138" },
+      byName: { "leonardo dicaprio": "nm-somebody-else" },
+    };
+    expect(nconstForCredit(credit("Leonardo DiCaprio", "tmdb:6193"), links)).toBe("nm0000138");
+  });
+
+  test("the name is the fallback for a credit with no id", () => {
+    const links: PersonLinks = { byId: {}, byName: { "hans zimmer": "nm0001877" } };
+    expect(nconstForCredit(credit("Hans Zimmer"), links)).toBe("nm0001877");
+  });
+
+  /**
+   * A credit whose id we cannot place is NOT a credit we refuse to link -- it is one where
+   * the better answer was unavailable, and the title-scoped name join is still safe. This
+   * is every series cast entry the crosswalk misses.
+   */
+  test("an id we cannot place falls through to the name", () => {
+    const links: PersonLinks = { byId: {}, byName: { "hans zimmer": "nm0001877" } };
+    expect(nconstForCredit(credit("Hans Zimmer", "tmdb:99999"), links)).toBe("nm0001877");
+  });
+
+  /**
+   * The refusal, pinned. Two same-named people on one title poison the name entry, so it is
+   * simply absent -- and with no id there is nowhere certain to go. Plain text is the
+   * output, not a guess at whichever of them is more famous.
+   */
+  test("a name we cannot place resolves to nothing, never to a guess", () => {
+    expect(nconstForCredit(credit("John Williams"), { byId: {}, byName: {} })).toBeNull();
+  });
+
+  test("no map at all is nothing rather than a throw", () => {
+    expect(nconstForCredit(credit("Anyone", "tmdb:1"), undefined)).toBeNull();
+  });
+});
+
+describe("personNameKey", () => {
+  /**
+   * The server folds with its own copy in `src/lib/people.ts` and the client reads the map
+   * with this one. A divergence silently unlinks every name rather than failing loudly, so
+   * the fold is pinned on both sides.
+   */
+  test("folds case and surrounding space, and nothing else", () => {
+    expect(personNameKey("  Leonardo DiCaprio ")).toBe("leonardo dicaprio");
+    expect(personNameKey("Louis C.K.")).toBe("louis c.k.");
   });
 });
 

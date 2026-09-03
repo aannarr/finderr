@@ -19,6 +19,7 @@ import {
   cachedTitle,
   type EpisodeState,
   getTitleDetail,
+  type PersonLinks,
   type RenderedPane,
   subscribeTitleState,
   type Title,
@@ -127,13 +128,13 @@ export interface TitleDetailView {
   /** Undefined until the first response; panes render skeletons until then. */
   facets: ResolvedFacets | undefined;
   /**
-   * Our own person ids for this title's credited names, keyed by folded name.
+   * Our own person ids for this title's credits, by provider id and by folded name.
    *
    * From the index, not from a provider, so it is not a facet -- and undefined until the
    * detail response lands, which is why a cast name is plain text for one frame before it
-   * becomes a link. Empty on an index built before the cast tables existed.
+   * becomes a link. Either half is empty on an index built before the stage that fills it.
    */
-  people: Record<string, string> | undefined;
+  people: PersonLinks | undefined;
   /** The rest of this title's collection, decorated. Undefined until the response lands. */
   collectionTitles: Title[] | undefined;
   /**

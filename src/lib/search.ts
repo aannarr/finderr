@@ -23,13 +23,16 @@
 import { Database } from "bun:sqlite";
 import type { Config } from "./config";
 import { type TitleIds, titleIds } from "./crosswalk";
+import type { PersonCredit } from "./facets";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
   type Collaborator,
   type CollaboratorOptions,
   frequentCollaborators,
   nconstsByNameForTitle,
+  nconstsForCredits,
   type PersonCreditsOptions,
+  type PersonLinks,
   type PersonPage,
   personPage,
 } from "./people";
@@ -201,6 +204,17 @@ export class SearchEngine {
   readonly hasIds: boolean;
 
   /**
+   * Whether this index carries the bulk-loaded PERSON crosswalk.
+   *
+   * Separate from `hasIds` because they are two stages loading two files, and either can be
+   * present without the other -- an index built between the two ships has titles crosswalked
+   * and people not. One flag for both would claim a table that is not there.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasPersonIds: boolean;
+
+  /**
    * Whether `title_genre` carries its own copy of `votes`.
    *
    * The fourth guard, for the same reason as the three above: the index a deploy meets is
@@ -243,6 +257,7 @@ export class SearchEngine {
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
     this.hasIds = this.tableExists("title_ids");
+    this.hasPersonIds = this.tableExists("person_external");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
@@ -965,9 +980,18 @@ export class SearchEngine {
     return this.hasPeople ? frequentCollaborators(this.db, nconst, opts) : [];
   }
 
-  /** Our own ids for the names credited on a title, so a cast list can become links. */
-  nconstsByNameForTitle(tconst: string): Map<string, string> {
-    return this.hasPeople ? nconstsByNameForTitle(this.db, tconst) : new Map();
+  /**
+   * Our own ids for the credits on a title, so a cast list can become links.
+   *
+   * The two halves are gated separately because they come from different stages: an index
+   * can carry the cast tables without the person crosswalk (any index built before this
+   * shipped does), and neither half depends on the other being there.
+   */
+  personLinks(tconst: string, credits: readonly PersonCredit[]): PersonLinks {
+    return {
+      byId: this.hasPersonIds ? Object.fromEntries(nconstsForCredits(this.db, credits)) : {},
+      byName: this.hasPeople ? Object.fromEntries(nconstsByNameForTitle(this.db, tconst)) : {},
+    };
   }
 }
 

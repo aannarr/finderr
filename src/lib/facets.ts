@@ -67,20 +67,57 @@ export interface Rating {
   url?: string;
 }
 
-export interface CastMember {
+/**
+ * What every credit carries, whatever job it is a credit for.
+ *
+ * The shared half rather than two copies, because resolving a credit to OUR person is one
+ * question for an actor and for a director: the provider's id if there is one, the name if
+ * there is not. `nconstsForCredits` takes this and nothing more.
+ */
+export interface PersonCredit {
   name: string;
-  character: string | null;
-  order: number;
+  /**
+   * The provider's own id for this person, NAMESPACED -- `tmdb:1295`, never a bare `1295`,
+   * because a bare number does not say whose id space it is in. Build it with
+   * `tmdbPersonId` and read it back with `tmdbPersonIdOf`; nothing should be splitting this
+   * string by hand.
+   *
+   * `null` is ordinary rather than exceptional: skyhook's series cast carries no person id
+   * in any space, so a third of all credits arrive with nothing but a name.
+   */
   personId: string | null;
   image: string | null;
 }
 
-export interface CrewMember {
-  name: string;
+export interface CastMember extends PersonCredit {
+  character: string | null;
+  order: number;
+}
+
+export interface CrewMember extends PersonCredit {
   job: string;
   department: string | null;
-  personId: string | null;
-  image: string | null;
+}
+
+/** The one prefix `personId` uses for TMDB, spelled once so a reader and a writer agree. */
+const TMDB_PERSON_PREFIX = "tmdb:";
+
+/** A TMDB person id in `PersonCredit.personId` form. */
+export function tmdbPersonId(id: number): string {
+  return `${TMDB_PERSON_PREFIX}${id}`;
+}
+
+/**
+ * The TMDB person id inside a `personId`, or `null` for anything else.
+ *
+ * `null` for a credit with no id, for another provider's namespace, and for a malformed
+ * one. All three mean the same thing to every caller -- there is no TMDB person id here --
+ * and a caller that had to tell them apart would be guessing about a string a plugin wrote.
+ */
+export function tmdbPersonIdOf(personId: string | null | undefined): number | null {
+  if (!personId?.startsWith(TMDB_PERSON_PREFIX)) return null;
+  const n = Number(personId.slice(TMDB_PERSON_PREFIX.length));
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 export interface Certification {
