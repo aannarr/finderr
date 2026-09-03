@@ -517,23 +517,32 @@ const PERSON_SEARCH_MIN_TOKEN_CHARS = 3;
  * of what it computes is about titles: `top_votes` reads `title.votes`, which moves nightly
  * even on a night when no credit changed. Carrying it would freeze a person's popularity at
  * whatever it was the last time the dumps were scanned, which is up to `castRefreshDays`
- * ago. Measured on the real index: 3.0s for the popularity pass and 0.6s for the FTS.
+ * ago. Measured on a copy of the live 353,117-person index: 7.2s in total, 4.4s of it the
+ * popularity pass and 2.0s the FTS insert, against a nightly build that already runs for
+ * minutes (`BUILD COST` in `./index-builder.ts`).
  *
  * Creates the table even when there is nobody in it, so `hasPeopleSearch` answers the same
  * question `hasPeople` does -- "was this index built by a version that knows about people
  * search" -- rather than doubling as a row count.
  */
 export function buildPersonSearchIndex(db: Database, log: (msg: string) => void = () => {}): void {
-  // Correlated subqueries rather than a grouped temp table: the grouped form has to write
-  // and then re-read 353k rows to save nothing, and it measured WORSE than this by enough
-  // that it never finished a probe run.
+  /*
+    ONE GROUPED SCAN joined onto the update, not a correlated subquery per person.
+
+    The correlated form reads the same and measured 40.6s on a copy of the live index
+    against 4.4s for this -- SQLite runs it once per row, so a third of a million index
+    seeks pay for a scan that answers every person at once.
+
+    A person with no surviving credit is left at the column default, which is 0 and is the
+    right answer: they are as unknown as the index can say. `update ... from` simply does
+    not match them, so no `coalesce` is needed and none is written.
+  */
   db.run(
-    `update person set
-       top_votes = coalesce((select max(t.votes) from title_principal tp
-                             join title t on t.rowid_ = tp.title_rowid
-                             where tp.person_rowid = person.rowid_), 0),
-       credits   = coalesce((select count(distinct tp.title_rowid) from title_principal tp
-                             where tp.person_rowid = person.rowid_), 0)`,
+    `update person set top_votes = g.v, credits = g.c
+     from (select tp.person_rowid as pid, max(t.votes) as v, count(distinct tp.title_rowid) as c
+           from title_principal tp join title t on t.rowid_ = tp.title_rowid
+           group by tp.person_rowid) g
+     where g.pid = person.rowid_`,
   );
   db.run(
     `create virtual table ${PERSON_FTS_TABLE} using fts5(name, content='person', content_rowid='rowid_', ` +

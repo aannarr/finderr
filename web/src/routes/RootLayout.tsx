@@ -387,7 +387,7 @@ export function RootLayout() {
                 <button
                   type="button"
                   onClick={focusSearch}
-                  aria-label="Search titles"
+                  aria-label="Search titles and people"
                   className="-my-1 rounded-lg px-2 py-1 text-muted transition-colors hover:text-ink"
                 >
                   <SearchGlyph />
@@ -449,7 +449,7 @@ export function RootLayout() {
                   searchFocused.current = false;
                 }}
                 placeholder="Search anything -- spelling optional"
-                aria-label="Search titles"
+                aria-label="Search titles and people"
                 /*
                   BOTH shortcuts, merged. `aria-keyshortcuts` takes a space-separated list,
                   so spreading a second props object would silently overwrite the first --
