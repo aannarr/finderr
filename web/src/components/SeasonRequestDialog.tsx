@@ -25,6 +25,7 @@ import {
   toggleSeason,
 } from "../lib/season-select";
 import { ToggleChip } from "./Chip";
+import { useChipGroup } from "./RovingFocus";
 
 export interface SeasonRequestDialogProps {
   open: boolean;
@@ -39,6 +40,26 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
   const ref = useRef<HTMLDialogElement>(null);
   const ordered = orderSeasons([...seasons]);
   const [chosen, setChosen] = useState<number[]>(() => defaultSelection(seasons));
+
+  /*
+    Nine seasons is nine tab stops between the heading and the Cancel button, so the
+    tick-boxes are ONE and ← → move within them.
+
+    Focus does NOT choose: this is the multi-select case, so an arrow walk with selection
+    following would tick or untick every box it passed over. `ToggleChip` is a real button,
+    so Space still ticks the one under focus.
+
+    > [!IMPORTANT] The roving tabindex cannot move where `showModal()` puts focus, and the
+    > reason is `defaultSelection` rather than luck
+    > A modal dialog focuses its first tabbable descendant, and a roving group makes that
+    > the CHOSEN chip rather than the first one. Here they are always the same element: the
+    > selection is reset to `defaultSelection` on every open, which ticks every real season,
+    > and the specials sort last -- so chip 0 is ticked, and it is the tab stop. A series
+    > that is nothing but specials ticks nothing, and `rovingStopIndex` answers 0 for that
+    > too. Verified on screen, because "the browser owns focus here" is exactly the kind of
+    > claim a green test suite cannot make.
+  */
+  const chips = useChipGroup<HTMLFieldSetElement>();
 
   /*
     Reset on every OPEN rather than once on mount. The dialog stays mounted between
@@ -97,7 +118,7 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
           form, which is exactly the case the element exists for, and it gets the
           grouping announced without an aria attribute doing the work.
         */}
-        <fieldset className="flex flex-wrap gap-1.5 border-0 p-0">
+        <fieldset ref={chips.ref} onKeyDown={chips.onKeyDown} className="flex flex-wrap gap-1.5 border-0 p-0">
           <legend className="sr-only">Seasons to request</legend>
           {ordered.map((s) => (
             <ToggleChip

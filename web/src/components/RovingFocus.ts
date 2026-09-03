@@ -129,8 +129,17 @@ export interface ChipGroupOptions {
  * > `selectionFollowsFocus` the outcome is identical either way, which is exactly why the
  * > season row sets it: the reader gets one step, and focus goes where the selection went.
  */
-export function useChipGroup({ selectionFollowsFocus = false }: ChipGroupOptions = {}) {
-  const ref = useRef<HTMLDivElement | null>(null);
+export function useChipGroup<Container extends HTMLElement = HTMLDivElement>({
+  selectionFollowsFocus = false,
+}: ChipGroupOptions = {}) {
+  /*
+    Generic over the container because the element that HOLDS the chips is chosen by the
+    ARIA, not by this hook: a toolbar and a group are divs, but the request dialog's
+    tick-boxes are inside a form and therefore a real `<fieldset>`. A `RefObject` is
+    invariant, so one hardcoded element type would force a cast at that call site -- a lie
+    to the compiler in exchange for nothing.
+  */
+  const ref = useRef<Container | null>(null);
   const typed = useRef({ prefix: "", at: 0 });
 
   /*

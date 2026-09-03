@@ -18,6 +18,7 @@ import { NominationRow } from "../components/Awards";
 import { ToggleChip } from "../components/Chip";
 import { Pane } from "../components/FacetPane";
 import { useKeyAction } from "../components/Kbd";
+import { useChipGroup } from "../components/RovingFocus";
 import { TitleGrid } from "../components/TitleGrid";
 import { PERSON_LINK_CLASS } from "../components/TitlePanes";
 import {
@@ -238,6 +239,20 @@ export function PersonRoute() {
     Boolean(page) && !loading && (page?.credits.length ?? 0) < (page?.total ?? 0),
   );
 
+  /*
+    A prolific person has a dozen roles, which is a dozen tab stops between their name and
+    their filmography, so the role row is ONE stop and ← → move within it.
+
+    `selectionFollowsFocus` even though choosing here NAVIGATES, which is the opposite call
+    from the refinement bar. The difference is single- versus multi-select, not the cost of
+    the click: exactly one role is shown at a time, so every position the arrows pass
+    through is a view somebody could have asked for on purpose ("only their directing
+    credits"). The refinement bar is a set of independent toggles, where the same walk
+    accumulates a filter combination nobody chose. See `showRole` for what stops the walk
+    from filling the history stack.
+  */
+  const roleChips = useChipGroup({ selectionFollowsFocus: true });
+
   if (error) {
     return (
       <p className="py-16 text-center text-muted">
@@ -255,6 +270,16 @@ export function PersonRoute() {
 
   const years = lifespan(page.person);
   const roles = mergedCategories(page.categories);
+  /*
+    `replace` because the role row is a view of THIS person rather than a place you went.
+
+    It has to be, now that ← and → change the role: a push per keystroke would mean six
+    arrow presses cost six Back presses to undo, and Back from a person page should return
+    to the title you opened them from. The mouse gets the same rule for the same reason --
+    two behaviours for one control is how a control starts lying about itself.
+  */
+  const showRole = (search: Pick<SearchParams, "role" | "sort">) =>
+    navigate({ to: "/person/$nconst", params: { nconst }, search, replace: true });
 
   return (
     <>
@@ -278,13 +303,24 @@ export function PersonRoute() {
         Only worth a filter when there is something to filter BETWEEN. One role means
         every chip is a no-op, and a control that cannot change anything is noise.
       */}
+      {/*
+        A named group, for the same reason the season row has one: ← and → act on the SET
+        rather than on any one chip, and a screen reader is told so by the role rather than
+        by each button. `group` and not `toolbar` because these chips filter the grid below
+        them; the refinement bar is the toolbar of the search page.
+      */}
       {roles.length > 1 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          <ToggleChip
-            label="All"
-            active={!role}
-            onClick={() => navigate({ to: "/person/$nconst", params: { nconst }, search: { sort } })}
-          />
+        /* biome-ignore lint/a11y/useSemanticElements: the rule's suggested <fieldset> is for form
+           fields, and there is no form on this page -- these chips filter the grid rather than
+           carrying a value anything submits. The season row declines the same suggestion. */
+        <div
+          role="group"
+          aria-label="Filter credits by role"
+          ref={roleChips.ref}
+          onKeyDown={roleChips.onKeyDown}
+          className="mb-2 flex flex-wrap gap-1.5"
+        >
+          <ToggleChip label="All" active={!role} onClick={() => showRole({ sort })} />
           {roles.map((r) => {
             const value = r.values.join(",");
             return (
@@ -293,9 +329,7 @@ export function PersonRoute() {
                 label={r.label}
                 count={r.count}
                 active={role === value}
-                onClick={() =>
-                  navigate({ to: "/person/$nconst", params: { nconst }, search: { role: value, sort } })
-                }
+                onClick={() => showRole({ role: value, sort })}
               />
             );
           })}
@@ -309,6 +343,12 @@ export function PersonRoute() {
 
         Worth drawing only where there is something to reorder. One credit is the same list
         either way, so the control would be a no-op exactly like a lone role chip is.
+
+        DELIBERATELY NOT a `useChipGroup`, unlike the role row above. Two chips is a
+        two-key tab walk, and a roving group would trade that for a one-key walk plus a
+        rule the reader has to learn -- that Tab now skips a chip they can see. The hook
+        pays for itself over a dozen roles or nine seasons; over two it is a cost with no
+        matching saving.
       */}
       {page.total > 1 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">
