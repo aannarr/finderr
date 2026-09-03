@@ -37,6 +37,7 @@ import {
 import type { AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { cookieIsSecure } from "../lib/config";
+import { FirstRun } from "../lib/first-run";
 import {
   createPin,
   type FetchLike,
@@ -101,6 +102,12 @@ export interface AuthServiceDeps {
 
 export class AuthService {
   private readonly passkeys: PasskeyService;
+  /**
+   * The first-run admin claim. PUBLIC because the boot banner asks whether the door is
+   * open, and asking is also what arms the latch on a server that already has users --
+   * see `FirstRun.open`.
+   */
+  readonly firstRun: FirstRun;
   private readonly authLimiter: RateLimiter;
   readonly searchLimiter: RateLimiter;
   /**
@@ -116,6 +123,7 @@ export class AuthService {
 
   constructor(private readonly deps: AuthServiceDeps) {
     this.passkeys = new PasskeyService(deps.auth, deps.cfg, deps.log);
+    this.firstRun = new FirstRun({ auth: deps.auth, kv: deps.store, log: deps.log });
     this.authLimiter = new RateLimiter(deps.cfg.auth.authRatePerMinute);
     this.searchLimiter = new RateLimiter(deps.cfg.auth.searchRatePerMinute);
     this.agentLimiters = {
@@ -368,13 +376,22 @@ export class AuthService {
        * Anonymous gets `{ authenticated: false }` plus whether the Plex button should be
        * drawn at all. It deliberately does NOT say how many users exist, whether an
        * invite is outstanding, or what this server is for.
+       *
+       * `setup: true` is the ONE exception, and it is ABSENT rather than false the rest of
+       * the time. It says "this server has no accounts", which is a real disclosure -- but
+       * the screen cannot offer the claim without knowing, the claim is the feature, and
+       * the fact stops being true the moment anybody signs up and never becomes true again.
+       * A `setup: false` on every other server would leak nothing extra and would still be
+       * one more field an anonymous caller learns to read.
        */
       "/api/auth/state": (req) => {
         const p = this.principal(req);
         if (!p?.user) {
+          const setup = this.firstRun.open();
           return json({
             authenticated: false,
             plex: this.deps.cfg.plex.enabled && !!this.deps.cfg.plex.token,
+            ...(setup ? { setup: true } : {}),
           });
         }
         /*
@@ -470,9 +487,11 @@ export class AuthService {
       /**
        * Begin registering a passkey.
        *
-       * Two ways in and they are told apart by what the caller has: an INVITE token (a new
-       * account) or a live session (an existing user adding a second device). Neither is a
-       * mode flag -- a request with neither is refused.
+       * Three ways in, told apart by what the caller has and never by a mode flag: a live
+       * session (an existing user adding a second device), an INVITE token (a new account),
+       * or NEITHER on a server that has no accounts at all -- the first-run claim, which
+       * `FirstRun` authorises by minting the admin invite the rest of this handler then
+       * treats as any other. A request with none of the three is refused.
        */
       "/api/auth/passkey/register/begin": async (req) => {
         const refused = this.limited(req);
@@ -485,8 +504,8 @@ export class AuthService {
           if (p?.user) return json(await this.passkeys.beginRegistration({ user: p.user }));
 
           const token = str(b.token);
-          if (!token) return json({ error: REFUSED }, { status: 400 });
-          const tokenHash = hashToken(token);
+          const tokenHash = token ? hashToken(token) : this.firstRun.claimHash();
+          if (!tokenHash) return json({ error: REFUSED }, { status: 400 });
           const invite = this.deps.auth.getInvite(tokenHash);
           if (!invite || invite.redeemedAt !== null || invite.expiresAt <= new Date().toISOString()) {
             this.deps.log("auth: register begin with a dead invite");
@@ -527,6 +546,11 @@ export class AuthService {
        *
        * The invite (when there is one) is bound to the PIN row here, so the browser cannot
        * change which invitation it is redeeming halfway through the ceremony.
+       *
+       * A tokenless begin is a plain sign-in for a Plex account we already know -- unless
+       * the server has no accounts at all, in which case the first-run claim supplies the
+       * invite and this becomes the sign-up that creates the admin. There is nothing to
+       * disambiguate: a server with no users has no Plex account to sign in as either.
        */
       "/api/auth/plex/begin": async (req) => {
         const refused = this.limited(req);
@@ -534,6 +558,7 @@ export class AuthService {
         if (!this.deps.cfg.plex.enabled) return json({ error: REFUSED }, { status: 404 });
         const b = await body(req);
         const token = str(b.token);
+        const inviteHash = token ? hashToken(token) : this.firstRun.claimHash();
         const next = safeReturnPath(str(b.next));
         const clientId = newToken(16);
         try {
@@ -544,7 +569,7 @@ export class AuthService {
           this.deps.auth.putPin({
             id: pin.id,
             clientId,
-            inviteHash: token ? hashToken(token) : null,
+            inviteHash,
             expiresAt: isoIn(pin.expiresIn * 1000),
           });
           return json({

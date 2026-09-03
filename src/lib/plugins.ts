@@ -31,12 +31,7 @@ import { FACETS, isFacetName } from "./facets";
 import { isPaneSlot, type PaneDeclaration, type RegisteredPane } from "./panes";
 import type { OutboundPolicy, PluginFetch } from "./plugin-fetch";
 import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer } from "./plugin-fetch";
-
-/** The narrow slice of `Store` the registry needs, so a test can pass a Map instead. */
-export interface KeyValueStore {
-  getKv(key: string): string | null;
-  setKv(key: string, value: string): void;
-}
+import type { KeyValueStore } from "./store";
 
 /** A plugin's own scratch space, namespaced so two plugins can never collide. */
 export interface PluginKv {

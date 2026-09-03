@@ -34,6 +34,15 @@ export interface AuthState {
   user?: PublicUser;
   /** Whether to draw the Plex button at all. The server decides; the client never guesses. */
   plex?: boolean;
+  /**
+   * This server has no accounts, so whoever is reading may create the first one and it
+   * will be the admin.
+   *
+   * Present only while that is true -- the server omits it rather than sending `false`, so
+   * an ordinary sign-in page discloses nothing new. Which means the client must test it as
+   * a truthy value and never as `=== false`.
+   */
+  setup?: boolean;
 }
 
 /**

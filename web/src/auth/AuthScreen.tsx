@@ -7,6 +7,11 @@
  * > mention of the stack behind it. A stranger who reaches this host learns that something
  * > lives here and that they need an invitation. Nothing else.
  *
+ * The ONE thing it says beyond that is the first-run claim: on a server with no accounts at
+ * all it offers to create one instead of asking for an invitation. That discloses "nobody
+ * has signed up here", which the screen cannot avoid knowing if it is to offer the door --
+ * and which stops being true, permanently, the moment somebody takes it.
+ *
  * It ships in its OWN bundle (`web/login.html`), not as a route inside the app, so the
  * application's chunk -- which names every route and API shape it has -- is never handed
  * to somebody who is not signed in.
@@ -18,6 +23,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  type AuthState,
   checkInvite,
   getAuthState,
   loginWithPasskey,
@@ -84,12 +90,45 @@ export function returnDestination(search: string, pathname: string): string {
   return safeReturnPath(pathname) ?? "/";
 }
 
+/**
+ * `setup` and `invite` are the SAME screen with a different first sentence and no token.
+ *
+ * They are two phases rather than one with an optional token because they are reached
+ * differently -- one from `/invite/<token>`, one from a server that told us it has no
+ * accounts -- and folding them together would put an "is the token there?" branch in the
+ * one place a wrong answer creates an account under the wrong authority.
+ */
 type Phase =
   | { kind: "loading" }
   | { kind: "signin" }
+  | { kind: "setup" }
   | { kind: "invite"; token: string; displayName: string }
   | { kind: "dead-invite" }
   | { kind: "waiting-for-plex" };
+
+/**
+ * How an anonymous visitor got here, decided from the URL and the one thing the server told
+ * us. Everything that needs the network is left to the caller -- `check-invite` is "go and
+ * ask about this token", not an answer about it.
+ *
+ * Pure and exported because the ORDER is the interesting part and it should be pinned by a
+ * test rather than by reading an effect: a returning Plex tab first, then an explicit
+ * invitation, and only then the first-run claim. Somebody who followed an invite link to a
+ * brand-new server must redeem THAT link, not silently take the claim instead.
+ */
+export type EntryPoint =
+  | { kind: "plex-return"; pinId: string }
+  | { kind: "check-invite"; token: string }
+  | { kind: "setup" }
+  | { kind: "signin" };
+
+export function entryPoint(opts: { setup: boolean; pathname: string; search: string }): EntryPoint {
+  const pinId = new URLSearchParams(opts.search).get("plex");
+  if (pinId) return { kind: "plex-return", pinId };
+  const token = inviteTokenFromPath(opts.pathname);
+  if (token) return { kind: "check-invite", token };
+  return opts.setup ? { kind: "setup" } : { kind: "signin" };
+}
 
 export function AuthScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
@@ -152,28 +191,36 @@ export function AuthScreen() {
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const state = await getAuthState().catch(() => ({ authenticated: false }));
+      // The failure fallback is typed as the real shape, so every optional field below is
+      // read through the interface rather than through a cast that would go on compiling
+      // after the server stopped sending it.
+      const state = await getAuthState().catch((): AuthState => ({ authenticated: false }));
       if (!alive) return;
       if (state.authenticated) return enterApp();
-      setPlexEnabled(Boolean((state as { plex?: boolean }).plex));
+      setPlexEnabled(Boolean(state.plex));
+
+      const entry = entryPoint({
+        setup: Boolean(state.setup),
+        pathname: window.location.pathname,
+        search: window.location.search,
+      });
 
       // Coming back from plex.tv: the pin id rides in the query, and the browser polls
       // until the user has finished approving on Plex's own screen.
-      const pinId = new URLSearchParams(window.location.search).get("plex");
-      if (pinId) {
+      if (entry.kind === "plex-return") {
         setPhase({ kind: "waiting-for-plex" });
-        void pollPlex(pinId);
+        void pollPlex(entry.pinId);
         return;
       }
+      // `setup` and `signin` are already the phase they name; only an invitation needs
+      // asking about, and only that answer can arrive after the component is gone.
+      if (entry.kind !== "check-invite") return setPhase(entry);
 
-      const token = inviteTokenFromPath(window.location.pathname);
-      if (!token) return setPhase({ kind: "signin" });
-
-      const invite = await checkInvite(token);
+      const invite = await checkInvite(entry.token);
       if (!alive) return;
       if (!invite.ok) return setPhase({ kind: "dead-invite" });
       setName(invite.displayName ?? "");
-      setPhase({ kind: "invite", token, displayName: invite.displayName ?? "" });
+      setPhase({ kind: "invite", token: entry.token, displayName: invite.displayName ?? "" });
     })();
     return () => {
       alive = false;
@@ -197,7 +244,11 @@ export function AuthScreen() {
 
   const signIn = () => run(async () => (await loginWithPasskey()) && enterApp());
 
-  const signUp = (token: string) =>
+  /**
+   * Create an account. `token` redeems an invitation; without one this is the first-run
+   * claim, and the server refuses it the instant this host has an account.
+   */
+  const signUp = (token?: string) =>
     run(async () => (await registerPasskey({ token, displayName: name.trim() || undefined })) && enterApp());
 
   const withPlex = (token?: string) =>
@@ -210,6 +261,10 @@ export function AuthScreen() {
       );
       window.location.href = authUrl;
     });
+
+  // The invitation being redeemed, or undefined when this is the first-run claim. Hoisted
+  // so the two buttons below cannot disagree about which of the two they are running.
+  const claimToken = phase.kind === "invite" ? phase.token : undefined;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6">
@@ -253,9 +308,18 @@ export function AuthScreen() {
         </>
       )}
 
-      {phase.kind === "invite" && (
+      {(phase.kind === "invite" || phase.kind === "setup") && (
         <>
-          <p className="mt-2 text-sm text-muted">You have been invited. Pick a name and set up sign-in.</p>
+          {/*
+            ONE form for both doors. An invitation and a first-run claim ask the reader for
+            exactly the same thing -- a name and a way to sign in -- and a second copy of it
+            would be the copy that stops matching when either changes.
+          */}
+          <p className="mt-2 text-sm text-muted">
+            {phase.kind === "setup"
+              ? "Nobody has an account here yet. Create the first one and it will be the administrator."
+              : "You have been invited. Pick a name and set up sign-in."}
+          </p>
           <label className="mt-6 block text-xs text-muted" htmlFor="displayName">
             Display name
           </label>
@@ -269,14 +333,14 @@ export function AuthScreen() {
           />
           <div className="mt-4 flex flex-col gap-3">
             {canPasskey && (
-              <button type="button" onClick={() => signUp(phase.token)} disabled={busy} className={BUTTON}>
+              <button type="button" onClick={() => signUp(claimToken)} disabled={busy} className={BUTTON}>
                 Create a passkey
               </button>
             )}
             {plexEnabled && (
               <button
                 type="button"
-                onClick={() => withPlex(phase.token)}
+                onClick={() => withPlex(claimToken)}
                 disabled={busy}
                 className={SECONDARY}
               >

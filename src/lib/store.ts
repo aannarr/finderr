@@ -24,6 +24,19 @@ import { encodeSeasons } from "./seasons";
  */
 const PLEX_MACHINE_KEY = "plex_machine_identifier";
 
+/**
+ * The narrow slice of `Store` that anything reaching for `kv` needs, so a caller can be
+ * handed a Map in a test and the real store in production.
+ *
+ * Declared HERE, beside the table, because two subsystems now depend on it -- the plugin
+ * registry's scratch space and the first-run latch -- and a second copy of a two-method
+ * interface is a second thing to keep in step for no gain.
+ */
+export interface KeyValueStore {
+  getKv(key: string): string | null;
+  setKv(key: string, value: string): void;
+}
+
 export type RequestStatus =
   | "queued"
   | "sent"

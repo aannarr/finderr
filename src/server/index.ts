@@ -263,6 +263,16 @@ if (devUser) {
 }
 
 /*
+  The first-run claim, asked HERE rather than left to the first visitor.
+
+  Asking is what arms the latch (see `FirstRun.open`), so a server that already has accounts
+  shuts the door at boot instead of at whatever moment somebody first loads the sign-in page.
+  It runs AFTER `ensureDevUser` for the same reason the bootstrap block does: that account
+  exists by then, so `FINDERR_NO_AUTH` never has a claimable window at all.
+*/
+const claimable = auth.firstRun.open();
+
+/*
   Bootstrap.
 
   An empty user table is a locked front door with nobody holding a key, so the FIRST boot
@@ -273,6 +283,10 @@ if (devUser) {
   It fires only when there are no users at all -- not on every boot, and not when the last
   admin has merely been disabled, because "the board is empty" and "the admins are locked
   out" want different answers and only the second one is a judgement call.
+
+  It is NOT the same door as the claim above and does not replace it: an invite still works
+  on a server whose claim window has closed, which is the whole recovery path for a deleted
+  last admin.
 */
 if (authStore.userCount() === 0) {
   const { token } = authStore.createInvite({
@@ -294,6 +308,10 @@ if (authStore.userCount() === 0) {
   */
   for (const origin of cfg.auth.origins) log(`    ${origin}/invite/${token}`);
   log(`  (valid for ${cfg.auth.inviteHours}h; mint another with the system API key)`);
+  if (claimable) {
+    log("  or just open the app: with no accounts yet, the first visitor becomes the admin.");
+    log("  That door shuts for good the moment an account exists -- take it now or use the link.");
+  }
   log("  NOTE: a passkey needs an https origin -- over plain http, use Continue with Plex.");
   log("");
 }

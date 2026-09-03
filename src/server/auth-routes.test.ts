@@ -45,8 +45,19 @@ const REQUEST_ROW = {
   requested_by: "u-secret",
 } as unknown as MediaRequest;
 
+/**
+ * The slice of `Store` the auth surface actually touches: the request log, and the `kv`
+ * the first-run latch persists itself in. The kv is a real Map rather than a no-op, because
+ * "the claim never reopens" is a fact about what a WRITE left behind and a stub that forgets
+ * would make the test pass for the wrong reason.
+ */
 function fakeStore(): Store {
-  return { listRequests: () => [REQUEST_ROW] } as unknown as Store;
+  const kv = new Map<string, string>();
+  return {
+    listRequests: () => [REQUEST_ROW],
+    getKv: (key: string) => kv.get(key) ?? null,
+    setKv: (key: string, value: string) => void kv.set(key, value),
+  } as unknown as Store;
 }
 
 interface Harness {
@@ -522,6 +533,11 @@ describe("signing in with Plex", () => {
   */
   test("an unknown Plex account with no invite is refused, however valid its token", async () => {
     const p = harness({ fetchImpl: plexFetch({ token: "plex-token", accountId: "999" }) });
+    // SOMEBODY ALREADY HAS AN ACCOUNT, and that is now part of the scenario rather than
+    // scenery. A server with none is in its first-run window, where a tokenless sign-up is
+    // the admin claim and is SUPPOSED to succeed -- see the first-run describe below. This
+    // test is about the ordinary server, where an uninvited stranger gets nothing.
+    p.auth.createUser({ displayName: "Somebody", role: "admin" });
     const begin = (await (await p.call("/api/auth/plex/begin", { method: "POST" })).json()) as {
       pinId: string;
     };
@@ -530,7 +546,7 @@ describe("signing in with Plex", () => {
       body: JSON.stringify({ pinId: begin.pinId }),
     });
     expect(res.status).toBe(403);
-    expect(p.auth.userCount()).toBe(0);
+    expect(p.auth.userCount()).toBe(1);
   });
 
   test("an invite carried on the PIN creates the account and signs them in", async () => {
@@ -613,6 +629,144 @@ describe("signing in with Plex", () => {
       body: JSON.stringify({ pinId: begin.pinId }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+/*
+  The first visitor to a server with no accounts becomes its admin, and then nobody else
+  ever can. These are the ROUTE-level halves of that; `../lib/first-run.test.ts` owns the
+  latch itself.
+*/
+describe("the first-run admin claim", () => {
+  test("with no accounts the sign-in state offers setup", async () => {
+    const body = (await (await h.call("/api/auth/state")).json()) as Record<string, unknown>;
+    expect(body).toEqual({ authenticated: false, plex: false, setup: true });
+  });
+
+  /*
+    ABSENT, not `false`. The field says "this server has no accounts", and on every server
+    that does have them the honest answer is to say nothing at all -- see the state route.
+  */
+  test("the moment an account exists the field is gone entirely", async () => {
+    h.auth.createUser({ displayName: "somebody", role: "admin" });
+    const body = (await (await h.call("/api/auth/state")).json()) as Record<string, unknown>;
+    expect(body).toEqual({ authenticated: false, plex: false });
+  });
+
+  test("a tokenless passkey sign-up is authorised by an ADMIN invite minted for it", async () => {
+    const res = await h.call("/api/auth/passkey/register/begin", {
+      method: "POST",
+      body: JSON.stringify({ displayName: "First" }),
+    });
+    expect(res.status).toBe(200);
+    const claims = h.auth.listInvites();
+    expect(claims).toHaveLength(1);
+    expect(claims[0].role).toBe("admin");
+    expect(claims[0].createdBy).toBe("first-run");
+  });
+
+  /*
+    ONE claim, however many people are looking at the page. Two invites would be two admins,
+    because each would be redeemable once; sharing a single row makes `claimInvite` -- one
+    UPDATE, decided by SQLite -- the thing that picks the winner.
+  */
+  test("two visitors racing the door share one invite, so only one of them can win", async () => {
+    const begin = () => h.call("/api/auth/passkey/register/begin", { method: "POST", body: "{}" });
+    expect((await begin()).status).toBe(200);
+    expect((await begin()).status).toBe(200);
+    expect(h.auth.listInvites()).toHaveLength(1);
+  });
+
+  test("Plex is the other door, and it creates the admin outright", async () => {
+    const p = harness({
+      fetchImpl: async (url) => {
+        if (url.includes("/pins?strong=true"))
+          return Response.json({ id: 1682300520, code: "abc123", expiresIn: 1800 });
+        if (url.includes("/pins/")) return Response.json({ authToken: "plex-token" });
+        if (url.endsWith("/user")) return Response.json({ id: "999", username: "first" });
+        return new Response("{}", { status: 404 });
+      },
+    });
+    const begin = (await (await p.call("/api/auth/plex/begin", { method: "POST" })).json()) as {
+      pinId: string;
+    };
+    const res = await p.call("/api/auth/plex/finish", {
+      method: "POST",
+      body: JSON.stringify({ pinId: begin.pinId }),
+    });
+    expect(res.status).toBe(200);
+    expect(p.auth.getUserByPlexId("999")?.role).toBe("admin");
+  });
+
+  /*
+    THE RULE THE WHOLE DESIGN EXISTS FOR. `userCount() === 0` is true both on a fresh
+    install and on a server whose only admin was just deleted, and reopening the door on the
+    second is how a stranger inherits the Radarr, Sonarr and Plex credentials.
+  */
+  test("deleting the last user does NOT reopen it", async () => {
+    const u = h.auth.createUser({ displayName: "Only", role: "admin" });
+    // Reading the state is what latches the door shut -- the same read the sign-in page does.
+    await h.call("/api/auth/state");
+    h.auth.deleteUser(u.id);
+    expect(h.auth.userCount()).toBe(0);
+
+    const body = (await (await h.call("/api/auth/state")).json()) as Record<string, unknown>;
+    expect(body).toEqual({ authenticated: false, plex: false });
+    const res = await h.call("/api/auth/passkey/register/begin", { method: "POST", body: "{}" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "that did not work" });
+  });
+
+  test("a closed door is the SAME refusal every other anonymous failure gives", async () => {
+    h.auth.createUser({ displayName: "somebody", role: "admin" });
+    const claim = await h.call("/api/auth/passkey/register/begin", { method: "POST", body: "{}" });
+    const deadInvite = await h.call("/api/auth/passkey/register/begin", {
+      method: "POST",
+      body: JSON.stringify({ token: "nope" }),
+    });
+    expect(claim.status).toBe(deadInvite.status);
+    expect(await claim.json()).toEqual(await deadInvite.json());
+  });
+
+  test("an abandoned claim is revoked once an account exists by any other route", async () => {
+    await h.call("/api/auth/passkey/register/begin", { method: "POST", body: "{}" });
+    expect(h.auth.listInvites()).toHaveLength(1);
+    // The operator used the bootstrap invite from the log instead, so the claim is orphaned:
+    // an admin invitation whose window has closed has no business outliving it.
+    h.auth.createUser({ displayName: "Operator", role: "admin" });
+    await h.call("/api/auth/state");
+    expect(h.auth.listInvites()).toHaveLength(0);
+  });
+
+  test("it is rate limited on the same limiter as the rest of the auth surface", async () => {
+    const limited = harness({ cfg: config({ authRatePerMinute: 1 }) });
+    const claim = () => limited.call("/api/auth/passkey/register/begin", { method: "POST", body: "{}" });
+    expect((await claim()).status).toBe(200);
+    expect((await claim()).status).toBe(429);
+  });
+
+  /*
+    `FINDERR_NO_AUTH` creates its account before anything can be first to the page -- at boot
+    in the server, and on the first request here. So the mode whose whole point is that
+    everybody is already signed in never has a claimable window at all.
+  */
+  test("FINDERR_NO_AUTH short-circuits it, because its account already exists", async () => {
+    const dev = harness({ cfg: config({ noAuth: true }) });
+    const body = (await (await dev.call("/api/auth/state")).json()) as Record<string, unknown>;
+    expect(body).toEqual({ authenticated: true, user: expect.objectContaining({ role: "admin" }) });
+    expect(dev.service.firstRun.open()).toBe(false);
+  });
+
+  test("the bootstrap invite still works while the door is open -- two doors, not one", async () => {
+    const { token } = h.auth.createInvite({
+      role: "admin",
+      displayName: "admin",
+      createdBy: "bootstrap",
+      expiresAt: isoIn(60_000),
+    });
+    const res = await h.call(`/api/auth/invite?token=${token}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, displayName: "admin" });
   });
 });
 

@@ -125,8 +125,10 @@ that needs the installed app over HTTPS -- Safari does not offer push to a tab, 
 says so rather than showing a button that cannot work.
 
 Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
-table. The first boot prints an invite link for the first admin; admins mint invites,
-manage users and roles, and can reset anyone's access. Everybody gets an account page to
+table. On a server with no accounts the first visitor creates the admin — a window that
+shuts permanently once anybody has, and never reopens — and the first boot also prints an
+invite link, which keeps working afterwards. Admins mint invites, manage users and roles,
+and can reset anyone's access. Everybody gets an account page to
 name their passkeys, add another one, and connect or disconnect their Plex login. An
 anonymous visitor gets a bare login page and nothing else.
 
@@ -197,7 +199,7 @@ services:
 
 ```bash
 docker compose up -d
-docker compose logs finderr | grep invite                     # your first admin link
+docker compose logs finderr | grep invite                     # the backup admin link
 ```
 
 That is the whole install. There is no separate first-build step: with no index at
@@ -222,20 +224,34 @@ in place. No restart.
 > would stop the restarting is the command you are trying to run. Once an index exists,
 > `exec` works for everything else.
 
-Open `http://<host>:7979` and follow the invite link from the log.
+Open `http://<host>:7979` and create your account.
 
 #### Creating your first admin
 
-There is no sign-up form. finderr is invite-only, so the very first boot mints an admin
-invitation and prints it, once, to the log:
+Two doors, and both are open on a first boot.
+
+**Just open the app.** While no account exists at all, finderr offers to create one instead
+of asking for an invitation, and that account is the admin. This is how Jellyfin, Sonarr and
+Radarr do it, and it means the install needs no shell.
+
+It is a window, so understand what it is: until somebody takes it, whoever reaches the port
+first becomes the admin of a process holding your Radarr, Sonarr and Plex credentials. Take
+it as soon as the app is up, or do not publish the port until you have. The window **closes
+for good the moment an account exists** and does not reopen — not on restart, and not if you
+later delete every user. From then on it is invitations only.
+
+**Or follow the link from the log.** The first boot also mints an admin invitation and
+prints it, once:
 
 ```bash
 docker compose logs finderr | grep invite
 ```
 
 Open that link and create your account. The token is never stored — only a hash of it —
-so it cannot be listed again afterwards. If the line has scrolled away or the invite has
-expired, mint another with the system API key rather than hunting for it:
+so it cannot be listed again afterwards. This door does not close, which is what makes it
+the recovery path: it works long after the first-visitor window has shut. If the line has
+scrolled away or the invite has expired, mint another with the system API key rather than
+hunting for it:
 
 ```bash
 curl -s -X POST http://<host>:7979/api/admin/invites \
@@ -248,8 +264,8 @@ That endpoint is how an admin — or a script — does everything a person can d
 only to an admin's own session, which is a legitimate way to run and simply means you
 cannot bootstrap from a shell.
 
-`/api/health` tells you where you stand: `auth.users: 0` means nobody has claimed the
-bootstrap invite yet and it is still the only way in.
+`/api/health` tells you where you stand: `auth.users: 0` means nobody has an account yet,
+so both doors above are still open.
 
 #### Running without any login at all
 
