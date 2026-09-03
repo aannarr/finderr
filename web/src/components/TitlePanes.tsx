@@ -22,7 +22,8 @@
 
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import type { EpisodeState, PersonLinks, RenderedPane, Title, TitleAwards } from "../lib/api";
+import { isTermLinkable, termKey } from "../../../src/lib/terms";
+import type { EpisodeState, PersonLinks, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
 import {
@@ -69,11 +70,12 @@ import type {
   Trailer,
   WatchProviders,
 } from "../lib/facets";
+import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
-import { InertChip } from "./Chip";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
 import { PluginPanes, panesForSlot } from "./PluginPane";
 import { SeriesPane } from "./SeriesPane";
+import { findTerm, TermChip } from "./TermChip";
 import { TitleCard } from "./TitleCard";
 
 export interface TitlePanesProps {
@@ -95,6 +97,15 @@ export interface TitlePanesProps {
    * name we cannot resolve unambiguously. `nconstForCredit` reads it.
    */
   people?: PersonLinks;
+  /**
+   * Which of this title's terms have somewhere real to go, as the server measured them.
+   *
+   * Beside the facets rather than inside them, the same reasoning `people` follows: the
+   * facets are the providers' answers, this is OUR count of how much of the corpus carries
+   * each one. Absent or empty means every chip renders as plain text -- which is exactly
+   * what they all did before this existed, and is the correct output for a fresh cache.
+   */
+  terms?: readonly Term[];
   /**
    * The rest of this title's collection, already decorated and already filtered to what
    * we hold. Separate from `facets` for the same reason `people` is: the facet is the
@@ -232,12 +243,13 @@ export function TitleFactsCard({
   facets,
   working,
   problems,
+  terms,
   className = "",
-}: Pick<TitlePanesProps, "facets" | "working" | "problems"> & { className?: string }) {
+}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms"> & { className?: string }) {
   if (!factsVisible(facets, working, problems)) return null;
   return (
     <div className={`rounded-xl border border-line bg-surface p-4 ${className}`}>
-      <TitleFactsPanes facets={facets} working={working} problems={problems} />
+      <TitleFactsPanes facets={facets} working={working} problems={problems} terms={terms} />
     </div>
   );
 }
@@ -246,7 +258,8 @@ function TitleFactsPanes({
   facets,
   working,
   problems,
-}: Pick<TitlePanesProps, "facets" | "working" | "problems">) {
+  terms = [],
+}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms">) {
   const shared = { facets, working, problems, variant: "rail" as const };
   return (
     <>
@@ -299,7 +312,7 @@ function TitleFactsPanes({
             </SkeletonRepeat>
           </div>
         }
-        render={(entries: WatchProviders[]) => <WatchProviderRows entries={entries} />}
+        render={(entries: WatchProviders[]) => <WatchProviderRows entries={entries} terms={terms} />}
       />
 
       <FacetPane
@@ -313,7 +326,7 @@ function TitleFactsPanes({
             </SkeletonRepeat>
           </div>
         }
-        render={(keywords: Keyword[]) => <KeywordChips keywords={keywords} />}
+        render={(keywords: Keyword[]) => <KeywordChips keywords={keywords} terms={terms} />}
       />
     </>
   );
@@ -340,6 +353,7 @@ export function TitleLowerPanes({
   panes,
   episodeState,
   awards,
+  terms,
   onRequestEpisode,
   onRequestSeason,
 }: TitlePanesProps) {
@@ -407,7 +421,7 @@ export function TitleLowerPanes({
         <details className="mt-8 rounded-xl border border-line bg-surface p-4 sm:hidden">
           <summary className="cursor-pointer text-sm font-medium text-ink">Details</summary>
           <div className="mt-3">
-            <TitleFactsPanes facets={facets} working={working} problems={problems} />
+            <TitleFactsPanes facets={facets} working={working} problems={problems} terms={terms} />
           </div>
         </details>
       )}
@@ -769,16 +783,16 @@ const WATCH_TILE_SIZE = "h-7";
  * German subscription is not an answer to the question asked from Bangkok. `watchServices`
  * owns the other two rules: streaming only, and one tile per SERVICE rather than per name.
  */
-function WatchProviderRows({ entries }: { entries: WatchProviders[] }) {
+function WatchProviderRows({ entries, terms }: { entries: WatchProviders[]; terms: readonly Term[] }) {
   const here = pickWatchProviders(entries, preferredCountries(browserLocales()));
   if (!here) return null;
   const services = watchServices(here);
   if (services.length === 0) return null;
   /*
     The one address availability data comes with: TMDB's watch page for this country,
-    which fronts JustWatch. There is no per-offer URL in the payload, so every tile in
-    the row shares it -- a tile is a shortcut to the answer, not a claim about where it
-    lands. Guarded like any other outbound href; absent, the tiles are plain chips.
+    which fronts JustWatch. There is no per-offer URL in the payload, so it cannot be a
+    per-tile link -- and now that a tile has an INTERNAL destination of its own, it is
+    the row's link rather than every tile's. Guarded like any other outbound href.
   */
   const href = externalHref(here.link ?? "");
 
@@ -786,8 +800,12 @@ function WatchProviderRows({ entries }: { entries: WatchProviders[] }) {
     <>
       <ul className="flex flex-wrap items-center gap-1.5">
         {services.map((service) => (
-          <li key={service.name}>
-            <ServiceTile service={service} href={href} />
+          <li key={service.key}>
+            <ServiceTile
+              service={service}
+              term={findTerm(terms, "service", service.key)}
+              country={here.country}
+            />
           </li>
         ))}
       </ul>
@@ -796,10 +814,23 @@ function WatchProviderRows({ entries }: { entries: WatchProviders[] }) {
         availability catalogue is JustWatch's, which they ask be credited by name. It sits
         beside the data it is for rather than in a page footer, so deleting this pane takes
         the obligation with it.
+
+        It also now CARRIES the outbound link, which used to be on every tile. A tile that
+        links to our own "what else is on Netflix" page and a tile that links out to TMDB
+        cannot be the same control, and the internal one is what a reader of a request app
+        wants -- so the escape to the full offer list moved into the sentence that has to be
+        printed here anyway. One link per destination, and no row of duplicates.
       */}
       <p className="mt-3 text-xs text-muted">
-        This product uses the TMDB API but is not endorsed or certified by TMDB. Availability data from
-        JustWatch.
+        This product uses the TMDB API but is not endorsed or certified by TMDB. Availability data from{" "}
+        {href ? (
+          <a href={href} target="_blank" rel="noreferrer" className="underline hover:text-ink">
+            JustWatch
+          </a>
+        ) : (
+          "JustWatch"
+        )}
+        .
       </p>
     </>
   );
@@ -810,11 +841,24 @@ function WatchProviderRows({ entries }: { entries: WatchProviders[] }) {
  *
  * Same bargain the rating tile strikes -- the mark carries the identity in the space
  * available, and the name survives as the fallback and as the accessible name in every
- * case, so a screen reader hears "Netflix" either way. The accessible name says where the
- * link goes rather than just naming the service, because every tile in the row goes to the
- * same page and "Netflix, link" would promise otherwise.
+ * case, so a screen reader hears "Netflix" either way.
+ *
+ * WHERE IT GOES is our own service page: what else we hold that streams here. That is the
+ * question a request app can actually answer, and it obeys the same dead-end rule every
+ * other term does -- a service we hold one title for stays a plain tile. The link out to
+ * the full offer list moved to the attribution line under the row, because one control
+ * cannot mean two destinations.
  */
-function ServiceTile({ service, href }: { service: WatchService; href: string | null }) {
+function ServiceTile({
+  service,
+  term,
+  country,
+}: {
+  service: WatchService;
+  term: Term | undefined;
+  /** The country the pane actually drew, which is what the destination is about. */
+  country: string;
+}) {
   const shell = `${WATCH_TILE_SIZE} flex items-center justify-center rounded-md border border-line
                  bg-surface px-2`;
   const body = service.logo ? (
@@ -828,17 +872,20 @@ function ServiceTile({ service, href }: { service: WatchService; href: string | 
     <span className="text-[11px] leading-none text-ink">{service.name}</span>
   );
 
-  if (!href) return <div className={shell}>{body}</div>;
+  if (!term || !isTermLinkable(term)) return <div className={shell}>{body}</div>;
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      title={`${service.name} -- see every way to watch`}
+    <Link
+      to="/term/$dimension/$value"
+      params={{ dimension: "service", value: term.key }}
+      // The country the pane actually drew travels WITH the link. A service page is a
+      // different set of films per country, so a link that left it out would resolve
+      // somewhere else for whoever it was shared with.
+      search={{ country }}
+      title={`${service.name} -- ${term.titles} titles we hold`}
       className={`${shell} transition-colors hover:border-muted`}
     >
       {body}
-    </a>
+    </Link>
   );
 }
 
@@ -1094,11 +1141,6 @@ function CertificationBadge({ certs }: { certs: Certification[] }) {
   );
 }
 
-function browserLocales(): string[] {
-  if (typeof navigator === "undefined") return [];
-  return [...(navigator.languages ?? [navigator.language])];
-}
-
 // --- language --------------------------------------------------------------
 
 /**
@@ -1122,11 +1164,23 @@ function LanguageNames({ langs }: { langs: Language[] }) {
 
 // --- keywords --------------------------------------------------------------
 
-function KeywordChips({ keywords }: { keywords: Keyword[] }) {
+/**
+ * The keywords a title carries, each a link once it has somewhere real to go.
+ *
+ * They were inert text until this card, because `/browse` filters on genre, year, decade
+ * and kind and nothing else. They still ARE text for any keyword we hold fewer than two
+ * titles for -- `TermChip` owns that rule for every surface, so this component decides
+ * nothing about it.
+ */
+function KeywordChips({ keywords, terms }: { keywords: Keyword[]; terms: readonly Term[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {keywords.map((k) => (
-        <InertChip key={k.id || k.name} label={k.name} />
+        <TermChip
+          key={k.id || k.name}
+          label={k.name}
+          term={findTerm(terms, "keyword", termKey("keyword", k.name))}
+        />
       ))}
     </div>
   );

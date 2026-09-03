@@ -37,6 +37,20 @@ export interface SearchParams extends Filters {
    * than erroring. Absent still means votes-ordered on both.
    */
   sort?: "rank" | "year";
+  /**
+   * Which country a streaming-service term page is about.
+   *
+   * IN THE URL because it is part of what that page MEANS: `/term/service/netflix` is a
+   * different set of films in Bangkok and in Berlin, so a link without it would resolve to
+   * two different pages depending on who opened it. It travels from the tile that was
+   * clicked, which is the country the "Where to watch" pane actually drew -- re-deriving it
+   * from `navigator.languages` here would disagree with that tile whenever the pane had
+   * fallen back to another country.
+   *
+   * NOT a filter, so it is deliberately absent from `filtersOf`: the title index has no
+   * country column and never will. Same rule `role` and `sort` follow.
+   */
+  country?: string;
 }
 
 /** Parse a positive integer, or undefined for anything that is not one. */
@@ -90,6 +104,10 @@ export function validateSearch(raw: Record<string, unknown>): SearchParams {
   if (year) out.year = year;
   const role = nonEmpty(raw.role);
   if (role) out.role = role;
+  const country = nonEmpty(raw.country);
+  // Upper-cased on the way in, so `?country=th` and `?country=TH` are one page and one
+  // cache entry rather than two. The facet stores ISO 3166 alpha-2 in upper case.
+  if (country) out.country = country.toUpperCase();
   // Only the non-defaults are spelled: `?sort=votes` would be a second way to write the
   // URL that already means that, and two spellings of one page are two cache entries.
   if (raw.sort === "rank" || raw.sort === "year") out.sort = raw.sort;

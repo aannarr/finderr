@@ -14,18 +14,27 @@
 
 import { Link, useCanGoBack, useParams, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
+import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
+import { findTerm } from "../components/TermChip";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
-import { postEpisodeRequest, postSeasonRequest, type RequestOverrides, type Title } from "../lib/api";
+import {
+  postEpisodeRequest,
+  postSeasonRequest,
+  type RequestOverrides,
+  type Term,
+  type Title,
+} from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
 import { useToasts } from "../lib/toasts";
+import { useTermLinks } from "../lib/use-term-links";
 import { type TitleDetailView, useTitleDetail } from "../lib/use-title-detail";
 
 const KIND_LABEL: Record<string, string> = {
@@ -64,6 +73,17 @@ export function TitleRoute() {
     awards,
     error,
   } = useTitleDetail(tconst);
+
+  /*
+    Which of this title's keywords, services and studio go anywhere.
+
+    Fetched rather than read off the detail payload, because the answer depends on the
+    reader's country and that payload is cached for everybody -- the hook states the whole
+    argument. It is an ADDITION to chips that already render, so a failure leaves them as
+    text rather than as an error.
+  */
+  const terms = useTermLinks(tconst, facets);
+  const studioTerm = findTerm(terms, "studio", termKey("studio", title?.studio ?? ""));
 
   /*
     Both keys are bound before the early returns below, because hooks must be, and both
@@ -208,7 +228,13 @@ export function TitleRoute() {
             eager
             className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
           />
-          <TitleFactsCard facets={facets} working={working} problems={problems} className="mt-4" />
+          <TitleFactsCard
+            facets={facets}
+            working={working}
+            problems={problems}
+            terms={terms}
+            className="mt-4"
+          />
         </aside>
 
         <div className="min-w-0">
@@ -246,18 +272,13 @@ export function TitleRoute() {
                   </>
                 )}
                 {title.runtime && <span>{runtimeLabel(title.runtime)}</span>}
-                {title.studioLogo ? (
-                  <span className="flex items-center rounded bg-black/55 px-1.5 py-1">
-                    <img
-                      src={title.studioLogo}
-                      alt={title.studio ?? ""}
-                      title={title.studio ?? undefined}
-                      className="h-3.5 w-auto max-w-20 object-contain opacity-90"
-                    />
-                  </span>
-                ) : (
-                  title.studio && <span>{title.studio}</span>
-                )}
+                {/*
+                  The studio badge has RENDERED since the logo import and has been inert
+                  ever since -- a mark with nothing behind it. It is a link now, on the same
+                  dead-end rule every other term follows: it goes somewhere once we hold
+                  more than this one film from that studio, and stays a badge otherwise.
+                */}
+                <StudioBadge title={title} term={studioTerm} />
               </div>
 
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">{title.title}</h2>
@@ -394,10 +415,46 @@ export function TitleRoute() {
         panes={panes}
         episodeState={episodeState}
         awards={awards}
+        terms={terms}
         onRequestEpisode={requestEpisode}
         onRequestSeason={requestSeason}
       />
     </>
+  );
+}
+
+/**
+ * Who made it -- its mark where the logo importer has one, its name where it does not.
+ *
+ * The mark and the name are two renderings of ONE fact, so they share a wrapper rather than
+ * living in two branches that each decide separately whether to be a link. Nothing at all
+ * for a title we hold no studio for, which is most series and every unresolved film.
+ */
+function StudioBadge({ title, term }: { title: Title; term: Term | undefined }) {
+  if (!title.studio) return null;
+
+  const badge = title.studioLogo ? (
+    <span className="flex items-center rounded bg-black/55 px-1.5 py-1">
+      <img
+        src={title.studioLogo}
+        alt={title.studio}
+        className="h-3.5 w-auto max-w-20 object-contain opacity-90"
+      />
+    </span>
+  ) : (
+    <span>{title.studio}</span>
+  );
+
+  if (!term || !isTermLinkable(term)) return <span title={title.studio}>{badge}</span>;
+  return (
+    <Link
+      to="/term/$dimension/$value"
+      params={{ dimension: "studio", value: term.key }}
+      title={`${term.label} -- ${term.titles} titles we hold`}
+      className="hover:text-ink"
+    >
+      {badge}
+    </Link>
   );
 }
 

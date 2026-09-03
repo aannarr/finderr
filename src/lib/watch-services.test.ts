@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { pickWatchProviders, serviceKey, STREAMING_MARKS, streamingLogo, watchServices } from "./watch-services";
+import {
+  pickWatchProviders,
+  STREAMING_MARKS,
+  serviceKey,
+  streamingLogo,
+  watchServices,
+} from "./watch-services";
 
 describe("where to watch", () => {
   const country = (code: string, flatrate: string[] = [], rent: string[] = [], buy: string[] = []) => ({

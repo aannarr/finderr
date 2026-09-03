@@ -8,6 +8,7 @@
  */
 
 import type { PersonLinks } from "../../../src/lib/people";
+
 /*
   WHERE TO WATCH MOVED OUT, and this re-export is what keeps every call site pointing at
   one owner rather than at a copy.
@@ -20,12 +21,13 @@ import type { PersonLinks } from "../../../src/lib/people";
 */
 export {
   pickWatchProviders,
-  serviceKey,
   STREAMING_MARKS,
+  serviceKey,
   streamingLogo,
   type WatchService,
   watchServices,
 } from "../../../src/lib/watch-services";
+
 import type {
   Certification,
   CrewMember,
@@ -44,7 +46,6 @@ import type {
   ResolvedFacets,
   Season,
   Trailer,
-  WatchProviders,
 } from "./facets";
 
 /**

@@ -50,6 +50,15 @@ import { parseSeasonsInput } from "../lib/seasons";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
+import {
+  isTermDimension,
+  TERM_DIMENSIONS,
+  type Term,
+  type TermDimension,
+  type TermPair,
+  termPage,
+  termsOf,
+} from "../lib/terms";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
@@ -1007,6 +1016,57 @@ function liveCollectionRows(contentId?: string) {
 }
 
 /**
+ * Every (title, term) pair we hold in one dimension, out of local SQLite.
+ *
+ * THE ONE PLACE the three reverse reads are chosen between, so both term handlers apply
+ * the same liveness rule -- a page built on rows from an uninstalled addon would outlive
+ * the plugin that produced them, which is what `liveCollectionRows` guards for collections.
+ *
+ * `country` is only meaningful for `service`, and defaulting it is not an option: the facet
+ * carries ~112 of them and the reader is in exactly one. A service read with no country
+ * asked for is empty rather than "whatever country we happen to hold" -- the same refusal
+ * `pickWatchProviders` makes for the pane.
+ *
+ * `tconst` narrows to one title, which is what the chip gate asks; omitted it is the whole
+ * corpus, which is what a term page needs. That unnarrowed read is one indexed scan and no
+ * JSON parsing in JS, the same shape `/api/collections` already runs on every keystroke.
+ */
+function termPairs(dimension: TermDimension, opts: { country?: string; tconst?: string } = {}): TermPair[] {
+  const pluginIds = plugins.list().map((p) => p.meta.id);
+  switch (dimension) {
+    case "keyword":
+      return store.keywordPairs(pluginIds, opts.tconst);
+    case "service":
+      return opts.country ? store.watchServicePairs(opts.country, pluginIds, opts.tconst) : [];
+    case "studio":
+      return store.studioPairs(opts.tconst);
+  }
+}
+
+/**
+ * The terms one title carries, each with how many titles its page would hold.
+ *
+ * What turns a chip into a link, and the count is measured HERE rather than guessed in the
+ * browser: only the server can see how much of the corpus has been cached. A term below
+ * `MIN_TERM_TITLES` still comes back -- the client draws it as plain text, so the reader
+ * sees the same facts either way and only the destination differs.
+ *
+ * The two-step is unavoidable and is the cost of this endpoint: the narrow read says WHICH
+ * terms this title has, and the wide one says how populated each of them is.
+ */
+function termsForTitle(tconst: string, country: string | undefined): Term[] {
+  const out: Term[] = [];
+  for (const dimension of TERM_DIMENSIONS) {
+    const mine = new Set(
+      termsOf(dimension, termPairs(dimension, { country, tconst })).map((term) => term.key),
+    );
+    if (mine.size === 0) continue;
+    out.push(...termsOf(dimension, termPairs(dimension, { country })).filter((t) => mine.has(t.key)));
+  }
+  return out;
+}
+
+/**
  * Facet coverage per shelf -- the card's acceptance, one `curl` away.
  *
  * `isWarm` reads the facet cache and asks no provider: a health check that warmed the
@@ -1630,6 +1690,78 @@ const appRoutes = {
         unless a route asks for something else, so this is now the shape of not asking.
       */
     return json({ matches });
+  },
+
+  /**
+   * One term -- a keyword, a streaming service, a studio -- and every title we hold for it.
+   *
+   * The sibling of `/api/collection/:id`, and the same reasoning end to end: the membership
+   * already arrived with a cached facet (or, for a studio, with the artwork lookup), so
+   * this reads local SQLite, asks no provider and warms nothing. A term nobody has cached a
+   * title for has no page yet, which is a 404 rather than a fetch.
+   *
+   * NOT a `/browse` filter, and it could not be one: the terms live in `finderr.db` while
+   * the title index is `titles.db`, two separate SQLite files, so `?keyword=heist` has no
+   * WHERE clause to become. Same split `collectionTokenOf` already states.
+   *
+   * NO VOTE FLOOR. `browseVoteFloor` curates the broad grid; a term page is an explicit
+   * membership list of what we have actually cached, so there is nothing to hide and no
+   * escape hatch to offer -- exactly the ruling `/api/collection/:id` already carries, and
+   * the same one for all three dimensions rather than one per chip.
+   *
+   * `?country=` is REQUIRED for `service` and ignored by the other two: availability is
+   * per country and the reader's is chosen in the browser. Without it the page is honestly
+   * empty rather than quietly showing somebody else's country's catalogue.
+   */
+  "/api/term/:dimension/:value": (req: Bun.BunRequest<"/api/term/:dimension/:value">) => {
+    const { dimension, value } = req.params;
+    if (!isTermDimension(dimension)) return bad("unknown term dimension", 404);
+
+    const country = new URL(req.url).searchParams.get("country") ?? undefined;
+    const page = termPage(dimension, decodeURIComponent(value), termPairs(dimension, { country }));
+    if (!page) return bad("unknown term", 404);
+
+    // `live.current` is read INSIDE the callback for the reason stated in `live-index.ts`:
+    // a promote during the daily refresh kills whatever engine we were already holding.
+    const rows = page.tconsts.flatMap((t) => live.current.byTconst(t) ?? []);
+    return json(
+      {
+        term: page.term,
+        titles: decorate(rows.sort((a, b) => b.votes - a.votes)),
+        /*
+          Members we know about and cannot draw -- a title type we do not index. A count
+          rather than a row of stubs, the same judgement `collectionPage` makes: a tile with
+          no poster, no library state and no request button is a dead end wearing a poster
+          frame, and an unexplained gap is worse than a number.
+        */
+        missing: page.tconsts.length - rows.length,
+      },
+      // Shorter than browse's 300s, for the reason a collection is: membership GROWS as
+      // more titles are viewed and pre-warmed, and a long cache would hide one that
+      // arrived a minute ago.
+      { cache: perSession(60) },
+    );
+  },
+
+  /**
+   * The terms one title carries, and whether each of them goes anywhere.
+   *
+   * A route of its own rather than a block on `/api/title/:tconst`, because the answer
+   * depends on the READER'S COUNTRY and the title payload does not: one cached title body
+   * serves everybody, and folding a per-country field into it would either need the session
+   * in the cache key or quietly serve Bangkok Germany's streaming services.
+   *
+   * The browser already holds the keywords, the offers and the studio -- the only thing it
+   * cannot know is how populated each term's page would be, which is what this measures.
+   */
+  "/api/terms/:tconst": (req: Bun.BunRequest<"/api/terms/:tconst">) => {
+    const country = new URL(req.url).searchParams.get("country") ?? undefined;
+    return json(
+      { terms: termsForTitle(req.params.tconst, country) },
+      // Same 60s as a term page and for the same reason: a chip becomes a link the moment
+      // a second title carrying it is cached, and that can be a minute after this render.
+      { cache: perSession(60) },
+    );
   },
 
   /**

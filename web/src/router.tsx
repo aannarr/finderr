@@ -34,6 +34,7 @@ import { PersonRoute } from "./routes/PersonRoute";
 import { RequestsRoute } from "./routes/RequestsRoute";
 import { RootLayout } from "./routes/RootLayout";
 import { SearchRoute } from "./routes/SearchRoute";
+import { TermRoute } from "./routes/TermRoute";
 import { TitleRoute } from "./routes/TitleRoute";
 
 const rootRoute = createRootRoute({ component: RootLayout });
@@ -99,6 +100,28 @@ const collectionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/collection/$id",
   component: CollectionRoute,
+});
+
+/**
+ * `/term/keyword/heist` -- one keyword, service or studio, and the titles we hold for it.
+ *
+ * A PATH rather than `/browse?keyword=heist`, and that is forced rather than chosen: the
+ * terms live in the app database while the title index is a separate SQLite file, so a
+ * keyword could not become a WHERE clause on the grid even if the params carried it. Same
+ * split `/collection/$id` already lives on.
+ *
+ * The dimension is a parameter and the collection route's award is a literal, which is the
+ * opposite call to `/awards/oscars` -- because here there genuinely are three cases sharing
+ * one mechanism, so the general shape is designed against three examples rather than one.
+ *
+ * `country` rides in the search params for `service` only: availability differs by country,
+ * so it is part of what the page means and therefore part of the URL.
+ */
+const termRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/term/$dimension/$value",
+  validateSearch,
+  component: TermRoute,
 });
 
 /**
@@ -189,6 +212,7 @@ const routeTree = rootRoute.addChildren([
   titleRoute,
   personRoute,
   collectionRoute,
+  termRoute,
   awardsRoute,
   ceremonyRoute,
   listsRoute,

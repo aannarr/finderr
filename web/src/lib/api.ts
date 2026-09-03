@@ -20,6 +20,7 @@ import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
+import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
 import { Cache } from "./cache";
 import {
@@ -31,7 +32,17 @@ import {
 import { isCacheableFacetSet } from "./facet-panes";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
-export type { ArrLink, CollectionSummary, EpisodeState, HiddenByFloor, PaneBlock, PersonLinks, RenderedPane };
+export type {
+  ArrLink,
+  CollectionSummary,
+  EpisodeState,
+  HiddenByFloor,
+  PaneBlock,
+  PersonLinks,
+  RenderedPane,
+  Term,
+  TermDimension,
+};
 
 /**
  * What the upcoming mirror knows about a title, present only on the four upcoming shelves.
@@ -743,6 +754,80 @@ export async function getCollection(id: string): Promise<CollectionPage> {
     for (const t of data.titles) titleCache.set(t.tconst, t);
     return data;
   });
+}
+
+/**
+ * One term -- a keyword, a streaming service, a studio -- and the titles we hold for it.
+ *
+ * Same shape as `CollectionPage` and for the same reasons: `titles` is already decorated
+ * and already filtered to what is renderable, and `missing` is what the server knew about
+ * and could not draw, so the page says "3 of 4" instead of leaving an unexplained gap.
+ */
+export interface TermPage {
+  term: Term;
+  titles: Title[];
+  missing: number;
+}
+
+const termCache = new Cache<TermPage>(100);
+
+/**
+ * The cache key, which is the whole request identity.
+ *
+ * `country` is in it because a service page genuinely differs by country -- the same
+ * `/term/service/netflix` is a different set of films in Bangkok and in Berlin, and one
+ * entry serving both is the bug this exists to not have.
+ */
+function termKeyOf(dimension: TermDimension, value: string, country?: string): string {
+  return `${dimension}/${value}/${country ?? ""}`;
+}
+
+/** A term page we already hold. Synchronous, for the same reason `cachedCollection` is. */
+export function cachedTerm(dimension: TermDimension, value: string, country?: string): TermPage | undefined {
+  return termCache.get(termKeyOf(dimension, value, country));
+}
+
+/**
+ * Fetch a term page, ALWAYS -- the cache is for painting, not for answering.
+ *
+ * Word for word the reasoning `getCollection` carries: coverage WIDENS as titles are viewed
+ * and pre-warmed, so a cached entry returned unconditionally would pin one count for the
+ * session. The server's own `max-age=60` bounds how often this actually reaches it.
+ */
+export async function getTerm(dimension: TermDimension, value: string, country?: string): Promise<TermPage> {
+  const key = termKeyOf(dimension, value, country);
+  return dedupe(`term:${key}`, async () => {
+    const query = country ? `?country=${encodeURIComponent(country)}` : "";
+    const res = await fetch(`/api/term/${dimension}/${encodeURIComponent(value)}${query}`);
+    if (!res.ok) throw new Error(res.status === 404 ? "unknown term" : `term failed: ${res.status}`);
+    const data = (await res.json()) as TermPage;
+    termCache.set(key, data);
+    // Same as search, browse and collection: holding the rows means opening one from the
+    // grid paints its local half with no request.
+    for (const t of data.titles) titleCache.set(t.tconst, t);
+    return data;
+  });
+}
+
+/**
+ * Which of this title's terms have somewhere real to go.
+ *
+ * The browser already holds the keywords, the offers and the studio; the one thing it
+ * cannot know is how populated each term's page would be, because only the server can see
+ * how much of the corpus has been cached. That count is the entire payload, and it is what
+ * decides link versus plain text (`isTermLinkable`).
+ *
+ * NOT CACHED, deliberately -- the same call `findCollections` makes and for the same
+ * reason. A term becomes linkable the moment a second title carrying it is cached, so the
+ * answer with the shortest shelf life is the negative one, and a cached miss would go on
+ * telling a reader a chip is a dead end after it stopped being one. The server's 60s is the
+ * only cache this needs.
+ */
+export async function getTermLinks(tconst: string, country?: string): Promise<Term[]> {
+  const query = country ? `?country=${encodeURIComponent(country)}` : "";
+  const res = await fetch(`/api/terms/${encodeURIComponent(tconst)}${query}`);
+  if (!res.ok) throw new Error(`terms failed: ${res.status}`);
+  return ((await res.json()) as { terms: Term[] }).terms;
 }
 
 /**
