@@ -120,8 +120,16 @@ export function AwardsRoute() {
           </p>
         </div>
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+          {/*
+            "82 nominations · 82 wins" is two numbers for one fact. A source that records who
+            WON and not who was nominated -- which is both Wikidata lists -- makes those two
+            totals equal, so the equality IS the signal that the list is a winner list, and it
+            gets the sentence that is true of it.
+          */}
           <span className="tabular-nums">
-            {page.totals.nominations.toLocaleString()} nominations · {page.totals.wins.toLocaleString()} wins
+            {page.totals.nominations === page.totals.wins
+              ? `${page.totals.wins.toLocaleString()} winners`
+              : `${page.totals.nominations.toLocaleString()} nominations · ${page.totals.wins.toLocaleString()} wins`}
           </span>
           {page.anchor.total > 0 && (
             <>
@@ -196,10 +204,20 @@ function CeremonyRow({
             {editionLabel(award, c.ceremony, c.year)}
           </Link>
         </h3>
-        <span className="text-xs text-muted tabular-nums">
-          {c.nominations} nominations · {c.categories} categories
-        </span>
-        <Completion owned={c.filmsOwned} total={c.films} noun="titles" className="text-xs text-muted" />
+        {/*
+          Both counts are drawn only when they say something. An edition of a one-prize award
+          is one row in one category naming one title, so "1 nominations · 1 categories · 0 of
+          1 titles" is three numbers restating the line directly beneath them -- and the
+          completion for the whole award is already in the header.
+        */}
+        {c.categories > 1 && (
+          <span className="text-xs text-muted tabular-nums">
+            {c.nominations} nominations · {c.categories} categories
+          </span>
+        )}
+        {c.films > 1 && (
+          <Completion owned={c.filmsOwned} total={c.films} noun="titles" className="text-xs text-muted" />
+        )}
       </div>
 
       <div className="mt-2 flex gap-3">

@@ -123,9 +123,16 @@ export function CeremonyRoute() {
           <h2 className="text-xl font-semibold tracking-tight tabular-nums">
             {editionHeading(page.award, page.ceremony, page.year)}
           </h2>
-          <p className="text-xs text-muted tabular-nums">
-            {page.categories} categories · {page.nominations} nominations
-          </p>
+          {/*
+            Drawn only when there is more than one category to count. An edition of a
+            one-prize award would otherwise read "1 categories · 1 nominations" beside a
+            heading that already says which edition it is.
+          */}
+          {page.categories > 1 && (
+            <p className="text-xs text-muted tabular-nums">
+              {page.categories} categories · {page.nominations} nominations
+            </p>
+          )}
         </div>
 
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
@@ -145,7 +152,8 @@ export function CeremonyRoute() {
               <span aria-hidden="true">·</span>
             </>
           )}
-          <Completion owned={page.filmsOwned} total={page.films} noun="titles" />
+          {/* Same rule: "0 of 1 titles" is the hero below, counted. */}
+          {page.films > 1 && <Completion owned={page.filmsOwned} total={page.films} noun="titles" />}
         </p>
 
         <CeremonySteps award={page.award} prev={page.prev} next={page.next} />
@@ -318,8 +326,14 @@ function CategoryBlock({
     <section className="mt-8">
       <div className="mb-1 flex items-baseline justify-between gap-3 border-b border-line pb-1">
         <h3 className="text-sm font-medium text-ink">{prettyCategory(category)}</h3>
+        {/*
+          "1 nominee" over a block whose only row is a WINNER is a false label, and every row
+          of a Wikidata award is a winner. Counting what the block actually holds says the
+          true thing for both shapes without either page knowing which award it is drawing.
+        */}
         <span className="shrink-0 text-xs text-muted tabular-nums">
-          {nominations.length} nominee{nominations.length === 1 ? "" : "s"}
+          {nominations.length} {nominations.every((n) => n.won) ? "winner" : "nominee"}
+          {nominations.length === 1 ? "" : "s"}
         </span>
       </div>
 
