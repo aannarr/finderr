@@ -125,6 +125,26 @@ export function isTypeAheadKey(key: string): boolean {
 }
 
 /**
+ * Does this label answer to what the reader typed?
+ *
+ * ANY WORD of the label counts, not only the first, and that is not a liberty taken with
+ * the standard for its own sake -- it is what makes the rule work on both chip bars this
+ * app has. A genre chip is one word, so "adv" reaching Adventure is the plain reading. A
+ * season chip is "Season 5 · Advent": every label in the row starts with the same word, so
+ * a first-character-only rule leaves the reader with a key that matches everything and
+ * therefore nothing. Typing "adv" or "5" is what somebody means there.
+ *
+ * Split on anything that is not a letter or a digit, which also separates the count a chip
+ * carries -- `Adventure12` stays one token, `Season 5 · Advent10` is three.
+ */
+function labelAnswersTo(label: string, needle: string): boolean {
+  return label
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .some((word) => word.startsWith(needle));
+}
+
+/**
  * The chip a typed prefix picks, searching forward from where focus is.
  *
  * A SINGLE character starts at the item AFTER the current one, so pressing `d` twice walks
@@ -142,7 +162,7 @@ export function typeAheadIndex(labels: readonly string[], prefix: string, from: 
   const start = needle.length > 1 ? Math.max(from, 0) : from + 1;
   for (let i = 0; i < labels.length; i++) {
     const at = (((start + i) % labels.length) + labels.length) % labels.length;
-    if (labels[at]?.toLowerCase().startsWith(needle)) return at;
+    if (labelAnswersTo(labels[at] ?? "", needle)) return at;
   }
   return null;
 }

@@ -173,4 +173,22 @@ describe("typeAheadIndex", () => {
     // string. The prefix is still the label.
     expect(typeAheadIndex(["Adventure12", "Action7"], "adv", -1)).toBe(0);
   });
+
+  test("reaches a word that is not the first one", () => {
+    // The season row, measured in a browser: every chip is "Season N · Name", so a
+    // first-word-only rule matches all six and helps with none of them. The name and the
+    // number are what a reader types.
+    const SEASONS = ["Season 1 · Winter10", "Season 2 · Spring10", "Season 5 · Advent10"];
+    expect(typeAheadIndex(SEASONS, "adv", -1)).toBe(2);
+    expect(typeAheadIndex(SEASONS, "spr", -1)).toBe(1);
+    expect(typeAheadIndex(SEASONS, "5", -1)).toBe(2);
+  });
+
+  test("still prefers walking forward when every label shares a word", () => {
+    // `s` on the season row is the degenerate case the word rule inherits: it matches all
+    // of them, so it walks, which is what a reader pressing one letter repeatedly wants.
+    const SEASONS = ["Season 1", "Season 2", "Season 3"];
+    expect(typeAheadIndex(SEASONS, "s", 0)).toBe(1);
+    expect(typeAheadIndex(SEASONS, "s", 2)).toBe(0);
+  });
 });
