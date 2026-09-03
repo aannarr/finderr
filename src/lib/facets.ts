@@ -99,10 +99,23 @@ export interface CrewMember extends PersonCredit {
   department: string | null;
 }
 
-/** The one prefix `personId` uses for TMDB, spelled once so a reader and a writer agree. */
+/**
+ * The namespace prefix, spelled once so the writer and the reader cannot drift.
+ *
+ * `tmdb:` is this codebase's general namespace marker and `Keyword`/`Collection` use it for
+ * their own id spaces too. The PAIR below is person-specific because only a person id is
+ * ever read back -- a keyword id is only ever compared to itself.
+ */
 const TMDB_PERSON_PREFIX = "tmdb:";
 
-/** A TMDB person id in `PersonCredit.personId` form. */
+/**
+ * A TMDB person id in `PersonCredit.personId` form.
+ *
+ * The single writer, so that `tmdbPersonIdOf` in this file and the crosswalk it feeds
+ * cannot disagree with a plugin about how the id is spelled. A provider that hand-rolled
+ * the string would be a second owner of the format, and the failure is silent: every credit
+ * it wrote would simply stop linking.
+ */
 export function tmdbPersonId(id: number): string {
   return `${TMDB_PERSON_PREFIX}${id}`;
 }

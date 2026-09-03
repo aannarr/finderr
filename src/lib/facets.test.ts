@@ -21,6 +21,8 @@ import {
   type Rating,
   type Season,
   scheduleHorizonOf,
+  tmdbPersonId,
+  tmdbPersonIdOf,
 } from "./facets";
 
 describe("entityKindFor", () => {
@@ -31,6 +33,36 @@ describe("entityKindFor", () => {
     // A tvMovie lives in Radarr and has no seasons -- it is a movie to a provider.
     expect(entityKindFor("tvMovie")).toBe("movie");
     expect(entityKindFor("something IMDb invents next year")).toBe("movie");
+  });
+});
+
+describe("TMDB person ids", () => {
+  /**
+   * The writer and the reader are in different modules -- `radarr.ts` spells the id, the
+   * server reads it back through the person crosswalk -- and a divergence between them is
+   * SILENT: every credit still renders, just never as a link. So the round trip is pinned
+   * rather than either half alone.
+   */
+  test("what a provider writes is what the crosswalk reads back", () => {
+    expect(tmdbPersonIdOf(tmdbPersonId(6193))).toBe(6193);
+    expect(tmdbPersonId(6193)).toBe("tmdb:6193");
+  });
+
+  test("no id, another namespace, and a malformed one are all the same nothing", () => {
+    expect(tmdbPersonIdOf(null)).toBeNull();
+    expect(tmdbPersonIdOf(undefined)).toBeNull();
+    expect(tmdbPersonIdOf("")).toBeNull();
+    // A real id in an id space we hold no crosswalk for. Not an error -- the credit simply
+    // falls back to the name join.
+    expect(tmdbPersonIdOf("tvdb:6193")).toBeNull();
+    expect(tmdbPersonIdOf("6193")).toBeNull();
+    expect(tmdbPersonIdOf("tmdb:")).toBeNull();
+    expect(tmdbPersonIdOf("tmdb:nm0000138")).toBeNull();
+    // 0 and negatives are not ids, for the same reason `idOrNull` refuses them in the
+    // crosswalk parser: acting on one looks up somebody who cannot exist.
+    expect(tmdbPersonIdOf("tmdb:0")).toBeNull();
+    expect(tmdbPersonIdOf("tmdb:-5")).toBeNull();
+    expect(tmdbPersonIdOf("tmdb:1.5")).toBeNull();
   });
 });
 

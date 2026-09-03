@@ -15,6 +15,7 @@ import {
   type FacetShapes,
   languageFacet,
   type Rating,
+  tmdbPersonId,
 } from "../../lib/facets";
 import { getJson, type PluginFetch } from "../../lib/plugin-fetch";
 import { calendarDate } from "./upstream";
@@ -221,9 +222,15 @@ function crewOf(movie: RadarrMovie): FacetShapes["crew"] {
   );
 }
 
-/** TMDB person ids, namespaced -- a bare `525` would not say whose id space it is in. */
+/**
+ * TMDB person ids, namespaced -- a bare `525` would not say whose id space it is in.
+ *
+ * Spelled by `tmdbPersonId` rather than here, because the server reads these back through
+ * the person crosswalk: a second copy of the format would drift and every credit this
+ * plugin wrote would quietly stop linking.
+ */
 function personId(credit: RadarrCredit): string | null {
-  return credit.TmdbId ? `tmdb:${credit.TmdbId}` : null;
+  return credit.TmdbId ? tmdbPersonId(credit.TmdbId) : null;
 }
 
 function headshot(credit: RadarrCredit): string | null {

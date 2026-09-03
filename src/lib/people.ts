@@ -345,8 +345,8 @@ export function frequentCollaborators(
  * join stays TITLE-SCOPED, which is what makes it safe, and the crosswalk is what reaches
  * the people the scoped join cannot see: `title.principals` is IMDb's curated top-ten per
  * title, so anybody billed below about tenth has no row to join against however famous they
- * are. Measured 2026-09-03 over 211 warmed titles and 5,127 cast entries: 33.8% linked by
- * name alone, 56.8% with the crosswalk beside it.
+ * are. Measured 2026-09-03 over 212 warmed titles and 5,157 cast entries: 33.8% linked by
+ * name alone, 56.9% with the crosswalk beside it.
  *
  * Either half is empty on an index built before the stage that fills it, which renders as
  * plain text -- the dead-end rule's answer for a name with nowhere to go.
@@ -372,9 +372,9 @@ export interface PersonLinks {
 export function nconstsForCredits(db: Database, credits: readonly PersonCredit[]): Map<string, string> {
   const wanted = new Map<number, string>();
   for (const c of credits) {
+    if (!c.personId) continue;
     const id = tmdbPersonIdOf(c.personId);
-    // `c.personId` is non-null whenever `id` is -- `tmdbPersonIdOf` returns null otherwise.
-    if (id !== null && c.personId) wanted.set(id, c.personId);
+    if (id !== null) wanted.set(id, c.personId);
   }
 
   const resolved = nconstsByTmdbPersonId(db, [...wanted.keys()]);
