@@ -525,18 +525,50 @@ describe("request seasons", () => {
   });
 });
 
+/** One ask, for the tests that care about the ROW rather than about which title it names. */
+const ASKED = { title: "A Title", year: 2020, kind: "movie", service: "radarr" as const };
+
+/**
+ * Write a request and DATE it, so "yesterday" and "an hour later" are things a test can say.
+ *
+ * `createRequest` stamps both timestamps from the wall clock, so every row a test writes in
+ * one `beforeEach` shares a millisecond. A test about ordering BY TIME therefore has to write
+ * the times itself, or every column ties and it is only ever pinning the `id` tie-break --
+ * which is how the first version of the `created_at`-not-`updated_at` guard below passed
+ * under a mutation to the very column it is named for.
+ */
+function requestAt(tconst: string, userId: string | null, createdAt: string): void {
+  store.createRequest({ ...ASKED, tconst, requestedBy: userId });
+  // Both columns, because a row created a day ago whose `updated_at` says "just now" is a
+  // state nothing in the app produces, and a test that ordered on it would prove nothing.
+  store.db.run("update request set created_at = ?, updated_at = ? where tconst = ?", [
+    createdAt,
+    createdAt,
+    tconst,
+  ]);
+}
+
 describe("recentlyRequestedIds", () => {
   const ask = (tconst: string) =>
     store.createRequest({ tconst, title: tconst, year: 2010, kind: "movie", service: "radarr" });
 
   test("newest first, and never more than asked for", () => {
-    ask("tt1");
-    ask("tt2");
-    ask("tt3");
-    // Requests made inside one millisecond share a created_at, so the id tie-break is what
-    // makes this order a fact rather than whatever SQLite felt like returning.
+    // Dated out of insertion order on purpose: `id desc` alone would answer tt2, tt3, tt1,
+    // so this pins the sort COLUMN and not just the tie-break.
+    requestAt("tt1", null, "2026-09-01T09:00:00.000Z");
+    requestAt("tt3", null, "2026-09-03T09:00:00.000Z");
+    requestAt("tt2", null, "2026-09-02T09:00:00.000Z");
     expect(store.recentlyRequestedIds()).toEqual(["tt3", "tt2", "tt1"]);
     expect(store.recentlyRequestedIds(2)).toEqual(["tt3", "tt2"]);
+  });
+
+  test("requests made in the same millisecond fall back to the id, newest still first", () => {
+    ask("tt-a");
+    ask("tt-b");
+    // ISO timestamps collide for two asks inside one millisecond. Without the tie-break the
+    // order is whatever SQLite felt like returning, and a shelf that reshuffles between
+    // loads is worse than one that is merely imperfect.
+    expect(store.recentlyRequestedIds()).toEqual(["tt-b", "tt-a"]);
   });
 
   /**
@@ -557,8 +589,12 @@ describe("recentlyRequestedIds", () => {
    * it -- the shelf would reshuffle on activity rather than on when anybody asked.
    */
   test("a later status change does not move a request back to the front", () => {
-    ask("tt-old");
-    ask("tt-new");
+    // Written newest FIRST, so the ids run opposite to the ask order and an answer that came
+    // from `id` rather than from `created_at` is visible here too.
+    requestAt("tt-new", null, "2026-09-02T09:00:00.000Z");
+    requestAt("tt-old", null, "2026-09-01T09:00:00.000Z");
+    // The activity the shelf must ignore: this stamps `updated_at` from the wall clock, which
+    // is later than either row's `created_at`, so ordering on it would invert the answer.
     store.updateRequest("tt-old", { status: "downloading" });
     expect(store.recentlyRequestedIds()).toEqual(["tt-new", "tt-old"]);
   });
@@ -625,19 +661,11 @@ describe("request diagnostics", () => {
  * The counting half of the daily quota. The RULE is in `./request-quota.test.ts`.
  *
  * Every assertion here is about the same claim: the quota has no counter of its own, so
- * whatever the request log says IS the count. `created_at` is written by `createRequest`
- * from the wall clock, so a row that needs a specific timestamp is dated afterwards --
- * which is also the only way to reach the day-rollover case at all.
+ * whatever the request log says IS the count. Rows are dated with `requestAt` above -- which
+ * is the only way to reach the day-rollover case at all.
  */
 describe("counting a user's requests for the quota", () => {
   const TODAY = "2026-09-02T00:00:00.000Z";
-  const asked = { title: "A Title", year: 2020, kind: "movie", service: "radarr" as const };
-
-  /** Write a request and date it, so "yesterday" and "today" are things a test can say. */
-  function requestAt(tconst: string, userId: string | null, createdAt: string): void {
-    store.createRequest({ ...asked, tconst, requestedBy: userId });
-    store.db.run("update request set created_at = ? where tconst = ?", [createdAt, tconst]);
-  }
 
   test("counts only this user's rows", () => {
     requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
@@ -688,7 +716,7 @@ describe("counting a user's requests for the quota", () => {
 
   test("re-requesting the same title does not spend a second unit", () => {
     requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
-    store.createRequest({ ...asked, tconst: "tt0000001", seasons: null, requestedBy: "u-ana" });
+    store.createRequest({ ...ASKED, tconst: "tt0000001", seasons: null, requestedBy: "u-ana" });
     expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
   });
 
@@ -697,7 +725,7 @@ describe("counting a user's requests for the quota", () => {
     // second person neither steals the attribution nor is charged for a row they did not
     // create. Both halves of that follow from the one rule, and this pins both.
     requestAt("tt0000001", "u-ana", "2026-09-02T09:00:00.000Z");
-    store.createRequest({ ...asked, tconst: "tt0000001", requestedBy: "u-ben" });
+    store.createRequest({ ...ASKED, tconst: "tt0000001", requestedBy: "u-ben" });
     expect(store.countRequestsSince("u-ana", TODAY)).toBe(1);
     expect(store.countRequestsSince("u-ben", TODAY)).toBe(0);
   });

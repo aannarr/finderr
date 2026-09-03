@@ -246,7 +246,9 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       `arr` tier, which is the closest true statement rather than an exact one: the request
       log is written by the request route and the reconcile pass, not by `refreshLibrary()`.
       It shares the arr tier's 60-second cadence, and the request route primes that tier
-      itself so a reader never has to wait a minute to see their own ask.
+      itself so the HELD page is current for the next reader who fetches it rather than up to
+      a minute behind. Whether the ASKER's own browser sees it is a client question and the
+      answer today is no -- see the comment on that prime in `./index.ts`.
     */
     {
       id: "recently-requested",

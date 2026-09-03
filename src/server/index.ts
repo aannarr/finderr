@@ -1879,8 +1879,13 @@ const appRoutes = {
       });
       worker.enqueue(row.tconst);
       // "Recently requested" reads the row that was just written, and it is the one arr-tier
-      // shelf a PERSON can change: waiting for the 60-second library refresh would mean
-      // asking for something and not finding it on a shelf named after having asked.
+      // shelf a PERSON can change, so the held page is rebuilt now rather than up to 60
+      // seconds from now: whoever fetches `/api/discover` next sees the ask on the shelf
+      // named after having asked, instead of a page assembled before it existed.
+      //
+      // That is what this buys and no more. It does NOT put the row in front of the asker's
+      // own browser, which does not refetch `/api/discover` for the rest of the session --
+      // see `the-front-page-never-refetches-within-a-session-so-no-server` on the board.
       primeShelves("arr");
       // Echoed back through the same strip: the asker sees their own request, but the
       // response shape must not depend on who is reading it in one place and not another.

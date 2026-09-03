@@ -171,6 +171,29 @@ describe("a tier is rebuilt by its own writer and nobody else's", () => {
     expect(after?.find((s) => s.id === "genre-horror")).toEqual(genreBefore);
   });
 
+  /*
+    The request log has no timer of its own -- a PERSON writes it by clicking Request -- so
+    "Recently requested" was given the arr tier and the request route primes it. Declaring
+    `tier: "index"` instead would compile, pass every other test on the project, and leave the
+    shelf a day stale between index swaps. This is the test that notices.
+  */
+  test("the arr tier picks up a new request; the index shelves do not move", () => {
+    const { state, deps } = world();
+    const page = primed(deps);
+    const topBefore = page.current(ownedSet(deps))?.find((s) => s.id === "top-movies");
+
+    state.requested = ["asked-2", "asked-1"];
+    state.topRated = ["something-completely-different"];
+    page.refresh("arr");
+
+    const after = page.current(ownedSet(deps));
+    expect(after?.find((s) => s.id === "recently-requested")?.rows.map((r) => r.tconst)).toEqual([
+      "asked-2",
+      "asked-1",
+    ]);
+    expect(after?.find((s) => s.id === "top-movies")).toEqual(topBefore);
+  });
+
   test("the index tier picks up a new genre list only when it is refreshed", () => {
     const { state, deps } = world();
     const page = primed(deps);
