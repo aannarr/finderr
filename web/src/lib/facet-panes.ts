@@ -3,8 +3,8 @@
  *
  * Everything here is PURE and DOM-free: the pane components below `components/` decide
  * what a cast row looks like, this module decides whether there is a cast row at all and
- * what its values read as. That split is what makes the three-state rule -- skeleton,
- * content, hidden -- testable in one place instead of re-argued in every component.
+ * what its values read as. That split is what makes the pane rule -- skeleton, content,
+ * problem, hidden -- testable in one place instead of re-argued in every component.
  */
 
 import type { PersonLinks } from "../../../src/lib/people";
@@ -16,7 +16,9 @@ import type {
   ExternalIds,
   ExternalLink,
   FacetName,
+  FacetProblem,
   FacetShapes,
+  FailureReason,
   Language,
   PersonCredit,
   Rating,
@@ -28,22 +30,27 @@ import type {
 } from "./facets";
 
 /**
- * Three states, never two.
+ * Four states, and the fourth one is the difference between "nothing here" and "broken".
  *
- * `hidden` covers everything we are not going to get: a facet nobody provides, a
- * provider that answered with nothing, and a provider that failed. A failure is quiet
- * on purpose -- it belongs in `/api/health` and the log, not in the user's face.
+ * `hidden` is everything we are not going to get and have nothing to say about: a facet
+ * nobody provides, and a provider that answered with nothing. `problem` is a facet a named
+ * addon FAILED on -- which used to go down the `hidden` path too, so a title whose cast
+ * provider timed out rendered identically to a title that genuinely has no cast. A reader
+ * could not tell those apart, and neither could we.
+ *
+ * A DISCRIMINATED UNION rather than one struct with two optional fields, because "`data` is
+ * present exactly when the state is `content`" is a rule a comment can only assert and the
+ * compiler can enforce.
  */
-export type PaneState = "skeleton" | "content" | "hidden";
-
-export interface PaneView<F extends FacetName> {
-  state: PaneState;
-  /** Present exactly when `state` is `content`. */
-  data?: FacetShapes[F];
-}
+export type PaneView<F extends FacetName> =
+  | { state: "skeleton" }
+  | { state: "hidden" }
+  | { state: "content"; data: FacetShapes[F] }
+  | { state: "problem"; problems: readonly FacetProblem[] };
 
 /**
- * Whether a pane draws its content, reserves its space, or disappears.
+ * Whether a pane draws its content, reserves its space, says a provider broke, or
+ * disappears.
  *
  * `working` is the SERVER's answer to "who still owes this title a facet" -- `work.facets`
  * off the response, or `undefined` before the first one lands. A `pending` facet draws a
@@ -61,11 +68,18 @@ export interface PaneView<F extends FacetName> {
  * > So the client stops when the WORK stops rather than when a clock says so, and every
  * > facet decides for itself instead of the whole page settling at once. A fast synopsis
  * > paints while a slow cast keeps its skeleton.
+ *
+ * `problems` is `work.problems` off the same response -- who FAILED, by name. It is the
+ * whole title's list rather than this facet's, exactly like `working`, so a caller never
+ * has to filter before asking. A failure only becomes visible when the facet is `failed`
+ * AND somebody in that list owns it: a facet two plugins provide, where one failed and the
+ * other answered, is `ready` and says nothing, which is right -- the reader has the cast.
  */
 export function paneView<F extends FacetName>(
   facets: ResolvedFacets | undefined,
   facet: F,
   working: readonly FacetName[] | undefined,
+  problems?: readonly FacetProblem[],
 ): PaneView<F> {
   // No response yet, so we do not know whether this facet even exists here. Reserve the
   // space rather than draw a pane that is about to vanish.
@@ -77,19 +91,89 @@ export function paneView<F extends FacetName>(
 
   switch (resolved.status) {
     case "ready":
-      return isEmpty(resolved.data) ? { state: "hidden" } : { state: "content", data: resolved.data };
+      return hasContent(resolved.data) ? { state: "content", data: resolved.data } : { state: "hidden" };
     case "pending":
       // Still owed by somebody -> hold the space. Owed by nobody -> the answer is not
       // coming on this view, so drawing a skeleton would be a lie about work in progress.
       return { state: working?.includes(facet) ? "skeleton" : "hidden" };
+    case "failed": {
+      // A failure nobody claims stays quiet. `workState` reports problems from CURRENT
+      // rows only, so a failure under a superseded plugin config has no owner here and
+      // naming an author whose next answer is already in flight would be wrong.
+      const owned = (problems ?? []).filter((p) => p.facet === facet);
+      return owned.length > 0 ? { state: "problem", problems: owned } : { state: "hidden" };
+    }
     default:
       return { state: "hidden" };
   }
 }
 
-/** A `ready` facet can still hold an empty list, and an empty list is nothing to show. */
-function isEmpty(data: unknown): boolean {
-  return data === undefined || data === null || (Array.isArray(data) && data.length === 0);
+/**
+ * Is there anything to draw? A `ready` facet can still hold an empty list, and an empty
+ * list is nothing to show.
+ *
+ * A type PREDICATE rather than an `isEmpty` boolean, so the one caller that needs the data
+ * afterwards gets it non-optional: `ResolvedFacet.data` is declared optional for every
+ * status, and this is where a `content` view stops being a maybe.
+ */
+function hasContent<T>(data: T | null | undefined): data is T {
+  return data !== undefined && data !== null && !(Array.isArray(data) && data.length === 0);
+}
+
+/**
+ * What a failure reason READS as, and the client's copy of the closed vocabulary.
+ *
+ * The reason arrives as a CODE precisely so it is safe to show a browser -- the message
+ * stays in the container log, because an upstream error can quote a URL with a credential
+ * in its query string (`src/lib/facets.ts`, `FAILURE_REASONS`). This table is where the
+ * code becomes English, and being a table rather than a lookup on the wire value is what
+ * makes it a GUARD: a `reason` nobody here recognises can never reach the page verbatim.
+ *
+ * Mirrored rather than imported for the same reason `STREAMING_MARKS` mirrors
+ * `slugifyLogo`: `FAILURE_REASONS` is a VALUE in a server module, and importing it would
+ * pull that module into the browser bundle.
+ */
+const FAILURE_PHRASES: Record<FailureReason, string> = {
+  timeout: "timed out",
+  error: "failed",
+  "invalid-shape": "sent something we could not read",
+};
+
+/**
+ * `error` is the honest generalisation for a code we do not know -- the same answer the
+ * server gives a row written before the column existed. Something went wrong and the log
+ * knows what; guessing at a phrase, or printing the raw value, would be worse.
+ */
+function failurePhrase(reason: FailureReason): string {
+  return FAILURE_PHRASES[reason] ?? FAILURE_PHRASES.error;
+}
+
+/**
+ * What a plugin id has to look like before it is printed at a reader.
+ *
+ * The SAME shape `src/lib/plugins.ts` enforces on every manifest it loads, mirrored here
+ * for the same reason `FAILURE_PHRASES` is -- and it earns its place as a second guard
+ * rather than a second copy: this is the only line on the page whose text comes from an
+ * addon, so nothing that is not an id gets to be the text.
+ */
+const PLUGIN_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/** The addon by name, or an anonymous mention of it when the id is not one. */
+function addonName(pluginId: string): string {
+  return PLUGIN_ID.test(pluginId) ? pluginId : "an addon";
+}
+
+/**
+ * The one muted line a failed pane says, instead of vanishing.
+ *
+ * It names the ADDON and the REASON and stops there, which is the whole design: it is
+ * enough to tell a reader this is broken rather than absent, and enough to send whoever
+ * maintains the box to the right plugin's log lines. Two plugins failing one facet is two
+ * clauses, deduplicated -- the same failure reported twice is one fact.
+ */
+export function problemNote(problems: readonly FacetProblem[]): string {
+  const clauses = new Set(problems.map((p) => `${addonName(p.pluginId)} ${failurePhrase(p.reason)}`));
+  return `Unavailable: ${[...clauses].join(", ")}`;
 }
 
 /** Is anything still outstanding? Drives the deferred re-read and the skeletons. */
@@ -104,9 +188,10 @@ export function hasPendingFacet(facets: ResolvedFacets): boolean {
  * but neither is `failed`, and conflating the two is a bug this used to have: the client
  * cached on `!hasPendingFacet` alone, so a single transient provider failure was frozen
  * for the session while the server happily retried it after its own short failure TTL.
- * The client out-cached the server, and because `paneView` hides `failed` quietly the
- * symptom was a title page with a header and no panes at all, with no way back short of
- * a hard reload.
+ * The client out-cached the server, and because `paneView` hid every `failed` facet in
+ * silence back then, the symptom was a title page with a header and no panes at all, with
+ * no way back short of a hard reload. A failure says so out loud now, which makes that
+ * symptom legible -- and does nothing to make it acceptable, so this rule still stands.
  *
  * `empty` IS final: the provider answered, and the answer was "nothing".
  */

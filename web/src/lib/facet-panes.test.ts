@@ -30,6 +30,7 @@ import {
   pickCertification,
   pickWatchProviders,
   preferredCountries,
+  problemNote,
   ratingLogo,
   releaseRows,
   STREAMING_MARKS,
@@ -49,6 +50,8 @@ import type {
   CastMember,
   CrewMember,
   Episode,
+  FacetProblem,
+  FailureReason,
   PersonCredit,
   Rating,
   ResolvedFacets,
@@ -76,8 +79,7 @@ describe("paneView", () => {
   test("renders content and hands back the typed data", () => {
     const facets: ResolvedFacets = { keywords: { status: "ready", data: [{ id: "1", name: "heist" }] } };
     const view = paneView(facets, "keywords", NOBODY_WORKING);
-    expect(view.state).toBe("content");
-    expect(view.data).toEqual([{ id: "1", name: "heist" }]);
+    expect(view).toEqual({ state: "content", data: [{ id: "1", name: "heist" }] });
   });
 
   /** A ready-but-empty list is nothing to show, and a heading over nothing is noise. */
@@ -104,9 +106,101 @@ describe("paneView", () => {
     expect(paneView(facets, "synopsis", WORKING_ON_CAST).state).toBe("hidden");
   });
 
-  test("hides empty and failed alike -- a dead provider is not the user's problem", () => {
+  test("hides an empty facet -- the provider answered, and the answer was nothing", () => {
     expect(paneView({ cast: { status: "empty" } }, "cast", WORKING_ON_CAST).state).toBe("hidden");
+  });
+
+  test("hides a failure nobody claims, rather than blaming an unnamed addon", () => {
+    // `workState` reports problems from CURRENT rows only, so a failure recorded under a
+    // superseded plugin config reaches the client as `failed` with no owner. There is
+    // nobody to name, and the provider's replacement is already in flight.
     expect(paneView({ cast: { status: "failed" } }, "cast", WORKING_ON_CAST).state).toBe("hidden");
+    expect(paneView({ cast: { status: "failed" } }, "cast", NOBODY_WORKING, []).state).toBe("hidden");
+  });
+});
+
+/**
+ * The gap this closed: `failed` used to go down the `hidden` path with `empty`, so a title
+ * whose cast provider timed out rendered IDENTICALLY to a title that genuinely has no cast.
+ * The data telling those apart was already on the wire and nothing read it.
+ */
+describe("paneView on a failure somebody owns", () => {
+  const TIMED_OUT: FacetProblem[] = [{ pluginId: "servarr-metadata", facet: "cast", reason: "timeout" }];
+
+  test("says so, and hands the pane who to name", () => {
+    const view = paneView({ cast: { status: "failed" } }, "cast", [], TIMED_OUT);
+    expect(view).toEqual({ state: "problem", problems: TIMED_OUT });
+  });
+
+  test("a problem on ANOTHER facet does not make this one speak", () => {
+    // One list for the whole title, filtered here rather than by every caller.
+    expect(paneView({ crew: { status: "failed" } }, "crew", [], TIMED_OUT).state).toBe("hidden");
+  });
+
+  test("a facet another provider answered stays silent -- the reader has the cast", () => {
+    // Two plugins provide `cast`; one failed and one did not, so the facet is `ready` and
+    // the failure is an operational fact rather than a gap on the page.
+    const member: CastMember = { name: "Ada", personId: null, image: null, character: null, order: 0 };
+    const facets: ResolvedFacets = { cast: { status: "ready", data: [member] } };
+    expect(paneView(facets, "cast", [], TIMED_OUT).state).toBe("content");
+  });
+
+  test("a pending facet is still a skeleton, whatever else already failed", () => {
+    // One provider of two died and the other is still going: the answer may yet arrive,
+    // and saying "unavailable" over work in progress would be the older bug's mirror image.
+    expect(paneView({ cast: { status: "pending" } }, "cast", ["cast"], TIMED_OUT).state).toBe("skeleton");
+  });
+});
+
+/**
+ * The line a failed pane says, and the only place an addon's own words could reach a page.
+ *
+ * The reason is a CODE rather than a message precisely so this is safe (`FAILURE_REASONS`
+ * in `src/lib/facets.ts`): an upstream URL can carry a credential in its query string, and
+ * a plugin's exception text can quote one. Both guards below are what keep that true when
+ * the wire carries something the vocabulary does not.
+ */
+describe("problemNote", () => {
+  test("names the addon and the reason, and nothing else", () => {
+    expect(problemNote([{ pluginId: "servarr-metadata", facet: "cast", reason: "timeout" }])).toBe(
+      "Unavailable: servarr-metadata timed out",
+    );
+  });
+
+  test.each([
+    ["error", "Unavailable: tmdb failed"],
+    ["invalid-shape", "Unavailable: tmdb sent something we could not read"],
+  ])("%s reads as English rather than as a code", (reason, expected) => {
+    expect(problemNote([{ pluginId: "tmdb", facet: "cast", reason: reason as FailureReason }])).toBe(
+      expected,
+    );
+  });
+
+  test("two plugins failing one facet is two clauses, and a repeat is one", () => {
+    const problems: FacetProblem[] = [
+      { pluginId: "servarr-metadata", facet: "cast", reason: "timeout" },
+      { pluginId: "tmdb", facet: "cast", reason: "error" },
+      { pluginId: "tmdb", facet: "cast", reason: "error" },
+    ];
+    expect(problemNote(problems)).toBe("Unavailable: servarr-metadata timed out, tmdb failed");
+  });
+
+  test("a reason outside the vocabulary is generalised, never printed", () => {
+    const leak = "GET https://api.example.com/v3/movie?api_key=SECRET failed" as FailureReason;
+    const note = problemNote([{ pluginId: "tmdb", facet: "cast", reason: leak }]);
+    expect(note).toBe("Unavailable: tmdb failed");
+    expect(note).not.toContain("api_key");
+    expect(note).not.toContain("https://");
+  });
+
+  test("a plugin id that is not one is mentioned anonymously", () => {
+    // The loader enforces this shape on every manifest, so a real id always passes. It is
+    // guarded again here because this is the one line on the page an addon supplies text to.
+    const note = problemNote([
+      { pluginId: "https://api.example.com/?api_key=SECRET", facet: "cast", reason: "timeout" },
+    ]);
+    expect(note).toBe("Unavailable: an addon timed out");
+    expect(note).not.toContain("api_key");
   });
 });
 

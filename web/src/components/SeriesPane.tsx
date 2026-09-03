@@ -44,15 +44,17 @@ import {
   seasonLabel,
   todayUtc,
 } from "../lib/facet-panes";
-import type { Episode, FacetName, ResolvedFacets, Season } from "../lib/facets";
+import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
 import { seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
-import { FacetPane, type PaneVariant, Skeleton, SkeletonRepeat } from "./FacetPane";
+import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
 
 export interface SeriesPaneProps {
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
+  /** Who failed on this title. Passed to `paneView` for both halves; see `FacetPaneProps`. */
+  problems?: readonly FacetProblem[];
   /** Layout's call, passed through to the pane chrome -- the title page mounts this as a panel. */
   variant?: PaneVariant;
   /**
@@ -64,11 +66,19 @@ export interface SeriesPaneProps {
   onRequestEpisode?: (season: number, episode: number) => void;
 }
 
-export function SeriesPane({ facets, working, variant, episodeState, onRequestEpisode }: SeriesPaneProps) {
+export function SeriesPane({
+  facets,
+  working,
+  problems,
+  variant,
+  episodeState,
+  onRequestEpisode,
+}: SeriesPaneProps) {
   return (
     <FacetPane
       facets={facets}
       working={working}
+      problems={problems}
       facet="seasons"
       heading="Seasons"
       variant={variant}
@@ -78,6 +88,7 @@ export function SeriesPane({ facets, working, variant, episodeState, onRequestEp
           seasons={seasons}
           facets={facets}
           working={working}
+          problems={problems}
           episodeState={episodeState}
           onRequestEpisode={onRequestEpisode}
         />
@@ -100,12 +111,14 @@ function SeasonBrowser({
   seasons,
   facets,
   working,
+  problems,
   episodeState,
   onRequestEpisode,
 }: {
   seasons: Season[];
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
+  problems: readonly FacetProblem[] | undefined;
   episodeState?: readonly EpisodeState[];
   onRequestEpisode?: (season: number, episode: number) => void;
 }) {
@@ -117,7 +130,7 @@ function SeasonBrowser({
   // Asked ONCE for the whole pane, then handed down. The summary above the chips and the
   // dots under them are the same fact at two grains, so they must not be free to disagree
   // -- either about which episodes exist, or about where "today" fell.
-  const episodes = paneView(facets, "episodes", working);
+  const episodes = paneView(facets, "episodes", working, problems);
   const today = todayUtc();
 
   // A single-season show has nothing to step between, so it gets no keys and no glyphs.
@@ -130,7 +143,7 @@ function SeasonBrowser({
     <>
       <SeasonStandingLine
         seasons={ordered}
-        episodes={episodes.data}
+        episodes={episodes.state === "content" ? episodes.data : undefined}
         episodeState={episodeState}
         today={today}
       />
@@ -275,9 +288,13 @@ function SeasonEpisodes({
 }) {
   if (view.state === "hidden") return null;
 
+  // The seasons half answered and the episodes half did not. Saying so beats a selector
+  // sitting above nothing -- the same reason the skeleton below exists, one state along.
+  if (view.state === "problem") return <ProblemNote problems={view.problems} />;
+
   // Said out loud, because the pane's own `aria-busy` is already false by now: the
   // seasons half resolved, and only the episodes under it are still outstanding.
-  if (view.data === undefined) {
+  if (view.state === "skeleton") {
     return (
       <EpisodeRows busy>
         <SkeletonRepeat count={episodeSkeletonRows(season)}>

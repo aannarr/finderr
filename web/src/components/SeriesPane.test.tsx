@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { EpisodeState } from "../lib/api";
-import type { Episode, FacetName, ResolvedFacets, Season } from "../lib/facets";
+import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
 import { SeriesPane } from "./SeriesPane";
 
 function season(over: Partial<Season> & { number: number }): Season {
@@ -47,8 +47,11 @@ function render(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] = ["seasons", "episodes"],
   episodeState?: readonly EpisodeState[],
+  problems?: readonly FacetProblem[],
 ): string {
-  return renderToStaticMarkup(<SeriesPane facets={facets} working={working} episodeState={episodeState} />);
+  return renderToStaticMarkup(
+    <SeriesPane facets={facets} working={working} problems={problems} episodeState={episodeState} />,
+  );
 }
 
 describe("a film", () => {
@@ -238,5 +241,16 @@ describe("the two facets resolving apart", () => {
     expect(html).toContain("Season 1 · Winter is Coming");
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("<ol");
+  });
+
+  test("says which addon lost the episodes, in the same words a pane would", () => {
+    // The episode half is the BODY of the seasons pane rather than a pane of its own, so it
+    // cannot reach this sentence through `FacetPane` -- but a selector sitting over silence
+    // is the exact gap this exists to close, and the wording has one owner either way.
+    const html = render({ ...seasonsOnly, episodes: { status: "failed" } }, [], undefined, [
+      { pluginId: "servarr-metadata", facet: "episodes", reason: "timeout" },
+    ]);
+    expect(html).toContain("Season 1 · Winter is Coming");
+    expect(html).toContain("Unavailable: servarr-metadata timed out");
   });
 });

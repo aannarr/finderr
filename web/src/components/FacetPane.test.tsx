@@ -1,5 +1,6 @@
 /**
- * The three-state rule, and the fourth case a pane can be in.
+ * The rule every pane follows -- skeleton, content, problem, hidden -- and the one case
+ * that rule structurally cannot decide.
  *
  * Tested HERE rather than through `TitlePanes` because this is where the rule lives --
  * the card that produced it said so: "a test covering it, at the `FacetPane`/`paneView`
@@ -10,13 +11,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FacetName, ResolvedFacets } from "../lib/facets";
+import type { FacetName, FacetProblem, ResolvedFacets } from "../lib/facets";
 import { FacetPane } from "./FacetPane";
 
 function render(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] | undefined,
   drawing?: { count: number; whenNone: string },
+  problems?: readonly FacetProblem[],
 ): string {
   return renderToStaticMarkup(
     <FacetPane
@@ -24,6 +26,7 @@ function render(
       facets={facets}
       facet="keywords"
       working={working}
+      problems={problems}
       skeleton={<span>SKELETON</span>}
       render={(data) => <span>DREW {data.length}</span>}
       drawing={drawing}
@@ -48,13 +51,48 @@ describe("the rule every pane follows", () => {
     expect(render(facets, [])).toBe("");
   });
 
-  test.each(["empty", "failed"])("a %s facet leaves nothing behind", (status) => {
+  test.each(["empty", "failed"])("a %s facet nobody named leaves nothing behind", (status) => {
     const facets = { keywords: { status } } as unknown as ResolvedFacets;
     expect(render(facets, [])).toBe("");
   });
 
   test("ready with content draws it", () => {
     expect(render(READY, [])).toContain("DREW 1");
+  });
+});
+
+/**
+ * The state this file's header used to call "the fourth case", which was `drawing` below.
+ *
+ * A failure went down the `hidden` path with `empty`, so a pane whose provider timed out
+ * looked exactly like a pane whose provider said "nothing". The reader could not tell those
+ * apart and neither could anybody debugging it, while the answer was already on the wire.
+ */
+describe("a provider that failed, by name", () => {
+  const FAILED = { keywords: { status: "failed" } } as unknown as ResolvedFacets;
+  const PROBLEMS: FacetProblem[] = [{ pluginId: "servarr-metadata", facet: "keywords", reason: "timeout" }];
+
+  test("keeps its heading and says which addon failed and why", () => {
+    const html = render(FAILED, [], undefined, PROBLEMS);
+    expect(html).toContain("Keywords");
+    expect(html).toContain("Unavailable: servarr-metadata timed out");
+  });
+
+  test("an EMPTY facet is untouched by any of this", () => {
+    // The pane a reader sees for "there genuinely is no answer" must not change: `empty` is
+    // a real answer, and today's silence is the right output for it.
+    const empty = { keywords: { status: "empty" } } as unknown as ResolvedFacets;
+    expect(render(empty, [], undefined, PROBLEMS)).toBe("");
+  });
+
+  test("is NOT busy -- nothing is in flight, this is the final answer for this view", () => {
+    expect(render(FAILED, [], undefined, PROBLEMS)).not.toContain('aria-busy="true"');
+  });
+
+  test("draws no skeleton, and never calls render", () => {
+    const html = render(FAILED, [], undefined, PROBLEMS);
+    expect(html).not.toContain("SKELETON");
+    expect(html).not.toContain("DREW");
   });
 });
 

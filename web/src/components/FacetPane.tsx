@@ -1,15 +1,15 @@
 /**
  * The frame every facet pane is built in, and the blocks its skeleton is drawn from.
  *
- * ONE component decides whether a pane draws content, reserves space, or disappears, so
- * the three-state rule is honoured identically by every pane instead of being
+ * ONE component decides whether a pane draws content, reserves space, says a provider
+ * broke, or disappears, so the rule is honoured identically by every pane instead of being
  * re-argued in each. A pane supplies its heading, its facet, its placeholder and how to
  * render its data; everything else is here.
  */
 
 import { Fragment, type ReactNode } from "react";
-import { paneView } from "../lib/facet-panes";
-import type { FacetName, FacetShapes, ResolvedFacets } from "../lib/facets";
+import { paneView, problemNote } from "../lib/facet-panes";
+import type { FacetName, FacetProblem, FacetShapes, ResolvedFacets } from "../lib/facets";
 
 /**
  * A grey block standing in for content that has not landed.
@@ -80,6 +80,12 @@ export interface FacetPaneProps<F extends FacetName> {
   facet: F;
   /** Providers have had their turn; a facet still pending is not coming for this view. */
   working: readonly FacetName[] | undefined;
+  /**
+   * Who failed on this title, by name. The whole title's list, like `working` -- the pane
+   * hands it straight to `paneView`, which is the one place that decides whether this
+   * facet's failure is one a reader is told about.
+   */
+  problems?: readonly FacetProblem[];
   /** Sized to the content it replaces. */
   skeleton: ReactNode;
   render: (data: FacetShapes[F]) => ReactNode;
@@ -95,8 +101,8 @@ export interface FacetPaneProps<F extends FacetName> {
    * `count` is how many rows the pane can actually draw. `whenNone` is what it says at
    * zero, INSTEAD of drawing a heading over nothing.
    *
-   * Reaching here means the provider ANSWERED -- a failure hides at `paneView` and never
-   * arrives -- so a sentence about our index is honest here and cannot be confused with
+   * Reaching here means the provider ANSWERED -- a failure is a `problem` view and returns
+   * above this -- so a sentence about our index is honest here and cannot be confused with
    * "the provider broke".
    */
   drawing?: { count: number; whenNone: ReactNode };
@@ -109,18 +115,38 @@ export function FacetPane<F extends FacetName>({
   facets,
   facet,
   working,
+  problems,
   skeleton,
   render,
   drawing,
   variant,
 }: FacetPaneProps<F>) {
-  const view = paneView(facets, facet, working);
+  const view = paneView(facets, facet, working, problems);
   if (view.state === "hidden") return null;
+
+  // A named addon broke. The heading stays so the reader knows WHAT is missing, and the
+  // line under it says why -- which is the difference between "no cast" and "the cast did
+  // not arrive". Not busy: nothing is in flight, this is the final answer for this view.
+  if (view.state === "problem") {
+    return (
+      <Pane heading={heading} variant={variant}>
+        <ProblemNote problems={view.problems} />
+      </Pane>
+    );
+  }
+
+  if (view.state === "skeleton") {
+    return (
+      <Pane heading={heading} busy variant={variant}>
+        {skeleton}
+      </Pane>
+    );
+  }
 
   // Content, but nothing drawable: say so rather than heading a void. Chosen by aannarr
   // 2026-08-31 over hiding the pane -- "3 of 4" on the collection page already tells the
   // reader what we do not hold, and silence there would be the same gap unexplained.
-  if (view.data !== undefined && drawing?.count === 0) {
+  if (drawing?.count === 0) {
     return (
       <Pane heading={heading} variant={variant}>
         {drawing.whenNone}
@@ -129,10 +155,22 @@ export function FacetPane<F extends FacetName>({
   }
 
   return (
-    <Pane heading={heading} busy={view.state === "skeleton"} variant={variant}>
-      {view.data === undefined ? skeleton : render(view.data)}
+    <Pane heading={heading} variant={variant}>
+      {render(view.data)}
     </Pane>
   );
+}
+
+/**
+ * The one line a pane says when its provider failed, wherever that pane is drawn.
+ *
+ * Exported for the SERIES pane, whose episode half is the body of another pane rather than
+ * a pane of its own and so cannot go through `FacetPane` -- but must say the same sentence,
+ * in the same words, when its provider dies. The words themselves are `problemNote`'s: this
+ * is chrome, and the rule about what may be printed lives with the rest of the pane rules.
+ */
+export function ProblemNote({ problems }: { problems: readonly FacetProblem[] }) {
+  return <p className="text-sm text-muted">{problemNote(problems)}</p>;
 }
 
 /**
@@ -150,8 +188,8 @@ export function FacetPane<F extends FacetName>({
  * `FacetPane` would mean inventing a fake `FacetName` for data no plugin provides.
  *
  * That is the same reasoning `LinksRow` used, and the same limit applies: this is CHROME,
- * never an invitation to re-decide the skeleton/content/hidden rule per pane. **Any pane
- * whose visibility depends on a provider still goes through `FacetPane`.**
+ * never an invitation to re-decide the skeleton/content/problem/hidden rule per pane. **Any
+ * pane whose visibility depends on a provider still goes through `FacetPane`.**
  *
  * Three variants, all still one `<section>` + `<h3>` so the outline reads the same:
  * - `section`: the default reading-flow chrome.

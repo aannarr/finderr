@@ -6,7 +6,7 @@
  *
  * Nine panes of one facet each, plus `SeriesPane`, which needs two that resolve
  * independently. All of them are built on `FacetPane`, so every one draws content,
- * reserves space, or disappears by the same rule. They are ordinary components on
+ * reserves space, names the addon that failed, or disappears by the same rule. They are ordinary components on
  * purpose: the pane-registry card gives plugins slots to author their own, and it
  * refactors these into that shape once there is a plugin asking for one.
  *
@@ -58,6 +58,7 @@ import type {
   Certification,
   CrewMember,
   FacetName,
+  FacetProblem,
   Keyword,
   Language,
   PersonCredit,
@@ -79,6 +80,12 @@ export interface TitlePanesProps {
   title: Title;
   facets: ResolvedFacets | undefined;
   working: readonly FacetName[] | undefined;
+  /**
+   * Which addon failed on this title, and why. Travels beside `working` because it is the
+   * other half of the same answer -- one says who still owes a facet, the other who is
+   * never going to deliver it -- and both are read by `paneView` and nothing else.
+   */
+  problems?: readonly FacetProblem[];
   /**
    * Our own person ids for this title's credits, by provider id and by folded name.
    *
@@ -141,9 +148,10 @@ export function TitleMainPanes({
   title,
   facets,
   working,
+  problems,
   panes,
-}: Pick<TitlePanesProps, "title" | "facets" | "working" | "panes">) {
-  const shared = { facets, working };
+}: Pick<TitlePanesProps, "title" | "facets" | "working" | "problems" | "panes">) {
+  const shared = { facets, working, problems };
   const slot = slotFor(panes);
   return (
     <>
@@ -201,8 +209,12 @@ const FACT_FACETS = ["certification", "language", "releaseDates", "watchProvider
  * pane follows -- a skeleton counts, because reserved space is a statement too. Without
  * this, a title every fact provider came back empty for wears an empty bordered box.
  */
-function factsVisible(facets: ResolvedFacets | undefined, working: readonly FacetName[] | undefined) {
-  return FACT_FACETS.some((f) => paneView(facets, f, working).state !== "hidden");
+function factsVisible(
+  facets: ResolvedFacets | undefined,
+  working: readonly FacetName[] | undefined,
+  problems: readonly FacetProblem[] | undefined,
+) {
+  return FACT_FACETS.some((f) => paneView(facets, f, working, problems).state !== "hidden");
 }
 
 /**
@@ -217,18 +229,23 @@ function factsVisible(facets: ResolvedFacets | undefined, working: readonly Face
 export function TitleFactsCard({
   facets,
   working,
+  problems,
   className = "",
-}: Pick<TitlePanesProps, "facets" | "working"> & { className?: string }) {
-  if (!factsVisible(facets, working)) return null;
+}: Pick<TitlePanesProps, "facets" | "working" | "problems"> & { className?: string }) {
+  if (!factsVisible(facets, working, problems)) return null;
   return (
     <div className={`rounded-xl border border-line bg-surface p-4 ${className}`}>
-      <TitleFactsPanes facets={facets} working={working} />
+      <TitleFactsPanes facets={facets} working={working} problems={problems} />
     </div>
   );
 }
 
-function TitleFactsPanes({ facets, working }: Pick<TitlePanesProps, "facets" | "working">) {
-  const shared = { facets, working, variant: "rail" as const };
+function TitleFactsPanes({
+  facets,
+  working,
+  problems,
+}: Pick<TitlePanesProps, "facets" | "working" | "problems">) {
+  const shared = { facets, working, problems, variant: "rail" as const };
   return (
     <>
       <FacetPane
@@ -314,6 +331,7 @@ export function TitleLowerPanes({
   title,
   facets,
   working,
+  problems,
   people,
   collectionTitles,
   relatedTitles,
@@ -322,7 +340,7 @@ export function TitleLowerPanes({
   awards,
   onRequestEpisode,
 }: TitlePanesProps) {
-  const shared = { facets, working };
+  const shared = { facets, working, problems };
   const slot = slotFor(panes);
   return (
     <>
@@ -381,11 +399,11 @@ export function TitleLowerPanes({
         visible. Gated on the same emptiness check as the card, so neither mount ever
         draws chrome over nothing.
       */}
-      {factsVisible(facets, working) && (
+      {factsVisible(facets, working, problems) && (
         <details className="mt-8 rounded-xl border border-line bg-surface p-4 sm:hidden">
           <summary className="cursor-pointer text-sm font-medium text-ink">Details</summary>
           <div className="mt-3">
-            <TitleFactsPanes facets={facets} working={working} />
+            <TitleFactsPanes facets={facets} working={working} problems={problems} />
           </div>
         </details>
       )}

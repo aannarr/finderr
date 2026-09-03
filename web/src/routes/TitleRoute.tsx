@@ -58,6 +58,7 @@ export function TitleRoute() {
     relatedTitles,
     panes,
     working,
+    problems,
     arrLink,
     episodeState,
     awards,
@@ -183,7 +184,7 @@ export function TitleRoute() {
             eager
             className="aspect-2/3 w-full overflow-hidden rounded-xl border border-line bg-surface"
           />
-          <TitleFactsCard facets={facets} working={working} className="mt-4" />
+          <TitleFactsCard facets={facets} working={working} problems={problems} className="mt-4" />
         </aside>
 
         <div className="min-w-0">
@@ -336,7 +337,7 @@ export function TitleRoute() {
             screen at t=0, and nothing arriving late is allowed to push it around. The
             reading-flow panes share the main column; the wide rows follow the grid.
           */}
-          <TitleMainPanes title={title} facets={facets} working={working} panes={panes} />
+          <TitleMainPanes title={title} facets={facets} working={working} problems={problems} panes={panes} />
         </div>
       </article>
 
@@ -362,6 +363,7 @@ export function TitleRoute() {
         title={title}
         facets={facets}
         working={working}
+        problems={problems}
         people={people}
         collectionTitles={collectionTitles}
         relatedTitles={relatedTitles}
