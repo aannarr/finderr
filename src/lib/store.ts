@@ -13,7 +13,13 @@ import type { Config } from "./config";
 import { paths } from "./config";
 import type { PlexItem } from "./plex";
 import type { RequestDiagnostic } from "./request-diagnostics";
-import type { ClickRow, SearchLogSink, SearchRow } from "./search-log";
+import {
+  type ClickRow,
+  decodeFilters,
+  encodeFilters,
+  type SearchLogSink,
+  type SearchRow,
+} from "./search-log";
 import { encodeSeasons } from "./seasons";
 import type { TermPair } from "./terms";
 
@@ -596,13 +602,18 @@ create index if not exists ix_award_nominee_nconst on award_nominee(nconst);
 -- > No session, no user id, no address. That is the D4 ruling on the tuning card, and it is
 -- > the reason these two are safe to keep at all. A row here is about a QUERY.
 --
+-- The filters column is a fact about the QUERY and is therefore allowed: the four scalars
+-- a facet chip applied, as JSON, null when none were. See encodeFilters in
+-- src/lib/search-log.ts, which is the only thing that writes this shape.
+--
 -- No primary key on either, deliberately: two people searching the same thing in the same
 -- second are two facts and collapsing them would understate exactly the query that matters
 -- most. Both are pruned to a row ceiling rather than to an age -- see pruneSearchLog.
 create table if not exists search_log (
   query   text not null,
   at      integer not null,
-  results integer not null
+  results integer not null,
+  filters text
 );
 create index if not exists ix_search_log_at on search_log(at);
 
@@ -749,6 +760,18 @@ const ADDED_COLUMNS: {
     column: "via_agent_key",
     ddl: "alter table request add column via_agent_key integer not null default 0",
   },
+  /*
+    WHICH FACET CHIPS WERE NARROWING A SEARCH. JSON of the four declared scalars, or null.
+
+    NO BACKFILL, AND NONE IS POSSIBLE. A row written before this column genuinely does not
+    know whether a chip was applied, and null is the honest answer -- defaulting it to "no
+    filters" would invent evidence for the one question the column exists to answer.
+
+    > [!CAUTION] The four DECLARED scalars, never a spread of the request
+    > `genre`, `decade`, `year`, `kind` and nothing else. It is a fact about the query, which
+    > is what D4 permits; the next field somebody wants here is another ruling.
+  */
+  { table: "search_log", column: "filters", ddl: "alter table search_log add column filters text" },
 ];
 
 export class Store implements SearchLogSink {
@@ -1873,9 +1896,9 @@ export class Store implements SearchLogSink {
 
   /** One transaction per batch: a flush of forty rows costs one fsync, not forty. */
   writeSearches(rows: readonly SearchRow[]): void {
-    const ins = this.db.prepare("insert into search_log (query, at, results) values (?,?,?)");
+    const ins = this.db.prepare("insert into search_log (query, at, results, filters) values (?,?,?,?)");
     this.db.transaction(() => {
-      for (const r of rows) ins.run(r.query, r.at, r.results);
+      for (const r of rows) ins.run(r.query, r.at, r.results, encodeFilters(r.filters));
     })();
   }
 
@@ -1911,11 +1934,21 @@ export class Store implements SearchLogSink {
     return removed;
   }
 
-  /** Every logged query, newest first. The report job's whole input. */
+  /**
+   * Every logged query, newest first. The report job's whole input.
+   *
+   * `filters` is decoded here rather than handed on as the stored text, so a reader of a
+   * `SearchRow` never has to know the column is JSON -- `decodeFilters` is the one place
+   * that does, and it treats an older row's null and a junk value the same way.
+   */
   searchLogRows(limit: number): SearchRow[] {
-    return this.db
-      .query("select query, at, results from search_log order by at desc limit ?")
-      .all(limit) as SearchRow[];
+    const rows = this.db
+      .query("select query, at, results, filters from search_log order by at desc limit ?")
+      .all(limit) as (Omit<SearchRow, "filters"> & { filters: string | null })[];
+    return rows.map(({ filters, ...row }) => {
+      const picked = decodeFilters(filters);
+      return picked ? { ...row, filters: picked } : row;
+    });
   }
 
   searchClickRows(limit: number): ClickRow[] {

@@ -57,6 +57,62 @@ describe("buildSearchReport", () => {
     expect(r.retypedRefinements).toBe(1);
   });
 
+  test("running the same query again narrows nothing, however long the gap", () => {
+    // REGRESSION: the prefix test alone counted this, because a string starts with itself.
+    // It matters because a chip click re-runs the identical text, so the retype half of Q4
+    // was counting the chip's own gesture as evidence that nobody uses the chips.
+    const r = buildSearchReport([search("dune", 0), search("Dune", 5 * MINUTE)], []);
+
+    expect(r.retypedRefinements).toBe(0);
+  });
+
+  test("counts the searches that carried a chip, and which chip it was", () => {
+    // Q4's other half: "nobody clicks a chip" and "everybody clicks kind" are different
+    // findings about the facet bar, so one number could not carry both.
+    const r = buildSearchReport(
+      [
+        { ...search("dune", 1), filters: { genre: "Sci-Fi", year: 1984 } },
+        { ...search("silo", 2), filters: { genre: "Drama" } },
+        search("the matrix", 3),
+      ],
+      [],
+    );
+
+    expect(r.chips.searches).toBe(2);
+    expect(r.chips.byKey).toEqual({ genre: 2, decade: 0, year: 1, kind: 0 });
+  });
+
+  test("a chip added to a query somebody already ran is a chip refinement", () => {
+    const r = buildSearchReport(
+      [
+        search("dune", 0),
+        { ...search("dune", MINUTE), filters: { genre: "Sci-Fi" } },
+        // Same chip again on a third run: nothing was narrowed, so it is not a refinement.
+        { ...search("dune", 2 * MINUTE), filters: { genre: "Sci-Fi" } },
+        // A DIFFERENT query that happens to carry a chip narrows nothing either.
+        { ...search("silo", 3 * MINUTE), filters: { kind: "series" } },
+      ],
+      [],
+    );
+
+    expect(r.chips.refinements).toBe(1);
+    // It is the counterpart of the retype, not a second count of the same gesture.
+    expect(r.retypedRefinements).toBe(0);
+  });
+
+  test("swapping one chip for another narrows nothing", () => {
+    // The reader changed their mind rather than narrowing: the result set moved sideways.
+    const r = buildSearchReport(
+      [
+        { ...search("dune", 0), filters: { genre: "Sci-Fi" } },
+        { ...search("dune", MINUTE), filters: { genre: "Drama" } },
+      ],
+      [],
+    );
+
+    expect(r.chips.refinements).toBe(0);
+  });
+
   test("ranks the clicks that went deepest, because those are the scorer's failures", () => {
     const r = buildSearchReport(
       [search("budapest hostel", 1)],
@@ -97,6 +153,17 @@ describe("formatSearchReport", () => {
     const text = formatSearchReport(buildSearchReport([search("dune", 1)], []), false);
 
     expect(text).toContain("not measured");
+  });
+
+  test("prints the chip usage beside the retypes, which is the comparison Q4 asks for", () => {
+    const text = formatSearchReport(
+      buildSearchReport([search("dune", 0), { ...search("dune", MINUTE), filters: { genre: "Sci-Fi" } }], []),
+      false,
+    );
+
+    expect(text).toContain("chip refinements:    1");
+    expect(text).toContain("searches with chips: 1 (50.0%)");
+    expect(text).toContain("genre 1");
   });
 
   test("prints canary candidates with the rank that condemns them", () => {

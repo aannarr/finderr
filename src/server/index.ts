@@ -43,6 +43,7 @@ import {
   NO_SEARCH_LOG,
   parseClickBody,
   FLUSH_MS as SEARCH_LOG_FLUSH_MS,
+  type SearchFilters,
   SearchLog,
   type SearchLogger,
 } from "../lib/search-log";
@@ -1372,13 +1373,19 @@ const appRoutes = {
       return Number.isNaN(n) ? undefined : n;
     };
 
-    const res = live.current.search(q, {
-      limit: Math.min(num("limit") ?? 25, 100),
+    /*
+      The four facet scalars, read once and spent twice -- narrowing the search, and stored
+      on its log row. One derivation rather than two, so the row can never claim a chip the
+      engine did not actually apply.
+    */
+    const filters: SearchFilters = {
       genre: u.searchParams.get("genre") ?? undefined,
       decade: num("decade"),
       year: num("year"),
       kind: u.searchParams.get("kind") ?? undefined,
-    });
+    };
+
+    const res = live.current.search(q, { limit: Math.min(num("limit") ?? 25, 100), ...filters });
 
     // Resolve artwork for whatever the user is about to look at, in the
     // background. Never blocks the response.
@@ -1391,8 +1398,11 @@ const appRoutes = {
       this query work for the person who typed it", and `0` is the failure to go looking
       for. `candidates` counts what the index offered before the facet filters ran, which is
       never zero for a query that returned nothing after a chip was applied.
+
+      The filters ride along because a chip click leaves the query text identical: without
+      them, narrowing by chip and running the same search twice are the same row.
     */
-    searchLog.searched(q, res.hits.length);
+    searchLog.searched(q, res.hits.length, filters);
 
     return json(
       { ...res, hits: decorate(res.hits) },

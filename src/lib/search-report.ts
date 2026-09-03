@@ -21,8 +21,10 @@
 
 import { parseQuery } from "./query-parser";
 import { TIERS, type Tier } from "./search";
-import type { ClickRow, SearchRow } from "./search-log";
-import { TYPING_WINDOW_MS } from "./search-log";
+import type { ClickRow, SearchFilters, SearchRow } from "./search-log";
+import { FILTER_KEYS, TYPING_WINDOW_MS } from "./search-log";
+
+type FilterKey = (typeof FILTER_KEYS)[number];
 
 /** What replaying one query against a real index says about it. */
 export interface Replayed {
@@ -35,6 +37,27 @@ export interface Replayed {
 export interface QueryCount {
   query: string;
   n: number;
+}
+
+/** Which facet key was narrowing a search, and how often. */
+export type ChipCounts = Record<FilterKey, number>;
+
+/**
+ * Q4's chip half: whether anybody uses the facet bar at all.
+ *
+ * Three numbers rather than one, because "nobody clicks a chip" and "everybody clicks
+ * `kind` and nothing else" are different findings about the same bar.
+ */
+export interface ChipUsage {
+  /** Searches that carried at least one chip. */
+  searches: number;
+  byKey: ChipCounts;
+  /**
+   * A search NARROWED by adding a chip: the same query text re-run with a filter it did not
+   * have before. The counterpart of `retypedRefinements` -- the two together say which
+   * gesture people reach for when a result set is too wide.
+   */
+  refinements: number;
 }
 
 /** A query whose reader had to look past the first row to find what they wanted. */
@@ -61,11 +84,12 @@ export interface SearchReport {
   /** Queries that came back with nothing at all, worst first. The clearest failures. */
   zeroResult: QueryCount[];
   /**
-   * Q4, the answerable half: a query that EXTENDS an earlier one, long after the typing
-   * window closed. Somebody narrowing a search by retyping it rather than by clicking a
-   * chip. The chip's own side is not visible here -- see the note in the job.
+   * Q4, one half: a query that EXTENDS an earlier one, long after the typing window closed.
+   * Somebody narrowing a search by retyping it rather than by clicking a chip.
    */
   retypedRefinements: number;
+  /** Q4, the other half: how a chip was actually used, from the `filters` on a row. */
+  chips: ChipUsage;
   /** Q3: which tier answered, from replay. Empty when no index was supplied. */
   tiers: Record<Tier, number>;
   mostRun: QueryCount[];
@@ -101,17 +125,60 @@ function countBy(rows: readonly { query: string }[], keep: (q: string) => boolea
  * The typing window is what separates this from `settledSearches`, which uses the same
  * prefix test for the opposite purpose: inside the window an extension is one query being
  * typed, outside it, it is a second search that gave up on the first.
+ *
+ * AN UNCHANGED QUERY IS NOT A REFINEMENT, and the prefix test alone cannot say so because a
+ * string starts with itself. Somebody arriving back on the same search -- from the Back
+ * button, or by clicking a chip, which re-runs the identical text -- narrowed nothing by
+ * typing, and counting them here would report the chip's own gesture as evidence that the
+ * chips go unused.
  */
 function countRetypedRefinements(rows: readonly SearchRow[]): number {
   const byTime = [...rows].sort((a, b) => a.at - b.at);
   let n = 0;
   for (let i = 1; i < byTime.length; i++) {
-    const previous = byTime[i - 1];
-    const current = byTime[i];
-    if (current.at - previous.at <= TYPING_WINDOW_MS) continue;
-    if (current.query.toLowerCase().startsWith(previous.query.toLowerCase())) n++;
+    const previous = byTime[i - 1].query.toLowerCase();
+    const current = byTime[i].query.toLowerCase();
+    if (byTime[i].at - byTime[i - 1].at <= TYPING_WINDOW_MS) continue;
+    if (current !== previous && current.startsWith(previous)) n++;
   }
   return n;
+}
+
+/** Does `wider` hold every filter `narrower` holds, and fewer of them? */
+function isNarrowedBy(wider: SearchFilters, narrower: SearchFilters): boolean {
+  const added = FILTER_KEYS.filter((k) => narrower[k] !== undefined && wider[k] === undefined);
+  const kept = FILTER_KEYS.every((k) => wider[k] === undefined || wider[k] === narrower[k]);
+  return added.length > 0 && kept;
+}
+
+/**
+ * How the facet bar was used: how many searches carried a chip, which ones, and how often a
+ * chip was what NARROWED a search somebody had already run.
+ *
+ * The narrowing test is the chip's answer to `countRetypedRefinements`, and it needs no
+ * typing window: clicking a chip involves no typing, so the two rows it produces are a
+ * second apart or a minute apart for reasons that say nothing about intent. What identifies
+ * it is that the query text is unchanged and a filter appeared.
+ */
+function chipUsageOf(rows: readonly SearchRow[]): ChipUsage {
+  const byKey = Object.fromEntries(FILTER_KEYS.map((k) => [k, 0])) as ChipCounts;
+  let searches = 0;
+  for (const row of rows) {
+    if (!row.filters) continue;
+    searches++;
+    for (const key of FILTER_KEYS) if (row.filters[key] !== undefined) byKey[key]++;
+  }
+
+  const byTime = [...rows].sort((a, b) => a.at - b.at);
+  let refinements = 0;
+  for (let i = 1; i < byTime.length; i++) {
+    const previous = byTime[i - 1];
+    const current = byTime[i];
+    if (current.query.toLowerCase() !== previous.query.toLowerCase()) continue;
+    if (current.filters && isNarrowedBy(previous.filters ?? {}, current.filters)) refinements++;
+  }
+
+  return { searches, byKey, refinements };
 }
 
 /** The worst rank each query's readers had to reach, for the queries where that was not 0. */
@@ -178,6 +245,7 @@ export function buildSearchReport(
     nonAscii: countBy(searches, (q) => /[^\x00-\x7F]/.test(q)),
     zeroResult,
     retypedRefinements: countRetypedRefinements(searches),
+    chips: chipUsageOf(searches),
     tiers,
     mostRun: countBy(searches, () => true),
     clicks: {
@@ -221,6 +289,10 @@ export function formatSearchReport(r: SearchReport, replayed: boolean): string {
         : "not measured -- re-run without --no-replay"
     }`,
     `Q4  retyped refinements: ${r.retypedRefinements} -- narrowed by typing more, where a chip would have done`,
+    `    chip refinements:    ${r.chips.refinements} -- narrowed by clicking a chip instead`,
+    `    searches with chips: ${r.chips.searches} (${pct(r.chips.searches, r.searches)}), by chip: ${FILTER_KEYS.map(
+      (k) => `${k} ${r.chips.byKey[k]}`,
+    ).join("  ")}`,
     `Q5  non-English queries: ${r.nonAscii.reduce((n, q) => n + q.n, 0)} (${r.nonAscii.length} distinct)`,
     "",
     `clicks: ${r.clicks.total}, of which ${r.clicks.belowTop} below the top row (${pct(

@@ -1080,14 +1080,32 @@ describe("migrating a database written before request.seasons", () => {
 describe("search log", () => {
   const search = (query: string, at: number, results = 5) => ({ query, at, results });
 
-  test("keeps a query, its stamp and its result count -- and nothing else", () => {
+  test("keeps a query, its stamp, its result count and its chips -- and nothing else", () => {
     store.writeSearches([search("the matrix", 1_000, 25)]);
 
     const row = store.db.query("select * from search_log").get() as Record<string, unknown>;
     // The column list IS the privacy rule (D4 on the tuning card). A session id, a user id
-    // or an address appearing here is the failure this assertion exists to catch.
-    expect(Object.keys(row).sort()).toEqual(["at", "query", "results"]);
+    // or an address appearing here is the failure this assertion exists to catch. `filters`
+    // is here because it is a fact about the QUERY -- which is the line D4 draws, and the
+    // reason a fifth column needs its own ruling rather than an edit to this list.
+    expect(Object.keys(row).sort()).toEqual(["at", "filters", "query", "results"]);
     expect(row).toMatchObject({ query: "the matrix", at: 1_000, results: 25 });
+    // No chip was applied, and null says exactly that rather than inventing "none".
+    expect(row.filters).toBeNull();
+  });
+
+  test("round-trips the facet chips a search carried", () => {
+    store.writeSearches([{ ...search("dune", 1_000), filters: { genre: "Sci-Fi", decade: 2020 } }]);
+
+    expect(store.searchLogRows(1)[0].filters).toEqual({ genre: "Sci-Fi", decade: 2020 });
+  });
+
+  test("reads a row written before the column existed as no filters at all", () => {
+    // What the ADDED_COLUMNS migration leaves behind: an old row genuinely does not know
+    // whether a chip was applied, so it must not read back as "the searcher used none".
+    store.db.run("insert into search_log (query, at, results) values (?,?,?)", ["dune", 1_000, 3]);
+
+    expect(store.searchLogRows(1)[0]).toEqual({ query: "dune", at: 1_000, results: 3 });
   });
 
   test("keeps a click with its rank, and nobody's name", () => {

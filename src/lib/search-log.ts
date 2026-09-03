@@ -18,6 +18,13 @@
  * >
  * > So do not add a column here that narrows a row to a person, and do not add one
  * > "temporarily to debug something" -- there is no reader of this data that needs one.
+ * >
+ * > A FACT ABOUT THE QUERY IS ALLOWED; A FACT ABOUT THE READER IS NOT. That is the whole
+ * > rule, and `filters` (the four facet scalars, below) is what it permits: a low-cardinality
+ * > dimension on rows nothing can link to each other, strictly less identifying than the
+ * > free-text query beside it. The enumeration in the paragraph above was what a row needed
+ * > the day it was written, not a freeze on the column list -- but the next field is another
+ * > ruling, never a precedent this one granted.
  *
  * THE TIER IS DELIBERATELY NOT STORED on a search row, and the omission is what makes the
  * minimal row sufficient. Which tier answered a query is a pure function of the query and
@@ -34,6 +41,81 @@
 
 import { isTier, type Tier } from "./search";
 
+/**
+ * The facet chips that were APPLIED to a search, and never an echo of the request.
+ *
+ * The four DECLARED scalars and nothing else, so this is a PICK rather than an omit-list --
+ * the same discipline `filtersOf` (`web/src/lib/search-params.ts`) follows, and for the same
+ * reason: an omit-list quietly accepts whatever the next param turns out to be.
+ */
+export interface SearchFilters {
+  genre?: string;
+  decade?: number;
+  year?: number;
+  kind?: string;
+}
+
+/**
+ * The pick list itself, so encoding, decoding and anything counting chips cannot disagree
+ * about what a filter is. Adding a fifth key here is a ruling, not a refactor.
+ */
+export const FILTER_KEYS = ["genre", "decade", "year", "kind"] as const;
+
+/**
+ * The four declared scalars out of whatever was handed in, or `undefined` for none of them.
+ *
+ * THE PICK ITSELF, in one place, so a row in the buffer and a row in the table cannot come
+ * to hold different ideas of what a filter is. Every other function here is built on it.
+ */
+export function pickFilters(filters: SearchFilters | undefined): SearchFilters | undefined {
+  if (!filters) return undefined;
+  const picked: SearchFilters = {};
+  for (const key of FILTER_KEYS) {
+    const value = filters[key];
+    if (value !== undefined) Object.assign(picked, { [key]: value });
+  }
+  return Object.keys(picked).length === 0 ? undefined : picked;
+}
+
+/**
+ * The filters as one storable scalar, or `null` when no chip was applied.
+ *
+ * JSON rather than a joined string because two of the four are numbers and the other two are
+ * free text out of the index: a separator would have to be escaped, and the escape would be
+ * a second encoding nobody remembers on the way back out.
+ *
+ * `null` and not `{}` for an unfiltered search: an old row genuinely does not know whether a
+ * chip was applied, and a stored empty object would claim it does.
+ */
+export function encodeFilters(filters: SearchFilters | undefined): string | null {
+  const picked = pickFilters(filters);
+  return picked === undefined ? null : JSON.stringify(picked);
+}
+
+/**
+ * What `encodeFilters` wrote, back as a value -- and `undefined` for anything else.
+ *
+ * Defensive because its input is a database column rather than a caller: a row written by an
+ * older build reads back `null`, and a hand-edited one reads back junk. Neither is worth
+ * throwing over in a report that exists to summarise what happened.
+ */
+export function decodeFilters(raw: unknown): SearchFilters | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const picked: SearchFilters = {};
+    for (const key of FILTER_KEYS) {
+      const value = (parsed as Record<string, unknown>)[key];
+      const wanted = key === "decade" || key === "year" ? "number" : "string";
+      if (typeof value === wanted) Object.assign(picked, { [key]: value });
+    }
+    return Object.keys(picked).length === 0 ? undefined : picked;
+  } catch {
+    return undefined;
+  }
+}
+
 /** One query somebody ran, and how many rows they were shown for it. */
 export interface SearchRow {
   /** As typed, trimmed, bounded by `QUERY_MAX`. */
@@ -47,6 +129,14 @@ export interface SearchRow {
    * this query work" and must not be read as a statistic about how much the index holds.
    */
   results: number;
+  /**
+   * Which facet chips were narrowing this search, absent when none were.
+   *
+   * It exists so "does anybody use the chips, or does everybody retype?" is answerable at
+   * all: a chip click leaves the query text identical, so without this two rows a chip apart
+   * are the same search run twice.
+   */
+  filters?: SearchFilters;
 }
 
 /** One result somebody opened, and where it was sitting when they did. */
@@ -97,19 +187,25 @@ const CAPACITY = 2000;
 /**
  * The queries somebody MEANT, out of the prefixes they typed on the way.
  *
- * Drops a row when a LATER row within `windowMs` starts with it -- which covers both the
- * mid-word pause ("the matr" then "the matrix") and the plain repeat ("dune" then "dune",
- * from a Back navigation), because a string starts with itself.
+ * Drops a row when a LATER row within `windowMs` starts with it AND carries the same filters
+ * -- which covers both the mid-word pause ("the matr" then "the matrix") and the plain repeat
+ * ("dune" then "dune", from a Back navigation), because a string starts with itself.
+ *
+ * THE FILTERS ARE PART OF THE COMPARISON, and without that the chip evidence never reaches
+ * the table: clicking a chip re-runs the identical query text, so "dune" then "dune"+horror a
+ * second later would be settled away as one search and the `filters` column would only ever
+ * hold the last chip of a burst. Two searches that differ in their filters are two searches.
  *
  * Exported and pure so the policy can be argued with in a test rather than inferred from
  * the shape of the table afterwards.
  */
 export function settledSearches(rows: readonly SearchRow[], windowMs = TYPING_WINDOW_MS): SearchRow[] {
   const lowered = rows.map((r) => r.query.toLowerCase());
+  const filters = rows.map((r) => encodeFilters(r.filters));
   return rows.filter((row, i) => {
     for (let j = i + 1; j < rows.length; j++) {
       if (rows[j].at - row.at > windowMs) break;
-      if (lowered[j].startsWith(lowered[i])) return false;
+      if (filters[j] === filters[i] && lowered[j].startsWith(lowered[i])) return false;
     }
     return true;
   });
@@ -150,7 +246,7 @@ export function parseClickBody(body: unknown, at: number): ClickRow | null {
  * be an object literal rather than a subclass carrying a buffer it never fills.
  */
 export interface SearchLogger {
-  searched(query: string, results: number, at?: number): void;
+  searched(query: string, results: number, filters?: SearchFilters, at?: number): void;
   clicked(row: ClickRow): void;
   flush(now?: number): void;
   report(): SearchLogStats;
@@ -184,14 +280,19 @@ export class SearchLog implements SearchLogger {
     private readonly capacity: number = CAPACITY,
   ) {}
 
-  searched(query: string, results: number, at: number = Date.now()): void {
+  searched(query: string, results: number, filters?: SearchFilters, at: number = Date.now()): void {
     const bounded = boundedQuery(query);
     if (bounded.length === 0) return;
     if (this.searches.length >= this.capacity) {
       this.stats.dropped++;
       return;
     }
-    this.searches.push({ query: bounded, at, results });
+    // Picked rather than held as handed in, so a buffered row carries exactly what the
+    // column will: the four scalars, and no key at all when no chip was applied.
+    const picked = pickFilters(filters);
+    this.searches.push(
+      picked ? { query: bounded, at, results, filters: picked } : { query: bounded, at, results },
+    );
   }
 
   clicked(row: ClickRow): void {

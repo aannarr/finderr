@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ClickRow,
+  decodeFilters,
+  encodeFilters,
   NO_SEARCH_LOG,
   parseClickBody,
   QUERY_MAX,
@@ -24,6 +26,50 @@ class Recorder implements SearchLogSink {
 }
 
 const row = (query: string, at: number, results = 5): SearchRow => ({ query, at, results });
+
+describe("filters on a row", () => {
+  test("keeps the four declared scalars and drops everything else", () => {
+    // The pick is the privacy rule in code: a param nobody ruled on cannot ride in on a
+    // spread, which is how `role` once reached the browse cache key.
+    const encoded = encodeFilters({
+      genre: "Horror",
+      decade: 1990,
+      year: 1994,
+      kind: "movie",
+      session: "abc",
+    } as never);
+
+    expect(JSON.parse(encoded ?? "null")).toEqual({
+      genre: "Horror",
+      decade: 1990,
+      year: 1994,
+      kind: "movie",
+    });
+  });
+
+  test("an unfiltered search stores null rather than an empty object", () => {
+    // Null is what an old row reads back as, and it means "we do not know". An empty object
+    // would claim the searcher applied no chip, which is a different statement.
+    expect(encodeFilters(undefined)).toBeNull();
+    expect(encodeFilters({})).toBeNull();
+  });
+
+  test("round-trips what it wrote", () => {
+    expect(decodeFilters(encodeFilters({ genre: "Horror", year: 1994 }))).toEqual({
+      genre: "Horror",
+      year: 1994,
+    });
+  });
+
+  test.each([
+    ["a row written before the column existed", null],
+    ["junk somebody typed into the table", "{not json"],
+    ["a scalar where an object belongs", '"Horror"'],
+    ["a filter of the wrong type", '{"decade":"nineties"}'],
+  ])("reads %s as no filters rather than throwing", (_label, stored) => {
+    expect(decodeFilters(stored)).toBeUndefined();
+  });
+});
 
 describe("settledSearches", () => {
   test("drops the prefixes somebody typed on the way to the query they meant", () => {
@@ -57,6 +103,27 @@ describe("settledSearches", () => {
     expect(settled.map((r) => r.query)).toEqual(["the matrix"]);
   });
 
+  test("keeps a repeat that a chip narrowed, because that is the chip evidence", () => {
+    // Without this the whole `filters` column is pointless: a chip click re-runs the same
+    // text, so settling on the text alone would collapse the before and after into one row.
+    const settled = settledSearches([
+      row("dune", 1_000),
+      { ...row("dune", 1_500), filters: { genre: "Sci-Fi" } },
+    ]);
+
+    expect(settled.map((r) => r.filters)).toEqual([undefined, { genre: "Sci-Fi" }]);
+  });
+
+  test("still collapses a repeat carrying the same chip", () => {
+    const filters = { genre: "Sci-Fi" };
+    const settled = settledSearches([
+      { ...row("dun", 1_000), filters },
+      { ...row("dune", 1_500), filters },
+    ]);
+
+    expect(settled.map((r) => r.query)).toEqual(["dune"]);
+  });
+
   test("keeps two unrelated queries in the same window", () => {
     const settled = settledSearches([row("dune", 1_000), row("silo", 1_100)]);
 
@@ -68,7 +135,7 @@ describe("SearchLog", () => {
   test("records nothing until it is flushed", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink);
-    log.searched("interstellar", 25, 1_000);
+    log.searched("interstellar", 25, undefined, 1_000);
 
     expect(sink.searches).toEqual([]);
     expect(log.report().pending).toBe(1);
@@ -77,14 +144,14 @@ describe("SearchLog", () => {
   test("holds a row younger than the typing window so a prefix cannot escape settling", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink);
-    log.searched("the matr", 2, 10_000);
+    log.searched("the matr", 2, undefined, 10_000);
 
     // The flush lands 500ms later: the typist may still be mid-word, so writing now would
     // record a fragment as if it were a query.
     log.flush(10_500);
     expect(sink.searches).toEqual([]);
 
-    log.searched("the matrix", 25, 10_600);
+    log.searched("the matrix", 25, undefined, 10_600);
     log.flush(10_600 + TYPING_WINDOW_MS + 1);
     expect(sink.searches.map((r) => r.query)).toEqual(["the matrix"]);
   });
@@ -92,7 +159,7 @@ describe("SearchLog", () => {
   test("writes a settled row once and does not write it again", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink);
-    log.searched("bridgerton", 3, 1_000);
+    log.searched("bridgerton", 3, undefined, 1_000);
 
     log.flush(1_000 + TYPING_WINDOW_MS + 1);
     log.flush(1_000 + TYPING_WINDOW_MS + 2);
@@ -104,10 +171,20 @@ describe("SearchLog", () => {
   test("keeps a zero-result query, which is the failure the log exists to find", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink);
-    log.searched("solstollarna 1999", 0, 1_000);
+    log.searched("solstollarna 1999", 0, undefined, 1_000);
     log.flush(1_000 + TYPING_WINDOW_MS + 1);
 
     expect(sink.searches[0]).toMatchObject({ query: "solstollarna 1999", results: 0 });
+  });
+
+  test("carries the chips that were applied, and no key at all when none were", () => {
+    const sink = new Recorder();
+    const log = new SearchLog(sink);
+    log.searched("dune", 12, { genre: "Sci-Fi", decade: undefined }, 1_000);
+    log.searched("silo", 7, undefined, 1_000);
+    log.flush(1_000 + TYPING_WINDOW_MS + 1);
+
+    expect(sink.searches.map((r) => r.filters)).toEqual([{ genre: "Sci-Fi" }, undefined]);
   });
 
   test("clicks flush immediately -- there is no prefix to wait for", () => {
@@ -123,8 +200,8 @@ describe("SearchLog", () => {
   test("ignores a blank query and bounds a huge one", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink);
-    log.searched("   ", 0, 1_000);
-    log.searched("x".repeat(QUERY_MAX + 500), 0, 1_000);
+    log.searched("   ", 0, undefined, 1_000);
+    log.searched("x".repeat(QUERY_MAX + 500), 0, undefined, 1_000);
     log.flush(1_000 + TYPING_WINDOW_MS + 1);
 
     expect(sink.searches).toHaveLength(1);
@@ -134,7 +211,7 @@ describe("SearchLog", () => {
   test("a full buffer drops and counts rather than growing", () => {
     const sink = new Recorder();
     const log = new SearchLog(sink, TYPING_WINDOW_MS, 2);
-    for (const q of ["a", "b", "c", "d"]) log.searched(q, 1, 1_000);
+    for (const q of ["a", "b", "c", "d"]) log.searched(q, 1, undefined, 1_000);
 
     expect(log.report().dropped).toBe(2);
     expect(log.report().pending).toBe(2);
@@ -173,7 +250,7 @@ describe("parseClickBody", () => {
 
 describe("NO_SEARCH_LOG", () => {
   test("accepts everything and remembers nothing", () => {
-    NO_SEARCH_LOG.searched("dune", 25, 1_000);
+    NO_SEARCH_LOG.searched("dune", 25, undefined, 1_000);
     NO_SEARCH_LOG.clicked({ query: "dune", tconst: "tt1160419", rank: 0, tier: "fts", at: 1 });
     NO_SEARCH_LOG.flush(9_999);
 
