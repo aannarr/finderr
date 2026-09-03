@@ -1709,7 +1709,14 @@ const appRoutes = {
     if (!isTermDimension(dimension)) return bad("unknown term dimension", 404);
 
     const country = new URL(req.url).searchParams.get("country") ?? undefined;
-    const page = termPage(dimension, decodeURIComponent(value), termPairs(dimension, { country }));
+    /*
+      `value` is used RAW, and decoding it here was a bug caught before it shipped. Bun's
+      router percent-decodes a path parameter for you -- measured, including `%2F` in a
+      studio name -- so a second `decodeURIComponent` throws `URIError` on any term with a
+      literal `%` in it ("100% pure" is a real TMDB keyword) and 500s the route. Same
+      reading `/api/collection/:id` already relies on for `tmdb:2344`.
+    */
+    const page = termPage(dimension, value, termPairs(dimension, { country }));
     if (!page) return bad("unknown term", 404);
 
     // `live.current` is read INSIDE the callback for the reason stated in `live-index.ts`:
