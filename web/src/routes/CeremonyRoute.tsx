@@ -1,9 +1,10 @@
 /**
- * `/awards/oscars/96` -- one ceremony, every category, winner first.
+ * `/awards/oscars/96`, `/awards/palme-dor/1994` -- one edition, every category, winner first.
  *
- * Routed on the CEREMONY NUMBER and never the year. `Year` is `1927/28` for the first six,
- * so it is a label rather than a key -- and even where it is four digits it is not unique
- * in the way a route needs. The year is displayed everywhere and parsed nowhere.
+ * Routed on the EDITION KEY, which is the ceremony number where the source has one and the
+ * year where it does not. The Academy's `Year` is `1927/28` for the first six, so it is a
+ * label rather than a key there; Wikidata carries no ordinal at all, so the year is the only
+ * key it can offer. `editionHeading` is the single owner of which of the two a page prints.
  *
  * Local SQLite the whole way down, like the timeline: the server grouped the rows and
  * resolved every film it could against the index, so this component renders and decides
@@ -18,6 +19,7 @@ import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
 import { SynopsisBody } from "../components/TitlePanes";
 import {
+  type AwardIdentity,
   type CeremonyPage,
   cachedCeremony,
   getCeremony,
@@ -27,7 +29,7 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
-import { isPersonLed, ordinal, prettyCategory } from "../lib/awards-format";
+import { editionHeading, editionLabel, isPersonLed, prettyCategory } from "../lib/awards-format";
 import { paneView } from "../lib/facet-panes";
 import { useTitleDetail } from "../lib/use-title-detail";
 
@@ -41,7 +43,7 @@ import { useTitleDetail } from "../lib/use-title-detail";
 const VISIBLE_CATEGORIES = 8;
 
 export function CeremonyRoute() {
-  const { ceremony } = useParams({ strict: false }) as { ceremony: string };
+  const { award, ceremony } = useParams({ strict: false }) as { award: string; ceremony: string };
   const number = Number.parseInt(ceremony, 10);
   const { request } = useApp();
 
@@ -52,13 +54,14 @@ export function CeremonyRoute() {
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
   // Seeded during render for the same reason `PersonRoute` is: stepping to the next
-  // ceremony and back must not blank the page while a cached answer is already in hand.
+  // edition and back must not blank the page while a cached answer is already in hand.
   const [seededFor, setSeededFor] = useState<string | null>(null);
-  if (seededFor !== ceremony) {
-    setSeededFor(ceremony);
-    setPage(cachedCeremony(number) ?? null);
+  const seed = `${award}/${ceremony}`;
+  if (seededFor !== seed) {
+    setSeededFor(seed);
+    setPage(cachedCeremony(award, number) ?? null);
     setError(null);
-    // Collapse on navigation: "show all" is a decision about the ceremony you were
+    // Collapse on navigation: "show all" is a decision about the edition you were
     // reading, not a preference that should follow you to the next one.
     setExpanded(false);
   }
@@ -68,9 +71,9 @@ export function CeremonyRoute() {
       setError("unknown ceremony");
       return;
     }
-    if (cachedCeremony(number)) return;
+    if (cachedCeremony(award, number)) return;
     let stale = false;
-    getCeremony(number)
+    getCeremony(award, number)
       .then((p) => {
         if (!stale) setPage(p);
       })
@@ -80,13 +83,13 @@ export function CeremonyRoute() {
     return () => {
       stale = true;
     };
-  }, [number]);
+  }, [award, number]);
 
   if (error) {
     return (
       <p className="py-16 text-center text-muted">
-        {error === "unknown ceremony" ? "We hold no ceremony by that number." : error}{" "}
-        <Link to="/awards/oscars" className="underline hover:text-ink">
+        {error === "unknown ceremony" ? "We hold nothing under that number." : error}{" "}
+        <Link to="/awards/$award" params={{ award }} className="underline hover:text-ink">
           Back to the timeline
         </Link>
       </p>
@@ -101,20 +104,24 @@ export function CeremonyRoute() {
   // The winner, only when we hold a row for it -- everything the hero draws (a poster, a
   // synopsis, a request button) is keyed on the index row, so without one there is no hero
   // to build and the header keeps its plain line instead.
-  const bestPictureRow = page.bestPicture?.tconst ? page.titles[page.bestPicture.tconst] : undefined;
+  const anchorRow = page.anchorFilm?.tconst ? page.titles[page.anchorFilm.tconst] : undefined;
 
   return (
     <>
       <header className="mb-6">
         <p className="mb-1 text-xs text-muted">
-          <Link to="/awards/oscars" className="underline-offset-2 hover:text-ink hover:underline">
-            ← The Academy Awards
+          <Link
+            to="/awards/$award"
+            params={{ award: page.award.id }}
+            className="underline-offset-2 hover:text-ink hover:underline"
+          >
+            ← {page.award.title}
           </Link>
         </p>
 
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h2 className="text-xl font-semibold tracking-tight">
-            {ordinal(page.ceremony)} Academy Awards · <span className="tabular-nums">{page.year}</span>
+          <h2 className="text-xl font-semibold tracking-tight tabular-nums">
+            {editionHeading(page.award, page.ceremony, page.year)}
           </h2>
           <p className="text-xs text-muted tabular-nums">
             {page.categories} categories · {page.nominations} nominations
@@ -123,31 +130,31 @@ export function CeremonyRoute() {
 
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
           {/*
-            The Best Picture LINE survives even though the hero below says the same thing,
-            and only when the hero cannot: `WinnerHero` needs an indexed row to draw a poster
-            and fetch a synopsis, and about a tenth of nominations name a film we hold no row
-            for. This is the honest fallback for those -- a name, in the header, where it has
-            always been.
+            The anchor LINE survives even though the hero below says the same thing, and only
+            when the hero cannot: `WinnerHero` needs an indexed row to draw a poster and fetch
+            a synopsis, and about a tenth of nominations name a film we hold no row for. This
+            is the honest fallback for those -- a name, in the header, where it has always
+            been.
           */}
-          {page.bestPicture && !bestPictureRow && (
+          {page.anchorFilm && !anchorRow && (
             <>
               <span>
-                <span className="text-muted/70">Best Picture </span>
-                <AwardFilmLink film={page.bestPicture} titles={page.titles} className="text-ink" />
+                <span className="text-muted/70">{page.award.anchorLabel} </span>
+                <AwardFilmLink film={page.anchorFilm} titles={page.titles} className="text-ink" />
               </span>
               <span aria-hidden="true">·</span>
             </>
           )}
-          <Completion owned={page.filmsOwned} total={page.films} noun="films" />
+          <Completion owned={page.filmsOwned} total={page.films} noun="titles" />
         </p>
 
-        <CeremonySteps prev={page.prev} next={page.next} />
+        <CeremonySteps award={page.award} prev={page.prev} next={page.next} />
       </header>
 
-      {bestPictureRow && <WinnerHero row={bestPictureRow} onRequest={request} />}
+      {anchorRow && <WinnerHero row={anchorRow} label={page.award.anchorLabel} onRequest={request} />}
 
-      {page.groups.map((g) => g.category).length === 0 ? (
-        <p className="py-16 text-center text-muted">This ceremony has no recorded categories.</p>
+      {page.groups.length === 0 ? (
+        <p className="py-16 text-center text-muted">This edition has no recorded categories.</p>
       ) : (
         <>
           {groups.map((g) => (
@@ -178,7 +185,7 @@ export function CeremonyRoute() {
 }
 
 /**
- * The Best Picture winner, celebrated at the top of its ceremony.
+ * The edition's winner, celebrated at the top of its page.
  *
  * > [!IMPORTANT] The synopsis is LAZY, and it has to be -- it is a facet, not an index column
  * > The ceremony payload is local SQLite only, like every render path here, and a synopsis
@@ -196,7 +203,7 @@ export function CeremonyRoute() {
  * synopsis sits beside it in its own column, so a late paragraph grows downward and the top
  * of the page never moves.
  */
-function WinnerHero({ row, onRequest }: { row: Title; onRequest: (t: Title) => void }) {
+function WinnerHero({ row, label, onRequest }: { row: Title; label: string; onRequest: (t: Title) => void }) {
   const { facets, working } = useTitleDetail(row.tconst);
   const synopsis = paneView(facets, "synopsis", working);
 
@@ -211,7 +218,7 @@ function WinnerHero({ row, onRequest }: { row: Title; onRequest: (t: Title) => v
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-accent">Best Picture</p>
+          <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-accent">{label}</p>
           <h3 className="mt-0.5 text-lg font-semibold tracking-tight sm:text-xl">
             <Link to="/title/$tconst" params={{ tconst: row.tconst }} className="hover:underline">
               {row.title}
@@ -250,26 +257,34 @@ function WinnerHero({ row, onRequest }: { row: Title; onRequest: (t: Title) => v
  * The neighbours come from the server, which knows which ceremonies EXIST -- stepping by
  * ±1 in the browser would walk off both ends and invent a 99th.
  */
-function CeremonySteps({ prev, next }: { prev: number | null; next: number | null }) {
+function CeremonySteps({
+  award,
+  prev,
+  next,
+}: {
+  award: AwardIdentity;
+  prev: number | null;
+  next: number | null;
+}) {
   if (prev === null && next === null) return null;
   return (
     <nav className="mt-3 flex gap-4 text-xs text-muted">
       {prev !== null && (
         <Link
-          to="/awards/oscars/$ceremony"
-          params={{ ceremony: String(prev) }}
+          to="/awards/$award/$ceremony"
+          params={{ award: award.id, ceremony: String(prev) }}
           className="underline-offset-2 hover:text-ink hover:underline"
         >
-          ← {ordinal(prev)}
+          ← {editionLabel(award, prev)}
         </Link>
       )}
       {next !== null && (
         <Link
-          to="/awards/oscars/$ceremony"
-          params={{ ceremony: String(next) }}
+          to="/awards/$award/$ceremony"
+          params={{ award: award.id, ceremony: String(next) }}
           className="underline-offset-2 hover:text-ink hover:underline"
         >
-          {ordinal(next)} →
+          {editionLabel(award, next)} →
         </Link>
       )}
     </nav>

@@ -19,7 +19,8 @@ import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
-import { OSCARS, personAwards, titleAwards } from "../lib/awards";
+import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry";
+import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import { type EpisodeState, missingEpisodeIds, todayUtc } from "../lib/episodes";
@@ -654,33 +655,33 @@ setTimeout(() => void refreshTmdbLists().then(warmShelves), 8_000);
 setInterval(() => void refreshTmdbLists().then(warmShelves), 6 * 60 * 60 * 1000);
 
 /**
- * Import the award nominations, in-process and never on a request path.
+ * Import the award rows, in-process and never on a request path.
  *
- * ONCE at boot if there is nothing stored, then daily. It is not on the six-hourly loop
- * above because the data genuinely changes once a year: the Academy announces in March and
- * `oscar_data` catches up within weeks. A daily check costs one conditional-ish 2.2 MB read
- * of somebody's public repo, which is polite; six-hourly would be four times that for no
- * new fact.
+ * ONCE at boot for any award with nothing stored, then daily for all of them. It is not on
+ * the six-hourly loop above because the data genuinely changes once a year: the Academy
+ * announces in March and `oscar_data` catches up within weeks, and Cannes is a week in May.
+ * A daily check costs one 2.2 MB read of somebody's public repo and two small SPARQL
+ * queries, which is polite; six-hourly would be four times that for no new fact.
  *
- * Failures are logged and swallowed. A finderr with no nominations is a finderr whose
- * awards page is empty, which is the same shape as a keyless `tmdb` plugin going dark -- it
- * must never be the reason the server does not come up.
+ * Failures are logged per award and swallowed. A finderr with no nominations is a finderr
+ * whose awards page is empty, which is the same shape as a keyless `tmdb` plugin going dark
+ * -- it must never be the reason the server does not come up, and one source being down must
+ * never cost another its refresh.
  */
-async function refreshAwards(): Promise<void> {
-  try {
-    const meta = await importAwards(store);
-    log(`awards: ${meta.rows.toLocaleString()} nominations from ${meta.sha?.slice(0, 10) ?? "main"}`);
-  } catch (err) {
-    log(`awards import failed -- ${(err as Error).message}`);
+async function refreshAwards(defs: readonly AwardDef[] = AWARDS): Promise<void> {
+  for (const r of await importAwards(store, {}, defs)) {
+    if (r.meta) log(`awards: ${r.def.id} -- ${r.meta.rows.toLocaleString()} rows`);
+    else log(`awards: ${r.def.id} import failed -- ${r.error?.message}`);
   }
 }
 
-// Only on a cold store. A redeploy keeps its data directory, so re-importing on every boot
-// would download 2.2 MB to write rows that are already there -- and a container that
-// restarts in a loop would do it every time.
-if (store.awardCount(OSCARS) === 0) {
-  log("awards: nothing stored -- importing");
-  setTimeout(() => void refreshAwards(), 12_000);
+// Only the awards with a COLD table. A redeploy keeps its data directory, so re-importing
+// everything on every boot would re-download 2.2 MB to write rows that are already there --
+// and a container that restarts in a loop would do it every time.
+const coldAwards = AWARDS.filter((def) => store.awardCount(def.id) === 0);
+if (coldAwards.length > 0) {
+  log(`awards: nothing stored for ${coldAwards.map((a) => a.id).join(", ")} -- importing`);
+  setTimeout(() => void refreshAwards(coldAwards), 12_000);
 }
 setInterval(() => void refreshAwards(), 24 * 60 * 60 * 1000);
 
@@ -1079,11 +1080,12 @@ const shelfCoverage = () => facetCoverage(currentShelves(), (row) => facets.isWa
  * that changes once a year, and caching it in a module const is exactly how the awards
  * page would go on naming last year's commit after an import.
  */
-const awardsDeps = (): AwardsDeps => ({
+const awardsDeps = (def: AwardDef): AwardsDeps => ({
   store,
   engine: live.current,
   decorate,
-  source: awardSourceMeta(store),
+  def,
+  source: awardSourceMeta(store, def.id),
 });
 
 /**
@@ -1238,14 +1240,18 @@ const appRoutes = {
             tmdbSeries: store.upcomingCount("tmdb-series"),
           },
           trending: store.trendingCount(),
-          awards: (() => {
-            const meta = awardSourceMeta(store);
+          // One entry per award rather than one number: "awards: 12,137 rows" stopped being
+          // a fact about the subsystem the moment there were three of them, and a second
+          // source that silently imported nothing would hide behind the first one's total.
+          awards: AWARDS.map((def) => {
+            const meta = awardSourceMeta(store, def.id);
             return {
-              rows: store.awardCount(OSCARS),
+              award: def.id,
+              rows: store.awardCount(def.id),
               sha: meta?.sha ?? null,
               importedAt: meta?.importedAt ?? null,
             };
-          })(),
+          }),
           services: { radarr: !!radarr, sonarr: !!sonarr, prowlarr: !!prowlarr },
           auth: {
             users: authStore.userCount(),
@@ -1840,37 +1846,50 @@ const appRoutes = {
   },
 
   /**
-   * Every Academy Award ceremony, newest first.
+   * Every edition of one award, newest first.
    *
-   * Local SQLite the whole way down, like every other render-path handler: the nominations
-   * were imported by a job on a yearly clock and this only reads them, joins the anchor
-   * films against the live index and counts ownership against the library mirror.
+   * The award is a PARAMETER now that there are three of them, and `/api/awards/oscars` is
+   * one of the values it takes -- so every link that already existed keeps working. An award
+   * not in the registry is a 404 rather than an empty timeline: "we do not have that award"
+   * and "that award has no rows yet" are different facts and the page draws them differently.
+   *
+   * Local SQLite the whole way down, like every other render-path handler: the rows were
+   * imported by a job on a yearly clock and this only reads them, joins the anchor titles
+   * against the live index and counts ownership against the library mirror.
    *
    * A checkout that has never run the import gets `ceremonies: []` and a null `source`,
    * which the page renders as "no awards imported yet" rather than as an error -- the
    * import is optional in exactly the way the cast tables are.
    */
-  "/api/awards/oscars": () =>
-    json(
-      timelinePayload(awardsDeps()),
+  "/api/awards/:award": (req: Bun.BunRequest<"/api/awards/:award">) => {
+    const def = awardById(req.params.award);
+    if (!def) return bad("unknown award", 404);
+    return json(
+      timelinePayload(awardsDeps(def)),
       // Long, because the underlying rows change once a year. The ownership counts ride on
       // the same response and move faster than that -- but they move on a library sync, and
       // a private 10-minute window on a page nobody watches for library changes is the
       // right trade. Per-session because the counts are about THIS instance's library.
       { cache: perSession(600) },
-    ),
+    );
+  },
 
   /**
-   * One ceremony, every category, winner first.
+   * One edition, every category, winner first.
    *
-   * The parameter is the CEREMONY NUMBER, never the year: `Year` is `1927/28` for the first
-   * six and is a label rather than a key. A non-numeric or unknown ceremony is a 404, which
-   * is the same answer `/api/collection/:id` gives for an id we hold nothing under.
+   * The parameter is the EDITION KEY, never a display label: the Academy numbers its
+   * ceremonies (and `Year` is `1927/28` for the first six, so it could never be a key), while
+   * Wikidata dates its awards and the year is all there is. Both are integers and both are
+   * what `CeremonySummary.ceremony` carries, so one route serves both -- see `AwardEdition`.
+   * A non-numeric or unknown edition is a 404, which is the same answer `/api/collection/:id`
+   * gives for an id we hold nothing under.
    */
-  "/api/awards/oscars/:ceremony": (req: Bun.BunRequest<"/api/awards/oscars/:ceremony">) => {
+  "/api/awards/:award/:ceremony": (req: Bun.BunRequest<"/api/awards/:award/:ceremony">) => {
+    const def = awardById(req.params.award);
+    if (!def) return bad("unknown award", 404);
     const ceremony = Number.parseInt(req.params.ceremony, 10);
     if (!Number.isFinite(ceremony)) return bad("unknown ceremony", 404);
-    const page = ceremonyPayload(awardsDeps(), ceremony);
+    const page = ceremonyPayload(awardsDeps(def), ceremony);
     if (!page) return bad("unknown ceremony", 404);
     return json(page, { cache: perSession(600) });
   },

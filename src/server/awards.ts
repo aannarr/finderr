@@ -15,6 +15,7 @@
  * entry, so the browser has nothing to render a link out of and prints plain text.
  */
 
+import { type AwardDef, anchorNoun } from "../lib/award-registry";
 import {
   type AwardSourceMeta,
   type CategoryGroup,
@@ -22,8 +23,6 @@ import {
   ceremonyTimeline,
   groupByCategory,
   type Nomination,
-  OSCARS,
-  TIMELINE_ANCHOR,
 } from "../lib/awards";
 import type { TitleRow } from "../lib/search";
 import type { Store } from "../lib/store";
@@ -40,25 +39,57 @@ export interface AwardsDeps {
   store: Store;
   engine: TitleLookup;
   decorate: Decorate;
+  /** WHICH award these payloads are about. Everything award-specific is read off it. */
+  def: AwardDef;
   source: AwardSourceMeta | null;
 }
 
+/**
+ * What the browser needs to draw an award's own screens without a second copy of the
+ * registry.
+ *
+ * The definition is not sent wholesale: the SPARQL query and the repo path are the import
+ * job's business and would be dead weight on every page load. These four fields are what the
+ * headings, the edition links and the completion sentence are built from.
+ */
+export interface AwardIdentity {
+  id: string;
+  title: string;
+  /** "Best Picture", "Palme d'Or" -- what the anchor prize is called on screen. */
+  anchorLabel: string;
+  /** `ordinal` prints "96th"; `year` prints the year alone. See `AwardEdition`. */
+  editionKey: "ordinal" | "year";
+  editionOne: string;
+  editionMany: string;
+}
+
+export function awardIdentity(def: AwardDef): AwardIdentity {
+  return {
+    id: def.id,
+    title: def.title,
+    anchorLabel: def.anchorLabel,
+    editionKey: def.edition.key,
+    editionOne: def.edition.one,
+    editionMany: def.edition.many,
+  };
+}
+
 export interface TimelinePayload {
-  award: string;
+  award: AwardIdentity;
   source: AwardSourceMeta | null;
   totals: { ceremonies: number; nominations: number; wins: number };
   /**
-   * The completion count for the anchor category -- "you own 61 of 98 Best Picture winners".
+   * The completion count for the anchor prize -- "you own 61 of 98 Best Picture winners".
    *
    * The one number Seerr structurally cannot answer, and it is affordable only because the
    * nominations and the library mirror are in the same file. `total` counts winners with a
-   * tconst rather than ceremonies: a winner we cannot identify cannot be owned or not owned,
+   * tconst rather than editions: a winner we cannot identify cannot be owned or not owned,
    * and counting it in the denominator would make 100% unreachable for a reason no reader
    * could see.
    */
-  anchor: { category: string; owned: number; total: number };
+  anchor: { noun: string; owned: number; total: number };
   ceremonies: CeremonySummary[];
-  /** Decorated rows for the anchor films we hold. Keyed by tconst; absent means unlinkable. */
+  /** Decorated rows for the anchor titles we hold. Keyed by tconst; absent means unlinkable. */
   titles: Record<string, unknown>;
 }
 
@@ -70,22 +101,22 @@ export interface TimelinePayload {
  * sake of it. The posters are what cost bytes, and those are `<img>` requests the browser
  * paces itself.
  */
-export function timelinePayload({ store, engine, decorate, source }: AwardsDeps): TimelinePayload {
-  const ceremonies = ceremonyTimeline(store, OSCARS);
+export function timelinePayload({ store, engine, decorate, def, source }: AwardsDeps): TimelinePayload {
+  const ceremonies = ceremonyTimeline(store, def);
 
-  // One lookup per anchor film, against the live index. A film that is not indexed yields
-  // no row and therefore no card -- the ceremony still renders with its title as text.
+  // One lookup per anchor title, against the live index. A title that is not indexed yields
+  // no row and therefore no card -- the edition still renders with its title as text.
   const rows: TitleRow[] = [];
   for (const c of ceremonies) {
-    const row = c.bestPictureTconst ? engine.byTconst(c.bestPictureTconst) : null;
+    const row = c.anchorTconst ? engine.byTconst(c.anchorTconst) : null;
     if (row) rows.push(row);
   }
   const decorated = decorate(rows);
 
-  const anchorIds = ceremonies.flatMap((c) => (c.bestPictureTconst ? [c.bestPictureTconst] : []));
+  const anchorIds = ceremonies.flatMap((c) => (c.anchorTconst ? [c.anchorTconst] : []));
 
   return {
-    award: OSCARS,
+    award: awardIdentity(def),
     source,
     totals: {
       ceremonies: ceremonies.length,
@@ -93,7 +124,7 @@ export function timelinePayload({ store, engine, decorate, source }: AwardsDeps)
       wins: ceremonies.reduce((n, c) => n + c.wins, 0),
     },
     anchor: {
-      category: TIMELINE_ANCHOR,
+      noun: anchorNoun(def),
       // Counted against the library mirror rather than against the decorated rows: a
       // winner we do not INDEX could still be in Radarr, and the ownership question is
       // about the library, not about our corpus.
@@ -127,7 +158,7 @@ export interface NominationView {
 }
 
 export interface CeremonyPayload {
-  award: string;
+  award: AwardIdentity;
   ceremony: number;
   year: string;
   nominations: number;
@@ -135,23 +166,24 @@ export interface CeremonyPayload {
   categories: number;
   films: number;
   filmsOwned: number;
-  bestPicture: { title: string; tconst: string | null } | null;
+  /** The edition's headline win, when we know which row it is. */
+  anchorFilm: { title: string; tconst: string | null } | null;
   groups: { category: string; nominations: NominationView[] }[];
   titles: Record<string, unknown>;
-  /** Which ceremonies exist either side, so the page can step without a second request. */
+  /** Which editions exist either side, so the page can step without a second request. */
   prev: number | null;
   next: number | null;
 }
 
-/** One ceremony, every category, winner first. `null` for a ceremony we do not hold. */
+/** One edition, every category, winner first. `null` for an edition we do not hold. */
 export function ceremonyPayload(deps: AwardsDeps, ceremony: number): CeremonyPayload | null {
-  const { store, engine, decorate } = deps;
-  const rows = store.awardCeremonyRows(OSCARS, ceremony);
+  const { store, engine, decorate, def } = deps;
+  const rows = store.awardCeremonyRows(def.id, ceremony);
   if (rows.length === 0) return null;
 
-  const groups = groupByCategory(rows);
+  const groups = groupByCategory(rows, def.anchorCategory);
 
-  // Every film this ceremony names, resolved once. A `Set` because a film nominated in
+  // Every title this edition names, resolved once. A `Set` because a film nominated in
   // nine categories must not be looked up nine times, and because the decorated map is
   // keyed by tconst anyway.
   const ids = new Set(rows.flatMap((r) => r.filmIds.filter((id): id is string => id !== null)));
@@ -161,15 +193,19 @@ export function ceremonyPayload(deps: AwardsDeps, ceremony: number): CeremonyPay
     if (row) indexed.push(row);
   }
 
-  const counts = store.awardCeremonyCounts(OSCARS).find((c) => c.ceremony === ceremony);
-  const anchor = groups.find((g) => g.category === TIMELINE_ANCHOR)?.nominations.find((n) => n.won);
+  const counts = store.awardCeremonyCounts(def.id).find((c) => c.ceremony === ceremony);
+  // The anchor category when the award has one, and otherwise the edition's first win --
+  // which for a one-prize award is the only win there is.
+  const anchorGroup =
+    def.anchorCategory === null ? groups[0] : groups.find((g) => g.category === def.anchorCategory);
+  const anchor = anchorGroup?.nominations.find((n) => n.won);
 
-  // Neighbours from the counts we already hold, so stepping through ceremonies costs no
+  // Neighbours from the counts we already hold, so stepping through editions costs no
   // extra query and cannot walk off either end.
-  const all = store.awardCeremonyCounts(OSCARS).map((c) => c.ceremony);
+  const all = store.awardCeremonyCounts(def.id).map((c) => c.ceremony);
 
   return {
-    award: OSCARS,
+    award: awardIdentity(def),
     ceremony,
     year: rows[0]?.year ?? "",
     nominations: counts?.nominations ?? rows.length,
@@ -177,10 +213,10 @@ export function ceremonyPayload(deps: AwardsDeps, ceremony: number): CeremonyPay
     categories: counts?.categories ?? groups.length,
     films: counts?.films ?? ids.size,
     filmsOwned: counts?.filmsOwned ?? 0,
-    bestPicture: anchor ? { title: anchor.films[0] ?? "", tconst: anchor.filmIds[0] ?? null } : null,
+    anchorFilm: anchor ? { title: anchor.films[0] ?? "", tconst: anchor.filmIds[0] ?? null } : null,
     groups: groups.map(toGroupView),
     titles: byTconst(decorate(indexed)),
-    // `all` is ceremony-DESCENDING, so the newer neighbour sits at the lower index.
+    // `all` is edition-DESCENDING, so the newer neighbour sits at the lower index.
     prev: all.find((c) => c < ceremony) ?? null,
     next: [...all].reverse().find((c) => c > ceremony) ?? null,
   };

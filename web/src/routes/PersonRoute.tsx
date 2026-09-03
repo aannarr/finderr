@@ -97,8 +97,8 @@ function PersonAwardsSummary({ awards }: { awards: PersonAwards | null }) {
             ))}
             credit={
               <Link
-                to="/awards/oscars/$ceremony"
-                params={{ ceremony: String(e.ceremony) }}
+                to="/awards/$award/$ceremony"
+                params={{ award: awards.award, ceremony: String(e.ceremony) }}
                 className="underline-offset-2 hover:text-accent hover:underline"
               >
                 {prettyCategory(e.category)}, {e.year}

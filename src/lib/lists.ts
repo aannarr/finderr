@@ -22,6 +22,7 @@
  * > there is one, here, and `web` imports it exactly as it already imports `VERDICT_COPY`.
  */
 
+import { AWARDS } from "./award-registry";
 import type { BrowseFilters } from "./search";
 
 /**
@@ -46,23 +47,22 @@ export interface ComputedList {
 }
 
 /**
- * Where a curated list lives -- a CLOSED union of paths this app actually serves.
+ * A list with its own route rather than a browse behind it.
  *
- * A literal type rather than `string`, because "navigable does not outrank honest" is the
- * rule this row exists under and a type can enforce it where a test could only notice. It
- * also lets `/lists` hand the value straight to a typed `<Link>`: a bare `string` would need
- * a cast, which is the same wrong answer with the compiler talked out of mentioning it.
+ * `award` is the route parameter `/awards/$award` takes, and it is the only destination a
+ * curated list has today. It used to be a closed union of literal PATHS, which enforced
+ * "navigable does not outrank honest" -- a row could not point at a route nobody served.
+ * Deriving the rows from `AWARDS` enforces the same rule harder: there is no path to get
+ * wrong, because the id that names the row is the id the route resolves.
  *
- * Adding a curated list means adding its route AND its path here, in that order.
+ * If a curated list ever exists that is NOT an award, this goes back to a discriminated
+ * union with the destination on it. Inventing that union now would be one for a case that
+ * does not exist.
  */
-export type CuratedPath = "/awards/oscars";
-
-/** A list with its own route rather than a browse behind it. */
 export interface CuratedList {
   id: string;
   title: string;
   subtitle?: string;
-  to: CuratedPath;
 }
 
 /**
@@ -81,20 +81,20 @@ export const LIST_SIZE = 250;
 /**
  * Lists with an explicit membership and their own screens.
  *
+ * DERIVED from the award registry rather than typed out beside it, because the name and the
+ * one-line description of an award are facts about the award and having them in two places
+ * is how the second one goes stale. `/awards/$award` serves every id in it by construction,
+ * so a row here cannot point at a route that does not resolve -- which is the dead end this
+ * product refuses to draw, enforced by where the data comes from rather than by a test.
+ *
  * `/lists` renders this array under its own heading and skips the heading entirely when it
- * is empty, so a curated list appears the moment its route is real -- and not one commit
- * before. A row pointing at a route that does not resolve yet is precisely the dead end
- * this product refuses to draw: navigable does not outrank honest, and `CuratedPath` is
- * that rule made unwriteable rather than merely tested.
+ * is empty.
  */
-export const CURATED: CuratedList[] = [
-  {
-    id: "oscars",
-    title: "The Academy Awards",
-    subtitle: "98 ceremonies, every nomination since 1929",
-    to: "/awards/oscars",
-  },
-];
+export const CURATED: CuratedList[] = AWARDS.map((award) => ({
+  id: award.id,
+  title: award.title,
+  subtitle: award.subtitle,
+}));
 
 /**
  * The genres worth a list of their own.

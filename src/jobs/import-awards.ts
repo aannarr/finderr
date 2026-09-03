@@ -1,73 +1,79 @@
 #!/usr/bin/env bun
 /**
- * Import every Academy Award nomination into the app database.
+ * Import every award finderr holds into the app database.
  *
- * A JOB, never a request path. The data changes once a year, the download is 2.2 MB, and
- * the governing rule says a render path touches nothing but local SQLite -- so this runs
- * on a timer beside the index refresh and every page reads the rows it wrote.
+ * A JOB, never a request path. The data changes once a year, one source is a 2.2 MB download
+ * and the other is a public SPARQL endpoint that has taken ninety seconds to answer -- and
+ * the governing rule says a render path touches nothing but local SQLite. So this runs on a
+ * timer beside the index refresh, and every page reads the rows it wrote.
  *
  * ```
- * bun run awards:import          # fetch and replace
- * bun run awards:import --file oscars.tsv   # from a local copy, no network
+ * bun run awards:import                       # every award in the registry
+ * bun run awards:import --award palme-dor     # just one
+ * bun run awards:import --award oscars --file oscars.tsv   # from a local copy, no network
  * ```
  *
- * Idempotent: the store swaps the whole award in one transaction, so re-running it is
- * free and interrupting it leaves the previous set intact.
+ * `--file` is the `oscar_data` loader's own escape hatch and every other loader ignores it,
+ * so it is only meaningful beside `--award oscars`.
+ *
+ * Idempotent per award: the store swaps the whole award in one transaction, so re-running is
+ * free and interrupting it leaves the previous set intact. One award failing does not stop
+ * the others -- a Wikidata 502 must not cost the Oscars their nightly refresh.
  */
 
 import { mkdirSync } from "node:fs";
-import { AWARD_SOURCE, type AwardSourceMeta, fetchAwards, OSCARS, parseAwards } from "../lib/awards";
+import { type LoadDeps, loadAward } from "../lib/award-import";
+import { AWARDS, type AwardDef, awardById } from "../lib/award-registry";
+import type { AwardSourceMeta } from "../lib/awards";
 import { loadConfig, paths } from "../lib/config";
 import { Store } from "../lib/store";
 
-/** Where the provenance lives. One key, so a page can state its source in one read. */
-export const AWARD_SOURCE_KEY = `awards:${OSCARS}:source`;
+/** Where one award's provenance lives, so a page can state its source in one read. */
+export function awardSourceKey(award: string): string {
+  return `awards:${award}:source`;
+}
 
 const log = (m: string) => console.log(`[awards] ${m}`);
 
-export async function importAwards(store: Store, opts: { file?: string } = {}): Promise<AwardSourceMeta> {
-  let text: string;
-  let sha: string | null = null;
-  let sourceDate: string | null = null;
-  let url: string;
-
-  if (opts.file) {
-    // The local path exists so a test, or a machine with no route to GitHub, can still
-    // exercise the whole import. It records no sha, because there is nothing to record
-    // -- a file on disk cannot say which commit it came from, and inventing one would be
-    // the provenance line lying.
-    text = await Bun.file(opts.file).text();
-    url = `file:${opts.file}`;
-  } else {
-    const fetched = await fetchAwards();
-    text = fetched.text;
-    sha = fetched.sha;
-    sourceDate = fetched.sourceDate;
-    url = fetched.url;
-  }
-
-  // Throws `AwardsSchemaDriftError` on a changed header, BEFORE anything is written. The
-  // stored nominations are then untouched, which is the same contract `SchemaDriftError`
-  // gives the index build.
-  const rows = parseAwards(text, OSCARS);
-  const written = store.replaceAwards(OSCARS, rows);
-
-  const meta: AwardSourceMeta = {
-    sha,
-    url,
-    licence: AWARD_SOURCE.licence,
-    attribution: AWARD_SOURCE.attribution,
-    importedAt: new Date().toISOString(),
-    sourceDate,
-    rows: written,
-  };
-  store.setKv(AWARD_SOURCE_KEY, JSON.stringify(meta));
-  return meta;
+/** Import ONE award: fetch, parse, swap the rows, record where they came from. */
+export async function importAward(
+  store: Store,
+  def: AwardDef,
+  deps: LoadDeps = {},
+): Promise<AwardSourceMeta> {
+  const { rows, meta } = await loadAward(def, deps);
+  const written = store.replaceAwards(def.id, rows);
+  const full: AwardSourceMeta = { ...meta, rows: written };
+  store.setKv(awardSourceKey(def.id), JSON.stringify(full));
+  return full;
 }
 
-/** The provenance behind the stored rows, or null before the first import. */
-export function awardSourceMeta(store: Store): AwardSourceMeta | null {
-  const raw = store.getKv(AWARD_SOURCE_KEY);
+/**
+ * Import every award, and report each one's outcome rather than the first failure.
+ *
+ * The awards are independent sources with independent outages, so a rejected promise for one
+ * would throw away the work already done for another. Each result carries its own error, and
+ * the caller decides how loud to be about it.
+ */
+export async function importAwards(
+  store: Store,
+  deps: LoadDeps = {},
+  defs: readonly AwardDef[] = AWARDS,
+): Promise<{ def: AwardDef; meta?: AwardSourceMeta; error?: Error }[]> {
+  const out: { def: AwardDef; meta?: AwardSourceMeta; error?: Error }[] = [];
+  for (const def of defs) {
+    try {
+      out.push({ def, meta: await importAward(store, def, deps) });
+    } catch (err) {
+      out.push({ def, error: err as Error });
+    }
+  }
+  return out;
+}
+
+/** The provenance behind one award's stored rows, or null before its first import. */
+export function awardSourceMeta(store: Store, award: string): AwardSourceMeta | null {
+  const raw = store.getKv(awardSourceKey(award));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as AwardSourceMeta;
@@ -78,8 +84,25 @@ export function awardSourceMeta(store: Store): AwardSourceMeta | null {
   }
 }
 
+/** How an import reads in a log line: what it wrote, and what it read it from. */
+function describe(meta: AwardSourceMeta): string {
+  const revision = meta.sha ? meta.sha.slice(0, 10) : meta.query ? "wikidata query" : "revision unknown";
+  return `${meta.rows.toLocaleString()} rows from ${revision} -- ${meta.licence}`;
+}
+
 if (import.meta.main) {
-  const fileArg = process.argv.indexOf("--file");
+  const arg = (name: string): string | undefined => {
+    const i = process.argv.indexOf(name);
+    return i === -1 ? undefined : process.argv[i + 1];
+  };
+
+  const only = arg("--award");
+  const def = only ? awardById(only) : undefined;
+  if (only && !def) {
+    console.error(`[awards] unknown award '${only}' -- known: ${AWARDS.map((a) => a.id).join(", ")}`);
+    process.exit(1);
+  }
+
   const cfg = loadConfig();
   // The server creates the data directory at boot; this job can be the FIRST thing that
   // ever opens it (a fresh checkout running the import before `bun start`), and SQLite's
@@ -89,16 +112,15 @@ if (import.meta.main) {
   const store = new Store(cfg);
   try {
     const started = Date.now();
-    const meta = await importAwards(store, {
-      file: fileArg === -1 ? undefined : process.argv[fileArg + 1],
-    });
-    log(
-      `${meta.rows.toLocaleString()} nominations in ${((Date.now() - started) / 1000).toFixed(1)}s ` +
-        `from ${meta.sha ? meta.sha.slice(0, 10) : "main (sha unknown)"} -- ${meta.licence}`,
-    );
-  } catch (err) {
-    console.error(`[awards] import failed -- ${(err as Error).message}`);
-    process.exit(1);
+    const results = await importAwards(store, { file: arg("--file") }, def ? [def] : AWARDS);
+    for (const r of results) {
+      if (r.meta) log(`${r.def.id}: ${describe(r.meta)}`);
+      else log(`${r.def.id}: FAILED -- ${r.error?.message}`);
+    }
+    log(`done in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    // A run where every award failed is a failed run: a zero exit would tell a cron job
+    // nothing happened when nothing did.
+    if (results.every((r) => r.error)) process.exit(1);
   } finally {
     store.close();
   }

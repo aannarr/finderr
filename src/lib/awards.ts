@@ -1,25 +1,26 @@
 /**
- * Academy Award nominations: the source, the parse, and the shapes the pages read.
+ * Award nominations: the `oscar_data` parse, and the shapes every award page reads.
  *
- * The whole subsystem exists because one 2.2 MB download joins on ids we already speak.
- * `FilmId` is a `tconst` and lands on the title index; `NomineeIds` is an `nconst` and
- * lands on the person tables the cast build shipped. **There is no title matching
- * anywhere in this file and there must never be one** -- a row whose id we do not hold
- * renders as plain text, never as a guess, which is the same rule `nconstsByNameForTitle`
- * follows when two people share a name on one title.
+ * The subsystem exists because the sources join on ids we already speak. `FilmId` is a
+ * `tconst` and lands on the title index; `NomineeIds` is an `nconst` and lands on the person
+ * tables the cast build shipped. **There is no title matching anywhere in this file and there
+ * must never be one** -- a row whose id we do not hold renders as plain text, never as a
+ * guess, which is the same rule `nconstsByNameForTitle` follows when two people share a name
+ * on one title.
  *
- * The IMPORT reaches the network. Nothing else here does, and no render path calls it:
- * the pages read rows the job already wrote, like every other mirror in this product.
+ * Nothing here reaches the network: fetching belongs to `./award-import`, and the pages read
+ * rows the job already wrote, like every other mirror in this product.
  *
- * Source: https://github.com/DLu/oscar_data -- BSD-2-Clause, and `AWARD_SOURCE.licence`
- * is what lets a page say so out loud.
+ * WHICH awards exist, where each one's rows come from and what each one anchors its timeline
+ * on all live in `./award-registry`. This file knows the SHAPE of a nomination and nothing
+ * about the Academy -- which is what let a second and a third award arrive without it
+ * changing.
  */
 
-/** The only award we hold. A column rather than a table name, so a second one is rows. */
-export const OSCARS = "oscars";
+import type { AwardDef } from "./award-registry";
 
 export interface AwardSourceMeta {
-  /** Repo commit the rows were parsed from, or `null` when the API could not be asked. */
+  /** Repo commit the rows were parsed from, or `null` when there is no commit to name. */
   sha: string | null;
   /** The exact URL fetched -- pinned to `sha` when we have one, `main` when we do not. */
   url: string;
@@ -30,14 +31,15 @@ export interface AwardSourceMeta {
   /** Committer date of `sha`, when known -- the honest "data as of". */
   sourceDate: string | null;
   rows: number;
+  /**
+   * The exact query the rows came from, for a source that has no revision to pin.
+   *
+   * Wikidata has no commit and no version: it is a database that changed while you read this
+   * sentence. So the honest provenance is the QUERY and the moment it ran, and a page that
+   * shows one shows both. `null` for a source that can name a commit instead.
+   */
+  query: string | null;
 }
-
-export const AWARD_SOURCE = {
-  repo: "DLu/oscar_data",
-  path: "oscars.csv",
-  licence: "BSD-2-Clause",
-  attribution: "oscar_data by DLu",
-} as const;
 
 /**
  * The header the file MUST present, verbatim.
@@ -159,7 +161,7 @@ function splitField(raw: string): string[] {
  * by parsing it: zero embedded tabs, zero embedded newlines, so a full CSV reader would
  * be machinery for a problem this file does not have.
  */
-export function parseAwards(text: string, award = OSCARS): Nomination[] {
+export function parseAwards(text: string, award: string): Nomination[] {
   const lines = text.split("\n").filter((l) => l !== "");
   const header = lines[0];
   if (header === undefined) throw new AwardsSchemaDriftError(AWARDS_HEADER, "(empty file)");
@@ -217,59 +219,19 @@ export function parseAwards(text: string, award = OSCARS): Nomination[] {
   return out;
 }
 
-/**
- * Fetch the file, pinned to a commit whenever GitHub will tell us which one.
- *
- * Two calls: ask the commits API which sha last touched `oscars.csv`, then read the file
- * AT that sha. Recording a sha we did not actually read from would be a provenance line
- * that lies, which is worse than none -- so when the API cannot be reached we fall back
- * to `main` and record `sha: null`, and the page says "as of <import date>" instead of
- * naming a commit. `oscar_data` is a living repo; a date alone cannot identify what we read.
- */
-export async function fetchAwards(
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ text: string; sha: string | null; sourceDate: string | null; url: string }> {
-  const { repo, path } = AWARD_SOURCE;
-  let sha: string | null = null;
-  let sourceDate: string | null = null;
-
-  try {
-    const res = await fetchImpl(
-      `https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(path)}&per_page=1`,
-      { headers: { Accept: "application/vnd.github+json", "User-Agent": USER_AGENT } },
-    );
-    if (res.ok) {
-      const body = (await res.json()) as { sha?: string; commit?: { committer?: { date?: string } } }[];
-      sha = body[0]?.sha ?? null;
-      sourceDate = body[0]?.commit?.committer?.date ?? null;
-    }
-  } catch {
-    // Unauthenticated and rate-limited to 60/hour, so a refusal here is ordinary rather
-    // than exceptional. It costs the sha and nothing else; the import still runs.
-  }
-
-  const url = `https://raw.githubusercontent.com/${repo}/${sha ?? "main"}/${path}`;
-  const res = await fetchImpl(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`oscar_data fetch failed: ${res.status} ${res.statusText}`);
-  return { text: await res.text(), sha, sourceDate, url };
-}
-
-/**
- * An honest User-Agent, for the same reason the Servarr proxies get one.
- *
- * We are a third party reading somebody else's raw files. Saying who is asking is what
- * makes that polite rather than anonymous traffic.
- */
-const USER_AGENT = "finderr/1.0 (+https://github.com/aannarr/finderr)";
-
 // --- the shapes the pages read ---------------------------------------------
 
 /**
- * One ceremony as the timeline draws it.
+ * One edition as the timeline draws it.
  *
- * `bestPicture` is a `tconst` and nothing more: the timeline resolves it against the
- * live index itself, because a card needs a poster and library state that this table
- * does not hold and must not copy.
+ * The ANCHOR is the edition's headline win -- Best Picture at the Oscars, the single prize at
+ * Cannes. It is a `tconst` and nothing more: the timeline resolves it against the live index
+ * itself, because a card needs a poster and library state that this table does not hold and
+ * must not copy.
+ *
+ * The fields were called `bestPicture*` while the Oscars were the only award. They are named
+ * for the ROLE now, because "the Best Picture of the 2019 Cannes festival" is a sentence with
+ * no meaning and a payload should not contain one.
  */
 export interface CeremonySummary {
   award: string;
@@ -279,20 +241,20 @@ export interface CeremonySummary {
   wins: number;
   categories: number;
   /**
-   * The Best Picture winner's tconst, or `null`.
+   * The anchor winner's tconst, or `null`.
    *
-   * Null happens for real: the first ceremony awarded `UNIQUE AND ARTISTIC PICTURE`
+   * Null happens for real: the first Academy Awards gave `UNIQUE AND ARTISTIC PICTURE`
    * alongside what is now Best Picture, and a nomination without a `FilmId` cannot anchor
    * anything. A row with no anchor draws its year and its counts, which is honest.
    */
-  bestPictureTconst: string | null;
-  bestPictureTitle: string | null;
-  /** Wins in other categories for the same film, for the "also won" line. Canonical names. */
-  bestPictureAlsoWon: string[];
-  /** Nominations the Best Picture winner took that year, across every category. */
-  bestPictureNominations: number;
-  bestPictureWins: number;
-  /** Distinct films with a tconst in this ceremony, and how many of them we hold. */
+  anchorTconst: string | null;
+  anchorTitle: string | null;
+  /** Wins in other categories for the same title, for the "also won" line. Canonical names. */
+  anchorAlsoWon: string[];
+  /** Nominations the anchor winner took that year, across every category. */
+  anchorNominations: number;
+  anchorWins: number;
+  /** Distinct titles with a tconst in this edition, and how many of them we hold. */
   films: number;
   filmsOwned: number;
 }
@@ -348,18 +310,23 @@ export interface TitleAwardEntry {
 }
 
 /**
- * Order the categories of a ceremony the way the ceremony reads.
+ * Order the categories of an edition the way the edition reads.
  *
- * Best Picture first because it is the anchor the timeline already uses, then the source's
- * own `Class` grouping, then the canonical name. Deliberately NOT the source's row order:
- * that is the file's order, which drifts between eras and would reshuffle the page between
- * ceremonies for no reason a reader could see.
+ * The anchor category first because it is what the timeline already leads with, then the
+ * source's own `Class` grouping, then the canonical name. Deliberately NOT the source's row
+ * order: that is the file's order, which drifts between eras and would reshuffle the page
+ * between ceremonies for no reason a reader could see.
+ *
+ * `CLASS_ORDER` is `oscar_data`'s own `Class` vocabulary and stays here beside the parse that
+ * reads it. It is a FALLBACK ordering rather than a rule about the Academy: a source that
+ * carries no class leaves every group unranked and falls through to the name, which is the
+ * right answer for a single-category award where there is nothing to order.
  */
 const CLASS_ORDER = ["Production", "Directing", "Acting", "Writing", "Music", "Title", "Special", "SciTech"];
 
-export function orderCategories(groups: CategoryGroup[]): CategoryGroup[] {
+export function orderCategories(groups: CategoryGroup[], anchorCategory: string | null): CategoryGroup[] {
   const rank = (g: CategoryGroup) => {
-    if (g.category === "BEST PICTURE") return -1;
+    if (anchorCategory !== null && g.category === anchorCategory) return -1;
     const cls = g.nominations[0]?.className ?? "";
     const i = CLASS_ORDER.indexOf(cls);
     return i === -1 ? CLASS_ORDER.length : i;
@@ -368,13 +335,13 @@ export function orderCategories(groups: CategoryGroup[]): CategoryGroup[] {
 }
 
 /**
- * Group a ceremony's rows by canonical category, winner first inside each.
+ * Group an edition's rows by canonical category, winner first inside each.
  *
  * Winner first rather than source order: a category is read to find out who won, and the
  * winner sitting fourth is the answer buried in the middle. Ties keep source order, which
  * is the announcement order and the only meaningful one the file carries.
  */
-export function groupByCategory(rows: Nomination[]): CategoryGroup[] {
+export function groupByCategory(rows: Nomination[], anchorCategory: string | null): CategoryGroup[] {
   const by = new Map<string, Nomination[]>();
   for (const r of rows) {
     const list = by.get(r.category);
@@ -386,6 +353,7 @@ export function groupByCategory(rows: Nomination[]): CategoryGroup[] {
       category,
       nominations: [...nominations].sort((a, b) => Number(b.won) - Number(a.won) || a.seq - b.seq),
     })),
+    anchorCategory,
   );
 }
 
@@ -407,61 +375,61 @@ export interface AwardReader {
     films: number;
     filmsOwned: number;
   }[];
-  awardCategoryWinners(award: string, category: string): Nomination[];
+  /**
+   * The winning rows of an award, newest edition first, optionally within one category.
+   *
+   * `null` for the category means EVERY win, which is the shape a winner-only award needs:
+   * the Palme d'Or has one prize per festival, so filtering by category would be filtering a
+   * set of one and would need a category name that only exists because we invented it.
+   */
+  awardWinners(award: string, category: string | null): Nomination[];
   awardRowsForFilmAtCeremony(award: string, ceremony: number, tconst: string): Nomination[];
   awardRowsForTitle(award: string, tconst: string): Nomination[];
   awardRowsForPerson(award: string, nconst: string): Nomination[];
 }
 
 /**
- * The category the timeline anchors each ceremony on.
+ * Every edition, newest first, each with its anchor title and the counts around it.
  *
- * A constant rather than an inference, because "the top prize" is not derivable from the
- * table: the first ceremony gave `UNIQUE AND ARTISTIC PICTURE` alongside it, and picking
- * whichever category happens to sort first would make the anchor depend on the file.
- * aannarr's Q2 is open on whether the anchor should be per-category; changing it is this
- * one string, which is the point of naming it.
- */
-export const TIMELINE_ANCHOR = "BEST PICTURE";
-
-/**
- * Every ceremony, newest first, each with its anchor film and the counts around it.
- *
- * Costs four queries total regardless of how many ceremonies there are -- the counts, the
- * winners, and one pass for the anchor films' own records. It deliberately does NOT
+ * Costs four queries total regardless of how many editions there are -- the counts, the
+ * winners, and one pass for the anchor titles' own records. It deliberately does NOT
  * resolve a poster or library state for the anchor: those come from the live index and
  * the decorate path, which is the caller's job and the reason this returns a `tconst`.
+ *
+ * The award arrives as a DEFINITION rather than an id, because the anchor is the one thing
+ * the tables cannot answer for themselves and the registry is where that answer lives.
  */
-export function ceremonyTimeline(reader: AwardReader, award = OSCARS): CeremonySummary[] {
+export function ceremonyTimeline(reader: AwardReader, def: AwardDef): CeremonySummary[] {
   const winners = new Map<number, Nomination>();
-  for (const w of reader.awardCategoryWinners(award, TIMELINE_ANCHOR)) {
-    // First writer wins: the query is ordered by seq within a ceremony, and a ceremony
-    // with two rows flagged as winning one category is a source oddity we render rather
-    // than arbitrate.
+  for (const w of reader.awardWinners(def.id, def.anchorCategory)) {
+    // First writer wins: the query is ordered by seq within an edition, and an edition with
+    // two rows flagged as winning is either a source oddity (the Oscars) or a genuine tie
+    // (Cannes, nine times). Both render as the first row rather than being arbitrated here.
     if (!winners.has(w.ceremony)) winners.set(w.ceremony, w);
   }
 
-  return reader.awardCeremonyCounts(award).map((c) => {
+  return reader.awardCeremonyCounts(def.id).map((c) => {
     const win = winners.get(c.ceremony);
     const tconst = win?.filmIds.find((id) => id !== null) ?? null;
-    // Everything the anchor film itself did that year, which is where "13 nominations,
+    // Everything the anchor title itself did that year, which is where "13 nominations,
     // 7 wins" and the "also won" line come from. Only asked when there is an id to ask
     // about -- a winner with no tconst still prints its title and its year.
-    const own = tconst ? reader.awardRowsForFilmAtCeremony(award, c.ceremony, tconst) : [];
+    const own = tconst ? reader.awardRowsForFilmAtCeremony(def.id, c.ceremony, tconst) : [];
     return {
-      award,
+      award: def.id,
       ceremony: c.ceremony,
       year: c.year,
       nominations: c.nominations,
       wins: c.wins,
       categories: c.categories,
-      bestPictureTconst: tconst,
-      bestPictureTitle: win?.films[0] ?? null,
-      // The anchor category is dropped from its own "also won" line -- it is the headline
-      // directly above, and repeating it there is the same fact twice.
-      bestPictureAlsoWon: own.filter((n) => n.won && n.category !== TIMELINE_ANCHOR).map((n) => n.category),
-      bestPictureNominations: own.length,
-      bestPictureWins: own.filter((n) => n.won).length,
+      anchorTconst: tconst,
+      anchorTitle: win?.films[0] ?? null,
+      // The anchor's own category is dropped from its "also won" line -- it is the headline
+      // directly above, and repeating it there is the same fact twice. A winner-only award
+      // has no other category to list, so the line is empty and the page draws nothing.
+      anchorAlsoWon: own.filter((n) => n.won && n.category !== win?.category).map((n) => n.category),
+      anchorNominations: own.length,
+      anchorWins: own.filter((n) => n.won).length,
       films: c.films,
       filmsOwned: c.filmsOwned,
     };
@@ -475,7 +443,7 @@ export function ceremonyTimeline(reader: AwardReader, award = OSCARS): CeremonyS
  * the ordinary empty path instead of drawing a heading over "0 nominations". A film with
  * no Oscar history is the overwhelming majority of the index and is not a gap.
  */
-export function titleAwards(reader: AwardReader, tconst: string, award = OSCARS): TitleAwards | null {
+export function titleAwards(reader: AwardReader, tconst: string, award: string): TitleAwards | null {
   const rows = reader.awardRowsForTitle(award, tconst);
   if (rows.length === 0) return null;
   return {
@@ -494,7 +462,7 @@ export function titleAwards(reader: AwardReader, tconst: string, award = OSCARS)
 }
 
 /** One person's award record. `null` when they have none, for the same reason. */
-export function personAwards(reader: AwardReader, nconst: string, award = OSCARS): PersonAwards | null {
+export function personAwards(reader: AwardReader, nconst: string, award: string): PersonAwards | null {
   const rows = reader.awardRowsForPerson(award, nconst);
   if (rows.length === 0) return null;
   return {

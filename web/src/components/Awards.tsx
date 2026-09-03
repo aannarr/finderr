@@ -173,30 +173,56 @@ export function NomineeList({ nominees }: { nominees: NominationView["nominees"]
  * Where the data came from, and under what licence.
  *
  * A page that states a fact about 98 years of history should be able to say where it read
- * it. The COMMIT is what makes that truthful -- `oscar_data` is a living repo, so a date
- * alone cannot identify what we parsed -- and a null sha says so out loud rather than
- * quietly printing the import date as if it were provenance.
+ * it, and WHAT identifies that reading differs by source. `oscar_data` is a living repo, so
+ * a date alone cannot say what we parsed and the COMMIT is what makes the line truthful --
+ * a null sha says "revision unknown" out loud rather than quietly printing the import date
+ * as if it were provenance.
+ *
+ * Wikidata has no commit and no version at all: it changed while the query was running. So
+ * there the honest provenance is the QUESTION WE ASKED and the moment we asked it, and the
+ * query travels in the payload for exactly that reason. It sits behind a `<details>` because
+ * ten lines of SPARQL under a timeline is a footnote, not a paragraph -- but a footnote a
+ * reader can open and run themselves is the difference between a citation and a claim.
  */
 export function AwardSourceLine({
   source,
   className = "",
 }: {
-  source: { sha: string | null; licence: string; attribution: string; importedAt: string } | null;
+  source: {
+    sha: string | null;
+    licence: string;
+    attribution: string;
+    importedAt: string;
+    query: string | null;
+  } | null;
   className?: string;
 }) {
   if (!source) return null;
   const when = new Date(source.importedAt);
+  const asOf = Number.isNaN(when.getTime()) ? "at an unknown time" : when.toLocaleDateString();
+
   return (
-    <p className={`text-xs text-muted ${className}`}>
-      Data from {source.attribution} ({source.licence}),{" "}
-      {source.sha ? (
-        <>
-          commit <span className="font-mono">{source.sha.slice(0, 7)}</span>
-        </>
-      ) : (
-        "revision unknown"
+    <div className={`text-xs text-muted ${className}`}>
+      <p>
+        Data from {source.attribution} ({source.licence}),{" "}
+        {source.sha ? (
+          <>
+            commit <span className="font-mono">{source.sha.slice(0, 7)}</span>, imported {asOf}.
+          </>
+        ) : source.query ? (
+          <>queried {asOf}.</>
+        ) : (
+          <>revision unknown, imported {asOf}.</>
+        )}
+      </p>
+      {source.query && (
+        <details className="mt-1">
+          <summary className="cursor-pointer list-none hover:text-ink">The query ›</summary>
+          <pre className="mt-1 overflow-x-auto rounded bg-surface-2 p-2 font-mono text-[0.65rem] leading-relaxed">
+            {source.query}
+          </pre>
+        </details>
       )}
-      , imported {Number.isNaN(when.getTime()) ? "at an unknown time" : when.toLocaleDateString()}.
-    </p>
+    </div>
   );
 }

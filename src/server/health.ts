@@ -101,16 +101,20 @@ export interface HealthDeps {
    */
   trending: number;
   /**
-   * The award mirror: how many nominations are stored, and which commit they came from.
+   * The award mirror, ONE ENTRY PER AWARD: how many rows are stored and where they came from.
+   *
+   * A list rather than a total, because a total is what hides the interesting failure: three
+   * sources import independently and a Wikidata outage that leaves one award at zero would
+   * disappear into the Oscars' twelve thousand rows.
    *
    * `rows: 0` is the field worth reading -- the import is optional and runs on its own
    * daily timer, so zero means either that a cold store has not reached its first import
    * yet (about twelve seconds after boot) or that the import has been failing, and the log
-   * says which. `sha: null` beside a non-zero `rows` means the rows were parsed from `main`
-   * without GitHub's commits API answering, so we cannot name what we read -- honest, and
-   * the reason the field exists rather than a bare date.
+   * says which. `sha: null` beside a non-zero `rows` is ordinary for a Wikidata award (there
+   * is no commit to name) and means something for `oscar_data`: the rows were parsed from
+   * `main` without GitHub's commits API answering, so we cannot say what we read.
    */
-  awards: { rows: number; sha: string | null; importedAt: string | null };
+  awards: { award: string; rows: number; sha: string | null; importedAt: string | null }[];
   /**
    * Which services this instance is CONFIGURED to talk to. Not a reachability probe --
    * pinging three hosts on every health call would put a network round trip on the one

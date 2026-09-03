@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { AWARDS, awardById } from "./award-registry";
 import {
   CURATED,
   completionNoun,
@@ -111,13 +112,12 @@ describe("listGroups", () => {
 });
 
 describe("CURATED", () => {
-  test("a row is same-origin and absolute, never a link out", () => {
-    // `/lists` is chrome inside this app. A curated row is not the place an upstream URL
-    // gets in -- that rule has one owner per surface, and here it is the shape of `to`.
-    for (const list of CURATED) {
-      expect(list.to.startsWith("/")).toBe(true);
-      expect(list.to.startsWith("//")).toBe(false);
-    }
+  test("every row resolves to an award, so none of them is a dead end", () => {
+    // The rule this replaces was "`to` starts with one slash and not two" -- a check that a
+    // hand-written path was same-origin. There is no path to write now: `/awards/$award`
+    // takes the row's own id, so the destination exists whenever the award does.
+    for (const list of CURATED) expect(awardById(list.id)).toBeDefined();
+    expect(CURATED).toHaveLength(AWARDS.length);
   });
 
   test("ids are unique, so a row cannot silently replace another", () => {

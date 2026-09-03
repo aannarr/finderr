@@ -534,30 +534,50 @@ export interface AwardSource {
   importedAt: string;
   sourceDate: string | null;
   rows: number;
+  /** The SPARQL query, for a source with no revision to pin. Null when a sha says it better. */
+  query: string | null;
+}
+
+/**
+ * Who the award is, as the payload carries it.
+ *
+ * The server sends this rather than the browser importing the registry, because the page has
+ * to agree with the ROWS it was sent -- an award renamed between a cached response and a
+ * fresh bundle would otherwise draw one award's heading over another's editions.
+ */
+export interface AwardIdentity {
+  id: string;
+  title: string;
+  anchorLabel: string;
+  /** `ordinal` prints "96th"; `year` prints the year alone and nothing else. */
+  editionKey: "ordinal" | "year";
+  editionOne: string;
+  editionMany: string;
 }
 
 export interface CeremonySummary {
   award: string;
   ceremony: number;
-  /** `1927/28` for the first six. Displayed, never parsed -- the ceremony number is the key. */
+  /** `1927/28` for the first six Oscars. Displayed, never parsed -- `ceremony` is the key. */
   year: string;
   nominations: number;
   wins: number;
   categories: number;
-  bestPictureTconst: string | null;
-  bestPictureTitle: string | null;
-  bestPictureAlsoWon: string[];
-  bestPictureNominations: number;
-  bestPictureWins: number;
+  anchorTconst: string | null;
+  anchorTitle: string | null;
+  anchorAlsoWon: string[];
+  anchorNominations: number;
+  anchorWins: number;
   films: number;
   filmsOwned: number;
 }
 
 export interface AwardsTimeline {
-  award: string;
+  award: AwardIdentity;
   source: AwardSource | null;
   totals: { ceremonies: number; nominations: number; wins: number };
-  anchor: { category: string; owned: number; total: number };
+  /** "you own 61 of 98 Best Picture winners" -- the noun is the server's, so it is said once. */
+  anchor: { noun: string; owned: number; total: number };
   ceremonies: CeremonySummary[];
   /**
    * Decorated rows for the anchor films, keyed by tconst.
@@ -590,7 +610,7 @@ export interface NominationView {
 }
 
 export interface CeremonyPage {
-  award: string;
+  award: AwardIdentity;
   ceremony: number;
   year: string;
   nominations: number;
@@ -598,7 +618,7 @@ export interface CeremonyPage {
   categories: number;
   films: number;
   filmsOwned: number;
-  bestPicture: { title: string; tconst: string | null } | null;
+  anchorFilm: { title: string; tconst: string | null } | null;
   groups: { category: string; nominations: NominationView[] }[];
   titles: Record<string, Title>;
   prev: number | null;
@@ -635,22 +655,26 @@ export interface PersonAwards {
   }[];
 }
 
-const timelineCache = new Cache<AwardsTimeline>(1);
+// Keyed by AWARD and by `award/edition`: three awards on one cache key would serve the
+// Palme d'Or's editions under the Oscars' heading the moment somebody used the top nav.
+// Four timelines and twenty editions is a few hundred KB at most, and stepping back to an
+// award you already looked at is then free.
+const timelineCache = new Cache<AwardsTimeline>(4);
 const ceremonyCache = new Cache<CeremonyPage>(20);
 
 /** The timeline we already hold. Synchronous, for the same reason `cachedDiscover` is. */
-export function cachedAwards(): AwardsTimeline | undefined {
-  return timelineCache.get("oscars");
+export function cachedAwards(award: string): AwardsTimeline | undefined {
+  return timelineCache.get(award);
 }
 
-export async function getAwards(): Promise<AwardsTimeline> {
-  const hit = timelineCache.fresh("oscars");
+export async function getAwards(award: string): Promise<AwardsTimeline> {
+  const hit = timelineCache.fresh(award);
   if (hit) return hit;
-  return dedupe("awards", async () => {
-    const res = await fetch("/api/awards/oscars");
-    if (!res.ok) throw new Error(`awards failed: ${res.status}`);
+  return dedupe(`awards:${award}`, async () => {
+    const res = await fetch(`/api/awards/${encodeURIComponent(award)}`);
+    if (!res.ok) throw new Error(res.status === 404 ? "unknown award" : `awards failed: ${res.status}`);
     const data = (await res.json()) as AwardsTimeline;
-    timelineCache.set("oscars", data);
+    timelineCache.set(award, data);
     // Same as search and browse: holding the anchor rows means opening one from the
     // timeline paints its local half with no request.
     for (const t of Object.values(data.titles)) titleCache.set(t.tconst, t);
@@ -658,16 +682,21 @@ export async function getAwards(): Promise<AwardsTimeline> {
   });
 }
 
-export function cachedCeremony(ceremony: number): CeremonyPage | undefined {
-  return ceremonyCache.get(String(ceremony));
+/** The cache key for one edition. One owner, so the reader and the writer cannot disagree. */
+function ceremonyKey(award: string, ceremony: number): string {
+  return `${award}/${ceremony}`;
 }
 
-export async function getCeremony(ceremony: number): Promise<CeremonyPage> {
-  const key = String(ceremony);
+export function cachedCeremony(award: string, ceremony: number): CeremonyPage | undefined {
+  return ceremonyCache.get(ceremonyKey(award, ceremony));
+}
+
+export async function getCeremony(award: string, ceremony: number): Promise<CeremonyPage> {
+  const key = ceremonyKey(award, ceremony);
   const hit = ceremonyCache.fresh(key);
   if (hit) return hit;
   return dedupe(`ceremony:${key}`, async () => {
-    const res = await fetch(`/api/awards/oscars/${ceremony}`);
+    const res = await fetch(`/api/awards/${encodeURIComponent(award)}/${ceremony}`);
     if (!res.ok) throw new Error(res.status === 404 ? "unknown ceremony" : `ceremony failed: ${res.status}`);
     const data = (await res.json()) as CeremonyPage;
     ceremonyCache.set(key, data);

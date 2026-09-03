@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type AwardDef, awardById, OSCARS, oscarsDef } from "./award-registry";
 import { ceremonyTimeline, type Nomination, personAwards, titleAwards } from "./awards";
 import { loadConfig } from "./config";
 import { Store } from "./store";
@@ -179,23 +180,62 @@ describe("the timeline over a real store", () => {
       }),
       nom({ ceremony: 97, seq: 0, year: "2024", films: ["Older"], filmIds: ["tt2"], won: true }),
     ]);
-    const t = ceremonyTimeline(store);
+    const t = ceremonyTimeline(store, oscarsDef());
     expect(t.map((c) => c.ceremony)).toEqual([98, 97]);
     expect(t[0]).toMatchObject({
-      bestPictureTconst: "tt1",
-      bestPictureTitle: "Anora",
-      bestPictureNominations: 2,
-      bestPictureWins: 2,
-      bestPictureAlsoWon: ["DIRECTING"],
+      anchorTconst: "tt1",
+      anchorTitle: "Anora",
+      anchorNominations: 2,
+      anchorWins: 2,
+      anchorAlsoWon: ["DIRECTING"],
     });
+  });
+
+  /**
+   * The case that made `awardWinners` take a nullable category rather than a string.
+   *
+   * A winner-only award writes one row per edition under its own single category, so there
+   * is nothing to filter by -- and the anchor has to come out of the store WITHOUT the query
+   * naming a category, or a second award means a second hardcoded string.
+   */
+  test("an award with no anchor category anchors on the edition's own winner", () => {
+    const palme = awardById("palme-dor") as AwardDef;
+    store.replaceAwards(palme.id, [
+      nom({
+        award: palme.id,
+        ceremony: 1994,
+        year: "1994",
+        className: "",
+        category: "PALME D'OR",
+        rawCategory: "PALME D'OR",
+        films: ["Pulp Fiction"],
+        filmIds: ["tt0110912"],
+        won: true,
+      }),
+    ]);
+
+    const t = ceremonyTimeline(store, palme);
+    expect(t).toHaveLength(1);
+    expect(t[0]).toMatchObject({
+      ceremony: 1994,
+      anchorTconst: "tt0110912",
+      anchorTitle: "Pulp Fiction",
+      anchorNominations: 1,
+      anchorWins: 1,
+      // Nothing else to list: the one win IS the headline, so repeating it would be the same
+      // fact twice on one row.
+      anchorAlsoWon: [],
+    });
+    // And the awards do not see each other's rows, which is what the `award` column is for.
+    expect(ceremonyTimeline(store, oscarsDef())).toEqual([]);
   });
 
   test("titleAwards and personAwards read the same rows from both directions", () => {
     store.replaceAwards("oscars", [
       nom({ films: ["Anora"], filmIds: ["tt1"], nominees: ["Sean Baker"], nconsts: ["nm1"], won: true }),
     ]);
-    expect(titleAwards(store, "tt1")).toMatchObject({ nominations: 1, wins: 1 });
-    expect(personAwards(store, "nm1")).toMatchObject({ nominations: 1, wins: 1 });
-    expect(titleAwards(store, "tt404")).toBeNull();
+    expect(titleAwards(store, "tt1", OSCARS)).toMatchObject({ nominations: 1, wins: 1 });
+    expect(personAwards(store, "nm1", OSCARS)).toMatchObject({ nominations: 1, wins: 1 });
+    expect(titleAwards(store, "tt404", OSCARS)).toBeNull();
   });
 });

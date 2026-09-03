@@ -51,17 +51,14 @@ function toStrings(filters: ListFilters): Record<string, string> {
 }
 
 describe("CURATED", () => {
-  test("every curated row points at a real route, not a 404", () => {
-    // The routes registered in `router.tsx`. Named here rather than imported, deliberately:
-    // importing the router pulls every route COMPONENT into a test about a data table, and
-    // a curated list is meant to be checkable without rendering anything.
-    //
-    // `CuratedPath` makes this unwriteable at the type level too. The test survives because
-    // the type is a hand-kept union: it stops a row naming a path nobody serves, and THIS
-    // stops the union itself drifting from the router.
-    const routes = ["/awards/oscars", "/lists"];
+  test("every curated row's id is a usable route segment", () => {
+    // A curated row goes to `/awards/$award` with its own id as the parameter, so the route
+    // is registered by construction and the old "does this literal path exist" check has
+    // nothing left to catch. What CAN still go wrong is an id that does not survive a URL:
+    // a slash would split the segment and land on the edition route instead.
     for (const list of CURATED) {
-      expect(routes).toContain(list.to);
+      expect(list.id).toBe(encodeURIComponent(list.id));
+      expect(list.id).not.toContain("/");
     }
   });
 });

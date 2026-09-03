@@ -17,6 +17,48 @@ export function ordinal(n: number): string {
 }
 
 /**
+ * Just enough of an award to name one of its editions.
+ *
+ * Structural rather than `AwardIdentity`, so this module depends on the three fields it
+ * actually reads and not on the payload type -- which would drag `api.ts`, and with it the
+ * fetch layer, into a file whose whole point is that it is pure.
+ */
+export interface EditionNaming {
+  title: string;
+  editionKey: "ordinal" | "year";
+  editionOne: string;
+}
+
+/**
+ * One edition, named the way its award numbers them: `96th · 2024`, or `1994`.
+ *
+ * Two shapes because the sources genuinely differ. The Academy numbers its ceremonies and
+ * the year is a separate label -- one that reads `1927/28` for the first six -- so both are
+ * worth printing. Wikidata records a point in time and no ordinal at all, so the year is the
+ * whole answer and `1994th` would be an invention.
+ *
+ * The year is OPTIONAL because the step links know only their neighbour's key: an ordinal
+ * award then prints `95th` alone, and a dated one prints the key, which IS its year.
+ */
+export function editionLabel(award: EditionNaming, ceremony: number, year = ""): string {
+  if (award.editionKey === "ordinal") return year ? `${ordinal(ceremony)} · ${year}` : ordinal(ceremony);
+  return year || String(ceremony);
+}
+
+/**
+ * The same edition as a page heading, where there is room to say what it is.
+ *
+ * The two branches read differently on purpose: "96th ceremony · 2024" needs the noun to
+ * explain what is being counted, and "The Palme d'Or 1994" does not -- there is one prize,
+ * so the year is the edition. Both sit under a back-link that already names the award, which
+ * is why the ordinal branch does not repeat it.
+ */
+export function editionHeading(award: EditionNaming, ceremony: number, year: string): string {
+  if (award.editionKey === "ordinal") return `${ordinal(ceremony)} ${award.editionOne} · ${year}`;
+  return `${award.title} ${year || ceremony}`;
+}
+
+/**
  * The year a ceremony is ABOUT, as a number, for a header range.
  *
  * The first six ceremonies carry `1927/28`, so the leading four digits are the answer and

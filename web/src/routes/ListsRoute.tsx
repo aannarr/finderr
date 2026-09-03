@@ -23,7 +23,6 @@ import type { ReactNode } from "react";
 import {
   type ComputedList,
   CURATED,
-  type CuratedPath,
   completionNoun,
   listGroups,
   RANK_EXPLAINER,
@@ -63,7 +62,13 @@ export function ListsRoute() {
       {CURATED.length > 0 && (
         <Section heading="Curated" blurb="Lists somebody maintains, with their own pages.">
           {CURATED.map((list) => (
-            <ListCard key={list.id} title={list.title} subtitle={list.subtitle} to={list.to} />
+            <ListCard
+              key={list.id}
+              title={list.title}
+              subtitle={list.subtitle}
+              to="/awards/$award"
+              params={{ award: list.id }}
+            />
           ))}
         </Section>
       )}
@@ -120,12 +125,15 @@ function ListCard({
   title,
   subtitle,
   to,
+  params,
   search,
   children,
 }: {
   title: string;
   subtitle?: string;
-  to: "/browse" | CuratedPath;
+  to: "/browse" | "/awards/$award";
+  /** The award id, for a curated row. A computed row's destination takes no parameters. */
+  params?: { award: string };
   search?: SearchParams;
   children?: ReactNode;
 }) {
@@ -133,6 +141,7 @@ function ListCard({
     <li>
       <Link
         to={to}
+        params={params ?? {}}
         search={search ?? {}}
         className="block rounded-lg border border-line px-3 py-2 transition-colors hover:border-accent/60"
       >

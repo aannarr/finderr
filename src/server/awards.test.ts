@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type AwardDef, awardById, oscarsDef } from "../lib/award-registry";
 import type { Nomination } from "../lib/awards";
 import { loadConfig } from "../lib/config";
 import type { TitleRow } from "../lib/search";
@@ -56,8 +57,8 @@ function indexOf(...ids: string[]): AwardsDeps["engine"] {
 const decorate = ((rows: TitleRow[]) =>
   rows.map((r) => ({ ...r, inLibrary: false }))) as AwardsDeps["decorate"];
 
-function deps(engine: AwardsDeps["engine"]): AwardsDeps {
-  return { store, engine, decorate, source: null };
+function deps(engine: AwardsDeps["engine"], def: AwardDef = oscarsDef()): AwardsDeps {
+  return { store, engine, decorate, def, source: null };
 }
 
 function nom(over: Partial<Nomination>): Nomination {
@@ -103,7 +104,7 @@ describe("timelinePayload", () => {
     // The ceremony is still there, still carrying its title as text. A film we do not
     // index must not delete a year from the timeline.
     expect(p.ceremonies.map((c) => c.ceremony)).toEqual([98, 97]);
-    expect(p.ceremonies[1]?.bestPictureTitle).toBe("Unindexed");
+    expect(p.ceremonies[1]?.anchorTitle).toBe("Unindexed");
     expect(p.titles.tt404).toBeUndefined();
   });
 
@@ -114,7 +115,7 @@ describe("timelinePayload", () => {
       { imdb_id: "tt404", arr_id: 1, has_file: 1, monitored: 1, progress: null },
     ]);
     const p = timelinePayload(deps(indexOf("tt1")));
-    expect(p.anchor).toEqual({ category: "BEST PICTURE", owned: 1, total: 2 });
+    expect(p.anchor).toEqual({ noun: "Best Picture winners", owned: 1, total: 2 });
   });
 
   test("totals are over every ceremony, not the page", () => {
@@ -253,9 +254,38 @@ describe("ceremonyPayload", () => {
     expect(older?.next).toBe(98);
   });
 
-  test("names the Best Picture winner for the header", () => {
+  test("names the anchor winner for the header", () => {
     const p = ceremonyPayload(deps(indexOf("tt1")), 98);
-    expect(p?.bestPicture).toEqual({ title: "Winner", tconst: "tt1" });
+    expect(p?.anchorFilm).toEqual({ title: "Winner", tconst: "tt1" });
+  });
+
+  /**
+   * The anchor for an award that has no anchor CATEGORY -- the case the Oscars alone could
+   * never exercise.
+   *
+   * `ceremonyPayload` used to find the header's winner by looking for the group called
+   * `BEST PICTURE`. For a winner-only award there is no such group and never will be, so it
+   * takes the first group's win instead, which for one prize per edition is the only win.
+   */
+  test("an award with no anchor category still names its edition's winner", () => {
+    const palme = awardById("palme-dor") as AwardDef;
+    store.replaceAwards(palme.id, [
+      nom({
+        award: palme.id,
+        ceremony: 1994,
+        year: "1994",
+        className: "",
+        category: "PALME D'OR",
+        rawCategory: "PALME D'OR",
+        films: ["Pulp Fiction"],
+        filmIds: ["tt9"],
+        won: true,
+      }),
+    ]);
+    const p = ceremonyPayload(deps(indexOf("tt9"), palme), 1994);
+    expect(p?.anchorFilm).toEqual({ title: "Pulp Fiction", tconst: "tt9" });
+    expect(p?.award.anchorLabel).toBe("Palme d'Or");
+    expect(p?.award.editionKey).toBe("year");
   });
 
   test("counts films and ownership, distinct", () => {

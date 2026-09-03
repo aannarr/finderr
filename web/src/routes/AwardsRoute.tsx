@@ -1,23 +1,29 @@
 /**
- * `/awards/oscars` -- ninety-eight ceremonies as one scrollable century.
+ * `/awards/oscars`, `/awards/palme-dor` -- one award as a scrollable rail of editions.
  *
- * The shape the card asked for: a vertical rail, newest first, each ceremony anchored by
- * its Best Picture winner with a poster, its record for that year, and what else it won.
- * Every title and every year is a destination.
+ * The shape the card asked for: a vertical rail, newest first, each edition anchored by its
+ * headline winner with a poster, its record for that year, and what else it won. Every title
+ * and every year is a destination.
  *
- * Local SQLite the whole way down -- `/api/awards/oscars` reads imported rows, joins the
+ * Nothing here knows which award it is drawing. The payload carries the award's name, what
+ * its anchor prize is called and whether its editions are numbered or dated, so this file
+ * holds no vocabulary of its own -- the alternative was a second copy of the registry in the
+ * browser, drifting from the rows beside it.
+ *
+ * Local SQLite the whole way down -- `/api/awards/:award` reads imported rows, joins the
  * anchors against the index and counts ownership against the library mirror, and asks no
  * provider. So there is no polling here, no skeleton and no `work` to watch: the page is
  * either painted or one request away, exactly like the person page.
  */
 
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AwardSourceLine } from "../components/Awards";
 import { Completion } from "../components/Completion";
 import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
 import {
+  type AwardIdentity,
   type AwardsTimeline,
   type CeremonySummary,
   cachedAwards,
@@ -27,21 +33,31 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
-import { ceremonyYear, ordinal, prettyCategory } from "../lib/awards-format";
+import { ceremonyYear, editionLabel, prettyCategory } from "../lib/awards-format";
 
 export function AwardsRoute() {
+  const { award } = useParams({ strict: false }) as { award: string };
   const { request } = useApp();
-  const [page, setPage] = useState<AwardsTimeline | null>(() => cachedAwards() ?? null);
+  const [page, setPage] = useState<AwardsTimeline | null>(() => cachedAwards(award) ?? null);
   const [error, setError] = useState<string | null>(null);
 
-  // Library and request state change under this page like any other: requesting a Best
-  // Picture winner from the timeline must repaint its own row.
+  // Library and request state change under this page like any other: requesting a winner
+  // from the timeline must repaint its own row.
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
+  // Seeded during render for the same reason `CeremonyRoute` is: switching awards from the
+  // nav must not draw the previous award's editions under the new one's heading for a frame.
+  const [seededFor, setSeededFor] = useState<string | null>(null);
+  if (seededFor !== award) {
+    setSeededFor(award);
+    setPage(cachedAwards(award) ?? null);
+    setError(null);
+  }
+
   useEffect(() => {
-    if (cachedAwards()) return;
+    if (cachedAwards(award)) return;
     let stale = false;
-    getAwards()
+    getAwards(award)
       .then((p) => {
         if (!stale) setPage(p);
       })
@@ -51,14 +67,14 @@ export function AwardsRoute() {
     return () => {
       stale = true;
     };
-  }, []);
+  }, [award]);
 
   if (error) {
     return (
       <p className="py-16 text-center text-muted">
-        {error}{" "}
-        <Link to="/" search={{}} className="underline hover:text-ink">
-          Back to search
+        {error === "unknown award" ? "We hold no award by that name." : error}{" "}
+        <Link to="/lists" className="underline hover:text-ink">
+          Back to the lists
         </Link>
       </p>
     );
@@ -78,10 +94,13 @@ export function AwardsRoute() {
   if (page.ceremonies.length === 0) {
     return (
       <div className="py-16 text-center">
-        <h2 className="text-lg font-semibold tracking-tight">The Academy Awards</h2>
+        <h2 className="text-lg font-semibold tracking-tight">{page.award.title}</h2>
         <p className="mt-2 text-sm text-muted">
-          No nominations have been imported yet. They arrive on their own timer, or run{" "}
-          <code className="rounded bg-surface-2 px-1.5 py-0.5 text-xs">bun run awards:import</code>.
+          Nothing has been imported yet. It arrives on its own timer, or run{" "}
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 text-xs">
+            bun run awards:import --award {page.award.id}
+          </code>
+          .
         </p>
       </div>
     );
@@ -94,9 +113,9 @@ export function AwardsRoute() {
     <>
       <header className="mb-6">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h2 className="text-xl font-semibold tracking-tight">The Academy Awards</h2>
+          <h2 className="text-xl font-semibold tracking-tight">{page.award.title}</h2>
           <p className="text-xs text-muted tabular-nums">
-            {page.totals.ceremonies} ceremonies
+            {page.totals.ceremonies} {page.award.editionMany}
             {newest !== null && oldest !== null && ` · ${oldest}–${newest}`}
           </p>
         </div>
@@ -111,7 +130,7 @@ export function AwardsRoute() {
                 The completion count, and the one number a thin proxy over TMDB cannot
                 answer at all: it needs the nominations and the library in the same file.
               */}
-              <Completion owned={page.anchor.owned} total={page.anchor.total} noun="Best Picture winners" />
+              <Completion owned={page.anchor.owned} total={page.anchor.total} noun={page.anchor.noun} />
             </>
           )}
         </p>
@@ -123,7 +142,13 @@ export function AwardsRoute() {
       */}
       <ol className="ml-1 border-l border-line">
         {page.ceremonies.map((c) => (
-          <CeremonyRow key={c.ceremony} ceremony={c} titles={page.titles} onRequest={request} />
+          <CeremonyRow
+            key={c.ceremony}
+            ceremony={c}
+            award={page.award}
+            titles={page.titles}
+            onRequest={request}
+          />
         ))}
       </ol>
 
@@ -133,23 +158,25 @@ export function AwardsRoute() {
 }
 
 /**
- * One ceremony: the year, its anchor film, and what that film did.
+ * One edition: the year, its anchor title, and what that title did.
  *
- * The whole row is NOT a link. The ceremony heading goes to the year page and the poster
+ * The whole row is NOT a link. The edition heading goes to the year page and the poster
  * and title go to the film, which are two different destinations a reader genuinely wants
  * from here -- wrapping the lot in one link would make the more interesting of the two
  * unreachable.
  */
 function CeremonyRow({
   ceremony: c,
+  award,
   titles,
   onRequest,
 }: {
   ceremony: CeremonySummary;
+  award: AwardIdentity;
   titles: Record<string, Title>;
   onRequest: (t: Title) => void;
 }) {
-  const row = c.bestPictureTconst ? titles[c.bestPictureTconst] : undefined;
+  const row = c.anchorTconst ? titles[c.anchorTconst] : undefined;
 
   return (
     <li className="relative -ml-px border-l border-transparent pb-8 pl-5">
@@ -162,21 +189,21 @@ function CeremonyRow({
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <h3 className="text-sm font-medium">
           <Link
-            to="/awards/oscars/$ceremony"
-            params={{ ceremony: String(c.ceremony) }}
+            to="/awards/$award/$ceremony"
+            params={{ award: award.id, ceremony: String(c.ceremony) }}
             className="underline-offset-2 hover:text-accent hover:underline"
           >
-            {ordinal(c.ceremony)} · {c.year}
+            {editionLabel(award, c.ceremony, c.year)}
           </Link>
         </h3>
         <span className="text-xs text-muted tabular-nums">
           {c.nominations} nominations · {c.categories} categories
         </span>
-        <Completion owned={c.filmsOwned} total={c.films} noun="films" className="text-xs text-muted" />
+        <Completion owned={c.filmsOwned} total={c.films} noun="titles" className="text-xs text-muted" />
       </div>
 
       <div className="mt-2 flex gap-3">
-        <AnchorPoster row={row} title={c.bestPictureTitle} />
+        <AnchorPoster row={row} title={c.anchorTitle} />
 
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-baseline gap-x-2">
@@ -187,27 +214,31 @@ function CeremonyRow({
                   params={{ tconst: row.tconst }}
                   className="underline-offset-2 hover:text-accent hover:underline"
                 >
-                  {c.bestPictureTitle}
+                  {c.anchorTitle}
                 </Link>
               ) : (
                 // No row means we do not index it, so there is nowhere to send anybody.
                 // Plain text is the correct answer, not a shortfall.
-                c.bestPictureTitle
+                c.anchorTitle
               )}
             </span>
             <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-accent">
-              Best Picture
+              {award.anchorLabel}
             </span>
           </p>
 
-          {c.bestPictureNominations > 0 && (
+          {/*
+            A winner-only award gives every edition exactly one row, so "1 nomination, 1 win"
+            under the headline would be the headline restated as arithmetic. The line is for
+            an award where the anchor did more than win its own category.
+          */}
+          {c.anchorNominations > 1 && (
             <p className="mt-0.5 text-xs text-muted tabular-nums">
-              {c.bestPictureNominations} nomination{c.bestPictureNominations === 1 ? "" : "s"},{" "}
-              {c.bestPictureWins} win{c.bestPictureWins === 1 ? "" : "s"}
+              {c.anchorNominations} nominations, {c.anchorWins} win{c.anchorWins === 1 ? "" : "s"}
             </p>
           )}
 
-          {c.bestPictureAlsoWon.length > 0 && (
+          {c.anchorAlsoWon.length > 0 && (
             <p className="mt-1 text-xs text-muted">
               <span className="text-muted/70">also won </span>
               {/*
@@ -215,7 +246,7 @@ function CeremonyRow({
                 `WRITING (Adapted Screenplay)`, which is correct as a KEY and unreadable as
                 a list of five.
               */}
-              {c.bestPictureAlsoWon.map(prettyCategory).join(" · ")}
+              {c.anchorAlsoWon.map(prettyCategory).join(" · ")}
             </p>
           )}
 
@@ -233,7 +264,7 @@ function CeremonyRow({
 /**
  * The anchor's poster, or the space it would have taken.
  *
- * The frame is drawn either way, so a ceremony whose winner we do not index does not reflow
+ * The frame is drawn either way, so an edition whose winner we do not index does not reflow
  * the rows above and below it -- `Poster` guarantees that for every caller now, which is
  * most of why it exists. This wrapper survives only to name the timeline's own size.
  */

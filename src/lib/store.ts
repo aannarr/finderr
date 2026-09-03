@@ -2120,21 +2120,26 @@ export class Store implements SearchLogSink {
   }
 
   /**
-   * The winner of one category per ceremony, as the timeline's anchor.
+   * The winning rows of an award, newest edition first, optionally within one category.
    *
    * Takes the category NAME rather than hardcoding Best Picture: the anchor is a render
    * decision and belongs to the caller, and `UNIQUE AND ARTISTIC PICTURE` exists as a
    * second top prize at the first ceremony, so "the" top category is not a fact this
    * table can assert on its own.
+   *
+   * `null` means every win, whatever its category. That is not a convenience: a winner-only
+   * award has one prize per edition and no category to narrow by, so the filter would be
+   * matching a name we invented in order to have one.
    */
-  awardCategoryWinners(award: string, category: string): Nomination[] {
+  awardWinners(award: string, category: string | null): Nomination[] {
+    const where = category === null ? "" : "and category = ? ";
+    const params = category === null ? [award] : [award, category];
     return (
       this.db
         .query(
-          "select * from award_nomination where award = ? and category = ? and won = 1 " +
-            "order by ceremony desc, seq",
+          `select * from award_nomination where award = ? ${where}and won = 1 order by ceremony desc, seq`,
         )
-        .all(award, category) as AwardRow[]
+        .all(...params) as AwardRow[]
     ).map(toNomination);
   }
 

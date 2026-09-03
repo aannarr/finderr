@@ -529,8 +529,8 @@ function AwardsPane({ awards }: { awards: TitleAwards | null | undefined }) {
             detail={e.detail}
             subject={
               <Link
-                to="/awards/oscars/$ceremony"
-                params={{ ceremony: String(e.ceremony) }}
+                to="/awards/$award/$ceremony"
+                params={{ award: awards.award, ceremony: String(e.ceremony) }}
                 className={PERSON_LINK_CLASS}
               >
                 {prettyCategory(e.category)}

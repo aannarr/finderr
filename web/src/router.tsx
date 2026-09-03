@@ -110,9 +110,9 @@ const collectionRoute = createRoute({
  * keyword could not become a WHERE clause on the grid even if the params carried it. Same
  * split `/collection/$id` already lives on.
  *
- * The dimension is a parameter and the collection route's award is a literal, which is the
- * opposite call to `/awards/oscars` -- because here there genuinely are three cases sharing
- * one mechanism, so the general shape is designed against three examples rather than one.
+ * The dimension is a parameter because there are genuinely three cases sharing one mechanism,
+ * so the general shape is designed against three examples rather than one. `/awards/$award`
+ * reached the same shape by the same route, one award later.
  *
  * `country` rides in the search params for `service` only: availability differs by country,
  * so it is part of what the page means and therefore part of the URL.
@@ -179,30 +179,31 @@ const adminRoute = createRoute({
 });
 
 /**
- * `/awards/oscars` -- ninety-eight ceremonies, newest first.
+ * `/awards/oscars`, `/awards/palme-dor` -- every edition of one award, newest first.
  *
- * The award is IN THE PATH rather than a parameter, deliberately. `/awards/$award` would
- * promise a vocabulary we do not have: the Oscars are the only source anybody has found
- * that carries both `tconst` and `nconst`, and a general shape designed against one
- * example is a shape designed against nothing. A second award becomes a second literal
- * route, and the generalisation happens when there is something to generalise FROM.
+ * The award is a PARAMETER now, and the comment that stood here argued against exactly that:
+ * a general shape designed against one example is a shape designed against nothing. That was
+ * right when there was one award. There are three, `/awards/oscars` is still one of the
+ * values this route takes, and every link that already pointed at it still resolves.
  */
 const awardsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/awards/oscars",
+  path: "/awards/$award",
   component: AwardsRoute,
 });
 
 /**
- * `/awards/oscars/96` -- one ceremony.
+ * `/awards/oscars/96`, `/awards/palme-dor/1994` -- one edition.
  *
- * The parameter is the CEREMONY NUMBER, never the year. The first six ceremonies carry
- * `1927/28` as their year, so the year is a label; the number is the only stable key the
- * source has, and routing on it is what keeps `/awards/oscars/1` meaningful.
+ * The parameter is the EDITION KEY and never a display label. The Academy numbers its
+ * ceremonies -- the first six carry `1927/28` as their YEAR, so the year is a label and the
+ * number is the only stable key that source has. Wikidata has no ordinal at all and dates
+ * each award, so there the year IS the key. Both are integers, which is why one route serves
+ * both; which one a given award uses is `AwardEdition.key` in the registry.
  */
 const ceremonyRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/awards/oscars/$ceremony",
+  path: "/awards/$award/$ceremony",
   component: CeremonyRoute,
 });
 

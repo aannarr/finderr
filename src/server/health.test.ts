@@ -19,11 +19,17 @@ function deps(onCoverage: () => void): HealthDeps {
     plex: { items: 1730, machineId: "0123456789abcdef0123456789abcdef01234567" },
     upcoming: { radarr: 42, sonarr: 27, tmdbMovie: 19, tmdbSeries: 16 },
     trending: 18,
-    awards: {
-      rows: 12_137,
-      sha: "c5e9716b7e020e70205d6b95f5a5678526c1b45f",
-      importedAt: "2026-09-01T00:00:00.000Z",
-    },
+    awards: [
+      {
+        award: "oscars",
+        rows: 12_137,
+        sha: "c5e9716b7e020e70205d6b95f5a5678526c1b45f",
+        importedAt: "2026-09-01T00:00:00.000Z",
+      },
+      // A Wikidata award beside it: no commit to name, which is the ordinary state for a
+      // source with no revision rather than the failure `sha: null` means for `oscar_data`.
+      { award: "palme-dor", rows: 83, sha: null, importedAt: "2026-09-01T00:00:00.000Z" },
+    ],
     services: { radarr: true, sonarr: true, prowlarr: false },
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true, noAuth: false },
     push: { enabled: true, devices: 2 },
