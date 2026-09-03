@@ -15,6 +15,7 @@ import type { PlexItem } from "./plex";
 import type { RequestDiagnostic } from "./request-diagnostics";
 import type { ClickRow, SearchLogSink, SearchRow } from "./search-log";
 import { encodeSeasons } from "./seasons";
+import type { TermPair } from "./terms";
 
 /**
  * Where the mirrored server's identity lives.
@@ -1573,6 +1574,136 @@ export class Store implements SearchLogSink {
       : (this.db
           .query(`select * from facet_contribution where ${live} and json_extract(data, '$.id') = ?`)
           .all(facet, now, contentId) as FacetContributionRow[]);
+  }
+
+  /**
+   * Every (title, keyword) pair we hold -- the keyword index read from the term end.
+   *
+   * THE REVERSE INDEX, and it is a QUERY rather than a table. `json_each` walks the cached
+   * `Keyword[]` payload inside SQLite, so a keyword browse costs one indexed scan of the
+   * `keywords` rows and no JSON parsing in JS. A `keyword_title` table would be a second
+   * copy of this same knowledge, and the only way to fill it for titles nobody has viewed
+   * is a sweep of the providers -- which is forbidden. See `src/lib/terms.ts`.
+   *
+   * `tconst` narrows to one title, which is what the chip gate on a title page asks first;
+   * omit it for the whole corpus, which is what a term page needs. The unnarrowed read is
+   * the same shape and cost as the collection-name lookup `/api/collections` already makes
+   * on every keystroke.
+   *
+   * `pluginIds` is the installed registry. A row whose PLUGIN is gone must not appear on a
+   * page -- the same rule `isUsableContribution` applies to a rendered facet, spelled here
+   * as an `in (...)` because the alternative is reading every row back to filter it.
+   */
+  keywordPairs(pluginIds: readonly string[], tconst?: string, now = new Date().toISOString()): TermPair[] {
+    return this.facetTermPairs(
+      "keywords",
+      "json_extract(k.value, '$.name')",
+      "json_each(f.data) k",
+      [],
+      pluginIds,
+      tconst,
+      now,
+    );
+  }
+
+  /**
+   * Every (title, streaming service) pair we hold IN ONE COUNTRY.
+   *
+   * The country is not optional and cannot be: the facet carries ~112 of them and a German
+   * subscription is not an answer to a question asked from Bangkok -- the same rule
+   * `pickWatchProviders` applies to the pane, moved into the query because here it is also
+   * what keeps the row count down to roughly three per cached title.
+   *
+   * `flatrate` only, matching `watchServices`: `rent` and `buy` are every storefront on
+   * earth, so browsing them would be browsing nothing. The names come back UNFOLDED --
+   * `serviceKey` needs a 42-spelling table SQLite cannot express, so the fold happens in
+   * `terms.ts` over these pairs.
+   */
+  watchServicePairs(
+    country: string,
+    pluginIds: readonly string[],
+    tconst?: string,
+    now = new Date().toISOString(),
+  ): TermPair[] {
+    return this.facetTermPairs(
+      "watchProviders",
+      "s.value",
+      "json_each(f.data) c, json_each(c.value, '$.flatrate') s",
+      [{ sql: "upper(json_extract(c.value, '$.country')) = ?", arg: country.toUpperCase() }],
+      pluginIds,
+      tconst,
+      now,
+    );
+  }
+
+  /**
+   * Every (title, studio or network) pair we hold.
+   *
+   * Not a facet at all: the studio arrives on the SAME artwork lookup that resolves the
+   * poster and is stored beside it, so this reverse read is one indexed scan of a table
+   * that is already there. That is why studio browse needed no new provider, no new
+   * artwork and no schema change -- the badge was rendering from this column already, it
+   * simply had nowhere to go.
+   */
+  studioPairs(tconst?: string): TermPair[] {
+    const where = ["studio is not null", "trim(studio) != ''"];
+    const args: string[] = [];
+    if (tconst !== undefined) {
+      where.push("imdb_id = ?");
+      args.push(tconst);
+    }
+    return this.db
+      .query(`select imdb_id tconst, studio term from artwork where ${where.join(" and ")}`)
+      .all(...(args as never[])) as TermPair[];
+  }
+
+  /**
+   * The shared body of the two facet-backed reverse reads.
+   *
+   * `termSql` and `from` differ because the payloads differ -- `keywords` is a flat list of
+   * objects, `watchProviders` is a list of countries each holding a list of names -- and
+   * everything else about the two queries is identical: the same liveness window, the same
+   * plugin filter, the same optional narrowing to one title. One owner for that half, so a
+   * third facet-backed dimension is a call rather than a third hand-copied WHERE clause.
+   *
+   * The fragments are literals from the two callers above and never reach this from a
+   * request, which is what keeps the interpolation honest; every VALUE is bound.
+   */
+  private facetTermPairs(
+    facet: string,
+    termSql: string,
+    from: string,
+    extra: readonly { sql: string; arg: string }[],
+    pluginIds: readonly string[],
+    tconst: string | undefined,
+    now: string,
+  ): TermPair[] {
+    // No plugin installed means no row may be drawn, and `in ()` is not valid SQL.
+    if (pluginIds.length === 0) return [];
+
+    const where = [
+      "f.facet = ?",
+      "f.outcome = 'ok'",
+      "(f.expires_at is null or f.expires_at > ?)",
+      `f.plugin_id in (${pluginIds.map(() => "?").join(",")})`,
+    ];
+    const args: string[] = [facet, now, ...pluginIds];
+    for (const clause of extra) {
+      where.push(clause.sql);
+      args.push(clause.arg);
+    }
+    if (tconst !== undefined) {
+      where.push("f.entity_id = ?");
+      args.push(tconst);
+    }
+
+    return this.db
+      .query(
+        `select f.entity_id tconst, ${termSql} term
+         from facet_contribution f, ${from}
+         where ${where.join(" and ")}`,
+      )
+      .all(...(args as never[])) as TermPair[];
   }
 
   /**

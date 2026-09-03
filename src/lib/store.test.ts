@@ -161,6 +161,129 @@ describe("facet cache, read by content", () => {
   });
 });
 
+describe("the term reverse reads", () => {
+  const PLUGINS = ["servarr-metadata", "tmdb"];
+
+  const contribution = (entity: string, facet: string, data: unknown, extra = {}) => ({
+    reason: null,
+    entity_id: entity,
+    facet,
+    plugin_id: "servarr-metadata",
+    config_version: "1",
+    outcome: "ok" as const,
+    data: JSON.stringify(data),
+    freshness: "settled",
+    resolved_at: "2026-08-31T00:00:00.000Z",
+    expires_at: null,
+    ...extra,
+  });
+
+  const keywords = (entity: string, names: string[], extra = {}) =>
+    contribution(
+      entity,
+      "keywords",
+      names.map((name, i) => ({ id: `tmdb:${i}`, name })),
+      extra,
+    );
+
+  const offers = (entity: string, byCountry: Record<string, string[]>, extra = {}) =>
+    contribution(
+      entity,
+      "watchProviders",
+      Object.entries(byCountry).map(([country, flatrate]) => ({
+        country,
+        flatrate,
+        rent: ["Google Play Movies"],
+        buy: ["Amazon Video"],
+        link: null,
+      })),
+      extra,
+    );
+
+  describe("keywordPairs", () => {
+    test("reads the cached keyword lists from the term end", () => {
+      store.putFacetContribution(keywords("tt1", ["Heist", "Dream"]));
+      store.putFacetContribution(keywords("tt2", ["heist"]));
+
+      const pairs = store.keywordPairs(PLUGINS);
+      expect(pairs.sort((a, b) => `${a.tconst}${a.term}`.localeCompare(`${b.tconst}${b.term}`))).toEqual([
+        { tconst: "tt1", term: "Dream" },
+        { tconst: "tt1", term: "Heist" },
+        { tconst: "tt2", term: "heist" },
+      ]);
+    });
+
+    test("narrows to one title, which is what a chip gate asks first", () => {
+      store.putFacetContribution(keywords("tt1", ["Heist"]));
+      store.putFacetContribution(keywords("tt2", ["Dream"]));
+      expect(store.keywordPairs(PLUGINS, "tt2")).toEqual([{ tconst: "tt2", term: "Dream" }]);
+    });
+
+    /** A row whose plugin is gone must not reach a page -- the `isUsableContribution` rule. */
+    test("a row from an uninstalled plugin is not read", () => {
+      store.putFacetContribution(keywords("tt1", ["Heist"], { plugin_id: "deleted-addon" }));
+      expect(store.keywordPairs(PLUGINS)).toEqual([]);
+      expect(store.keywordPairs([])).toEqual([]);
+    });
+
+    test("expired and non-ok rows are gone", () => {
+      store.putFacetContribution(keywords("tt1", ["Heist"], { expires_at: "2026-08-30T00:00:00.000Z" }));
+      store.putFacetContribution({
+        ...keywords("tt2", ["Dream"]),
+        outcome: "failed" as const,
+        data: null,
+      });
+      expect(store.keywordPairs(PLUGINS, undefined, "2026-08-31T00:00:00.000Z")).toEqual([]);
+    });
+  });
+
+  describe("watchServicePairs", () => {
+    /**
+     * The facet carries ~112 countries and a reader is in one of them. A German
+     * subscription is not an answer to a question asked from Bangkok, which is the same
+     * rule `pickWatchProviders` applies to the pane.
+     */
+    test("only the country asked for", () => {
+      store.putFacetContribution(offers("tt1", { US: ["Netflix", "Hulu"], DE: ["Netflix"] }));
+      store.putFacetContribution(offers("tt2", { DE: ["Netflix"] }));
+
+      expect(store.watchServicePairs("US", PLUGINS).sort((a, b) => a.term.localeCompare(b.term))).toEqual([
+        { tconst: "tt1", term: "Hulu" },
+        { tconst: "tt1", term: "Netflix" },
+      ]);
+      expect(store.watchServicePairs("de", PLUGINS)).toHaveLength(2);
+    });
+
+    /** `rent` and `buy` are every storefront on earth -- browsing them is browsing nothing. */
+    test("streaming only", () => {
+      store.putFacetContribution(offers("tt1", { US: [] }));
+      expect(store.watchServicePairs("US", PLUGINS)).toEqual([]);
+    });
+
+    test("the names come back unfolded, because SQLite cannot hold the mark table", () => {
+      store.putFacetContribution(offers("tt1", { US: ["Netflix Standard with Ads"] }));
+      expect(store.watchServicePairs("US", PLUGINS)).toEqual([
+        { tconst: "tt1", term: "Netflix Standard with Ads" },
+      ]);
+    });
+  });
+
+  describe("studioPairs", () => {
+    /** Not a facet: the studio arrives on the artwork lookup and is stored beside the poster. */
+    test("reads the artwork table, skipping titles with no studio", () => {
+      store.setArtwork("tt1", "https://x/a.jpg", "A24");
+      store.setArtwork("tt2", "https://x/b.jpg", "A24");
+      store.setArtwork("tt3", "https://x/c.jpg");
+
+      expect(store.studioPairs().sort((a, b) => a.tconst.localeCompare(b.tconst))).toEqual([
+        { tconst: "tt1", term: "A24" },
+        { tconst: "tt2", term: "A24" },
+      ]);
+      expect(store.studioPairs("tt2")).toEqual([{ tconst: "tt2", term: "A24" }]);
+    });
+  });
+});
+
 describe("posterFrom", () => {
   test("picks the poster, ignoring fanart and banners", () => {
     expect(
