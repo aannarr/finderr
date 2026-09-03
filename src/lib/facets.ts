@@ -115,6 +115,10 @@ const TMDB_PERSON_PREFIX = "tmdb:";
  * cannot disagree with a plugin about how the id is spelled. A provider that hand-rolled
  * the string would be a second owner of the format, and the failure is silent: every credit
  * it wrote would simply stop linking.
+ *
+ * TWO providers write this field now -- `servarr-metadata` for a film and `tmdb` for a
+ * series -- which is what turns a divergence from a hypothetical into a thing that would
+ * unlink half the corpus and nothing else.
  */
 export function tmdbPersonId(id: number): string {
   return `${TMDB_PERSON_PREFIX}${id}`;
@@ -307,7 +311,7 @@ export type FacetName = keyof FacetShapes;
 
 // --- how each facet behaves ------------------------------------------------
 
-export interface FacetDeclaration {
+export interface FacetDeclaration<F extends FacetName = FacetName> {
   /** Entity kinds this facet exists for. A provider is never asked about the others. */
   entities: readonly EntityKind[];
   /**
@@ -324,9 +328,55 @@ export interface FacetDeclaration {
   immutable?: true;
   /** Core owns this fact. A plugin declaring it is refused at load time. */
   coreOnly?: true;
+  /**
+   * How strong one contribution is. The strongest SUPERSEDES the rest before they merge.
+   *
+   * The knob for a facet where two providers answer the same question rather than
+   * different halves of it. `ratings` wants both sources; `cast` does not -- two providers
+   * naming Kit Harington render two Kit Haringtons, because a `list` facet concatenates
+   * and nothing downstream can tell one source's entry from another's.
+   *
+   * **A SCORE, never a list of plugin ids.** Naming the winner in core would weld this file
+   * to the plugins that happen to exist today, close the facet to any addon that arrives
+   * later, and make the answer depend on who is installed rather than on what they said.
+   * Scoring the DATA keeps the rule open: whoever brings the better answer wins, including
+   * a plugin nobody has written yet.
+   *
+   * A provider that is dark contributes nothing and is not scored, so a checkout missing
+   * the stronger provider's key gets the weaker answer with no special case anywhere.
+   * Contributions that TIE all survive and merge as usual -- precedence separates tiers,
+   * it does not pick one winner out of equals.
+   */
+  precedence?: (data: FacetShapes[F]) => number;
 }
 
+/**
+ * The declaration table's type, per facet rather than across them.
+ *
+ * A plain `Record<FacetName, FacetDeclaration>` would type `precedence` against the UNION
+ * of every facet shape, so a scorer written for `CastMember[]` could not be declared and
+ * `mergeContributions` could not call one. The mapped form ties each entry to its own shape.
+ */
+export type FacetVocabulary = { [F in FacetName]: FacetDeclaration<F> };
+
 const MOVIE_AND_SERIES = ["movie", "series"] as const;
+
+/**
+ * How much of a cast list can actually be linked to a person.
+ *
+ * The precedence rule for `cast`, and the reason it is a share rather than a count: a
+ * provider is competing on whether its answer is USABLE, not on how long it is. A list of
+ * 44 names with no id in any space is a wall of plain text -- the name join in
+ * `nconstsByNameForTitle` is all that can be done with it -- while a list carrying person
+ * ids is one every reader can click through.
+ *
+ * An empty list scores 0 rather than dividing by zero, which is right on its own terms:
+ * "we looked and there was nobody" supersedes nothing.
+ */
+function linkableShare(cast: CastMember[]): number {
+  if (cast.length === 0) return 0;
+  return cast.filter((member) => member.personId !== null).length / cast.length;
+}
 
 /**
  * The vocabulary. One entry per fact type core is willing to hold.
@@ -335,10 +385,14 @@ const MOVIE_AND_SERIES = ["movie", "series"] as const;
  * resolver code changes, which is the seam that lets a new fact type arrive without
  * reopening four files.
  */
-export const FACETS: Record<FacetName, FacetDeclaration> = {
+export const FACETS: FacetVocabulary = {
   synopsis: { entities: ["movie", "series", "episode"], merge: "single" },
   ratings: { entities: MOVIE_AND_SERIES, merge: "list" },
-  cast: { entities: MOVIE_AND_SERIES, merge: "list", immutable: true },
+  // The one facet two providers answer the SAME question for: `servarr-metadata` serves it
+  // for both kinds, and `tmdb` serves a series again with real person ids. Concatenating
+  // would print every id-bearing actor beside an id-less twin, so the better-linked answer
+  // supersedes the other rather than joining it -- see `precedence`.
+  cast: { entities: MOVIE_AND_SERIES, merge: "list", immutable: true, precedence: linkableShare },
   crew: { entities: MOVIE_AND_SERIES, merge: "list", immutable: true },
   certification: { entities: MOVIE_AND_SERIES, merge: "list" },
   trailer: { entities: MOVIE_AND_SERIES, merge: "list" },
@@ -660,24 +714,48 @@ export interface FacetContribution<F extends FacetName = FacetName> {
  *
  * Contributions arrive keyed by plugin id and are combined in plugin-id order, so the
  * merged value never depends on filesystem iteration order. A `list` facet concatenates
- * (RT audience lands beside servarr's IMDb score); a `single` facet takes the first,
- * which is arbitrary but deterministic -- an explicit precedence knob is a later card,
- * and no facet has two competing single-value providers today.
+ * (RT audience lands beside servarr's IMDb score); a `single` facet takes the first, which
+ * is arbitrary but deterministic.
+ *
+ * A facet that declares `precedence` narrows the field FIRST -- see `supersede`. That runs
+ * ahead of every merge mode rather than beside them, so "who answers" and "how the answers
+ * combine" stay two separate questions with one rule each.
  */
 export function mergeContributions<F extends FacetName>(
   facet: F,
   byPlugin: Map<string, FacetShapes[F]>,
 ): FacetShapes[F] | null {
   const ordered = [...byPlugin.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v);
-  if (ordered.length === 0) return null;
+  const kept = supersede(facet, ordered);
+  if (kept.length === 0) return null;
   switch (FACETS[facet].merge) {
     case "list":
-      return (ordered as unknown[][]).flat() as FacetShapes[F];
+      return (kept as unknown[][]).flat() as FacetShapes[F];
     case "object":
-      return Object.assign({}, ...ordered) as FacetShapes[F];
+      return Object.assign({}, ...kept) as FacetShapes[F];
     default:
-      return ordered[0] as FacetShapes[F];
+      return kept[0] as FacetShapes[F];
   }
+}
+
+/**
+ * Only the strongest contributions, for a facet that declares what strength means.
+ *
+ * Identity for the fourteen facets that declare nothing, and identity again when only one
+ * provider answered -- which is what makes a keyless checkout behave exactly as it did
+ * before any competing provider existed, with no branch anywhere that says so.
+ *
+ * Ties are KEPT, all of them. Two providers with equally linkable cast lists is a real
+ * situation with no defensible winner, and silently dropping one on plugin-id order would
+ * be the arbitrary choice this whole mechanism exists to replace.
+ */
+function supersede<F extends FacetName>(facet: F, contributions: FacetShapes[F][]): FacetShapes[F][] {
+  const precedence = FACETS[facet].precedence;
+  if (!precedence || contributions.length < 2) return contributions;
+
+  const scored = contributions.map((data) => ({ data, score: precedence(data) }));
+  const best = Math.max(...scored.map((s) => s.score));
+  return scored.filter((s) => s.score === best).map((s) => s.data);
 }
 
 /**
