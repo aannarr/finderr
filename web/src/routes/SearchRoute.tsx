@@ -163,14 +163,29 @@ export function SearchRoute() {
     return () => ctrl.abort();
   }, [debouncedQuery, filters]);
 
+  /*
+    THE FRONT PAGE IS ASKED FOR ON EVERY MOUNT, even when state already holds one.
+
+    This used to open with `if (shelves) return`, which made the seeded copy above the last
+    word for the rest of the session: a reader who requested a title then came Back was
+    shown a page assembled before they asked, on a shelf named after having asked. The
+    server was already rebuilding for exactly that click (`primeShelves("arr")`); nothing
+    on this side ever asked again.
+
+    Asking unconditionally costs nothing on the ordinary Back. `getDiscover` short-circuits
+    on its own cache and resolves with the SAME array it handed out before, and React bails
+    out of a re-render when state is set to the value it already holds. What it buys is the
+    one case the early return swallowed: a page marked paint-only by `postRequest` is drawn
+    instantly from cache AND refetched.
+  */
   useEffect(() => {
-    // A cache hit already painted above, so there is nothing to fetch and nothing to
-    // set -- setting state here would be a wasted render on every Back.
-    if (shelves) return;
     getDiscover()
       .then((d) => setShelves(d.shelves))
-      .catch(() => setShelves([]));
-  }, [shelves]);
+      // `[]` is "the server says there are no shelves", so it may only be reached from
+      // having nothing. A refetch that fails behind a page already on screen must leave
+      // that page alone rather than replace it with the empty state.
+      .catch(() => setShelves((held) => held ?? []));
+  }, []);
 
   const activeFilters = useMemo(
     () => Object.entries(filters).filter(([, v]) => v !== undefined && v !== ""),

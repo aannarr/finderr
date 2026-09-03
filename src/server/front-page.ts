@@ -35,6 +35,31 @@
  * over computing per request is ZERO for the arr tier: the page was already reading a mirror
  * up to 60 seconds old.
  *
+ * ## What the READER actually asks for, which is not the same list
+ *
+ * A rebuild only reaches a browser that asks again, and the browser's own rules for asking
+ * are stricter than this table. `web/src/lib/api.ts` holds the front page for the whole
+ * session and short-circuits on it, so within one session `/api/discover` is fetched once
+ * per REASON TO DOUBT it rather than once per visit. There is currently exactly one:
+ * `postRequest` marks the held copy paint-only, which is the client half of the
+ * `primeShelves("arr")` that `POST /api/requests` performs.
+ *
+ * So the honest reconciliation, per tier:
+ *
+ * | tier    | rebuilt        | the asker sees it                                     |
+ * |---------|----------------|-------------------------------------------------------|
+ * | `arr`   | 60s, and on ask | their own request: immediately, next time the front page is drawn. Anything else -- an arrival, somebody else's request -- on the next reload |
+ * | `tmdb`  | 6h             | next reload                                            |
+ * | `index` | daily          | next reload                                            |
+ *
+ * A reload is enough for the other two because a rebuild that slow will not happen while
+ * somebody is looking, and it is enough for an ARRIVAL because a reader learns about one
+ * from the "N ready" badge, which polls `/api/requests` on its own eight-second clock. What
+ * a reload could NOT fix was the request the reader just made, which is why that one gets
+ * an invalidation and the rest do not. Giving the client a TTL instead would cover all
+ * three at the cost of refetching a page that is usually byte-identical; if the arrival lag
+ * ever reads as a bug rather than as a slow fact, that is the change to make.
+ *
  * ## What is deliberately NOT held
  *
  * Two things stay on the request path because they change when a person clicks something,

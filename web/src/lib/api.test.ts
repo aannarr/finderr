@@ -20,6 +20,7 @@ import {
   cachedDiscover,
   getDiscover,
   getTitleDetail,
+  postRequest,
   postSeasonRequest,
   prefetchTitle,
   resetCaches,
@@ -65,6 +66,41 @@ describe("getDiscover", () => {
     expect(cachedDiscover()).toBeUndefined();
     const fetched = await getDiscover();
     expect(cachedDiscover()).toEqual(fetched);
+  });
+
+  /**
+   * THE SHELF NAMED AFTER HAVING ASKED.
+   *
+   * `POST /api/requests` rebuilds the arr tier on the server for exactly this reason. Before
+   * this, the asker's own browser was the one client guaranteed not to see the result: it had
+   * fetched the front page once and would not fetch it again for the rest of the session.
+   */
+  test("requesting a title makes the next front page a fetch, not a cache hit", async () => {
+    await getDiscover();
+    await postRequest("tt1375666");
+    await getDiscover();
+    expect(calls).toEqual(["/api/discover", "/api/requests", "/api/discover"]);
+  });
+
+  test("the held page still PAINTS while it waits to be asked about again", async () => {
+    const fetched = await getDiscover();
+    await postRequest("tt1375666");
+    // Dropping the entry would refetch too, and would cost the reader a blank front page
+    // for the length of that request on the way Back from the title they just asked for.
+    expect(cachedDiscover()).toEqual(fetched);
+  });
+
+  test("a failed request is not invalidation -- nothing changed, so nothing is stale", async () => {
+    await getDiscover();
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      return { ok: false, status: 403, json: async () => ({ error: "over quota" }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await expect(postRequest("tt1375666")).rejects.toThrow("over quota");
+
+    stubFetch();
+    await getDiscover();
+    expect(calls).toEqual(["/api/discover", "/api/requests"]);
   });
 
   test("a failed request is not cached, so a retry can still succeed", async () => {

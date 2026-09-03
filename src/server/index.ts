@@ -1754,12 +1754,20 @@ const appRoutes = {
    * `discoveryShelves()` owns which titles are on the front page; this handler only
    * turns index rows into cards. The warm loop reads the same function, which is what
    * makes "every shelf title is already warm" true by construction.
+   *
+   * > [!IMPORTANT] NOT storable by the browser, and it used to be `private, max-age=600`
+   * > A ten-minute window here outlives every reason the page is rebuilt: the arr tier
+   * > refreshes every 60 seconds and `POST /api/requests` primes it immediately, so the
+   * > browser could answer the asker's own refetch out of its cache with a body assembled
+   * > before they clicked. The window was buying nothing either -- the client holds this
+   * > page in memory for the session and persists it to IndexedDB for the next one (see
+   * > `web/src/lib/api.ts`), so a repeat visit was already free, and a RELOAD is exactly
+   * > the moment the reader is asking to be told again.
+   * >
+   * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
    */
   "/api/discover": () =>
-    json(
-      { shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) },
-      { cache: perSession(600) },
-    ),
+    json({ shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) }),
 
   "/api/requests": {
     /**

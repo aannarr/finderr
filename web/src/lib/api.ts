@@ -857,8 +857,11 @@ export function cachedDiscover(): { shelves: DiscoverShelf[] } | undefined {
 }
 
 export async function getDiscover(): Promise<{ shelves: DiscoverShelf[] }> {
-  // `fresh`: a restored front page is drawn immediately by `cachedDiscover` and is still
-  // refetched here, because a shelf is a claim about what the library holds NOW.
+  // `fresh`, so a front page that is only worth PAINTING is still refetched: one restored
+  // from disk, and one this session invalidated by requesting something (see
+  // `staleDiscover`). A shelf is a claim about what the library holds NOW, and callers are
+  // expected to ask on every visit -- the short-circuit here is the only thing deciding
+  // whether asking costs a request.
   const hit = discoverCache.fresh(DISCOVER_KEY);
   if (hit) return hit;
   return dedupe("discover", async () => {
@@ -873,6 +876,22 @@ export async function getDiscover(): Promise<{ shelves: DiscoverShelf[] }> {
     }
     return data;
   });
+}
+
+/**
+ * The held front page still draws, but stops being an answer.
+ *
+ * The client half of the server's `primeShelves("arr")`. The server rebuilds the arr tier
+ * the moment a request is written -- "Recently requested" is the one shelf a PERSON fills --
+ * and without this the asker's own browser never asks again for the rest of the session, so
+ * the shelf named after having asked is the one place their request does not appear.
+ *
+ * Private on purpose. Which mutations move a shelf is a fact about the shelves, and it
+ * belongs beside them rather than at each call site: a second caller of `postRequest` must
+ * not have to remember this.
+ */
+function staleDiscover(): void {
+  discoverCache.stale(DISCOVER_KEY);
 }
 
 export interface BrowseResponse {
@@ -1030,6 +1049,10 @@ export async function postRequest(
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `request failed: ${res.status}`);
+  // A request row now exists that did not before, and "Recently requested" is built from
+  // those rows. Only here: the season and episode grains below write no request row -- they
+  // ask Sonarr for episodes of a series the library already holds -- so no shelf moves.
+  staleDiscover();
   return body as { request: MediaRequest };
 }
 

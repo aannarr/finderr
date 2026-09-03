@@ -85,6 +85,37 @@ describe("restored entries", () => {
   });
 });
 
+/**
+ * The same paint-but-ask standing, reached from a mutation instead of from disk.
+ *
+ * Without it a client that has fetched the front page once never asks again, so the server
+ * rebuilding a shelf the moment somebody requests a title changes nothing the asker can see.
+ */
+describe("stale entries", () => {
+  test("get still draws them and fresh refuses them", () => {
+    const c = new Cache<string>(10);
+    c.set("discover", "before the request");
+    c.stale("discover");
+    expect(c.get("discover")).toBe("before the request");
+    expect(c.fresh("discover")).toBeUndefined();
+  });
+
+  test("the refetch that follows makes it an answer again", () => {
+    const c = new Cache<string>(10);
+    c.set("discover", "before");
+    c.stale("discover");
+    c.set("discover", "after");
+    expect(c.fresh("discover")).toBe("after");
+  });
+
+  test("marking a key we do not hold leaves nothing behind for the next write", () => {
+    const c = new Cache<string>(10);
+    c.stale("discover");
+    c.set("discover", "fetched");
+    expect(c.fresh("discover")).toBe("fetched");
+  });
+});
+
 describe("revision", () => {
   test("it moves on a write and on a clear", () => {
     const c = new Cache<number>(10);
@@ -106,6 +137,15 @@ describe("revision", () => {
     const start = c.revision;
     c.restore([["a", 1]]);
     expect(c.revision).toBe(start);
+  });
+
+  /** For the same reason: the snapshot stores values, and this changes none of them. */
+  test("marking an entry stale does not move it", () => {
+    const c = new Cache<number>(10);
+    c.set("a", 1);
+    const after = c.revision;
+    c.stale("a");
+    expect(c.revision).toBe(after);
   });
 
   test("a read does not move it", () => {
