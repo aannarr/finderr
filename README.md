@@ -78,11 +78,14 @@ outrank *The Shawshank Redemption*. `/lists` is the catalogue that falls out of 
 250, a per-genre and a per-decade list, each of them a plain browse with `sort=rank` behind
 it, so adding one costs a row in a table and no new query.
 
-Every Academy Award nomination since 1929 is in the index too, from
-[oscar_data](https://github.com/DLu/oscar_data). `/awards/oscars` is a timeline of every
-ceremony, each year is its own page, and a title or a person that was ever nominated
-carries its wins and nominations on its page. It is a local table like everything else:
-imported on a daily timer, read off disk, and it costs no API call at render.
+Awards are in the index too. Every Academy Award nomination since 1929 comes from
+[oscar_data](https://github.com/DLu/oscar_data); the Palme d'Or and the Primetime Emmy for
+Outstanding Drama Series come from [Wikidata](https://www.wikidata.org/), which records the
+winners and not the field. `/awards/oscars`, `/awards/palme-dor` and
+`/awards/emmy-drama-series` are each a timeline of every edition, each edition is its own
+page, and a title or a person that was ever nominated carries its wins on its page. They
+are local tables like everything else: imported on a daily timer, read off disk, and they
+cost no API call at render.
 
 The title page paints at once and fills in behind itself: synopsis, ratings from IMDb,
 TMDB, Metacritic, Trakt and Rotten Tomatoes (critics and audience), a trailer link, cast
@@ -340,7 +343,7 @@ bun install
 cp .env.example .env               # arr keys, optional TMDB and Plex, auth
 bun run logos:import               # studio / network / rating marks, ~12 MB, optional
 bun run index:build                # downloads the dumps, builds, gates, promotes
-bun run awards:import              # every Oscar nomination, 2.2 MB -- optional, see below
+bun run awards:import              # the Oscars, Cannes and the Emmy -- optional, see below
 bun run build                      # the web UI
 bun start                          # http://localhost:7979
 ```
@@ -350,11 +353,13 @@ bun start                          # http://localhost:7979
 belong to their trademark holders and are not tracked here. Skip the step and every badge
 prints its name instead. The Docker build runs it for you.
 
-`awards:import` is optional in the same way `index:build` is: the server imports the
-nominations itself twelve seconds after a cold boot and re-checks daily, so you only run
-it by hand to fill the awards pages before the first check, or with `--file oscars.tsv`
-on a machine with no route to GitHub. A failed import is logged and swallowed -- the
-awards pages come up empty and nothing else changes.
+`awards:import` is optional in the same way `index:build` is: the server imports the rows
+itself twelve seconds after a cold boot and re-checks daily, so you only run it by hand to
+fill the awards pages before the first check. `--award <id>` does one of them; `--award
+oscars --file oscars.tsv` reads the Academy's 2.2 MB file from disk on a machine with no
+route to GitHub. Each award is imported and reported separately, so a Wikidata outage
+costs the Oscars nothing. A failed import is logged and swallowed -- that award's page
+comes up empty and nothing else changes.
 
 `bun run dev` gives you hot reload (API on 7979, Vite on 7980). The repo's own
 `docker-compose.yml` builds the image locally and reads the unprefixed names in `.env`;
@@ -671,8 +676,8 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/discover` | the front-page shelves, pure index queries |
 | `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
-| `GET` | `/api/awards/oscars` | the ceremony timeline and its provenance |
-| `GET` | `/api/awards/oscars/:ceremony` | one year, categories in their canonical order |
+| `GET` | `/api/awards/:award` | one award's timeline and its provenance. `oscars`, `palme-dor`, `emmy-drama-series` |
+| `GET` | `/api/awards/:award/:edition` | one edition, categories in their canonical order. The edition is the ceremony number where the source numbers them and the year where it does not |
 | `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side. Also carries `unseen`, your own count of arrivals you have not been shown |
 | `GET` | `/api/requests?mine=1` | the same shape, narrowed to the caller. A server-side filter, because `requested_by` is stripped before a non-admin ever sees it |
 | `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
@@ -843,7 +848,7 @@ mature one, and it does plenty finderr does not:
 | 4K / second instance | yes | no |
 | Issue reporting | yes | no |
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
-| Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination |
+| Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination and two winner lists from Wikidata |
 | Extensibility | none | addons: facets and panes |
 | On a phone | works | built for it: installs to the home screen, no zoom on focus, one-handed search, safe-area aware, works through a flaky connection |
 | Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
@@ -903,6 +908,10 @@ people and is not covered by that licence:
   commit it parsed and says so on the awards page.
 - The id crosswalk is [Wikidata](https://www.wikidata.org/) (CC0), queried through
   [QLever](https://qlever.cs.uni-freiburg.de/) at the University of Freiburg (Apache-2.0).
+- The Palme d'Or and Primetime Emmy winners come from Wikidata too, through its own
+  [query service](https://query.wikidata.org/). There is no commit to pin on a database
+  that changes continuously, so finderr records the QUERY and the moment it ran, and the
+  awards page prints both.
 - The logo set is fetched at build time from [Kometa](https://github.com/Kometa-Team/Kometa/)
   (MIT). The marks themselves remain their trademark holders' property and are used for
   identification only.
