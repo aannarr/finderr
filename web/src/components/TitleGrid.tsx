@@ -7,14 +7,63 @@
  * edge in the discovery graph cheap instead of another bespoke page.
  */
 
-import { memo } from "react";
+import { type KeyboardEvent, memo } from "react";
 import type { Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
+import { CARD_LINK_SELECTOR, CARD_REQUEST_SELECTOR, CARD_SELECTOR } from "../lib/card-dom";
+import { ariaKeyShortcuts, HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 import { Skeleton } from "./FacetPane";
+import { moveRovingFocus, type RovingItems } from "./RovingFocus";
 import { TitleCard } from "./TitleCard";
 
 /** The one grid class list, shared with `GridSkeleton` so the two cannot drift apart. */
 const GRID_CLASS = "card-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
+
+/** Arrows move between CARDS; the element that takes focus is the card's primary link. */
+const CARD_ITEMS: RovingItems = { selector: CARD_SELECTOR, focusable: CARD_LINK_SELECTOR };
+
+/** Announced on every card's request button, from the same binding the handler matches. */
+const REQUEST_SHORTCUT = ariaKeyShortcuts(KEYMAP.request, HOST_PLATFORM);
+
+/**
+ * Drive a grid or a shelf from the keyboard: arrows move, `⌘⏎` asks for what has focus.
+ *
+ * Plain `Enter` is deliberately not handled. Focus lands on the card's own link, and the
+ * browser has followed a focused link on Enter since before any of us started -- a handler
+ * here would be a second implementation of the one thing already working, and `firesFrom`
+ * already keeps the page-level `loadMore` off a focused link for the same reason.
+ *
+ * `⌘⏎` is handled, because nothing else could be: it is the app's `request` action, but the
+ * grid draws sixty requestable titles and a global binding cannot say which one is meant.
+ * Focus is what says so. It presses the card's OWN request button rather than calling
+ * `request` with the row it rendered, which is not squeamishness -- `RequestAction` draws
+ * that button only for a title that can actually be requested, so pressing it inherits
+ * "owned beats requested, a dead end is not a retry" instead of re-deriving it here.
+ *
+ * `Shelf` shares this handler. A row is a grid with one line in it, which is exactly what
+ * `columnsInGrid` reports for a flex container, so ↑ and ↓ decline to move and scroll the
+ * page -- the only way to reach the next shelf.
+ *
+ * The related-titles row on the title page draws these same cards and deliberately does NOT
+ * get this: ← and → are bound there to step the season selector, and two meanings for one
+ * key on one screen is the collision this file exists on the right side of.
+ */
+function onCardKeyDown(event: KeyboardEvent<HTMLElement>): void {
+  if (matchesBinding(event, KEYMAP.request, HOST_PLATFORM)) {
+    const card = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(CARD_SELECTOR);
+    const button = card?.querySelector<HTMLElement>(CARD_REQUEST_SELECTOR);
+    if (!button) return;
+    // Without this the browser opens the focused link in a new tab, which is what ⌘⏎ means
+    // to it -- so the request would land AND the reader would lose the page.
+    event.preventDefault();
+    button.click();
+    return;
+  }
+  // A modified arrow is the browser's (⌘← is Back on a Mac), and `⌘/` opens navigation
+  // mode from anywhere; swallowing either would make the grid a trap.
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (moveRovingFocus(event.currentTarget, CARD_ITEMS, event.key)) event.preventDefault();
+}
 
 export const TitleGrid = memo(function TitleGrid({
   titles,
@@ -33,9 +82,22 @@ export const TitleGrid = memo(function TitleGrid({
 }) {
   const { request } = useApp();
   return (
-    <div className={GRID_CLASS}>
+    /*
+      The handler does not make this container a control -- it delegates to the cards' own
+      links and buttons, which are what a reader focuses and what the browser activates. A
+      `role` to satisfy the rule would be a lie: this is not a `grid` widget with rows and
+      gridcells, it is a plain list of links whose arrow keys have been taught the layout.
+    */
+    // biome-ignore lint/a11y/noStaticElementInteractions: the focusable children are the controls; see above
+    <div className={GRID_CLASS} onKeyDown={onCardKeyDown}>
       {titles.map((t, rank) => (
-        <TitleCard key={t.tconst} title={t} onRequest={request} onOpen={onOpen && (() => onOpen(t, rank))} />
+        <TitleCard
+          key={t.tconst}
+          title={t}
+          onRequest={request}
+          onOpen={onOpen && (() => onOpen(t, rank))}
+          requestShortcut={REQUEST_SHORTCUT}
+        />
       ))}
     </div>
   );
@@ -107,7 +169,12 @@ export function Shelf({
       </div>
 
       {/* A real ul/li: a shelf IS a list, and the semantics come free. */}
-      <ul className="shelf-row -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-2">
+      {/* Same handler as the grid, and the same reasoning: the keys act on the cards' own
+          links rather than on the list. */}
+      <ul
+        className="shelf-row -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-2"
+        onKeyDown={onCardKeyDown}
+      >
         {titles.map((t) => (
           <li key={t.tconst} className="w-36 shrink-0 snap-start sm:w-40 lg:w-44">
             <ShelfCard title={t} />
@@ -120,7 +187,7 @@ export function Shelf({
 
 const ShelfCard = memo(function ShelfCard({ title }: { title: Title }) {
   const { request } = useApp();
-  return <TitleCard title={title} onRequest={request} />;
+  return <TitleCard title={title} onRequest={request} requestShortcut={REQUEST_SHORTCUT} />;
 });
 
 /**

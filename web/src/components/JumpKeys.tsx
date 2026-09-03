@@ -40,6 +40,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { CARD_LINK_SELECTOR } from "../lib/card-dom";
 import { jumpLabelAt, jumpLabelFor } from "../lib/jump-keys";
 import { HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 
@@ -264,7 +265,9 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
       if (!target) return;
       // The card's own primary link, which owns where it goes and the prefetch on the way.
       // Clicking it rather than navigating here means this file holds no route knowledge.
-      target.querySelector<HTMLElement>("a[href]")?.click();
+      // The SAME link the grid's arrow keys focus, named once in `lib/card-dom.ts` -- it
+      // was "the first a[href]" here and a position is not a contract.
+      target.querySelector<HTMLElement>(CARD_LINK_SELECTOR)?.click();
     };
 
     /*

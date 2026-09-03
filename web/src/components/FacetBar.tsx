@@ -1,6 +1,7 @@
 import type { Facets, Filters } from "../lib/api";
 import { ClearChip, ToggleChip } from "./Chip";
 import type { KeyAction } from "./Kbd";
+import { useChipGroup } from "./RovingFocus";
 
 /**
  * Refinement buttons derived from the result set.
@@ -33,13 +34,34 @@ export function FacetBar({
   clearShortcut: KeyAction;
   activeCount: number;
 }) {
+  /*
+    Twenty chips between the search box and the results is a tab order nobody walks to the
+    end of, so the bar is ONE tab stop and ← → move within it. Focus does not choose here:
+    each chip is an independent filter whose click navigates and refetches, so arrowing
+    across eight genres would fire eight searches the reader never asked for. Space and
+    Enter still toggle, natively, because these are real buttons.
+  */
+  const chips = useChipGroup();
+
   const hasAny =
     facets.genre.length > 0 || facets.decade.length > 0 || facets.kind.length > 0 || facets.year.length > 0;
   if (!hasAny) return null;
 
   return (
     <div className="mt-2.5 -mx-4 overflow-x-auto px-4 pb-1">
-      <div className="flex items-center gap-1.5">
+      {/*
+        A named toolbar, which this row did not have. `role="toolbar"` is the ARIA for a
+        set of controls sharing one tab stop and navigated with the arrow keys, and it is
+        what tells a screen reader that ← → do something here rather than scrolling.
+      */}
+      <div
+        ref={chips.ref}
+        onKeyDown={chips.onKeyDown}
+        role="toolbar"
+        aria-label="Refine results"
+        aria-orientation="horizontal"
+        className="flex items-center gap-1.5"
+      >
         {activeCount > 0 && <ClearChip count={activeCount} onClick={onClear} shortcut={clearShortcut} />}
 
         {/* Type first -- "did you mean the series or the film" is the single most

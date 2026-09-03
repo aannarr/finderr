@@ -39,9 +39,19 @@ export const TitleCard = memo(function TitleCard({
   title: t,
   onRequest,
   onOpen,
+  requestShortcut,
 }: {
   title: Title;
   onRequest: (t: Title) => void;
+  /**
+   * The enclosing grid answers `⌘⏎` for whichever card has focus, so this card's request
+   * button may say so.
+   *
+   * A prop rather than something the card assumes, because `TitleCard` is also drawn in the
+   * related-titles row on the title page, where `⌘⏎` is bound to the page's own title
+   * instead. Announcing it there would teach a key that requests the wrong film.
+   */
+  requestShortcut?: string;
   /**
    * The card was OPENED -- both links, one meaning.
    *
@@ -68,6 +78,9 @@ export const TitleCard = memo(function TitleCard({
     // different heights across the row.
     <article
       ref={jump.ref}
+      // The handle every keyboard feature addresses a card by; `lib/card-dom.ts` says why
+      // the three markers are named there rather than being guessed at by selector.
+      data-card=""
       className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface"
     >
       {/*
@@ -117,10 +130,13 @@ export const TitleCard = memo(function TitleCard({
           // the title text opened the card exactly as much as one who clicked the poster.
           onClick={onOpen}
           /*
-            The FIRST `a[href]` inside the card, which is what `JumpKeysProvider` clicks.
+            THE CARD'S PRIMARY LINK: what `JumpKeysProvider` clicks and what the grid's
+            arrow keys focus, marked rather than found by position so neither feature has
+            its own idea of which link a card's is. See `lib/card-dom.ts`.
             It is also the one a reader focusing this card lands on, so the shortcut is
             announced on the element that answers to it.
           */
+          data-card-link=""
           aria-keyshortcuts={jumpLabel ? jumpAriaKeyShortcut(jumpLabel) : undefined}
           className="absolute inset-0 z-10 cursor-pointer outline-none
                      focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
@@ -273,7 +289,7 @@ export const TitleCard = memo(function TitleCard({
         )}
 
         <div className="mt-auto pt-2">
-          <RequestAction title={t} onRequest={onRequest} />
+          <RequestAction title={t} onRequest={onRequest} shortcut={requestShortcut} />
         </div>
       </div>
     </article>

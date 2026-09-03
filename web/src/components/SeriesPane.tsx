@@ -47,6 +47,7 @@ import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap
 import { ToggleChip } from "./Chip";
 import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
+import { useChipGroup } from "./RovingFocus";
 
 export interface SeriesPaneProps {
   facets: ResolvedFacets | undefined;
@@ -148,6 +149,18 @@ function SeasonBrowser({
   const prevKey = useKeyAction("prevSeason", () => step(-1), stepable);
   const nextKey = useKeyAction("nextSeason", () => step(1), stepable);
 
+  /*
+    Nine seasons is nine tab stops, so the row is ONE and ← → move within it.
+
+    `selectionFollowsFocus` because the arrows on this row have ALWAYS switched the season
+    outright, through the global `prevSeason`/`nextSeason` bindings above -- so focus moving
+    without the season following would be a regression dressed up as a standard. Exactly one
+    season is chosen at a time, which is the shape the pattern is for. The group's handler
+    runs first and stops the event, so a single → steps once rather than twice; the outcome
+    is the one the global key would have produced, with focus where the reader is looking.
+  */
+  const chips = useChipGroup({ selectionFollowsFocus: true });
+
   return (
     <>
       <SeasonStandingLine gap={gap} />
@@ -165,7 +178,14 @@ function SeasonBrowser({
       {/* biome-ignore lint/a11y/useSemanticElements: the rule's suggested <fieldset> is for form
           fields, and brings a `min-inline-size: min-content` that fights this row's horizontal
           overflow. These are toggle buttons, and `role="group"` is the ARIA that describes them. */}
-      <div role="group" aria-label="Seasons" {...mergeKeyProps(prevKey, nextKey)} className="flex gap-1.5">
+      <div
+        role="group"
+        aria-label="Seasons"
+        ref={chips.ref}
+        onKeyDown={chips.onKeyDown}
+        {...mergeKeyProps(prevKey, nextKey)}
+        className="flex gap-1.5"
+      >
         {/*
           The keys sit OUTSIDE the scrolling row, before it. Nine seasons overflow the
           width, so a hint at the end of the chips is off-screen until you have already

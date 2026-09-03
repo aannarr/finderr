@@ -36,10 +36,21 @@ export function RequestAction({
   title: t,
   onRequest,
   tone = "block",
+  shortcut,
 }: {
   title: Title;
   onRequest: (t: Title) => void;
   tone?: RequestTone;
+  /**
+   * The `aria-keyshortcuts` value for a key that requests THIS title while it is focused.
+   *
+   * A prop rather than a `useKeyAction` here, because a grid draws sixty of these and each
+   * one would otherwise hang its own global listener for a key only the focused card may
+   * answer. The grid that owns the handler is the one place that knows the key is live, so
+   * it is the one place that says so -- a list row on an awards page passes nothing and
+   * announces nothing, which is the truth there.
+   */
+  shortcut?: string;
 }) {
   const shell = SHELL[tone];
 
@@ -80,6 +91,14 @@ export function RequestAction({
     <button
       type="button"
       onClick={() => onRequest(t)}
+      /*
+        Drawn ONLY for a title that can actually be requested -- the two branches above
+        return a `<span>` instead -- which is what lets the keyboard ask "may this be
+        requested" by looking for this element rather than re-deriving the three-way rule.
+        See `CARD_REQUEST_SELECTOR` in `lib/card-dom.ts`.
+      */
+      data-card-request=""
+      aria-keyshortcuts={shortcut}
       className={`${shell} bg-accent font-medium text-black transition-opacity hover:opacity-90 active:opacity-75`}
     >
       Request
