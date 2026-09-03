@@ -1209,17 +1209,29 @@ export async function postEpisodeRequest(tconst: string, season: number, episode
 }
 
 /**
- * Ask Sonarr for the REST of one season of a series it already holds.
+ * Ask Sonarr for the REST of one season -- or of several -- of a series it already holds.
  *
- * The body names a SEASON and never a list of episodes: the server picks them off the
+ * The body names SEASONS and never a list of episodes: the server picks them off the
  * episode mirror, which is the only thing that knows what aired and what we hold. That is
- * also why the count comes back rather than being assumed -- the mirror may have moved on
+ * also why the counts come back rather than being assumed -- the mirror may have moved on
  * since the page drew its "missing 4 episodes" line, and the toast should say what was
  * actually queued.
+ *
+ * ONE function for one season and for six, because it is one operation: the season header's
+ * button passes a list of one and gets the same answer shape the dialog does. `seasons` in
+ * the reply is the seasons that actually had a hole, which is not always the ones asked for.
  */
-export async function postSeasonRequest(tconst: string, season: number): Promise<{ episodes: number }> {
-  const body = await postRequestGrain("/api/requests/season", { tconst, season }, "season request");
-  return { episodes: (body as { queued?: { episodes?: number } }).queued?.episodes ?? 0 };
+export async function postSeasonRequest(
+  tconst: string,
+  seasons: readonly number[],
+): Promise<{ episodes: number; seasons: number[] }> {
+  const body = await postRequestGrain(
+    "/api/requests/season",
+    { tconst, seasons: [...seasons] },
+    "season request",
+  );
+  const queued = (body as { queued?: { episodes?: number; seasons?: number[] } }).queued;
+  return { episodes: queued?.episodes ?? 0, seasons: queued?.seasons ?? [] };
 }
 
 /**

@@ -11,10 +11,18 @@
  * file deals in `number[]`, which is exactly what the JSON body carries.
  */
 
+import { SPECIALS_SEASON } from "./facet-panes";
 import type { Season } from "./facets";
+import type { SeasonGap } from "./season-gap";
 
-/** Season 0 is the specials. Skyhook returns one for effectively every series. */
-export const SPECIALS = 0;
+/**
+ * Season 0 is the specials. Skyhook returns one for effectively every series.
+ *
+ * Re-exported rather than declared: `facet-panes` already owned this number for
+ * `orderSeasons` and `seasonLabel`, and a second `= 0` here is a rule two files could
+ * disagree about. The alias survives because callers read better for it.
+ */
+export const SPECIALS = SPECIALS_SEASON;
 
 /**
  * What is ticked when the selector first opens: every real season, specials excluded.
@@ -88,6 +96,74 @@ export function summariseSeasons(chosen: readonly number[] | null | undefined): 
   const ranges = formatSeasonRanges(real);
   const noun = real.length === 1 ? "Season" : "Seasons";
   return specials ? `${noun} ${ranges} + specials` : `${noun} ${ranges}`;
+}
+
+/**
+ * What is ticked when the selector opens over a series we ALREADY hold: the seasons with a
+ * hole in them, and nothing else.
+ *
+ * The add path's default is "everything", because a series nobody holds is a series you want
+ * all of. Here the reader can see the sentence saying which seasons are short, and pre-ticking
+ * a season they already have in full would offer to re-search 12 episodes they own.
+ *
+ * `current` seasons -- everything aired so far, more to come -- are deliberately NOT ticked.
+ * They have no hole today, and Sonarr is already monitoring the rest.
+ */
+export function fillSelection(gap: readonly SeasonGap[]): number[] {
+  return gap
+    .filter((g) => g.holding === "partial")
+    .map((g) => g.season)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * How many episodes the current selection would actually fetch.
+ *
+ * The confirm button says this number, so it comes from the same `SeasonGap` list the chips
+ * were annotated from -- a button offering 85 while the chips add up to 83 is the exact
+ * disagreement `missingEpisodeIdsIn` exists to prevent on the server side.
+ *
+ * A ticked season with no hole contributes zero rather than being an error: the server drops
+ * it the same way, and the two must agree about what a redundant tick means.
+ */
+export function episodesInSelection(gap: readonly SeasonGap[], chosen: readonly number[]): number {
+  const wanted = new Set(chosen);
+  return gap.reduce((sum, g) => (wanted.has(g.season) ? sum + g.missing : sum), 0);
+}
+
+/**
+ * The number a chip wears in fill mode, or nothing at all.
+ *
+ * A season we hold in full gets no number, because "0" reads as a count of something rather
+ * than as the absence of a hole. The seasons worth ticking are exactly the ones wearing a
+ * figure, which is what makes the row scannable without reading a legend.
+ */
+export function missingInSeason(gap: readonly SeasonGap[], season: number): number | undefined {
+  const found = gap.find((g) => g.season === season);
+  return found && found.missing > 0 ? found.missing : undefined;
+}
+
+/**
+ * Stand-in seasons built from the numbers the episode mirror knows.
+ *
+ * The dialog is driven by the `seasons` facet, which is skyhook's and arrives whenever it
+ * arrives. The HEADER button that opens it is driven by the episode mirror, which is local
+ * -- so a reader can open the chooser before the facet has landed, and an empty dialog
+ * would be a worse answer than one whose chips read "Season 3" instead of "Season 3 ·
+ * Identity". Every field but the number is null, which is exactly what `seasonLabel` and
+ * `orderSeasons` already handle for a season skyhook never named.
+ */
+export function seasonsFromNumbers(numbers: readonly number[]): Season[] {
+  return [...new Set(numbers)]
+    .sort((a, b) => a - b)
+    .map((number) => ({
+      number,
+      name: null,
+      episodeCount: null,
+      premiereDate: null,
+      endDate: null,
+      image: null,
+    }));
 }
 
 /**

@@ -38,6 +38,17 @@ export interface EpisodeState {
   airDate: string | null;
 }
 
+/**
+ * Season 0 is the specials, and every series has one.
+ *
+ * Named here because the SERVER now has to know it too: the header's "is there a hole"
+ * question and `seriesGap` in the browser must agree about whether 55 behind-the-scenes
+ * clips make a complete show incomplete. `web/src/lib/facet-panes.ts` keeps its own copy
+ * for the same bundle-boundary reason `decadeOf` and `personNameKey` do -- importing a
+ * value across that line pulls a server module into the browser.
+ */
+export const SPECIALS_SEASON = 0;
+
 /** Today as a plain UTC date, matching how every date in this product is stored. */
 export function todayUtc(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
@@ -86,7 +97,7 @@ export function airedWithoutFile(standing: EpisodeStanding): boolean {
 }
 
 /**
- * Sonarr's ids for every aired episode of one season we hold no file for.
+ * Sonarr's ids for every aired episode of the given seasons we hold no file for.
  *
  * THIS INCLUDES THE EPISODES SONARR IS ALREADY SEARCHING FOR (`wanted`), and that is the
  * whole difference between the season grain and the per-row one. A row offers a button only
@@ -94,12 +105,61 @@ export function airedWithoutFile(standing: EpisodeStanding): boolean {
  * this", and a season summary that says four while the request fetches two is a worse lie
  * than one redundant indexer search. Sonarr's own "search season" does the same thing.
  *
- * Sorted by episode number so a queued batch reaches Sonarr in broadcast order, which is
- * also the order a reader watching the list expects things to fill in.
+ * Ordered by season and then by episode, so a batch reaches Sonarr in broadcast order across
+ * the whole selection rather than in whichever order the seasons were ticked. A reader who
+ * picks 5, 3, 4 gets season 3 searched first, because that is the order the show exists in
+ * and the order the episode list they were looking at fills in.
+ *
+ * A season in the list with nothing to fetch contributes nothing rather than refusing the
+ * whole selection -- ticking a complete season alongside two empty ones is a reader saying
+ * "these three", and the honest answer is to fetch what is missing from them. The caller
+ * decides what an EMPTY total means; here it is just an empty list.
  */
-export function missingEpisodeIds(states: readonly EpisodeState[], season: number, today: string): number[] {
+export function missingEpisodeIdsIn(
+  states: readonly EpisodeState[],
+  seasons: readonly number[],
+  today: string,
+): number[] {
+  const wanted = new Set(seasons);
   return states
-    .filter((s) => s.season === season && airedWithoutFile(episodeStanding(s, today)))
-    .sort((a, b) => a.episode - b.episode)
+    .filter((s) => wanted.has(s.season) && airedWithoutFile(episodeStanding(s, today)))
+    .sort((a, b) => (a.season === b.season ? a.episode - b.episode : a.season - b.season))
     .map((s) => s.arrEpisodeId);
+}
+
+/**
+ * Which of the given seasons actually had something to fetch.
+ *
+ * The response says what was queued, and "you asked for 3-7, seasons 3, 4 and 5 had holes"
+ * is a different sentence from "you asked for 3-7". Derived from the same filter as the ids
+ * so the two can never disagree.
+ */
+export function seasonsWithMissing(
+  states: readonly EpisodeState[],
+  seasons: readonly number[],
+  today: string,
+): number[] {
+  const wanted = new Set(seasons);
+  const found = new Set<number>();
+  for (const s of states) {
+    if (wanted.has(s.season) && airedWithoutFile(episodeStanding(s, today))) found.add(s.season);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Does this series have ANY aired episode we hold no file for, specials aside?
+ *
+ * Read straight off the mirror, with no facet in it -- which is what lets the title header
+ * decide whether to offer a "request the rest" control without waiting on skyhook. The
+ * seasons pane needs the `episodes` facet because it draws season names and air dates; the
+ * header only needs to know whether there is a hole at all.
+ *
+ * SPECIALS DO NOT COUNT, and that is not a detail. `seriesGap` skips season 0 for the stated
+ * reason that counting 55 behind-the-scenes clips as missing content tells every reader of
+ * every complete series that they are short of it. If this said otherwise, a series held in
+ * full would grow a Request button whose dialog then had nothing to pre-tick.
+ */
+export function hasMissingEpisodes(states: readonly EpisodeState[], today: string): boolean {
+  return states.some((s) => s.season !== SPECIALS_SEASON && airedWithoutFile(episodeStanding(s, today)));
 }

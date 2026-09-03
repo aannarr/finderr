@@ -14,6 +14,7 @@
 
 import { Link, useCanGoBack, useParams, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
+import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
@@ -33,6 +34,8 @@ import {
 import { useApp } from "../lib/app-context";
 import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
+import { seriesGap } from "../lib/season-gap";
+import { seasonsFromNumbers, summariseSeasons } from "../lib/season-select";
 import { useToasts } from "../lib/toasts";
 import { useTermLinks } from "../lib/use-term-links";
 import { type TitleDetailView, useTitleDetail } from "../lib/use-title-detail";
@@ -106,6 +109,36 @@ export function TitleRoute() {
   const [choosing, setChoosing] = useState(false);
 
   /*
+    THE SECOND THING THE CHOOSER IS FOR: a series we already hold, with holes in it.
+
+    `canRequest` above is false for anything in the library, which was the end of the road
+    for an owned series -- the only way to fill five missing seasons was to open the seasons
+    pane and press its per-season button five times. The same dialog answers both questions,
+    so this is one more mode on it rather than a second control.
+
+    > [!IMPORTANT] The BUTTON is decided by the mirror; the NUMBERS come from the facet
+    > `hasMissingEpisodes` reads `episodeState`, which is our own SQLite and arrives with the
+    > local half -- so whether this control exists is settled at the same moment as the rest
+    > of the header, and skyhook cannot move it. The gap's per-season counts DO need the
+    > `episodes` facet, and they only ever fill in numbers inside a control that is already
+    > on screen. That split is what keeps a facet from pushing the header around while still
+    > letting the dialog say "85 episodes" rather than "some".
+  */
+  const episodesFacet = facets?.episodes;
+  const seriesEpisodes = episodesFacet?.status === "ready" ? episodesFacet.data : null;
+  const today = todayUtc();
+  const holed = Boolean(title?.inLibrary && episodeState && hasMissingEpisodes(episodeState, today));
+  /*
+    Computed here as well as in `SeriesPane`, from the same pure function over the same
+    inputs -- not copied. `seriesGap` is the single owner of the rule, and two calls to it
+    cannot disagree the way two spellings of it would.
+  */
+  const gap =
+    holed && seasons && seriesEpisodes ? seriesGap(seasons, seriesEpisodes, episodeState, today) : [];
+  const chooserSeasons =
+    seasons ?? (holed && episodeState ? seasonsFromNumbers(episodeState.map((e) => e.season)) : null);
+
+  /*
     Arr settings for this one request, ADMIN ONLY.
 
     Held here rather than inside `RequestOptions` because the Request button is what sends
@@ -116,9 +149,12 @@ export function TitleRoute() {
   */
   const [overrides, setOverrides] = useState<RequestOverrides>({});
 
+  /** True whenever the chooser is open over a series we already hold. */
+  const filling = holed;
+
   const startRequest = () => {
     if (!title) return;
-    if (choosable) setChoosing(true);
+    if (choosable || filling) setChoosing(true);
     else void request(title, null, overrides);
   };
 
@@ -152,20 +188,27 @@ export function TitleRoute() {
     between the render and the click -- and reporting what was actually queued is the only
     number that is true when it is read.
   */
-  const requestSeason = (season: number) => {
+  const requestSeasons = (chosen: readonly number[]) => {
     if (!title) return;
-    const label = `Season ${season}`;
+    const label = summariseSeasons(chosen);
     const id = toasts.push(`Requesting ${title.title} ${label}`);
-    void postSeasonRequest(title.tconst, season)
-      .then(({ episodes }) =>
+    void postSeasonRequest(title.tconst, chosen)
+      .then(({ episodes, seasons: filled }) =>
         toasts.resolve(
           id,
           "success",
-          `Sonarr is looking for ${episodes} episode${episodes === 1 ? "" : "s"} of ${label}`,
+          // BOTH numbers are the server's. The button was drawn from a mirror that may have
+          // moved since, and the seasons that turned out to have a hole are not always the
+          // ones asked for -- a reader who ticked a complete season should not be told it
+          // was fetched.
+          `Sonarr is looking for ${episodes} episode${episodes === 1 ? "" : "s"} of ${summariseSeasons(filled)}`,
         ),
       )
       .catch((e: Error) => toasts.resolve(id, "error", e.message));
   };
+
+  /** The season header's own button, which is this operation with a list of one. */
+  const requestSeason = (season: number) => requestSeasons([season]);
 
   const requestKey = useKeyAction("request", startRequest, canRequest);
   const backKey = useKeyAction("back", () => router.history.back(), canGoBack);
@@ -348,6 +391,26 @@ export function TitleRoute() {
             )}
 
             {/*
+              A series we hold with holes in it: the SAME chooser, under whichever control
+              said we have it.
+
+              It sits beside Play rather than replacing it, because both are true at once --
+              you can watch season 1 tonight and ask for 3 to 7 at the same time. Whether it
+              is drawn is decided by the episode mirror, which is local, so this cannot pop
+              in behind a provider; see the note beside `holed` above.
+            */}
+            {filling && (
+              <button
+                type="button"
+                onClick={startRequest}
+                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm text-muted
+                           transition hover:border-ink hover:text-ink"
+              >
+                Request missing seasons
+              </button>
+            )}
+
+            {/*
               Under the button and never inside the header block: it loads its lists on
               first open, so it is one more thing that arrives late, and the header rule
               exists precisely so nothing arriving late can shove the page.
@@ -391,15 +454,17 @@ export function TitleRoute() {
         browser's top layer, so where it sits in the tree costs nothing, and keeping it
         out of the header keeps that block purely local.
       */}
-      {seasons && (
+      {chooserSeasons && (
         <SeasonRequestDialog
           open={choosing}
-          seasons={seasons}
+          seasons={chooserSeasons}
           title={title.title}
+          gap={filling ? gap : undefined}
           onCancel={() => setChoosing(false)}
           onConfirm={(chosen) => {
             setChoosing(false);
-            void request(title, chosen, overrides);
+            if (filling) requestSeasons(chosen);
+            else void request(title, chosen, overrides);
           }}
         />
       )}

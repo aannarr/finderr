@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Season } from "./facets";
+import type { SeasonGap } from "./season-gap";
 import {
   allSeasonNumbers,
   defaultSelection,
+  episodesInSelection,
+  fillSelection,
   formatSeasonRanges,
   isEverySeason,
+  missingInSeason,
+  seasonsFromNumbers,
   summariseSeasons,
   toggleSeason,
 } from "./season-select";
@@ -113,5 +118,116 @@ describe("isEverySeason", () => {
 
   test("no seasons at all is not 'every season'", () => {
     expect(isEverySeason([], [])).toBe(false);
+  });
+});
+
+/**
+ * The fill-mode half: what the chooser ticks and counts over a series we already hold.
+ *
+ * The gaps below are Burn Notice's real reading on the day this was built -- season 1
+ * complete, season 2 two short, seasons 3 to 7 entirely absent.
+ */
+describe("fillSelection", () => {
+  const BURN: SeasonGap[] = [
+    { season: 1, holding: "complete", missing: 0 },
+    { season: 2, holding: "partial", missing: 2 },
+    { season: 3, holding: "partial", missing: 16 },
+    { season: 4, holding: "partial", missing: 18 },
+  ];
+
+  test("ticks the seasons with a hole and nothing else", () => {
+    expect(fillSelection(BURN)).toEqual([2, 3, 4]);
+  });
+
+  test("a season we hold in full is NOT ticked -- that would re-search what we have", () => {
+    expect(fillSelection(BURN)).not.toContain(1);
+  });
+
+  test("a season still airing is not a hole, so it is left alone", () => {
+    // `current` means we hold everything broadcast so far. Sonarr is already monitoring
+    // the rest, and ticking it would search for episodes that do not exist yet.
+    const gap: SeasonGap[] = [{ season: 9, holding: "current", missing: 0 }];
+    expect(fillSelection(gap)).toEqual([]);
+  });
+
+  test("comes back sorted whatever order the gap was built in", () => {
+    const gap: SeasonGap[] = [
+      { season: 7, holding: "partial", missing: 1 },
+      { season: 2, holding: "partial", missing: 1 },
+    ];
+    expect(fillSelection(gap)).toEqual([2, 7]);
+  });
+
+  test("a series with nothing missing ticks nothing", () => {
+    expect(fillSelection([{ season: 1, holding: "complete", missing: 0 }])).toEqual([]);
+  });
+});
+
+describe("episodesInSelection", () => {
+  const GAP: SeasonGap[] = [
+    { season: 1, holding: "complete", missing: 0 },
+    { season: 2, holding: "partial", missing: 2 },
+    { season: 3, holding: "partial", missing: 16 },
+  ];
+
+  test("adds up only the seasons that are ticked", () => {
+    expect(episodesInSelection(GAP, [2, 3])).toBe(18);
+    expect(episodesInSelection(GAP, [2])).toBe(2);
+  });
+
+  test("a ticked season with no hole contributes nothing rather than erroring", () => {
+    // The server drops it the same way, and the two must agree about what a redundant
+    // tick means or the button offers a number the queue will not honour.
+    expect(episodesInSelection(GAP, [1, 2])).toBe(2);
+  });
+
+  test("nothing ticked is zero, which is what disables the confirm", () => {
+    expect(episodesInSelection(GAP, [])).toBe(0);
+  });
+
+  test("a season the gap has never heard of is ignored", () => {
+    expect(episodesInSelection(GAP, [99])).toBe(0);
+  });
+});
+
+describe("missingInSeason", () => {
+  const GAP: SeasonGap[] = [
+    { season: 1, holding: "complete", missing: 0 },
+    { season: 2, holding: "partial", missing: 2 },
+  ];
+
+  test("a season with a hole wears its count", () => {
+    expect(missingInSeason(GAP, 2)).toBe(2);
+  });
+
+  test("a complete season wears NO number -- '0' would read as a count", () => {
+    expect(missingInSeason(GAP, 1)).toBeUndefined();
+  });
+
+  test("a season outside the gap wears nothing", () => {
+    expect(missingInSeason(GAP, 9)).toBeUndefined();
+  });
+});
+
+describe("seasonsFromNumbers", () => {
+  test("builds a chip-able season for every number, sorted and deduplicated", () => {
+    // The episode mirror lists one row per EPISODE, so the same season arrives many times.
+    expect(seasonsFromNumbers([3, 1, 3, 2, 1]).map((s) => s.number)).toEqual([1, 2, 3]);
+  });
+
+  test("every field but the number is null, which is what skyhook-less seasons look like", () => {
+    const [first] = seasonsFromNumbers([1]);
+    expect(first).toEqual({
+      number: 1,
+      name: null,
+      episodeCount: null,
+      premiereDate: null,
+      endDate: null,
+      image: null,
+    });
+  });
+
+  test("no numbers is no seasons", () => {
+    expect(seasonsFromNumbers([])).toEqual([]);
   });
 });

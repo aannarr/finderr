@@ -275,28 +275,51 @@ describe("postSeasonRequest", () => {
     }) as unknown as typeof fetch;
   }
 
-  test("sends ONE post naming a season, and no episode list", async () => {
-    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", season: 3, episodes: 4 } } });
-    await postSeasonRequest("tt1", 3);
+  test("sends ONE post naming the seasons, and no episode list", async () => {
+    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", seasons: [3], episodes: 4 } } });
+    await postSeasonRequest("tt1", [3]);
 
     expect(calls).toEqual(["/api/requests/season"]);
-    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ tconst: "tt1", season: 3 });
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ tconst: "tt1", seasons: [3] });
+  });
+
+  test("six seasons are ONE post, not six", async () => {
+    // The whole point of the list form: the season header's button and the chooser's
+    // "Request 85 episodes" reach Sonarr through one queue entry and one toast.
+    stubSeasonFetch({
+      ok: true,
+      body: { queued: { tconst: "tt1", seasons: [2, 3, 4, 5, 6, 7], episodes: 85 } },
+    });
+    await postSeasonRequest("tt1", [2, 3, 4, 5, 6, 7]);
+
+    expect(calls).toEqual(["/api/requests/season"]);
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ tconst: "tt1", seasons: [2, 3, 4, 5, 6, 7] });
   });
 
   test("reports the count the SERVER queued, not the one the button was drawn from", async () => {
     // The mirror can move between the render and the click, and the toast has to be true
     // when it is read rather than when the page was assembled.
+    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", seasons: [3], episodes: 2 } } });
+    expect(await postSeasonRequest("tt1", [3])).toEqual({ episodes: 2, seasons: [3] });
+  });
+
+  test("reports the seasons that HAD a hole, which is not always the ones asked for", async () => {
+    stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", seasons: [3], episodes: 2 } } });
+    expect(await postSeasonRequest("tt1", [1, 3])).toEqual({ episodes: 2, seasons: [3] });
+  });
+
+  test("an older server that echoes no seasons still reports its count", async () => {
     stubSeasonFetch({ ok: true, body: { queued: { tconst: "tt1", season: 3, episodes: 2 } } });
-    expect(await postSeasonRequest("tt1", 3)).toEqual({ episodes: 2 });
+    expect(await postSeasonRequest("tt1", [3])).toEqual({ episodes: 2, seasons: [] });
   });
 
   test("surfaces the server's own sentence on a refusal", async () => {
     stubSeasonFetch({ ok: false, status: 409, body: { error: "request the series first" } });
-    await expect(postSeasonRequest("tt1", 3)).rejects.toThrow("request the series first");
+    await expect(postSeasonRequest("tt1", [3])).rejects.toThrow("request the series first");
   });
 
   test("falls back to the status when a refusal carries no sentence", async () => {
     stubSeasonFetch({ ok: false, status: 503 });
-    await expect(postSeasonRequest("tt1", 3)).rejects.toThrow("season request failed: 503");
+    await expect(postSeasonRequest("tt1", [3])).rejects.toThrow("season request failed: 503");
   });
 });

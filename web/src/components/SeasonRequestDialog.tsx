@@ -17,10 +17,14 @@
 import { useEffect, useRef, useState } from "react";
 import { orderSeasons, seasonLabel } from "../lib/facet-panes";
 import type { Season } from "../lib/facets";
+import type { SeasonGap } from "../lib/season-gap";
 import {
   allSeasonNumbers,
   defaultSelection,
+  episodesInSelection,
+  fillSelection,
   isEverySeason,
+  missingInSeason,
   summariseSeasons,
   toggleSeason,
 } from "../lib/season-select";
@@ -31,15 +35,41 @@ export interface SeasonRequestDialogProps {
   open: boolean;
   seasons: readonly Season[];
   title: string;
+  /**
+   * Where the series stands, season by season. Present ONLY for a series Sonarr already
+   * holds, and its presence is what puts the dialog in FILL mode.
+   *
+   * The two modes are the same control over the same nouns and differ in three things: what
+   * is ticked when it opens (every season vs the seasons with a hole), what a chip's number
+   * means (how many episodes the season HAS vs how many we are MISSING), and what the confirm
+   * button promises (monitor vs search). Everything else -- the roving focus, the specials
+   * rule, the run-collapsing summary -- is one implementation, because it is one dialog.
+   */
+  gap?: readonly SeasonGap[];
   onCancel: () => void;
   /** Called with the chosen season numbers. Never called with an empty list. */
   onConfirm: (seasons: number[]) => void;
 }
 
-export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm }: SeasonRequestDialogProps) {
+export function SeasonRequestDialog({
+  open,
+  seasons,
+  title,
+  gap,
+  onCancel,
+  onConfirm,
+}: SeasonRequestDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const ordered = orderSeasons([...seasons]);
-  const [chosen, setChosen] = useState<number[]>(() => defaultSelection(seasons));
+  /*
+    PRESENT-BUT-EMPTY IS STILL FILL MODE, and the distinction is not pedantic. The header
+    control that opens this is driven by the episode mirror, which is local; the gap needs
+    the `episodes` facet, which is not. So a reader can open the chooser in the half second
+    before the facet lands, and `[]` is what they get. Treating that as ADD mode would
+    promise to "monitor" a series Sonarr already has and then 409 on confirm.
+  */
+  const filling = gap !== undefined;
+  const [chosen, setChosen] = useState<number[]>(() => openingSelection(seasons, gap));
 
   /*
     Nine seasons is nine tab stops between the heading and the Cancel button, so the
@@ -71,15 +101,16 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
     const el = ref.current;
     if (!el) return;
     if (open) {
-      setChosen(defaultSelection(seasons));
+      setChosen(openingSelection(seasons, gap));
       if (!el.open) el.showModal();
     } else if (el.open) {
       el.close();
     }
-  }, [open, seasons]);
+  }, [open, seasons, gap]);
 
   const everything = isEverySeason(chosen, ordered);
   const nothing = chosen.length === 0;
+  const episodes = gap ? episodesInSelection(gap, chosen) : 0;
 
   return (
     <dialog
@@ -109,7 +140,11 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
             absence -- see `summariseSeasons`.
           */}
           <p className="mt-1 text-sm text-muted">
-            {nothing ? "Pick at least one season." : `Sonarr will monitor ${summariseSeasons(chosen)}.`}
+            {nothing
+              ? "Pick at least one season."
+              : filling
+                ? `Sonarr will search for ${episodeCount(episodes)} of ${summariseSeasons(chosen)}.`
+                : `Sonarr will monitor ${summariseSeasons(chosen)}.`}
           </p>
         </div>
 
@@ -124,12 +159,23 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
             <ToggleChip
               key={s.number}
               label={seasonLabel(s)}
-              count={s.episodeCount ?? undefined}
+              /*
+                The number changes meaning with the mode, and the line under the row says
+                which one it is. In fill mode a season we hold in full wears NO number --
+                "0" reads as a count rather than as the absence of a hole, and the seasons
+                worth ticking being the ones wearing a figure is what makes the row
+                scannable without reading anything.
+              */
+              count={gap ? missingInSeason(gap, s.number) : (s.episodeCount ?? undefined)}
               active={chosen.includes(s.number)}
               onClick={() => setChosen((c) => toggleSeason(c, s.number))}
             />
           ))}
         </fieldset>
+
+        {filling && (
+          <p className="-mt-2 text-xs text-muted">Numbers are the aired episodes we do not have.</p>
+        )}
 
         <div className="flex items-center justify-between gap-3">
           <button
@@ -150,15 +196,40 @@ export function SeasonRequestDialog({ open, seasons, title, onCancel, onConfirm 
             </button>
             <button
               type="submit"
-              disabled={nothing}
+              /*
+                In fill mode a selection of complete seasons has nothing to fetch, and the
+                server refuses it with a 409. Refusing it here instead means the reader is
+                told before they press rather than by a red toast afterwards.
+              */
+              disabled={nothing || (filling && episodes === 0)}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-black
                          transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              Request {summariseSeasons(chosen)}
+              {filling ? `Request ${episodeCount(episodes)}` : `Request ${summariseSeasons(chosen)}`}
             </button>
           </div>
         </div>
       </form>
     </dialog>
   );
+}
+
+/**
+ * What is ticked when the dialog opens, which is the one thing the two modes disagree about
+ * before the reader touches anything.
+ *
+ * Kept out of the component because it is a decision rather than markup, and because the
+ * roving-focus note above depends on it. That note still holds in fill mode, for a better
+ * reason than it holds in add mode: the tab stop is the FIRST TICKED chip
+ * (`rovingStopIndex` reads `aria-pressed` off the rendered buttons), and fill mode ticks
+ * exactly the seasons with a hole -- so `showModal()` lands focus on the first season the
+ * reader is actually being offered, rather than on a complete season they cannot use.
+ */
+function openingSelection(seasons: readonly Season[], gap: readonly SeasonGap[] | undefined): number[] {
+  return gap ? fillSelection(gap) : defaultSelection(seasons);
+}
+
+/** "85 episodes" / "1 episode" -- the noun the two labels and the sentence all share. */
+function episodeCount(n: number): string {
+  return `${n} episode${n === 1 ? "" : "s"}`;
 }

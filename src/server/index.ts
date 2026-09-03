@@ -23,7 +23,7 @@ import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry"
 import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
-import { type EpisodeState, missingEpisodeIds, todayUtc } from "../lib/episodes";
+import { type EpisodeState, missingEpisodeIdsIn, seasonsWithMissing, todayUtc } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
@@ -2158,22 +2158,36 @@ const appRoutes = {
   },
 
   /**
-   * Ask for the REST of one season of a series Sonarr already holds.
+   * Ask for the REST of one season -- or of SEVERAL seasons -- of a series Sonarr already
+   * holds.
    *
    * The fourth grain, and the one the series pane's "Downloaded: ... Season 3 missing 4
    * episodes" line needs to be actionable: without it a reader who can SEE the hole has to
    * hover four rows and press four buttons, and the browser has to fire four POSTs to say
    * one thing.
    *
+   * > [!IMPORTANT] `seasons: number[]` and `season: number` are ONE route, not two
+   * > "Get me seasons 3-7" is the same operation as "get me season 3" with a longer list,
+   * > and splitting it would give one rule -- which episodes of a season are owed -- two
+   * > handlers to drift apart in. The scalar form is kept because the per-season button in
+   * > the season header still sends it and there is no reason to make that button say a
+   * > list of one. `parseSeasonsInput` validates the list, so the wire spelling has the
+   * > same owner as the one `/api/requests` already uses for the ADD path.
+   *
+   * A season in the list with nothing outstanding is dropped rather than refused: ticking a
+   * complete season next to two empty ones is a reader saying "these three", and the answer
+   * is to fetch what is missing from them. The 409 fires only when the WHOLE selection is
+   * already held, which is the case where the page is looking at a stale mirror.
+   *
    * > [!IMPORTANT] THE SERVER PICKS THE EPISODES, and it picks the ones the summary counted
    * > The client sends a season, never a list of ids -- a client-supplied list is a claim
    * > this route would have to re-check against the mirror anyway, and the mirror is the
-   * > authority on what aired and what we hold. `missingEpisodeIds` is the same rule the
+   * > authority on what aired and what we hold. `missingEpisodeIdsIn` is the same rule the
    * > browser drew the sentence with (`src/lib/episodes.ts`), so the count in the button and
    * > the episodes actually enqueued come from one owner.
    *
    * That rule INCLUDES the episodes Sonarr is already searching for, which is where this
-   * differs from the per-row button above -- see `missingEpisodeIds` for why.
+   * differs from the per-row button above -- see `missingEpisodeIdsIn` for why.
    *
    * Like the per-episode grain it writes no `request` row, and every refusal is a fact about
    * our own mirror, so none of them costs a network call. No `request` row also means no
@@ -2184,7 +2198,7 @@ const appRoutes = {
    */
   "/api/requests/season": {
     POST: async (req: Request) => {
-      let body: { tconst?: string; season?: unknown };
+      let body: { tconst?: string; season?: unknown; seasons?: unknown };
       try {
         body = (await req.json()) as typeof body;
       } catch {
@@ -2192,20 +2206,46 @@ const appRoutes = {
       }
       const { tconst, season } = body;
       if (!tconst) return bad("tconst is required");
-      if (!Number.isInteger(season)) return bad("season must be an integer");
+
+      // The scalar is folded into the list form immediately, so everything below this line
+      // deals in one shape. Sending both is a client that has not decided what it means.
+      if (season !== undefined && body.seasons !== undefined) {
+        return bad("send either season or seasons, not both");
+      }
+      let wanted: number[];
+      if (season !== undefined) {
+        if (!Number.isInteger(season)) return bad("season must be an integer");
+        wanted = [season as number];
+      } else {
+        const parsed = parseSeasonsInput(body.seasons);
+        if ("error" in parsed) return bad(parsed.error);
+        if (!parsed.seasons) return bad("seasons must name at least one season");
+        wanted = parsed.seasons;
+      }
+
       const refused = refuseUnlessSonarrHolds(tconst);
       if (refused) return refused;
 
-      const episodes = missingEpisodeIds(episodeStateFor(tconst), season as number, todayUtc());
+      const states = episodeStateFor(tconst);
+      const today = todayUtc();
+      const episodes = missingEpisodeIdsIn(states, wanted, today);
       // Nothing to do is a refusal rather than an empty 202: the button that sent this was
       // drawn from a count, so an empty answer means the page is looking at a mirror that
       // has moved on, and saying so is more use than a silent success.
       if (episodes.length === 0) {
-        return bad("nothing to fetch -- that season has no aired episode we are missing", 409);
+        return bad("nothing to fetch -- no aired episode of those seasons is missing", 409);
       }
 
+      // One job for the whole selection. Enqueuing per season would breathe 400ms between
+      // seasons for no reason and report five toasts for one decision.
       worker.enqueueEpisodes(tconst, episodes);
-      return json({ queued: { tconst, season, episodes: episodes.length } }, { status: 202 });
+      const filled = seasonsWithMissing(states, wanted, today);
+      return json(
+        // `season` echoes the first season actually queued so a caller that sent the scalar
+        // reads its own grain back; `seasons` is the whole answer.
+        { queued: { tconst, season: filled[0], seasons: filled, episodes: episodes.length } },
+        { status: 202 },
+      );
     },
   },
 

@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Season } from "../lib/facets";
+import type { SeasonGap } from "../lib/season-gap";
 import { SeasonRequestDialog } from "./SeasonRequestDialog";
 
 function season(over: Partial<Season> & { number: number }): Season {
@@ -90,5 +91,76 @@ describe("SeasonRequestDialog", () => {
 
   test("episode counts ride along on the chips", () => {
     expect(render()).toContain("55");
+  });
+});
+
+/**
+ * FILL MODE -- the same dialog over a series Sonarr already holds.
+ *
+ * Shaped on the real Burn Notice reading that motivated this: season 1 complete, season 2
+ * two short, seasons 3-7 entirely absent.
+ */
+describe("SeasonRequestDialog, filling a series we already hold", () => {
+  const BURN: Season[] = [
+    season({ number: 0, episodeCount: 7 }),
+    season({ number: 1, episodeCount: 12 }),
+    season({ number: 2, episodeCount: 16 }),
+    season({ number: 3, episodeCount: 16 }),
+  ];
+
+  const GAP: SeasonGap[] = [
+    { season: 1, holding: "complete", missing: 0 },
+    { season: 2, holding: "partial", missing: 2 },
+    { season: 3, holding: "partial", missing: 16 },
+  ];
+
+  function fill(gap: readonly SeasonGap[] = GAP) {
+    return renderToStaticMarkup(
+      <SeasonRequestDialog
+        open
+        seasons={BURN}
+        gap={gap}
+        title="Burn Notice"
+        onCancel={() => {}}
+        onConfirm={() => {}}
+      />,
+    );
+  }
+
+  test("promises a SEARCH rather than monitoring, and counts the episodes", () => {
+    // The add path says "Sonarr will monitor Seasons 1-3"; here the series is already
+    // monitored and what the reader is buying is a search.
+    expect(fill()).toContain("Sonarr will search for 18 episodes of Seasons 2-3.");
+  });
+
+  test("ticks only the seasons with a hole", () => {
+    const html = fill();
+    // A complete season pre-ticked would offer to re-search twelve episodes we hold.
+    expect(html).toContain("Request 18 episodes");
+    expect(html).not.toContain("Seasons 1-3");
+  });
+
+  test("a chip's number is what we are MISSING, and a complete season wears none", () => {
+    const html = fill();
+    // Season 3 is 16 short of 16, so the two readings agree by accident there; season 2 is
+    // the one that tells them apart -- 16 episodes, 2 missing.
+    expect(html).toContain(">2<");
+    expect(html).toContain("Numbers are the aired episodes we do not have.");
+  });
+
+  test("a selection with nothing to fetch cannot be submitted", () => {
+    // Every season complete: the server would answer 409, so the button refuses first.
+    const html = fill([{ season: 1, holding: "complete", missing: 0 }]);
+    expect(html).toContain("Pick at least one season.");
+    expect(html).toContain("disabled");
+  });
+
+  test("an EMPTY gap is still fill mode, not the add path", () => {
+    // The header control is drawn off the local episode mirror and the gap needs a facet,
+    // so a reader can open this before the counts exist. Promising to "monitor" here would
+    // be an add against a series Sonarr already has.
+    const html = fill([]);
+    expect(html).not.toContain("Sonarr will monitor");
+    expect(html).toContain("Pick at least one season.");
   });
 });
