@@ -935,7 +935,7 @@ describe("titleLinks", () => {
   test("three addresses come free, from the tconst alone", () => {
     expect(titleLinks(FILM, "movie", undefined, undefined)).toEqual([
       { url: "https://www.imdb.com/title/tt1375666/", label: "IMDb" },
-      { url: "https://trakt.tv/search/imdb/tt1375666", label: "Trakt" },
+      { url: "https://trakt.tv/movies/tt1375666", label: "Trakt" },
       { url: "https://letterboxd.com/imdb/tt1375666/", label: "Letterboxd" },
     ]);
   });
@@ -946,11 +946,24 @@ describe("titleLinks", () => {
    * and be a dead end.
    */
   test("a series gets no Letterboxd link, and TMDB's /tv/ path rather than /movie/", () => {
-    const labels = titleLinks("tt0944947", "series", { tmdb: 1399 }, undefined).map((l) => l.label);
-    expect(labels).not.toContain("Letterboxd");
-    expect(titleLinks("tt0944947", "series", { tmdb: 1399 }, undefined)).toContainEqual({
-      url: "https://www.themoviedb.org/tv/1399",
-      label: "TMDB",
+    const links = titleLinks("tt0944947", "series", { tmdb: 1399 }, undefined);
+    expect(links.map((l) => l.label)).not.toContain("Letterboxd");
+    expect(links).toContainEqual({ url: "https://www.themoviedb.org/tv/1399", label: "TMDB" });
+  });
+
+  /**
+   * Trakt is the second kind-dependent address, after TMDB. It reads an IMDb id where its
+   * own slug goes, but the path segment says which catalogue to look in, so a film sent to
+   * `/shows/` is a 404 the reader only discovers by clicking.
+   */
+  test("Trakt's path segment follows the kind", () => {
+    expect(titleLinks(FILM, "movie", undefined, undefined)).toContainEqual({
+      url: "https://trakt.tv/movies/tt1375666",
+      label: "Trakt",
+    });
+    expect(titleLinks("tt0944947", "series", undefined, undefined)).toContainEqual({
+      url: "https://trakt.tv/shows/tt0944947",
+      label: "Trakt",
     });
   });
 

@@ -1124,14 +1124,27 @@ interface LinkSite {
  * send anyone.
  *
  * Order is IMDb first because it is the id this whole product is built on and the one
- * asked for by name; the rest run broad-to-narrow. Every address below was checked against
- * the live site rather than remembered -- each one 301s to the canonical page.
+ * asked for by name; the rest run broad-to-narrow.
+ *
+ * EVERY ADDRESS BELOW WAS OPENED IN A BROWSER, SIGNED OUT, ON 2026-09-03. The date is here
+ * because these rot: the Trakt entry was correct when written and had silently 404ed for
+ * some time before anyone noticed, and the comment asserting it was fine is what stopped
+ * the re-check. Two rules learned from that, for whoever re-verifies these next: a status
+ * code is not an answer on a client-rendered site -- Trakt's dead search answers 200 -- and
+ * it has to be checked SIGNED OUT, because a maintainer's own browser is logged in.
  */
 const LINK_SITES: readonly LinkSite[] = [
   { id: "imdb", space: "imdb", url: (id) => imdbUrl(id) },
-  // Trakt has no page keyed by OUR id, but it does publish a search-by-id address that
-  // redirects to the item. That is a documented entry point rather than a URL we guessed.
-  { id: "trakt", space: "imdb", url: (id) => `https://trakt.tv/search/imdb/${id}` },
+  {
+    id: "trakt",
+    space: "imdb",
+    // Trakt's item pages accept an IMDb id where their own slug goes, and render for a
+    // signed-out reader. Their SEARCH does not: every /search address answers 200 and shows
+    // a signup wall, which is the dead-end shape this table exists to keep off the page.
+    // Kind-dependent like TMDB's, for the same reason -- the path segment is Trakt's URL
+    // layout, not something the title vocabulary knows about.
+    url: (id, kind) => `https://trakt.tv/${kind === "series" ? "shows" : "movies"}/${id}`,
+  },
   {
     id: "tmdb",
     space: "tmdb",
