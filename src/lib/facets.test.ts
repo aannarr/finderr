@@ -442,6 +442,91 @@ describe("mergeContributions", () => {
   });
 });
 
+/**
+ * The knob `cast` needs and `ratings` must never grow.
+ *
+ * Two providers answer `cast` for a series -- `servarr-metadata` through skyhook, with no
+ * person id in any space, and `tmdb` with real ones -- and concatenating them puts every
+ * actor on the page twice. Dedupe is the wrong tool: contributions merge in plugin-id
+ * order, so keeping the first would keep the id-LESS entry, and the two sources bill in
+ * different orders anyway. One answer has to win outright.
+ */
+describe("precedence", () => {
+  const withIds: CastMember[] = [
+    { name: "Kit Harington", character: "Jon Snow", order: 1, personId: "tmdb:239019", image: null },
+    { name: "Lena Headey", character: "Cersei", order: 6, personId: "tmdb:17286", image: null },
+  ];
+  const withoutIds: CastMember[] = [
+    { name: "Kit Harington", character: "Jon Snow", order: 0, personId: null, image: null },
+    { name: "Sean Bean", character: "Ned Stark", order: 1, personId: null, image: null },
+  ];
+
+  const merge = (byPlugin: Record<string, CastMember[]>) =>
+    mergeContributions("cast", new Map(Object.entries(byPlugin)));
+
+  test("the linkable answer supersedes the id-less one, so nobody renders twice", () => {
+    const merged = merge({ "servarr-metadata": withoutIds, tmdb: withIds });
+
+    expect(merged).toEqual(withIds);
+    expect(merged?.filter((m) => m.name === "Kit Harington")).toHaveLength(1);
+  });
+
+  /**
+   * PLUGIN-ID ORDER IS THE TRAP. `servarr-metadata` sorts before `tmdb`, so every
+   * position-based rule -- keep the first, dedupe on name -- keeps exactly the entry that
+   * cannot be linked. The rule has to read the data.
+   */
+  test("winning is about the data, not about who sorted first", () => {
+    expect(merge({ "aaa-plugin": withoutIds, "zzz-plugin": withIds })).toEqual(withIds);
+    expect(merge({ "aaa-plugin": withIds, "zzz-plugin": withoutIds })).toEqual(withIds);
+  });
+
+  /**
+   * The keyless checkout, and the reason precedence needs no special case for it: a dark
+   * provider contributes nothing, so the weaker answer is the only answer and wins.
+   */
+  test("one contribution is untouched, however weak it is", () => {
+    expect(merge({ "servarr-metadata": withoutIds })).toEqual(withoutIds);
+  });
+
+  /** A partial answer still beats none: a list with SOME ids is more linkable than one with none. */
+  test("the share is what ranks, not the count", () => {
+    const partial: CastMember[] = [withIds[0], withoutIds[1]];
+    expect(merge({ "servarr-metadata": withoutIds, tmdb: partial })).toEqual(partial);
+  });
+
+  /**
+   * "We looked and there is nobody" supersedes nothing. A provider answering with an empty
+   * list must not blank a real cast list from somebody else.
+   */
+  test("an empty contribution never wins", () => {
+    expect(merge({ "servarr-metadata": withoutIds, tmdb: [] })).toEqual(withoutIds);
+  });
+
+  /** No defensible winner, so both survive -- the same behaviour every other list facet has. */
+  test("a tie merges, rather than one being dropped on plugin id", () => {
+    expect(merge({ "a-plugin": withIds, "z-plugin": withIds })).toHaveLength(4);
+  });
+
+  /** `ratings` wants every source. Declaring precedence there would delete the RT score. */
+  test("a facet that declares no precedence still concatenates everything", () => {
+    const scores: Rating[] = [
+      { source: "imdb", kind: "user", value: 8.8, outOf: 10 },
+      { source: "rottentomatoes", kind: "audience", value: 91, outOf: 100 },
+    ];
+    expect(FACETS.ratings.precedence).toBeUndefined();
+    expect(
+      mergeContributions(
+        "ratings",
+        new Map([
+          ["a", [scores[0]]],
+          ["z", [scores[1]]],
+        ]),
+      ),
+    ).toHaveLength(2);
+  });
+});
+
 describe("isValidContribution", () => {
   test("accepts a well-formed contribution", () => {
     expect(isValidContribution("ratings", { data: [{ source: "imdb" }] })).toBe(true);
