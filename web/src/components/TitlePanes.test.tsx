@@ -306,7 +306,7 @@ describe("the links row", () => {
   test("draws the addresses the tconst alone can reach, before any provider answers", () => {
     const html = render(undefined);
     expect(html).toContain('href="https://www.imdb.com/title/tt1375666/"');
-    expect(html).toContain('href="https://trakt.tv/search/imdb/tt1375666"');
+    expect(html).toContain('href="https://trakt.tv/movies/tt1375666"');
     expect(html).toContain("Letterboxd");
   });
 
