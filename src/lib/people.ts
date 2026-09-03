@@ -435,7 +435,166 @@ export function nconstsByNameForTitle(db: Database, tconst: string): Map<string,
  * CK" -- fine -- but also collapses distinctions in names it was never designed for.
  * A conservative fold missing a match costs one unlinked name; an eager one sends a
  * reader to the wrong person.
+ *
+ * **This is the IDENTITY fold and it is not the search fold.** It decides whether two
+ * sources are describing the same human, where a wrong answer is a link to the wrong
+ * filmography -- so it is deliberately timid. `searchPeople` below folds through the FTS
+ * tokenizer instead, which is the same fold `tfts` applies to titles: a reader typing
+ * "almodovar" means Pedro Almodóvar, and a search that missed him would be the wrong kind
+ * of careful. Two questions, two folds, on purpose.
  */
 export function personNameKey(name: string): string {
   return name.trim().toLowerCase();
+}
+
+// --- search ----------------------------------------------------------------
+
+/**
+ * The FTS5 index over `person.name`, and the rank columns a hit is ordered by.
+ *
+ * The DDL lives HERE, beside the query that depends on it, for the reason
+ * `search-stopwords.ts` owns `POPULAR_TITLE_INDEX`: a builder that shaped the index
+ * differently from what the query asks for produces no error at all, just a slow or empty
+ * answer nobody can trace back. One module owns both halves or they drift.
+ *
+ * ## Why an FTS index rather than `ix_person_name`
+ *
+ * That index is on the RAW name under BINARY collation, so it answers "names starting with
+ * `Christopher`" and nothing a reader would actually type. Measured against the real
+ * 353,117-person index: a `like` scan is 14ms for the covering form and 29ms for the full
+ * row, against a 7.8ms mean for the entire title search it would ride beside -- and
+ * `bun:sqlite` is synchronous, so those milliseconds are the whole server's. It also cannot
+ * match a token in the MIDDLE of a name, which is most of what a person search is: nobody
+ * types "christopher" to find Nolan.
+ *
+ * External-content FTS5, exactly like `tfts` over `title`: the names are not duplicated,
+ * FTS just indexes what `person` already holds. 0.57s to build and 1,127 pages.
+ */
+export const PERSON_FTS_TABLE = "pfts";
+
+/**
+ * One person in a search answer.
+ *
+ * `credits` rather than the vote signal it is ranked by: how many titles we hold for
+ * somebody is a fact a reader can use, and `top_votes` is an internal ordering key that
+ * would only invite a client to re-sort on it.
+ */
+export interface PersonHit extends Person {
+  /** Titles we hold credits for. The rank tiebreak, and what a tile prints under the name. */
+  credits: number;
+}
+
+export interface PersonSearchOptions {
+  limit?: number;
+}
+
+/**
+ * A row of people beside a grid of titles, so eight is the shape rather than a page size.
+ */
+const DEFAULT_PERSON_HIT_LIMIT = 8;
+
+/**
+ * How many letters a token needs before it is worth searching on.
+ *
+ * A FLOOR ON COST, and the number is measured on the real 353,117-person index. A prefix
+ * term costs roughly what its doclist is long, and an AND of two broad terms costs about
+ * their SUM rather than their intersection -- FTS5 has to read both. So `a` alone is 23ms,
+ * `s` is 30ms, `"ma"* AND "ma"*` is 18ms, while every token at three letters or more comes
+ * in at 6.3ms worst (`mar`), 1-3ms typically and under 0.1ms for a real name.
+ *
+ * PER TOKEN, and a short token is DROPPED rather than refusing the whole query. That is
+ * what keeps the row from flickering: somebody typing "tom hanks" passes through "tom h",
+ * and a rule that refused it would take the Toms off the screen for two keystrokes and then
+ * put them back. Dropping the stub instead leaves the previous, still-true answer up and
+ * narrows it as soon as the second name is specific enough to be cheap.
+ */
+const PERSON_SEARCH_MIN_TOKEN_CHARS = 3;
+
+/**
+ * Build the people-search layer over whatever `person` and `title_principal` hold.
+ *
+ * Runs on EVERY build rather than being carried forward with the cast tables, because half
+ * of what it computes is about titles: `top_votes` reads `title.votes`, which moves nightly
+ * even on a night when no credit changed. Carrying it would freeze a person's popularity at
+ * whatever it was the last time the dumps were scanned, which is up to `castRefreshDays`
+ * ago. Measured on the real index: 3.0s for the popularity pass and 0.6s for the FTS.
+ *
+ * Creates the table even when there is nobody in it, so `hasPeopleSearch` answers the same
+ * question `hasPeople` does -- "was this index built by a version that knows about people
+ * search" -- rather than doubling as a row count.
+ */
+export function buildPersonSearchIndex(db: Database, log: (msg: string) => void = () => {}): void {
+  // Correlated subqueries rather than a grouped temp table: the grouped form has to write
+  // and then re-read 353k rows to save nothing, and it measured WORSE than this by enough
+  // that it never finished a probe run.
+  db.run(
+    `update person set
+       top_votes = coalesce((select max(t.votes) from title_principal tp
+                             join title t on t.rowid_ = tp.title_rowid
+                             where tp.person_rowid = person.rowid_), 0),
+       credits   = coalesce((select count(distinct tp.title_rowid) from title_principal tp
+                             where tp.person_rowid = person.rowid_), 0)`,
+  );
+  db.run(
+    `create virtual table ${PERSON_FTS_TABLE} using fts5(name, content='person', content_rowid='rowid_', ` +
+      "tokenize='unicode61 remove_diacritics 2')",
+  );
+  db.run(`insert into ${PERSON_FTS_TABLE}(rowid, name) select rowid_, name from person`);
+
+  const people = (db.query("select count(*) c from person").get() as { c: number }).c;
+  log(`  ${people.toLocaleString()} people searchable`);
+}
+
+/**
+ * The FTS5 MATCH expression for a typed query, or `null` when nothing in it is searchable.
+ *
+ * EVERY token is a PREFIX, not just the last one. A reader typing "chris nol" means
+ * Christopher Nolan, and matching all but the final token as whole words would find only
+ * the handful of people actually christened Chris.
+ *
+ * Tokens are split on everything that is not a letter or a digit, which is what `unicode61`
+ * does on the other side -- so "o'brien" asks for `"o"* AND "brien"*`, the index answers,
+ * and a token can never contain the quote that would break the expression.
+ */
+function personMatchExpression(query: string): string | null {
+  const tokens = query.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= PERSON_SEARCH_MIN_TOKEN_CHARS);
+  if (tokens.length === 0) return null;
+  return tokens.map((t) => `"${t}"*`).join(" AND ");
+}
+
+/**
+ * People whose name matches the query, best known first.
+ *
+ * **Ranked by the votes on their best-known title, tie-broken by how many titles we hold.**
+ * A person row carries no audience signal of its own, so the rank borrows the one the whole
+ * index is already built on: the top hit for "nolan" is the Nolan a reader means. Both
+ * numbers are precomputed by `buildPersonSearchIndex` -- deriving them per query means
+ * joining every match through `title_principal`, which took "tom" from 1.5ms to 29ms.
+ *
+ * The tail keys make the order TOTAL. Two people tied on both numbers must not swap between
+ * one keystroke and the next, and an order that reshuffles is worse than one that is merely
+ * imperfect.
+ *
+ * An empty result and a query with no searchable token are the same answer here -- no
+ * people to draw. "This index cannot search people at all" is a different fact and it is
+ * `SearchEngine.hasPeopleSearch`'s to report, not this function's.
+ */
+export function searchPeople(db: Database, query: string, opts: PersonSearchOptions = {}): PersonHit[] {
+  const match = personMatchExpression(query);
+  if (match === null) return [];
+
+  const rows = db
+    .query(
+      // The FTS table is named rather than aliased: `<alias> match ?` is `no such column`,
+      // because MATCH resolves against the table name and not against whatever it is
+      // called in this query.
+      `select p.nconst, p.name, p.birth_year, p.death_year, p.credits
+       from ${PERSON_FTS_TABLE} join person p on p.rowid_ = ${PERSON_FTS_TABLE}.rowid
+       where ${PERSON_FTS_TABLE} match ?
+       order by p.top_votes desc, p.credits desc, p.name, p.nconst
+       limit ?`,
+    )
+    .all(match, opts.limit ?? DEFAULT_PERSON_HIT_LIMIT) as (PersonDbRow & { credits: number })[];
+
+  return rows.map((r) => ({ ...toPerson(r), credits: r.credits }));
 }

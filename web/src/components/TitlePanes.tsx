@@ -35,9 +35,7 @@ import {
   formatVotes,
   groupCrewByJob,
   imdbUrl,
-  initialsOf,
   languageNames,
-  localImageUrl,
   localImdbRating,
   mergeRatings,
   nconstForCredit,
@@ -73,6 +71,7 @@ import type {
 import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
+import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
 import { PluginPanes, panesForSlot } from "./PluginPane";
 import { SeriesPane } from "./SeriesPane";
 import { findTerm, TermChip } from "./TermChip";
@@ -381,7 +380,7 @@ export function TitleLowerPanes({
         facet="cast"
         heading="Cast"
         skeleton={
-          <div className={CAST_ROW_CLASS}>
+          <div className={PERSON_ROW_CLASS}>
             <SkeletonRepeat count={8}>
               <CastTileSkeleton />
             </SkeletonRepeat>
@@ -942,14 +941,6 @@ function TrailerLinks({ trailers }: { trailers: Trailer[] }) {
 // --- cast ------------------------------------------------------------------
 
 /**
- * A row, not a wrapping grid: a grid of thirty headshots pushes every later pane off the
- * screen. `shelf-row` is the same hidden-scrollbar treatment the discovery shelves use.
- */
-const CAST_ROW_CLASS = "shelf-row flex snap-x gap-3 overflow-x-auto pb-2";
-const CAST_TILE_CLASS = "w-24 shrink-0 snap-start";
-const CAST_IMAGE_CLASS = "aspect-2/3 w-full rounded-lg";
-
-/**
  * Beyond about thirty nobody is scrolling, and every entry past that is another image
  * request for a face the reader will never reach.
  */
@@ -958,9 +949,9 @@ const MAX_CAST = 30;
 function CastRow({ cast, people }: { cast: CastMember[]; people?: PersonLinks }) {
   const billed = byBillingOrder(cast).slice(0, MAX_CAST);
   return (
-    <ul className={CAST_ROW_CLASS}>
+    <ul className={PERSON_ROW_CLASS}>
       {billed.map((member) => (
-        <li key={`${member.personId ?? member.name}|${member.order}`} className={CAST_TILE_CLASS}>
+        <li key={`${member.personId ?? member.name}|${member.order}`} className={PERSON_TILE_CLASS}>
           {/* The portrait is part of the link when there is one -- a face is the most
               clickable thing on the tile, and a name that navigates beside a picture
               that does not is the kind of inconsistency people notice by feel. */}
@@ -1029,40 +1020,10 @@ function PersonLink({
 
 function CastTileSkeleton() {
   return (
-    <div className={CAST_TILE_CLASS}>
-      <Skeleton className={CAST_IMAGE_CLASS} />
+    <div className={PERSON_TILE_CLASS}>
+      <Skeleton className={PERSON_PORTRAIT_CLASS} />
       <Skeleton className="mt-1.5 h-3 w-full" />
       <Skeleton className="mt-1 h-3 w-2/3" />
-    </div>
-  );
-}
-
-/**
- * A headshot, or the person's initials.
- *
- * `localImageUrl` is what keeps an upstream provider URL out of the browser: finderr is
- * internet-facing while its providers are an implementation detail. The server rewrites
- * headshots to its own `/img/f/<key>`, so this normally draws a face; initials remain the
- * fallback for a person the provider had no picture of.
- */
-function PersonPortrait({ name, image }: { name: string; image: string | null }) {
-  const src = localImageUrl(image);
-  if (src) {
-    return (
-      <img
-        src={src}
-        alt=""
-        loading="lazy"
-        className={`${CAST_IMAGE_CLASS} border border-line object-cover`}
-      />
-    );
-  }
-  return (
-    <div
-      className={`${CAST_IMAGE_CLASS} flex items-center justify-center border border-line bg-surface text-sm text-muted`}
-      aria-hidden="true"
-    >
-      {initialsOf(name)}
     </div>
   );
 }

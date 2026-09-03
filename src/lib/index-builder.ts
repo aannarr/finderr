@@ -59,6 +59,7 @@ import {
 import { intOrNull, nullable, streamTsv } from "./dumps";
 import { INDEX_STAGES, stampStages } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
+import { buildPersonSearchIndex } from "./people";
 import { POPULAR_TITLE_INDEX } from "./search-stopwords";
 import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
@@ -141,7 +142,17 @@ create table person (
   nconst     text not null unique,
   name       text not null,
   birth_year integer,
-  death_year integer
+  death_year integer,
+  -- How well known this person is, denormalised for the same reason title.rank is: the
+  -- people search has to visit every name that matches a prefix to find the best eight,
+  -- and deriving these per query means joining each of them back through title_principal.
+  -- Measured on the real index, the query for "tom" went 1.5ms with these and 29ms without.
+  --
+  -- Filled by buildPersonSearchIndex() in ./people.ts, which owns them together with the
+  -- FTS index that reads them, and which runs on EVERY build -- top_votes is about titles,
+  -- and titles move on a night when the carried-forward cast does not.
+  top_votes  integer not null default 0,
+  credits    integer not null default 0
 );
 create table title_principal (
   title_rowid  integer not null,
@@ -156,6 +167,25 @@ create table title_principal (
   characters   text
 );
 ${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}`;
+
+/**
+ * The FTS index every title query runs through, over the normalized columns.
+ *
+ * `content=` makes it an external-content table: the text is not duplicated, FTS just
+ * indexes what `title` already holds.
+ *
+ * A named function beside the schema for the reason `EXPLODE_GENRES` is exported -- a
+ * fixture that builds this by hand can disagree with what the real builder writes, and then
+ * a query passes its test and fails in production. It is also what lets a test assert that
+ * a change somewhere else left the title answers alone.
+ */
+export function buildTitleSearchIndex(db: Database): void {
+  db.run(
+    "create virtual table tfts using fts5(ntitle, norig, dtitle, content='title', content_rowid='rowid_', " +
+      "tokenize='unicode61 remove_diacritics 2')",
+  );
+  db.run("insert into tfts(rowid, ntitle, norig, dtitle) select rowid_, ntitle, norig, dtitle from title");
+}
 
 /**
  * Derive `title_genre` from the comma-separated `title.genres` column.
@@ -372,15 +402,8 @@ export async function buildIndex(
   const genreRows = (db.query("select count(*) c from title_genre").get() as { c: number }).c;
   log(`  ${genreRows.toLocaleString()} genre rows`);
 
-  // --- FTS over the normalized columns.
-  // `content=` makes this an external-content table: the text is not duplicated,
-  // FTS just indexes what `title` already holds.
   log("building FTS index ...");
-  db.run(
-    "create virtual table tfts using fts5(ntitle, norig, dtitle, content='title', content_rowid='rowid_', " +
-      "tokenize='unicode61 remove_diacritics 2')",
-  );
-  db.run("insert into tfts(rowid, ntitle, norig, dtitle) select rowid_, ntitle, norig, dtitle from title");
+  buildTitleSearchIndex(db);
 
   // --- Typo tolerance, on disk.
   //
@@ -397,6 +420,10 @@ export async function buildIndex(
   buildVocabulary(db, cfg, log);
 
   const cast = await castStage(db, cfg, dumpDir, log);
+  // AFTER the cast stage either built or carried the people, and never inside it: both
+  // branches produce the same `person` table and both need the same search layer over it.
+  log("indexing people for search ...");
+  buildPersonSearchIndex(db, log);
   const idRows = crosswalkStage(db, dumpDir, log);
   // AFTER the cast stage, not beside it: this one keeps only people `person` already holds,
   // so running it first would restrict against an empty table and keep nothing.

@@ -670,7 +670,7 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/agent/manifest` | agent keys only. This API described to the key that asked, as markdown, generated from the live route table |
 | `GET`/`POST`/`DELETE` | `/api/auth/agent-key` | your one agent key. A person in a browser only — a key cannot manage credentials, its own included |
 | `GET` | `/api/index-status` | public. What the boot build is doing, for the progress page |
-| `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered |
+| `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered, plus `people` — matching names, best known first. The facet chips narrow the titles only. `people` is absent, not empty, on an index built before it carried a people index |
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
 | `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
 | `GET` | `/api/discover` | the front-page shelves, pure index queries |
@@ -768,8 +768,10 @@ Every line here is a real limitation. It is not a roadmap.
   three from Radarr's lookup for free; neither Sonarr's lookup nor skyhook carries any of
   them, so a series resolves those facets as empty. Source gaps, and each is an addon over
   TMDB rather than a core change.
-- Search is titles only. You cannot type an actor's name into the search box. People are
-  reached by clicking a name on a title page; from there a filmography is one click.
+- A person in the search results has no face. Typing a name finds people now — they come
+  back in their own row above the titles, ranked by the votes on their best-known title —
+  but the tile draws initials, because the only headshots we hold are cached against a
+  TITLE's cast facet and there is no way to look one up by `nconst`.
 - Regional release titles are not indexed. `originalTitle` is the production-language
   title; a foreign film's Swedish or German release title needs `title.akas` filtered to a
   region, and that is not wired in yet.

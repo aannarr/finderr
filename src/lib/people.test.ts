@@ -12,17 +12,20 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Config } from "./config";
+import { type Config, loadConfig } from "./config";
 import { loadPersonCrosswalk } from "./crosswalk";
 import type { PersonCredit } from "./facets";
-import { SCHEMA } from "./index-builder";
+import { applyRank, buildTitleSearchIndex, SCHEMA } from "./index-builder";
+import { despace, normalizeStripped } from "./normalize";
 import {
+  buildPersonSearchIndex,
   frequentCollaborators,
   nconstsByNameForTitle,
   nconstsForCredits,
   personByNconst,
   personNameKey,
   personPage,
+  searchPeople,
 } from "./people";
 import { SearchEngine } from "./search";
 
@@ -81,6 +84,10 @@ function indexOf(
       c.characters ?? null,
     );
   }
+
+  // The same layer a real build adds over the same tables, so a fixture cannot answer a
+  // people search differently from the index it is standing in for.
+  buildPersonSearchIndex(db);
   return db;
 }
 
@@ -511,6 +518,186 @@ describe("nconstsForCredits", () => {
   });
 });
 
+describe("searchPeople", () => {
+  /**
+   * Four people who all answer to "nolan" so the RANK is what the assertions are about,
+   * and one accented name because the search fold and the identity fold are different.
+   */
+  const NOLANS = [
+    { nconst: "nm-chris", name: "Christopher Nolan" },
+    { nconst: "nm-jonah", name: "Jonathan Nolan" },
+    { nconst: "nm-tia", name: "Tia Nolan" },
+    { nconst: "nm-obscure", name: "Nolan Nobody" },
+    { nconst: "nm-pedro", name: "Pedro Almodóvar" },
+  ];
+
+  const NOLAN_CREDITS: CreditFix[] = [
+    // Two titles each for the top two, so votes decide and credits cannot.
+    { tconst: "tt-dark", nconst: "nm-chris", category: "director" },
+    { tconst: "tt-incep", nconst: "nm-chris", category: "director" },
+    { tconst: "tt-incep", nconst: "nm-jonah", category: "writer" },
+    { tconst: "tt-obscure", nconst: "nm-jonah", category: "writer" },
+    // Tia and "Nolan Nobody" share ONE title and tie on votes, so only the credit count
+    // and then the name can separate them.
+    { tconst: "tt-obscure", nconst: "nm-tia", category: "editor" },
+    { tconst: "tt-obscure", nconst: "nm-obscure", category: "editor" },
+    { tconst: "tt-dark", nconst: "nm-pedro", category: "director" },
+  ];
+
+  const nolans = () => indexOf(TITLES, NOLANS, NOLAN_CREDITS);
+
+  test("a full name finds the person -- the gap this whole layer closes", () => {
+    expect(searchPeople(nolans(), "christopher nolan").map((p) => p.name)).toEqual(["Christopher Nolan"]);
+  });
+
+  test("a surname alone finds them, which a name-prefix index could never do", () => {
+    // "nolan" is not the start of "Christopher Nolan". Nobody types a given name to find
+    // a director, so matching only the front of the string is not a person search at all.
+    expect(searchPeople(nolans(), "nolan")[0].name).toBe("Christopher Nolan");
+  });
+
+  test("EVERY token is a prefix, so a half-typed name still lands", () => {
+    // "chris nol" is somebody halfway through the name. Matching all but the last token as
+    // whole words would find only the people actually christened Chris.
+    expect(searchPeople(nolans(), "chris nol").map((p) => p.name)).toEqual(["Christopher Nolan"]);
+  });
+
+  test("ranks by the best-known title's votes, then by how many titles we hold", () => {
+    const found = searchPeople(nolans(), "nolan").map((p) => p.name);
+    // Chris (The Dark Knight, 2.9M) over Jonah (Inception, 2.5M) over the two on the
+    // 900-vote short -- and those two tie on votes, so the credit count and then the name
+    // decide. A person row carries no audience signal of its own; this borrows the one the
+    // whole index is built on.
+    expect(found).toEqual(["Christopher Nolan", "Jonathan Nolan", "Nolan Nobody", "Tia Nolan"]);
+  });
+
+  test("the order is TOTAL, so a tie cannot reshuffle between keystrokes", () => {
+    const db = nolans();
+    // Nolan Nobody and Tia Nolan tie on votes AND on credits. An order that came out
+    // differently on the second call is worse than one that is merely imperfect.
+    const once = searchPeople(db, "nolan").map((p) => p.nconst);
+    expect(searchPeople(db, "nolan").map((p) => p.nconst)).toEqual(once);
+    expect(once.indexOf("nm-obscure")).toBeLessThan(once.indexOf("nm-tia"));
+  });
+
+  test("credits count TITLES, matching what the tile prints", () => {
+    const chris = searchPeople(nolans(), "christopher nolan")[0];
+    expect(chris.credits).toBe(2);
+    expect(chris.nconst).toBe("nm-chris");
+  });
+
+  test("folds case and diacritics -- the SEARCH fold, not personNameKey's", () => {
+    // personNameKey is deliberately timid because a wrong answer there is a link to the
+    // wrong human. A reader typing "almodovar" plainly means Pedro Almodóvar.
+    expect(searchPeople(nolans(), "ALMODOVAR").map((p) => p.nconst)).toEqual(["nm-pedro"]);
+  });
+
+  test("a token too short to be cheap is searched on nothing", () => {
+    // A one- or two-letter prefix term is 18-30ms on the real index, against a 7.8ms mean
+    // for the entire title search it rides beside -- on a synchronous server.
+    expect(searchPeople(nolans(), "no")).toEqual([]);
+    expect(searchPeople(nolans(), "n")).toEqual([]);
+    expect(searchPeople(nolans(), "   ")).toEqual([]);
+    // Per TOKEN, so two stubs are two refusals rather than one three-letter query.
+    expect(searchPeople(nolans(), "ma ma")).toEqual([]);
+  });
+
+  /**
+   * The flicker this prevents: somebody typing "christopher nolan" passes through
+   * "christopher n". Refusing the whole query on the short token would take Christopher
+   * Nolan off the screen for two keystrokes and then put him back.
+   */
+  test("a short token is DROPPED, not fatal -- the row does not blink mid-name", () => {
+    expect(searchPeople(nolans(), "nolan c").map((p) => p.nconst)).toEqual(
+      searchPeople(nolans(), "nolan").map((p) => p.nconst),
+    );
+  });
+
+  test("punctuation is a separator on both sides of the query", () => {
+    const db = indexOf(
+      TITLES,
+      [{ nconst: "nm-ob", name: "Dylan O'Brien" }],
+      [{ tconst: "tt-incep", nconst: "nm-ob", category: "actor" }],
+    );
+    expect(searchPeople(db, "o'brien").map((p) => p.nconst)).toEqual(["nm-ob"]);
+    // "obrien" is one token the index never tokenized, so it finds nobody -- the fold is
+    // the tokenizer's and it splits the name the same way on both sides or not at all.
+    expect(searchPeople(db, "obrien")).toEqual([]);
+  });
+
+  test("limit caps the row", () => {
+    expect(searchPeople(nolans(), "nolan", { limit: 2 })).toHaveLength(2);
+  });
+
+  test("nobody by that name is an empty list, not a throw", () => {
+    expect(searchPeople(nolans(), "kurosawa")).toEqual([]);
+  });
+});
+
+/**
+ * The failure this card could cause and this block exists to catch: "I added people and the
+ * titles moved."
+ *
+ * The people layer is a SECOND query over its own index rather than a tier inside the title
+ * ladder, so nothing about it should be able to reach `search()`. That is an argument; this
+ * is the measurement. Two indexes over identical titles, one carrying the people layer and
+ * one not, must answer every query identically -- rows, order and score.
+ */
+describe("adding people to the answer leaves the titles alone", () => {
+  /** The title half of a real index: normalized columns, the real rank, the real FTS DDL. */
+  function searchableIndex(withPeople: boolean): string {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(SCHEMA);
+
+    const insert = db.query(
+      "insert into title (tconst, kind, title, year, votes, rating, genres, ntitle, norig, dtitle) " +
+        "values (?, 'movie', ?, ?, ?, 7, 'Drama', ?, '', ?)",
+    );
+    for (const t of TITLES) {
+      insert.run(t.tconst, t.title, t.year, t.votes, normalizeStripped(t.title), despace(t.title));
+    }
+    applyRank(db, 10);
+    buildTitleSearchIndex(db);
+
+    if (withPeople) {
+      const person = db.query("insert into person (rowid_, nconst, name) values (?, ?, ?)");
+      const credit = db.query(
+        "insert into title_principal (title_rowid, person_rowid, category, ordering) values (?,?,?,0)",
+      );
+      PEOPLE.forEach((p, i) => {
+        person.run(i + 1, p.nconst, p.name);
+      });
+      credit.run(1, 1, "actor");
+      credit.run(2, 2, "director");
+      buildPersonSearchIndex(db);
+    }
+
+    db.close();
+    return path;
+  }
+
+  const cfg = loadConfig();
+
+  test("the same query returns the same titles, in the same order, at the same score", () => {
+    const withPeople = new SearchEngine(searchableIndex(true), cfg);
+    const without = new SearchEngine(searchableIndex(false), cfg);
+    for (const q of ["inception", "the dark knight", "dark", "early short", "incepton"]) {
+      const a = withPeople.search(q);
+      const b = without.search(q);
+      expect(a.hits.map((h) => [h.tconst, h.score])).toEqual(b.hits.map((h) => [h.tconst, h.score]));
+      expect(a.tier).toBe(b.tier);
+    }
+  });
+
+  test("a person's name reaches the people row and not the title ladder", () => {
+    const engine = new SearchEngine(searchableIndex(true), cfg);
+    // No title here is called anything like this, and none should be invented for it.
+    expect(engine.search("christopher nolan").hits).toEqual([]);
+    expect(engine.searchPeople("christopher nolan")?.map((p) => p.nconst)).toEqual(["nm-nolan"]);
+  });
+});
+
 describe("SearchEngine against an index without cast tables", () => {
   /** The pre-cast schema: everything `SCHEMA` had before `person`/`title_principal`. */
   const OLD_SCHEMA = SCHEMA.slice(0, SCHEMA.indexOf("-- People,"));
@@ -549,6 +736,10 @@ describe("SearchEngine against an index without cast tables", () => {
     // Empty rather than null: the person page draws no collaborator pane, exactly as it
     // does for somebody who simply has no repeat collaborator.
     expect(engine.frequentCollaborators("nm-leo")).toEqual([]);
+    // NULL rather than empty, and the difference is the whole point: the route omits the
+    // `people` key entirely, so a client can tell "no such person" from "no people here".
+    expect(engine.hasPeopleSearch).toBe(false);
+    expect(engine.searchPeople("christopher nolan")).toBeNull();
   });
 
   test("hasPeople is true once the tables are there", () => {
@@ -557,6 +748,48 @@ describe("SearchEngine against an index without cast tables", () => {
     db.run(SCHEMA);
     db.close();
     expect(new SearchEngine(path, cfg).hasPeople).toBe(true);
+  });
+
+  /**
+   * The UPGRADE WINDOW, and it is a different one from the cast tables' own.
+   *
+   * An index built by yesterday's image holds `person` and `title_principal` and no `pfts`,
+   * so every person page on it keeps working while search can find nobody. One flag for
+   * both would either throw `no such table: pfts` here or turn person pages off.
+   */
+  test("people tables without the search layer: pages work, search says null", () => {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(SCHEMA);
+    db.run("insert into title (tconst, kind, title, votes) values ('tt-x', 'movie', 'X', 500)");
+    db.run("insert into person (rowid_, nconst, name) values (1, 'nm-chris', 'Christopher Nolan')");
+    db.run(
+      "insert into title_principal (title_rowid, person_rowid, category, ordering) values (1,1,'director',0)",
+    );
+    db.close();
+
+    const engine = new SearchEngine(path, cfg);
+    expect(engine.hasPeople).toBe(true);
+    expect(engine.hasPeopleSearch).toBe(false);
+    expect(engine.searchPeople("christopher nolan")).toBeNull();
+    expect(engine.personPage("nm-chris")?.person.name).toBe("Christopher Nolan");
+  });
+
+  test("hasPeopleSearch is true once the build has added the layer", () => {
+    const path = join(dir, `${crypto.randomUUID()}.db`);
+    const db = new Database(path, { create: true });
+    db.run(SCHEMA);
+    db.run("insert into title (tconst, kind, title, votes) values ('tt-x', 'movie', 'X', 500)");
+    db.run("insert into person (rowid_, nconst, name) values (1, 'nm-chris', 'Christopher Nolan')");
+    db.run(
+      "insert into title_principal (title_rowid, person_rowid, category, ordering) values (1,1,'director',0)",
+    );
+    buildPersonSearchIndex(db);
+    db.close();
+
+    const engine = new SearchEngine(path, cfg);
+    expect(engine.hasPeopleSearch).toBe(true);
+    expect(engine.searchPeople("nolan")?.map((p) => p.nconst)).toEqual(["nm-chris"]);
   });
 
   /**

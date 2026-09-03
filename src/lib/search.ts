@@ -31,10 +31,14 @@ import {
   frequentCollaborators,
   nconstsByNameForTitle,
   nconstsForCredits,
+  PERSON_FTS_TABLE,
   type PersonCreditsOptions,
+  type PersonHit,
   type PersonLinks,
   type PersonPage,
+  type PersonSearchOptions,
   personPage,
+  searchPeople,
 } from "./people";
 import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
@@ -175,6 +179,23 @@ export class SearchEngine {
   readonly hasPeople: boolean;
 
   /**
+   * Whether this index can SEARCH those people, which is a later stage than holding them.
+   *
+   * Separate from `hasPeople` because the window between the two is real and is exactly the
+   * one an upgrade lands in: an index built by yesterday's image has `person` and
+   * `title_principal` and no `pfts` at all, and every person page on it keeps working.
+   * Folding the two into one flag would either throw `no such table: pfts` on that index or
+   * silently turn person pages off on it.
+   *
+   * Three checks, one flag, the shape `hasRank` already uses: the FTS table and the two
+   * rank columns are one stage's output (`buildPersonSearchIndex`), so an index carrying
+   * some of them and not the rest is not a state this build can produce.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasPeopleSearch: boolean;
+
+  /**
    * Whether this index carries the computed `rank` column.
    *
    * **The index a deploy meets is almost always the OLD one.** A redeploy keeps its data
@@ -255,6 +276,8 @@ export class SearchEngine {
     this.db.run("pragma temp_store = memory");
     this.db.run("pragma cache_size = -64000"); // 64 MB page cache
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
+    this.hasPeopleSearch =
+      this.hasPeople && this.tableExists(PERSON_FTS_TABLE) && this.columnExists("person", "top_votes");
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
@@ -988,6 +1011,21 @@ export class SearchEngine {
   /** A person and their filmography. `null` for an unknown id, or an index without people. */
   personPage(nconst: string, opts: PersonCreditsOptions = {}): PersonPage | null {
     return this.hasPeople ? personPage(this.db, nconst, opts) : null;
+  }
+
+  /**
+   * People matching a typed query, best known first -- or `null` when this index cannot say.
+   *
+   * `null` and `[]` are DIFFERENT ANSWERS and the caller must keep them apart: `[]` is
+   * "nobody by that name", `null` is "this index has no people search", and a client shown
+   * an empty row for the second would read a missing capability as a missing person.
+   *
+   * A SECOND query beside the title search rather than a tier inside it. A person and a
+   * title are different nouns with different cards and different destinations, and the
+   * title ladder is tuned against a 42-case canary that has nothing to say about people.
+   */
+  searchPeople(query: string, opts: PersonSearchOptions = {}): PersonHit[] | null {
+    return this.hasPeopleSearch ? searchPeople(this.db, query, opts) : null;
   }
 
   /** Who this person keeps working with. Empty for an index built before the cast tables. */

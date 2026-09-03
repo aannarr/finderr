@@ -21,6 +21,7 @@ import { ClearChip } from "../components/Chip";
 import { CollectionJump } from "../components/CollectionJump";
 import { FacetBar } from "../components/FacetBar";
 import { useKeyAction } from "../components/Kbd";
+import { PeopleRow } from "../components/PeopleRow";
 import { GridSkeleton, Shelf, ShelfSkeleton, StaleResults, TitleGrid } from "../components/TitleGrid";
 import {
   cachedDiscover,
@@ -280,8 +281,12 @@ export function SearchRoute() {
 
       {/* "Nothing for X" must never be shown ABOUT A QUERY STILL RUNNING -- with the
           debounce there is now a real window where the old empty result is on screen while
-          the new one is in flight, and claiming no match during it is simply false. */}
-      {searching && !working && result && result.hits.length === 0 && (
+          the new one is in flight, and claiming no match during it is simply false.
+
+          It counts PEOPLE too. A search that found the director and no films of theirs we
+          index has found something, and printing "Nothing for Chris Nolan" above a row
+          holding Christopher Nolan is the page arguing with itself. */}
+      {searching && !working && result && result.hits.length === 0 && !result.people?.length && (
         <div className="py-16 text-center text-muted">
           <p>Nothing for “{query}”.</p>
           {/*
@@ -314,7 +319,14 @@ export function SearchRoute() {
         phase === "first" ? (
           <GridSkeleton />
         ) : (
+          /*
+            The people row is INSIDE `StaleResults` with the grid, because it is half of the
+            same answer: fading one and leaving the other bright would say the two came from
+            different queries. It has no skeleton of its own for the same reason the shelves
+            do not get one here -- `phase === "first"` already reserves the screen.
+          */
           <StaleResults stale={phase === "refining"}>
+            <PeopleRow people={result?.people ?? []} />
             <TitleGrid titles={result?.hits ?? []} onOpen={reportClick} />
           </StaleResults>
         )

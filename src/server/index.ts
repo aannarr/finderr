@@ -1393,6 +1393,24 @@ const appRoutes = {
 
     const res = live.current.search(q, { limit: Math.min(num("limit") ?? 25, 100), ...filters });
 
+    /*
+      PEOPLE, beside the titles rather than among them.
+
+      Its own key because a person and a title are different nouns: merging them would put
+      `Hit`'s title-shaped fields on somebody's name, and the facet chips below the box
+      narrow titles and mean nothing to a person.
+
+      NOT filtered by the facet scalars, for the same reason: "Christopher Nolan" is not a
+      1990s Comedy. A chip narrows the grid and leaves the people row alone.
+
+      One more local SQLite read on a request that already does several. Measured on the
+      real 353,117-person index: 0.06ms for "christopher nolan", 0.13ms for "nolan", 1.5ms
+      for "tom" and 4.3ms for the worst shape the length floor admits -- beside a 7.8ms
+      mean for the title search it rides with. Cheap enough to stay on this request rather
+      than becoming the separate endpoint the card offered as the escape hatch.
+    */
+    const people = live.current.searchPeople(q);
+
     // Resolve artwork for whatever the user is about to look at, in the
     // background. Never blocks the response.
     artwork.prewarm(res.hits.map((h) => ({ tconst: h.tconst, kind: h.kind })));
@@ -1411,7 +1429,9 @@ const appRoutes = {
     searchLog.searched(q, res.hits.length, filters);
 
     return json(
-      { ...res, hits: decorate(res.hits) },
+      // The key is ABSENT, not empty, on an index that cannot search people -- so a client
+      // can tell "nobody by that name" from "this index has no people in it yet".
+      { ...res, hits: decorate(res.hits), ...(people ? { people } : {}) },
       // Identical queries are extremely common while typing. A short private cache
       // means the back button and repeated keystrokes cost nothing at all.
       { cache: perSession(60) },

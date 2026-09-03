@@ -138,6 +138,19 @@ export interface Facets {
 
 export interface SearchResponse {
   hits: Title[];
+  /**
+   * People whose name matches the query, best known first.
+   *
+   * Beside `hits`, never merged into it: a person and a title are different nouns with
+   * different cards and different destinations, and merging them would put a title's
+   * fields on somebody's name.
+   *
+   * **ABSENT and EMPTY are different answers.** `[]` is "nobody by that name"; missing is
+   * "this index cannot search people yet", which is what an index built before the people
+   * layer shipped returns for up to a day after a deploy. A row drawn for the second would
+   * report a missing capability as a missing person.
+   */
+  people?: PersonHit[];
   facets: Facets;
   tier: string;
   ms: number;
@@ -410,6 +423,18 @@ export interface Person {
   name: string;
   birthYear: number | null;
   deathYear: number | null;
+}
+
+/**
+ * One person in a search answer -- see `SearchResponse.people`.
+ *
+ * `credits` and not the vote signal they are ranked by: how many titles we hold for
+ * somebody is a fact worth printing under their name, and the ordering key is the server's
+ * business. A client that could see it would sooner or later re-sort on it.
+ */
+export interface PersonHit extends Person {
+  /** Titles we hold credits for. */
+  credits: number;
 }
 
 /**

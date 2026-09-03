@@ -58,9 +58,10 @@ export const STAGES_META_KEY = "stages";
  * Every stage this build knows how to produce, and what its output depends on.
  *
  * A stage belongs here once it can be ABSENT from an otherwise valid index -- which is the
- * same test as needing a capability probe in `SearchEngine`, and the three entries below
- * are exactly the three probes that exist (`hasPeople`, `hasRank`, `hasIds`). A stage that
- * every index has always had needs no stamp: there is no version of the file without it.
+ * same test as needing a capability probe in `SearchEngine` (`hasPeople`, `hasRank`,
+ * `hasIds`, `hasPersonIds`, `hasPeopleSearch`) or, for `popularTitles`, of being invisibly
+ * slower without it. A stage that every index has always had needs no stamp: there is no
+ * version of the file without it.
  *
  * The recipe is a canonical string. Two builds of the same configuration must produce the
  * same one, so anything set-like is sorted -- an unsorted list would report a difference
@@ -126,6 +127,22 @@ export const INDEX_STAGES = {
    * scan rather than fail.
    */
   popularTitles: () => JSON.stringify({ v: 1, floor: STOPWORD_VOTE_FLOOR }),
+
+  /**
+   * `pfts` and the `top_votes`/`credits` columns it ranks by -- the people search.
+   *
+   * Constant like `ids`, because there is no knob: the layer is derived entirely from
+   * `person` and `title_principal`, whose own configuration is already `cast`'s recipe.
+   * Its own entry rather than riding on `cast` because the two are not the same question --
+   * an index built by yesterday's image has the cast tables and no search over them, and
+   * one stamp for both would report that index as current.
+   *
+   * It is also the case this stamp exists for. Without it the layer would appear only when
+   * a dump happened to drift, and until then `hasPeopleSearch` would be false against a
+   * perfectly green deployment -- search would simply go on finding no people, with nothing
+   * anywhere saying why.
+   */
+  peopleSearch: () => JSON.stringify({ v: 1 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.
