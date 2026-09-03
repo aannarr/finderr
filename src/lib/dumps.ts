@@ -24,8 +24,8 @@ export const EXPECTED_HEADERS: Record<DumpName, string> = {
     "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres",
   "title.ratings": "tconst\taverageRating\tnumVotes",
   "title.akas": "titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle",
-  // 101,528,386 rows, by far the largest thing we ingest -- and the reason the cast
-  // build is floored rather than complete. Measured 2026-08-31.
+  // By far the largest thing we ingest -- and the reason the cast build is floored rather
+  // than complete. The row count lives on `castMinVotes` in ./config.ts, which owns it.
   "title.principals": "tconst\tordering\tnconst\tcategory\tjob\tcharacters",
   "name.basics": "nconst\tprimaryName\tbirthYear\tdeathYear\tprimaryProfession\tknownForTitles",
 };

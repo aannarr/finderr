@@ -12,10 +12,11 @@
  *
  * > [!IMPORTANT] The build runs as a SUBPROCESS, and that is not a style choice
  * > `buildIndex` streams its dumps with `for await`, so it does yield -- but the SQLite
- * > writes between those yields are synchronous, and the whole job is 103 s on a Mac and
- * > **376 s on the Synology**. Running it in this process would mean the progress page it
- * > exists to serve stutters for six minutes, and `/api/health` blocks with it, so the
- * > container would fail its own healthcheck while doing exactly what it was told.
+ * > writes between those yields are synchronous, and the whole job runs for MINUTES on the
+ * > hardware this ships to (BUILD COST, `../lib/index-builder.ts`). Running it in this
+ * > process would mean the progress page it exists to serve stutters for all of them, and
+ * > `/api/health` blocks with it, so the container would fail its own healthcheck while
+ * > doing exactly what it was told.
  * >
  * > Spawning is also the SAME code path an operator runs by hand and the same one the daily
  * > refresh already uses (see the `Bun.cron` block in `./index.ts`). One builder, three

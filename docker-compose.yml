@@ -245,7 +245,8 @@ services:
     # subprocess (FINDERR_INDEX_REFRESH_ON_BOOT, on by default) -- and /api/health answers
     # 200 the whole time, because liveness is not the same question as "is there an index".
     # Every route that needs one returns 503 until it exists. So 90s is about boot, not
-    # about the 376s the build takes on a Synology.
+    # about the minutes the build takes on a Synology -- see the BUILD COST block in
+    # src/lib/index-builder.ts, which owns that measurement.
     healthcheck:
       test:
         - CMD

@@ -1,11 +1,46 @@
 /**
  * Builds the searchable title index from the IMDb dumps.
  *
- * Design decision: REBUILD, never patch. A full rebuild is ~10s of CPU against 1.27M
- * rows. Incremental diffing would be more code, more failure modes, and no faster.
+ * Design decision: REBUILD, never patch. Incremental diffing would be more code, more
+ * failure modes, and no faster -- see BUILD COST below for why "no faster" is a
+ * measurement rather than an opinion.
  *
  * The build always targets `titles.new.db` and is only promoted to the live path
  * after every gate passes, so a bad build is a no-op rather than an outage.
+ *
+ * ## BUILD COST, MEASURED
+ *
+ * **This block is the ONE owner of these numbers.** Everything else that needs to argue
+ * about build cost -- `castRefreshDays` in `./config.ts`, `buildRankLayer` and
+ * `carryCastForward` below, `../server/index-build.ts`, the healthcheck `start_period` in
+ * `docker-compose.yml` -- cites it instead of restating a figure. Six independent copies
+ * of "376s" is how five of them end up stale and nobody can tell which one was re-measured.
+ *
+ * Measured 2026-09-03 on the Synology (Celeron J4125, no AVX2), both runs from the same
+ * on-disk dumps in an isolated data directory, canary 42/42 on each:
+ *
+ * | build | wall | result |
+ * |---|---|---|
+ * | cast refresh -- full `title.principals` scan | **389.7s** | 1,275,906 titles, 717.5 MB |
+ * | carry-forward -- cast tables copied from the previous index | **155.7s** | same 1,275,906 titles, volume gate 100.0% |
+ *
+ * The Mac does the refresh build in 102.7s (measured 2026-08-31, not re-run here).
+ *
+ * So the cast scan is ~234s, about 60% of a refresh build. That figure is a DELTA between
+ * two runs and carries run-to-run noise: the rank stage alone moved 43.4s -> 25.3s between
+ * these two, on an otherwise idle box.
+ *
+ * **Almost all of the scan is streaming and parsing, not inserting.** The vote floor keeps
+ * barely 1% of `title.principals` (the row counts are on `castMinVotes` in `./config.ts`),
+ * so an incremental cast build saves nothing -- it still reads the whole dump to discover
+ * what changed. NOT reading it is the only thing that helps, which is what
+ * `castRefreshDays` buys.
+ *
+ * **Carry-forward does not bring the build under two minutes.** 155.7s against a stated
+ * ~120s budget is a 1.3x breach, down from 3.2x. The remaining cost is the title stages,
+ * which cannot be carried forward the same way because titles DO change daily: 12.76M rows
+ * of `title.basics` parsed, then rank, then FTS and the spellfix vocabulary. Anything that
+ * closes the last 36s has to come from there, not from cast.
  */
 
 import { Database } from "bun:sqlite";
@@ -212,8 +247,8 @@ export function applyRank(db: Database, c: number): RankPrior {
  * would eventually be filled before the value it copies exists.
  *
  * Measured on the Mac against the real 1.28M-row index: prior 16ms, rank update 1.5s,
- * explode 2.1s, indexes 3.3s -- so the whole layer is under 7s on a build that already
- * costs 102.7s here and 376.3s on the NAS. It rides the existing 09:00 refresh and
+ * explode 2.1s, indexes 3.3s -- so the whole layer is under 7s on a build that costs
+ * minutes (BUILD COST, module docstring). It rides the existing 09:00 refresh and
  * schedules nothing new.
  */
 export function buildRankLayer(db: Database, cfg: Config, log: (msg: string) => void = () => {}): RankPrior {
@@ -498,24 +533,6 @@ function personCrosswalkStage(db: Database, dumpDir: string, log: (m: string) =>
 // ---------------------------------------------------------------------------
 
 /**
- * Build `person` and `title_principal` from the two people dumps.
- *
- * **This stage is floored, and the floor is not a preference.** `title.principals` is
- * 101,528,386 rows against a title index of 1,275,341 -- eighty times the whole product.
- * Restricted to titles clearing `castMinVotes` and to the categories in
- * `castCategories`, it lands at 1,414,391 rows over 297,233 people (measured 2026-08-31),
- * which merely doubles the index. Unfiltered it is not a bigger table, it is a different
- * product with a different build time.
- *
- * Two passes, in this order, because the second depends on the first: principals decides
- * WHICH people matter, and only then is `name.basics` worth reading -- it carries 15.6M
- * people and we need 297k of them.
- *
- * MISSING DUMPS ARE NOT AN ERROR. A checkout that has never fetched them still builds a
- * complete, promotable title index; it just has no person pages. The cast tables are
- * additive, so an existing deployment keeps working through the upgrade that adds them.
- */
-/**
  * Rescan the principals dump, or carry the previous index's cast tables forward.
  *
  * The whole point of the split, and the reason it is a separate function from both: the
@@ -525,7 +542,8 @@ function personCrosswalkStage(db: Database, dumpDir: string, log: (m: string) =>
  * Rescans when there is nothing to carry (first build, or the previous index predates the
  * cast tables), when the RECIPE that produced the carried tables no longer matches the
  * one configured now, or when the carried data is older than `castRefreshDays`. Otherwise
- * copies, which takes seconds against the 192s a scan costs on the NAS.
+ * copies, which takes seconds against the minutes a scan costs on the NAS (BUILD COST,
+ * module docstring).
  *
  * **Age alone was not enough, and the gap was quiet.** Carried tables are only equivalent
  * to a rescan while the filters that produced them still hold, so widening
@@ -640,12 +658,11 @@ function castBuiltAt(path: string): number | null {
 /**
  * Copy the cast tables out of the previous index instead of rebuilding them.
  *
- * **This is what makes a nightly build affordable.** Measured on the Synology (Celeron
- * J4125), scanning `title.principals` costs 192s -- and ~93% of that is streaming and
- * parsing 101.5M lines to keep 0.7% of them, NOT the inserts. So an incremental build
- * saves nothing: it still has to read the whole dump to discover what changed. Not
- * reading the dump is the only thing that helps, and cast for a released title cannot
- * change, so most nights there is nothing to discover.
+ * **This is what makes a nightly build affordable.** The cast scan is about 60% of a
+ * refresh build on the NAS, and reading the dump is almost all of that -- so an
+ * incremental scan would save nothing, because it still reads the whole dump to discover
+ * what changed (BUILD COST, module docstring). Cast for a released title cannot change,
+ * so most nights there is nothing to discover.
  *
  * **`title_rowid` is REMAPPED through `tconst`, never carried verbatim.** Rowids are
  * assigned by insertion order while streaming `title.basics`, so one new title appearing
@@ -700,6 +717,23 @@ function hasCastData(path: string): boolean {
   }
 }
 
+/**
+ * Build `person` and `title_principal` from the two people dumps.
+ *
+ * **This stage is floored, and the floor is not a preference.** `title.principals` is
+ * eighty times the whole title index; restricted to titles clearing `castMinVotes` and to
+ * the categories in `castCategories` it merely doubles it. Unfiltered it is not a bigger
+ * table, it is a different product with a different build time. The counts behind that
+ * live on `castMinVotes` in `./config.ts`, which owns them.
+ *
+ * Two passes, in this order, because the second depends on the first: principals decides
+ * WHICH people matter, and only then is `name.basics` worth reading -- it carries 15.6M
+ * people and we need a third of a million of them.
+ *
+ * MISSING DUMPS ARE NOT AN ERROR. A checkout that has never fetched them still builds a
+ * complete, promotable title index; it just has no person pages. The cast tables are
+ * additive, so an existing deployment keeps working through the upgrade that adds them.
+ */
 async function buildCast(
   db: Database,
   cfg: Config,

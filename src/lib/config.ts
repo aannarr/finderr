@@ -76,11 +76,18 @@ export interface Config {
     /**
      * Cast and crew are only indexed for titles clearing this vote count.
      *
-     * `title.principals` is 101,528,386 rows -- 80x the whole title index -- and the
-     * floor is what makes a reverse index affordable at all: at 1000 it keeps
-     * 1,414,391 rows across 297,233 people, measured 2026-08-31, which merely doubles
-     * the product rather than multiplying it. Set to 0 to index everybody, and expect
-     * a build measured in tens of minutes rather than seconds.
+     * `title.principals` is 101,571,406 rows -- 80x the whole title index -- and the
+     * floor is what makes a reverse index affordable at all: at 1000 it keeps 1,169,846
+     * rows across 353,242 people over the 65,105 titles that clear it (measured
+     * 2026-09-03), which merely doubles the product rather than multiplying it. Set to 0
+     * to index everybody, and expect a build measured in tens of minutes rather than
+     * seconds.
+     *
+     * This line read "1,414,391 rows across 297,233 people, measured 2026-08-31" until
+     * 2026-09-03, and that was wrong on its own date: the index the NAS built that day
+     * holds 1,169,456 / 353,127 under this exact recipe. A fresh scan and a three-day-old
+     * production index agree to within 0.03%, so the earlier pair was mis-recorded rather
+     * than describing a corpus that has since shrunk.
      *
      * It matches `browseVoteFloor`'s default deliberately: one threshold across the
      * product is one fewer number that has to stay meaningful.
@@ -104,14 +111,23 @@ export interface Config {
     /**
      * How often the cast stage actually RE-SCANS `title.principals`, in days.
      *
-     * Measured on the Synology (Celeron J4125), that scan costs 192s -- and ~93% of it is
-     * streaming and parsing 101.5M lines to keep 0.7% of them, not the inserts. So an
-     * incremental build saves nothing: it still has to read the whole dump to find out
-     * what changed. NOT reading the dump is the only thing that helps.
+     * The scan is about 60% of a refresh build on the NAS, and almost all of that is
+     * streaming and parsing the dump rather than inserting -- so an incremental build
+     * saves nothing, and NOT reading the dump is the only thing that helps. The numbers
+     * are in the BUILD COST block of `./index-builder.ts`, which owns them.
      *
      * Which is fine, because cast for a released title cannot change. A nightly pass
      * would only ever discover credits for titles that just crossed the vote floor. In
      * between, the tables are carried forward from the previous index in seconds.
+     *
+     * **7, and that is a measured floor rather than a round number.** 3,958 titles sit in
+     * the 900-1000 vote band against 65,105 already clearing the floor (measured
+     * 2026-09-03) -- so the entire population that could cross without gaining more than
+     * 100 votes is 6.1% of the eligible set, and it is dominated by decades-old titles
+     * that gain a handful of votes a year. The worst case a week-long window can produce
+     * is therefore a marginal title missing its cast for a few days, self-healing at the
+     * next refresh. Move it on two consecutive builds' worth of crossings, never on a
+     * guess.
      *
      * 0 means "every build", which is what a machine fast enough not to care should use.
      */
