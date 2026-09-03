@@ -21,7 +21,7 @@ import { ClearChip } from "../components/Chip";
 import { CollectionJump } from "../components/CollectionJump";
 import { FacetBar } from "../components/FacetBar";
 import { useKeyAction } from "../components/Kbd";
-import { GridSkeleton, Shelf, ShelfSkeleton, TitleGrid } from "../components/TitleGrid";
+import { GridSkeleton, Shelf, ShelfSkeleton, StaleResults, TitleGrid } from "../components/TitleGrid";
 import {
   cachedDiscover,
   cachedSearch,
@@ -308,23 +308,15 @@ export function SearchRoute() {
       ) : searching ? (
         /*
           `first` has nothing to keep, so it reserves the grid's space rather than showing a
-          blank screen. `refining` KEEPS the previous results and only fades them: replacing
-          a grid the reader is already reading with grey boxes on every settled keystroke is
-          the flicker this change exists to remove, not a new one to add.
+          blank screen. Every later query HAS something to keep, which is what `StaleResults`
+          is -- and its doc comment is where the case for keeping it lives.
         */
         phase === "first" ? (
           <GridSkeleton />
         ) : (
-          <div
-            aria-busy={phase === "refining"}
-            className={
-              phase === "refining"
-                ? "opacity-50 transition-opacity duration-150 motion-reduce:transition-none"
-                : undefined
-            }
-          >
+          <StaleResults stale={phase === "refining"}>
             <TitleGrid titles={result?.hits ?? []} onOpen={reportClick} />
-          </div>
+          </StaleResults>
         )
       ) : /*
           Every shelf is a local index query costing zero external calls. The server

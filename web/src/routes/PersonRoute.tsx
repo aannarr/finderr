@@ -19,7 +19,7 @@ import { ToggleChip } from "../components/Chip";
 import { Pane } from "../components/FacetPane";
 import { useKeyAction } from "../components/Kbd";
 import { useChipGroup } from "../components/RovingFocus";
-import { TitleGrid } from "../components/TitleGrid";
+import { StaleResults, TitleGrid } from "../components/TitleGrid";
 import { PERSON_LINK_CLASS } from "../components/TitlePanes";
 import {
   type Collaborator,
@@ -27,6 +27,7 @@ import {
   getPerson,
   type PersonAwards,
   type PersonPage,
+  type PersonQuery,
   subscribeTitleState,
   titleStateVersion,
 } from "../lib/api";
@@ -167,6 +168,30 @@ function lifespan(person: PersonPage["person"]): string | null {
   return String(person.birthYear);
 }
 
+/**
+ * One filmography request, spelled once.
+ *
+ * The render-phase cache probe, the effect that fetches and "Show more" all ask the same
+ * question with a different offset, and the cache is keyed on the answer -- so a fourth
+ * copy of this object literal that forgot `sort` would silently serve the wrong page.
+ */
+function creditsQuery(role: string | undefined, sort: "year" | undefined, offset = 0): PersonQuery {
+  return { category: role, sort, limit: PAGE, offset };
+}
+
+/**
+ * The credits on screen, and the request that produced them.
+ *
+ * The key travels WITH the payload rather than in a second `useState`, because the whole
+ * point is the window where the two disagree: while a newly chosen role is in flight the
+ * grid still shows the PREVIOUS role's rows, and two independent states could report that
+ * window inconsistently for a render.
+ */
+interface ShownCredits {
+  key: string;
+  page: PersonPage;
+}
+
 export function PersonRoute() {
   const { nconst } = useParams({ strict: false }) as { nconst: string };
   const { role, sort } = useSearch({ strict: false }) as Pick<SearchParams, "role" | "sort">;
@@ -176,31 +201,49 @@ export function PersonRoute() {
   // ordering this page cannot produce.
   const byYear = sort === "year" ? "year" : undefined;
 
-  const [page, setPage] = useState<PersonPage | null>(null);
+  const [shown, setShown] = useState<ShownCredits | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
-  // Seeded during render for the same reason BrowseRoute is: this route unmounts every
-  // time you open a title from the filmography, and a null initial state would blank the
-  // page on the way back.
+  /*
+    Seeded during render for the same reason BrowseRoute is: this route unmounts every time
+    you open a title from the filmography, and a null initial state would blank the page on
+    the way back.
+
+    > [!IMPORTANT] A new FILTER on the same person does NOT blank the page
+    > Only a different PERSON does. Everything above the grid -- the name, the lifespan, the
+    > award record, both chip rows -- is the same for every role and every order, so throwing
+    > it away and rebuilding it is a full-page flash that says nothing, and it unmounts the
+    > chip the reader just pressed, which takes their focus with it. The grid keeps the
+    > previous role's rows and fades them until the next ones land.
+  */
   const requestKey = `${nconst}|${role ?? ""}|${byYear ?? ""}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (seededFor !== requestKey) {
     setSeededFor(requestKey);
-    setPage(cachedPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 }) ?? null);
     setError(null);
+    const cached = cachedPerson(nconst, creditsQuery(role, byYear));
+    if (cached) setShown({ key: requestKey, page: cached });
+    else if (shown && shown.page.person.nconst !== nconst) setShown(null);
   }
 
   useEffect(() => {
-    if (cachedPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 })) return;
+    // Served from cache, so nothing is outstanding -- and saying so is not redundant. An
+    // earlier request that this one overtook was marked stale by the cleanup below, so its
+    // own `finally` declines to clear the flag, and without this line "Loading…" would
+    // stick on a page that has already finished loading.
+    if (cachedPerson(nconst, creditsQuery(role, byYear))) {
+      setLoading(false);
+      return;
+    }
 
     let stale = false;
     setLoading(true);
-    getPerson(nconst, { category: role, sort: byYear, limit: PAGE, offset: 0 })
+    getPerson(nconst, creditsQuery(role, byYear))
       .then((p) => {
-        if (!stale) setPage(p);
+        if (!stale) setShown({ key: requestKey, page: p });
       })
       .catch((e: Error) => {
         if (!stale) setError(e.message);
@@ -211,19 +254,21 @@ export function PersonRoute() {
     return () => {
       stale = true;
     };
-  }, [nconst, role, byYear]);
+  }, [nconst, role, byYear, requestKey]);
+
+  /** Is the grid below the answer to the question the chips currently say is being asked? */
+  const showingCurrentCredits = shown !== null && shown.key === requestKey;
 
   const loadMore = async () => {
-    if (!page) return;
+    // Only ever extends rows it can see. Mid-filter-change the grid still holds the previous
+    // role's credits, and appending the next role's onto those makes one grid out of two
+    // questions -- with an offset counted against the wrong total.
+    if (!shown || !showingCurrentCredits) return;
+    const held = shown.page.credits;
     setLoading(true);
     try {
-      const next = await getPerson(nconst, {
-        category: role,
-        sort: byYear,
-        limit: PAGE,
-        offset: page.credits.length,
-      });
-      setPage({ ...next, credits: [...page.credits, ...next.credits] });
+      const next = await getPerson(nconst, creditsQuery(role, byYear, held.length));
+      setShown({ key: requestKey, page: { ...next, credits: [...held, ...next.credits] } });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -236,26 +281,24 @@ export function PersonRoute() {
   const loadMoreKey = useKeyAction(
     "loadMore",
     () => void loadMore(),
-    Boolean(page) && !loading && (page?.credits.length ?? 0) < (page?.total ?? 0),
+    showingCurrentCredits && !loading && shown.page.credits.length < shown.page.total,
   );
 
   /*
     A prolific person has a dozen roles, which is a dozen tab stops between their name and
     their filmography, so the role row is ONE stop and ← → move within it.
 
-    > [!CAUTION] NO `selectionFollowsFocus`, even though this row is single-select
-    > The season selector is single-select and takes it, so this row looks like the same
-    > case and is not. Choosing a role NAVIGATES, and this route blanks itself while the
-    > filtered page loads (`if (!page) return null`, a few lines down) -- so the chip that
-    > focus is sitting on is UNMOUNTED by its own selection. Measured in a browser: one →
-    > moves the selection and then drops focus to the document, and the second → does
-    > nothing at all. A row you can enter and take exactly one step in is worse than the
-    > plain tab order it replaced. Space and Enter still choose, natively.
+    > [!NOTE] STILL no `selectionFollowsFocus`, but the reason changed
+    > It used to be that this route blanked itself while the filtered page loaded, so the
+    > chip focus was sitting on was unmounted by its own selection and the row could be
+    > entered and stepped through exactly once. That is fixed -- the page now keeps its
+    > header and both chip rows -- and the remaining objection is the one the hook's own doc
+    > gives for the refinement bar: choosing a role is a `navigate`, and a pushed history
+    > entry per arrow press turns a dozen roles into a dozen presses of Back. The season
+    > selector takes the prop because its steps are free and leave no history.
     >
-    > The blanking is not this row's bug and predates the arrow keys -- a mouse click loses
-    > focus the same way. It is filed as
-    > `the-person-page-blanks-itself-and-drops-focus-while-a-role-f`, and landing it is what
-    > re-opens this line.
+    > Whether that trade is worth making is filed rather than settled here:
+    > `should-the-person-page-s-role-row-take-selectionfollowsfocus`.
   */
   const roleChips = useChipGroup();
 
@@ -270,9 +313,11 @@ export function PersonRoute() {
     );
   }
 
-  // No skeleton: the whole page is one local query, so it is either here or it is a
-  // frame away. A skeleton for a query this fast is a flash, not a reassurance.
-  if (!page) return null;
+  // Nothing at all only for a person we hold NOTHING for yet -- no skeleton, because the
+  // whole page is one local query and is either here or a frame away. A filter change on a
+  // person already on screen never reaches this: `shown` still holds their last page.
+  if (!shown) return null;
+  const page = shown.page;
 
   const years = lifespan(page.person);
   const roles = mergedCategories(page.categories);
@@ -360,22 +405,29 @@ export function PersonRoute() {
         </div>
       )}
 
-      <TitleGrid titles={page.credits} />
+      {/*
+        The grid and its own control are the ONLY things a role or a sort changes, so they
+        are the only things that fade while the next answer is in flight. Everything above
+        stays put, which is what keeps focus on the chip that was just pressed.
+      */}
+      <StaleResults stale={!showingCurrentCredits}>
+        <TitleGrid titles={page.credits} />
 
-      {page.credits.length < page.total && (
-        <div className="mt-6 flex justify-center">
-          <button
-            type="button"
-            onClick={() => void loadMore()}
-            disabled={loading}
-            {...loadMoreKey.props}
-            className="rounded-lg border border-line px-4 py-2 text-sm text-muted hover:text-ink disabled:opacity-50"
-          >
-            {loading ? "Loading…" : `Show ${Math.min(PAGE, page.total - page.credits.length)} more`}
-            {loadMoreKey.hint}
-          </button>
-        </div>
-      )}
+        {page.credits.length < page.total && (
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              onClick={() => void loadMore()}
+              disabled={loading || !showingCurrentCredits}
+              {...loadMoreKey.props}
+              className="rounded-lg border border-line px-4 py-2 text-sm text-muted hover:text-ink disabled:opacity-50"
+            >
+              {loading ? "Loading…" : `Show ${Math.min(PAGE, page.total - page.credits.length)} more`}
+              {loadMoreKey.hint}
+            </button>
+          </div>
+        )}
+      </StaleResults>
 
       {/*
         Under the grid and its control, where "more like this" sits on a title page: the

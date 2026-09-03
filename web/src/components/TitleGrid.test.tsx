@@ -1,5 +1,6 @@
 /**
- * The front page's loading state, and the one distinction it turns on.
+ * The two loading states this file draws, and the one distinction they turn on: whether
+ * there is already an answer on screen worth keeping.
  *
  * `renderToStaticMarkup`, like the other component tests here: every question is "which
  * markup comes out", and `ShelfSkeleton` takes no props, touches no context and needs
@@ -14,7 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ShelfSkeleton } from "./TitleGrid";
+import { ShelfSkeleton, StaleResults } from "./TitleGrid";
 
 const html = renderToStaticMarkup(<ShelfSkeleton />);
 
@@ -50,5 +51,40 @@ describe("ShelfSkeleton", () => {
     // The bars themselves are decoration. `Skeleton` sets `aria-hidden` on each, so the
     // labelled region above is all that is announced -- not eighteen anonymous divs.
     expect(html.split('aria-hidden="true"').length - 1).toBeGreaterThan(18);
+  });
+});
+
+/**
+ * The other half of the loading story: a view that HAS something to keep.
+ *
+ * The reason this component exists is invisible to a markup test -- it is that the children
+ * are the SAME elements across the change, so focus inside them survives. What is provable
+ * here is the contract those elements are wrapped in, and both directions of it matter: a
+ * fade that never lifts reads as a page that stayed broken, and an `aria-busy` left true
+ * tells a screen reader to keep waiting for content that already arrived.
+ */
+describe("StaleResults", () => {
+  const render = (stale: boolean) =>
+    renderToStaticMarkup(
+      <StaleResults stale={stale}>
+        <p>rows</p>
+      </StaleResults>,
+    );
+
+  test("keeps the children either way", () => {
+    expect(render(true)).toContain("<p>rows</p>");
+    expect(render(false)).toContain("<p>rows</p>");
+  });
+
+  test("fades and announces itself busy while the replacement is in flight", () => {
+    expect(render(true)).toContain('aria-busy="true"');
+    expect(render(true)).toContain("opacity-50");
+    // Anybody who asked for less motion gets the fade without the transition.
+    expect(render(true)).toContain("motion-reduce:transition-none");
+  });
+
+  test("adds no class and claims no busy state once the answer is current", () => {
+    expect(render(false)).not.toContain('aria-busy="true"');
+    expect(render(false)).not.toContain("opacity-50");
   });
 });

@@ -7,7 +7,7 @@
  * edge in the discovery graph cheap instead of another bespoke page.
  */
 
-import { type KeyboardEvent, memo } from "react";
+import { type KeyboardEvent, memo, type ReactNode } from "react";
 import type { Title } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { CARD_LINK_SELECTOR, CARD_REQUEST_SELECTOR, CARD_SELECTOR } from "../lib/card-dom";
@@ -132,6 +132,31 @@ export function GridSkeleton({ count = 10 }: { count?: number }) {
         ))}
       </div>
     </output>
+  );
+}
+
+/**
+ * The answer already on screen, kept there while its replacement is in flight.
+ *
+ * Stale-while-revalidate, drawn. A reader who refines a search or picks a role has a grid
+ * in front of them and wants the NEXT one; taking this one away in the meantime replaces
+ * something readable with nothing, and -- on a page whose controls sit above the grid --
+ * unmounts the control they just pressed, which takes their focus with it.
+ *
+ * Fade rather than a skeleton, because the rows are still true: they are the previous
+ * question's answer, not a placeholder for this one. `aria-busy` says the same thing to a
+ * screen reader, and `motion-reduce` drops the transition for anyone who asked for that.
+ *
+ * Lives here, beside `GridSkeleton`, because the two are the pair: a skeleton for a view
+ * with nothing to keep, this for a view with something.
+ */
+const STALE_CLASS = "opacity-50 transition-opacity duration-150 motion-reduce:transition-none";
+
+export function StaleResults({ stale, children }: { stale: boolean; children: ReactNode }) {
+  return (
+    <div aria-busy={stale} className={stale ? STALE_CLASS : undefined}>
+      {children}
+    </div>
   );
 }
 
