@@ -1,5 +1,52 @@
 import { describe, expect, test } from "bun:test";
-import { ceremonyYear, isPersonLed, ordinal, prettyCategory } from "./awards-format";
+import {
+  ceremonyYear,
+  type EditionNaming,
+  editionHeading,
+  editionLabel,
+  isPersonLed,
+  ordinal,
+  prettyCategory,
+} from "./awards-format";
+
+const OSCARS: EditionNaming = {
+  title: "The Academy Awards",
+  editionKey: "ordinal",
+  editionOne: "ceremony",
+};
+
+const PALME: EditionNaming = { title: "The Palme d'Or", editionKey: "year", editionOne: "festival" };
+
+describe("editionLabel", () => {
+  test("a numbered award prints its ordinal beside the year it is about", () => {
+    // The Academy's `Year` is a separate fact from its ceremony number -- and reads `1927/28`
+    // for the first six -- so both are worth printing and neither is derivable from the other.
+    expect(editionLabel(OSCARS, 96, "2023")).toBe("96th · 2023");
+    expect(editionLabel(OSCARS, 1, "1927/28")).toBe("1st · 1927/28");
+  });
+
+  test("a dated award prints the year alone, because there is no ordinal to print", () => {
+    // Wikidata records a point in time and nothing else. `1994th` would be an invention, and
+    // it is the one an unguarded `ordinal()` would have made.
+    expect(editionLabel(PALME, 1994, "1994")).toBe("1994");
+  });
+
+  test("without a year, a step link still names its neighbour", () => {
+    // The step links know only the neighbour's KEY, which for a dated award is its year.
+    expect(editionLabel(OSCARS, 95)).toBe("95th");
+    expect(editionLabel(PALME, 1993)).toBe("1993");
+  });
+});
+
+describe("editionHeading", () => {
+  test("a numbered award names what is being counted", () => {
+    expect(editionHeading(OSCARS, 96, "2023")).toBe("96th ceremony · 2023");
+  });
+
+  test("a dated award leads with the award, because the year alone is not a heading", () => {
+    expect(editionHeading(PALME, 1994, "1994")).toBe("The Palme d'Or 1994");
+  });
+});
 
 describe("ordinal", () => {
   test("the ordinary endings", () => {
