@@ -20,6 +20,7 @@ import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
+import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
 import { Cache } from "./cache";
 import {
   CachePersistence,
@@ -661,6 +662,41 @@ export async function getCeremony(ceremony: number): Promise<CeremonyPage> {
     ceremonyCache.set(key, data);
     for (const t of Object.values(data.titles)) titleCache.set(t.tconst, t);
     return data;
+  });
+}
+
+/**
+ * How much of each computed list this library holds, keyed by the catalogue's list id.
+ *
+ * ONE entry for the whole catalogue, cached under one key, because both surfaces that draw
+ * a completion want a different slice of the same answer: `/lists` prints twenty-six of
+ * them at once and a ranked `/browse` prints exactly one. Fetching per list would make the
+ * index page twenty-six requests, and fetching per page would make the two disagree.
+ *
+ * A list id ABSENT from `completions` has no count to draw -- an index with no rank column,
+ * or a decade the server's clock does not agree exists. Callers render nothing for it.
+ */
+const listCompletionCache = new Cache<ListCompletions>(1);
+
+export type ListCompletions = Record<string, ListCompletion>;
+
+/** Completions we already hold. Synchronous, for the same reason `cachedAwards` is. */
+export function cachedListCompletions(): ListCompletions | undefined {
+  return listCompletionCache.get("all");
+}
+
+export async function getListCompletions(): Promise<ListCompletions> {
+  const hit = listCompletionCache.fresh("all");
+  if (hit) return hit;
+  return dedupe("list-completions", async () => {
+    const res = await fetch("/api/lists/completion");
+    if (!res.ok) throw new Error(`list completion failed: ${res.status}`);
+    const data = (await res.json()) as CompletionPayload;
+    // Keyed on the way IN rather than at every read: both callers look a list up by id, and
+    // the server sends an array because that is the shape it builds.
+    const byId = Object.fromEntries(data.completions.map((c) => [c.id, c]));
+    listCompletionCache.set("all", byId);
+    return byId;
   });
 }
 

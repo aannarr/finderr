@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyRank, EXPLODE_GENRES, SCHEMA } from "./index-builder";
-import { browseIndex, browseVoteFloor, decadeOf } from "./search";
+import { browseIndex, browseMembers, browseVoteFloor, decadeOf } from "./search";
 
 interface Fixture {
   tconst: string;
@@ -245,6 +245,54 @@ describe("browseIndex", () => {
     const second = browseIndex(db, { year: 1901, limit: 3, offset: 3 });
     expect(second.rows.map((r) => r.votes)).toEqual([44, 43, 42]);
     expect(second.total).toBe(8);
+  });
+});
+
+/**
+ * `browseMembers` -- the ids of a list, for counting how many of them we own.
+ *
+ * Every case asserts the SAME ANSWER as `browseIndex`, because that is the only property
+ * worth having: a completion count computed over a different set from the grid it is
+ * printed above would be a wrong number nobody could see was wrong.
+ */
+describe("browseMembers", () => {
+  const RANKED = Array.from({ length: 12 }, (_, i) => ({
+    tconst: `tt-m${i}`,
+    year: 2000,
+    kind: "movie",
+    votes: 100_000,
+    genres: i % 2 === 0 ? "Horror" : "Drama",
+    rating: 5 + i * 0.25,
+  }));
+
+  test("it returns exactly the ids `browseIndex` returns, in the same order", () => {
+    const db = indexOf(RANKED);
+    for (const opts of [
+      { kind: "movie", sort: "rank" as const, limit: 5 },
+      { kind: "movie", sort: "rank" as const, limit: 5, offset: 5 },
+      { genre: "Horror", kind: "movie", sort: "rank" as const, limit: 3 },
+      { genre: "Horror", kind: "movie", sort: "rank" as const, limit: 3, genreVotes: true },
+      // Not a list, but the function takes any browse and must not disagree on one either.
+      { kind: "movie", limit: 4 },
+    ]) {
+      expect(browseMembers(db, opts)).toEqual(browseIndex(db, opts).rows.map((r) => r.tconst));
+    }
+  });
+
+  test("it stops at the limit even when the list is longer", () => {
+    const db = indexOf(RANKED);
+    expect(browseMembers(db, { kind: "movie", sort: "rank", limit: 4 })).toHaveLength(4);
+    // And returns what there IS when the slice is thinner than the limit, which is what
+    // makes a completion denominator honest for a genre nobody has ranked much of.
+    expect(browseMembers(db, { genre: "Horror", kind: "movie", sort: "rank", limit: 250 })).toHaveLength(6);
+  });
+
+  test("an unrated title is not a member, exactly as it is not a row", () => {
+    const db = indexOf([
+      { tconst: "tt-rated", year: 2000, kind: "movie", votes: 5_000, genres: "Drama", rating: 8 },
+      { tconst: "tt-unrated", year: 2000, kind: "movie", votes: 0, genres: "Drama", rating: 0 },
+    ]);
+    expect(browseMembers(db, { kind: "movie", sort: "rank", limit: 250 })).toEqual(["tt-rated"]);
   });
 });
 

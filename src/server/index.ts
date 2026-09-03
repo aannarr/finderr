@@ -26,6 +26,7 @@ import type { EpisodeState } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
+import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
@@ -72,6 +73,7 @@ import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { json } from "./json-response";
+import { completionPayload, type ListsDeps } from "./lists";
 import { LiveIndex } from "./live-index";
 import { type PreviewDeps, previewResponse } from "./preview";
 import { PREVIEW_IMAGE_PATH, PREVIEW_PATH, PreviewResolver } from "./preview-resolver";
@@ -996,6 +998,25 @@ const awardsDeps = (): AwardsDeps => ({
   source: awardSourceMeta(store),
 });
 
+/**
+ * What the list-completion handler reads, resolved at the moment of use.
+ *
+ * `live.current` inside the closure for the same reason `awardsDeps` does it -- an engine
+ * captured across a daily promote serves yesterday's file or throws.
+ *
+ * The YEAR is the server's, and the browser generates the same catalogue from its own
+ * clock. They can disagree for a few hours either side of New Year, in which case a decade
+ * list the browser drew has no completion in this payload and simply renders without one.
+ * That is the same missing-id path an unranked index already takes, so it needs no second
+ * mechanism -- and pinning the year in the URL would make it cacheable state somebody has
+ * to keep meaningful instead.
+ */
+const listsDeps = (): ListsDeps => ({
+  year: new Date().getFullYear(),
+  members: (list) => live.current.rankedMembers(list.filters, LIST_SIZE),
+  ownedCount: (tconsts) => store.ownedCount(tconsts),
+});
+
 const staticDir = `${import.meta.dir}/../../web/dist`;
 
 /**
@@ -1677,6 +1698,19 @@ const appRoutes = {
     if (!page) return bad("unknown ceremony", 404);
     return json(page, { cache: perSession(600) });
   },
+
+  /**
+   * How much of each computed list this library holds.
+   *
+   * The completion counts and NOTHING else: the catalogue itself is static data both sides
+   * import from `src/lib/lists.ts`, so sending it back over the wire would be a second copy
+   * of a table the browser already has, arriving later than the page that draws it.
+   *
+   * Per-session and short, on the same reasoning as the awards timeline: the membership
+   * moves once per index rebuild and the ownership moves on a library sync, which is the
+   * faster of the two and is what the 60 seconds is for.
+   */
+  "/api/lists/completion": () => json(completionPayload(listsDeps()), { cache: perSession(60) }),
 
   /**
    * The discovery shelves, decorated with local library and request state.

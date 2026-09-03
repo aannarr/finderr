@@ -2,9 +2,12 @@
  * The pieces every award screen is built from.
  *
  * Four screens read this file -- the timeline, the ceremony page, the title pane and the
- * person page -- and they all draw the same three things: a nomination line, a link to a
- * person or a film that may not exist, and a completion count. One owner each, because a
- * second copy of "is this name a link?" is exactly how one screen ends up linking a studio.
+ * person page -- and they all draw the same things: a nomination line, and a link to a
+ * person or a film that may not exist. One owner each, because a second copy of "is this
+ * name a link?" is exactly how one screen ends up linking a studio.
+ *
+ * The completion count used to live here and now lives in `./Completion`, because the list
+ * catalogue draws the same sentence and it was never an award fact.
  *
  * > [!IMPORTANT] Nothing here is a facet, so nothing here goes through `paneView`
  * > The award tables are OURS -- imported by a job, read from local SQLite, complete the
@@ -93,43 +96,6 @@ export function WinnerMark({ won }: { won: boolean }) {
       aria-hidden={!won}
     >
       {won ? "Won" : "—"}
-    </span>
-  );
-}
-
-/**
- * "you own 14 of 38 films", with the bar that makes the ratio readable at a glance.
- *
- * The one number Seerr structurally cannot answer, which is why it is worth a component
- * rather than a sentence. A zero denominator renders NOTHING rather than "0 of 0": a
- * ceremony whose films we cannot identify has no completion to report, and printing 0%
- * would read as a failure of the library rather than of the data.
- */
-export function Completion({
-  owned,
-  total,
-  noun,
-  className = "",
-}: {
-  owned: number;
-  total: number;
-  noun: string;
-  className?: string;
-}) {
-  if (total === 0) return null;
-  const pct = Math.round((owned / total) * 100);
-  return (
-    <span className={`inline-flex items-center gap-2 ${className}`}>
-      <span className="tabular-nums">
-        you own {owned.toLocaleString()} of {total.toLocaleString()} {noun}
-      </span>
-      <span
-        className="h-1 w-16 overflow-hidden rounded-full bg-surface-2"
-        role="img"
-        aria-label={`${pct}% of ${noun} in your library`}
-      >
-        <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
-      </span>
     </span>
   );
 }

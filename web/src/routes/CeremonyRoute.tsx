@@ -12,7 +12,8 @@
 
 import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { AwardFilmLink, Completion, NominationRow, NomineeList } from "../components/Awards";
+import { AwardFilmLink, NominationRow, NomineeList } from "../components/Awards";
+import { Completion } from "../components/Completion";
 import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
 import { SynopsisBody } from "../components/TitlePanes";

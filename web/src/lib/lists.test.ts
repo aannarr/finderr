@@ -1,127 +1,67 @@
 /**
- * The list catalogue.
+ * The list catalogue, as the ROUTER sees it.
  *
- * Every assertion here is about the CATALOGUE being well-formed rather than about how it
- * renders, which is the whole reason `lists.ts` is pure data: the page cannot show a list
- * that resolves to a browse nobody can run, and finding that out needs no DOM.
+ * The catalogue itself lives in `src/lib/lists.ts` and its own invariants are tested beside
+ * it. What is left here is the half that needs this side of the tree: a list's filters have
+ * to survive the router's validator, and a curated row has to name a route this app
+ * actually registers. Both are about the browser, so both are tested in the browser's
+ * suite.
  */
 
 import { describe, expect, test } from "bun:test";
-import { CURATED, computedLists, LIST_GENRES, listDecades, listGroups, RANK_EXPLAINER } from "./lists";
+import { CURATED, computedLists, type ListFilters } from "../../../src/lib/lists";
 import { validateSearch } from "./search-params";
 
 const YEAR = 2026;
 
-describe("listDecades", () => {
-  test("newest first, starting with the decade the year is in", () => {
-    expect(listDecades(YEAR, 3)).toEqual([2020, 2010, 2000]);
-    // A year at the boundary belongs to the decade it starts, same rule as `decadeOf`.
-    expect(listDecades(2030, 2)).toEqual([2030, 2020]);
-    expect(listDecades(2029, 2)).toEqual([2020, 2010]);
-  });
-
-  test("it takes the year rather than reading the clock", () => {
-    // Pinnable on purpose: a catalogue that asked `new Date()` for itself would make this
-    // suite go red on 1 January, which is the least useful morning to be debugging it.
-    expect(listDecades(2026, 1)).toEqual([2020]);
-    expect(listDecades(2036, 1)).toEqual([2030]);
-  });
-});
-
-describe("computedLists", () => {
-  const lists = computedLists(YEAR);
-
-  test("every list is ranked -- that is what makes it a list rather than a grid", () => {
-    for (const list of lists) expect(list.search.sort).toBe("rank");
-  });
-
-  test("every list pins a kind, so no list mixes films and series", () => {
-    // Films and series are rated by different crowds at different volumes, so a mixed list
-    // has no honest title -- the series take the head and "the best films of the 2010s"
-    // stops being about films.
-    for (const list of lists) expect(list.search.kind).toBeTruthy();
-  });
-
-  test("ids are unique, because they are React keys and URL fragments", () => {
-    const ids = lists.map((l) => l.id);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
+describe("computedLists in the URL", () => {
   test("every list survives the router's own validator unchanged", () => {
-    // The catalogue stores URL strings and the router hands back typed params. A list whose
-    // `decade` came back undefined would render a link to the unfiltered grid while still
-    // being labelled "Best of the 1990s" -- a wrong answer that looks like a right one.
-    for (const list of lists) {
-      const parsed = validateSearch(list.search);
+    // The catalogue stores typed filters and the router hands back typed params, but the URL
+    // between them is strings. A list whose `decade` came back undefined would render a link
+    // to the unfiltered grid while still being labelled "Best of the 1990s" -- a wrong answer
+    // that looks like a right one.
+    for (const list of computedLists(YEAR)) {
+      const parsed = validateSearch({ ...list.filters, sort: "rank" });
       expect(parsed.sort).toBe("rank");
-      expect(parsed.kind).toBe(list.search.kind);
-      if (list.search.genre) expect(parsed.genre).toBe(list.search.genre);
-      if (list.search.decade) expect(parsed.decade).toBe(Number(list.search.decade));
+      expect(parsed.kind).toBe(list.filters.kind);
+      expect(parsed.genre).toBe(list.filters.genre);
+      expect(parsed.decade).toBe(list.filters.decade);
     }
   });
 
-  test("the genre lists are the closed editorial set, not every IMDb genre", () => {
-    const genres = lists.map((l) => l.search.genre).filter(Boolean);
-    expect(genres).toEqual([...LIST_GENRES]);
-    // The ones deliberately left out. "The best talk-shows of all time" is a list nobody
-    // is looking for, and deriving the set from the corpus would eventually add it.
-    for (const unwanted of ["Short", "News", "Talk-Show", "Adult", "Reality-TV"]) {
-      expect(genres).not.toContain(unwanted);
+  test("a list survives being written to a URL and read back", () => {
+    // The real round trip: object -> query string -> validator. `decade` is a number on both
+    // ends and a string in the middle, which is exactly where a list quietly loses its
+    // filter.
+    for (const list of computedLists(YEAR)) {
+      const query = new URLSearchParams({ ...toStrings(list.filters), sort: "rank" });
+      const parsed = validateSearch(Object.fromEntries(query));
+      expect(parsed.decade).toBe(list.filters.decade);
+      expect(parsed.genre).toBe(list.filters.genre);
+      expect(parsed.kind).toBe(list.filters.kind);
     }
   });
 });
 
-describe("listGroups", () => {
-  test("every computed list lands in exactly one group", () => {
-    const grouped = listGroups(YEAR).flatMap((g) => g.lists.map((l) => l.id));
-    const all = computedLists(YEAR).map((l) => l.id);
-    expect(grouped.sort()).toEqual(all.sort());
-  });
-
-  test("an empty group is dropped rather than drawn as a bare heading", () => {
-    for (const group of listGroups(YEAR)) expect(group.lists.length).toBeGreaterThan(0);
-  });
-});
+/** The filters as the URL carries them: strings, with the absent keys simply absent. */
+function toStrings(filters: ListFilters): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(filters).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])),
+  );
+}
 
 describe("CURATED", () => {
-  /*
-    This block asserted `CURATED` was EMPTY until `/awards/oscars` existed, and that
-    assertion has now done its job rather than been weakened. It was a placeholder guarding
-    one thing -- that nobody adds a row pointing at a route that does not resolve -- and the
-    route resolves, so the guard graduates into the real invariant: every row points at a
-    path this app actually serves. Deleting the block instead would have thrown away the
-    rule along with the placeholder.
-  */
   test("every curated row points at a real route, not a 404", () => {
     // The routes registered in `router.tsx`. Named here rather than imported, deliberately:
     // importing the router pulls every route COMPONENT into a test about a data table, and
     // a curated list is meant to be checkable without rendering anything.
+    //
+    // `CuratedPath` makes this unwriteable at the type level too. The test survives because
+    // the type is a hand-kept union: it stops a row naming a path nobody serves, and THIS
+    // stops the union itself drifting from the router.
     const routes = ["/awards/oscars", "/lists"];
     for (const list of CURATED) {
       expect(routes).toContain(list.to);
     }
-  });
-
-  test("a row is same-origin and absolute, never a link out", () => {
-    // `/lists` is chrome inside this app. A curated row is not the place an upstream URL
-    // gets in -- that rule has one owner per surface, and here it is the shape of `to`.
-    for (const list of CURATED) {
-      expect(list.to.startsWith("/")).toBe(true);
-      expect(list.to.startsWith("//")).toBe(false);
-    }
-  });
-
-  test("ids are unique, so a row cannot silently replace another", () => {
-    expect(new Set(CURATED.map((l) => l.id)).size).toBe(CURATED.length);
-  });
-});
-
-describe("RANK_EXPLAINER", () => {
-  test("it disclaims IMDb by name", () => {
-    // The rank reproduces IMDb's Top 250 head almost exactly and will never match it,
-    // because their vote filtering is unpublished. Every surface showing a computed list
-    // says whose list it is, and this is the one sentence that does it.
-    expect(RANK_EXPLAINER).toContain("IMDb");
-    expect(RANK_EXPLAINER).toContain("finderr");
   });
 });

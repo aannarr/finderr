@@ -958,6 +958,21 @@ export class SearchEngine {
     return browseIndex(this.db, { ...safe, genreVotes: this.hasGenreVotes });
   }
 
+  /**
+   * The head of a ranked list, as ids -- and NOTHING at all on an index with no rank.
+   *
+   * The opposite call to `browse` above: that one downgrades a ranked sort to votes so a
+   * generic grid still renders, and this one refuses. A completion count is a claim ABOUT A
+   * NAMED LIST -- "you own 178 of the top 250 horror films" -- so counting a votes-ordered
+   * head under a ranked list's label would be a wrong answer wearing a right one's name,
+   * which is the same reason `discoveryShelves` asks `hasRank` before drawing a top list.
+   * An empty array is the honest answer, and every caller renders nothing for it.
+   */
+  rankedMembers(filters: BrowseFilters, size: number): string[] {
+    if (!this.hasRank) return [];
+    return browseMembers(this.db, { ...filters, sort: "rank", limit: size, genreVotes: this.hasGenreVotes });
+  }
+
   private tableExists(name: string): boolean {
     return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
   }
@@ -1243,6 +1258,32 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   if (total > 0 || minVotes === 0) return { rows, total };
   const unfloored = browseTotal(db, browseSql(opts, 0, sort, opts.genreVotes));
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
+}
+
+/**
+ * The ids of one browse page, and not one column more.
+ *
+ * Shares `browseSql` with `browseIndex` so the membership of "the top 250 horror films" is
+ * decided in exactly one place -- a second WHERE clause here would be a second answer to
+ * "what is in this list", and the completion count would eventually disagree with the grid
+ * it is printed above.
+ *
+ * It runs NO count. That is the whole reason it is a separate function rather than
+ * `browseIndex(...).rows.map(...)`: `/lists` asks for the head of twenty-six lists at once,
+ * and `browseTotal` over an unfiltered `rank is not null` is a scan of the whole index --
+ * paid twenty-six times for a number no caller here wants.
+ */
+export function browseMembers(db: Database, opts: BrowseOptions): string[] {
+  const sort = opts.sort ?? "votes";
+  const sql = browseSql(opts, opts.minVotes ?? browseVoteFloor(opts, sort), sort, opts.genreVotes);
+  return (
+    db
+      .query(
+        `select t.tconst from title t ${sql.join} where ${sql.where}
+         order by ${sql.order} limit ? offset ?`,
+      )
+      .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as { tconst: string }[]
+  ).map((r) => r.tconst);
 }
 
 /**

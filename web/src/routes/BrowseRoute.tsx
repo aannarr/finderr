@@ -17,7 +17,9 @@
 
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { completionNoun, kindNoun, listForFilters, RANK_EXPLAINER } from "../../../src/lib/lists";
 import { ClearChip } from "../components/Chip";
+import { Completion } from "../components/Completion";
 import { useKeyAction } from "../components/Kbd";
 import { TitleGrid } from "../components/TitleGrid";
 import {
@@ -29,17 +31,10 @@ import {
   type Title,
   titleStateVersion,
 } from "../lib/api";
-import { RANK_EXPLAINER } from "../lib/lists";
 import { filtersOf, type SearchParams } from "../lib/search-params";
+import { useListCompletions } from "../lib/use-list-completions";
 
 const PAGE = 60;
-
-const KIND_LABEL: Record<string, string> = {
-  movie: "films",
-  tvSeries: "series",
-  tvMiniSeries: "mini-series",
-  tvMovie: "TV films",
-};
 
 /**
  * "Horror films from the 1980s" -- a sentence, not a list of key=value pairs.
@@ -51,8 +46,7 @@ const KIND_LABEL: Record<string, string> = {
  * built this forbade.
  */
 function describe(f: SearchParams): string {
-  const noun = f.kind ? (KIND_LABEL[f.kind] ?? f.kind) : "titles";
-  const parts = [f.sort === "rank" ? "best" : undefined, f.genre, noun];
+  const parts = [f.sort === "rank" ? "best" : undefined, f.genre, kindNoun(f.kind)];
   if (f.year) parts.push(`from ${f.year}`);
   else if (f.decade) parts.push(`from the ${f.decade}s`);
   return parts.filter(Boolean).join(" ");
@@ -160,6 +154,21 @@ export function BrowseRoute() {
   const activeFilters = Object.keys(filtersOf(params)).length;
   const canLoadMore = rows.length < total && !loading;
 
+  /*
+    Which NAMED list this page is, if it is one at all.
+
+    `/browse?genre=Horror&kind=movie&sort=rank` is not merely a filtered grid -- it is the
+    page "Best Horror" on `/lists` links to, so it is that list and can say what you own of
+    it. A votes-ordered grid is not a list and gets nothing: "you own 178 of 250 films" only
+    means something when the 250 are a defined head, and `sort=rank` is what defines it.
+
+    The completion is fetched for the WHOLE catalogue and one entry is read, which is the
+    same request `/lists` already made -- so arriving here from there costs nothing.
+  */
+  const completions = useListCompletions();
+  const list = sort === "rank" ? listForFilters(new Date().getFullYear(), filtersOf(params)) : undefined;
+  const completion = list ? completions[list.id] : undefined;
+
   /** One owner for "drop every filter", shared by the chip, the empty state and `esc`. */
   const clearFilters = useCallback(() => navigate({ to: "/browse", search: {} }), [navigate]);
 
@@ -190,7 +199,14 @@ export function BrowseRoute() {
         measure is claiming somebody else's authority. One sentence, one owner
         (`RANK_EXPLAINER`), shown here and on `/lists`.
       */}
-      {params.sort === "rank" && <p className="-mt-2 mb-4 max-w-2xl text-xs text-muted">{RANK_EXPLAINER}</p>}
+      {params.sort === "rank" && (
+        <p className="-mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+          <span className="max-w-2xl">{RANK_EXPLAINER}</span>
+          {completion && (
+            <Completion owned={completion.owned} total={completion.size} noun={completionNoun(params.kind)} />
+          )}
+        </p>
+      )}
 
       {activeFilters > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5 text-xs">

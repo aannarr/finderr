@@ -13,7 +13,8 @@
 
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { AwardSourceLine, Completion } from "../components/Awards";
+import { AwardSourceLine } from "../components/Awards";
+import { Completion } from "../components/Completion";
 import { Poster } from "../components/Poster";
 import { RequestAction } from "../components/RequestAction";
 import {
