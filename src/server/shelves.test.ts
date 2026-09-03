@@ -88,6 +88,19 @@ describe("discoveryShelves", () => {
     ]);
   });
 
+  /**
+   * "What is new to ME, then what is new to everyone" is the pairing the placement exists
+   * for, and an all-time canonical list between the two halves breaks it.
+   *
+   * The order test above runs KEYLESS -- the trending mirror is empty, so the one shelf
+   * whose position was an editorial decision is the one it cannot see. That blind spot is
+   * how "Popular right now" shipped third under a comment claiming second.
+   */
+  test("a populated trending shelf sits second, under recently-added", () => {
+    const ids = discoveryShelves(depsWith({}, [], ["owned-1"], UPCOMING, ["tr-1"])).map((s) => s.id);
+    expect(ids.slice(0, 3)).toEqual(["recently-added", "trending", "top-250"]);
+  });
+
   test("an index with no rank column drops the Top 250 rather than mislabelling a votes list", () => {
     // A redeploy keeps its data directory, so the live index has no rank column until the
     // next nightly refresh. `engine.browse` degrades a ranked sort to votes, which is right

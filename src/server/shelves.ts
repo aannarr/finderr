@@ -221,6 +221,34 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       rows: () => recentlyAdded(deps, 24),
     },
     /*
+      POPULAR RIGHT NOW, AND IT IS THE ONE SHELF NO LOCAL QUERY COULD PRODUCE.
+
+      Every other row here is a selection over the index. This one is mirrored from TMDB
+      because the corpus has no signal for it: `numVotes` measures how many people have
+      EVER rated a title, so a votes-ordered "popular" shelf is a list of the same great
+      films every week. That is not a shortcoming of the query, it is the wrong number.
+
+      Second, under "recently added", because it answers the other half of the question a
+      reader opens the front page with -- what is new to ME, then what is new to everyone.
+      It shipped THIRD, under the Top 250, while this comment already claimed second: an
+      all-time canonical list wedged between "new to me" and "new to everyone" breaks the
+      pairing the placement exists for, so the code was moved to the comment rather than
+      the other way round, and the order is pinned by a test now.
+
+      Empty is the ordinary state without a TMDB key: the sync never runs, the table stays
+      empty, and the filter at the bottom of this function drops the shelf entirely. A
+      keyless finderr simply has one fewer row, which is the same shape `hasRank` gives
+      the Top 250 before an index has been rebuilt.
+    */
+    {
+      id: "trending",
+      title: "Popular right now",
+      subtitle: "what people are watching this week",
+      tier: "tmdb",
+      limit: 30,
+      rows: () => trendingRows(deps, 30),
+    },
+    /*
       THE ONE SHELF THAT IS A LIST RATHER THAN A SELECTION, AND IT KEEPS WHAT YOU OWN.
 
       Every other row here excludes the library, because "here is something you do not
@@ -254,30 +282,6 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       tier: "index",
       limit: 30,
       rows: () => (engine.hasRank ? engine.browse({ sort: "rank", kind: "movie", limit: 30 }).rows : []),
-    },
-    /*
-      POPULAR RIGHT NOW, AND IT IS THE ONE SHELF NO LOCAL QUERY COULD PRODUCE.
-
-      Every other row here is a selection over the index. This one is mirrored from TMDB
-      because the corpus has no signal for it: `numVotes` measures how many people have
-      EVER rated a title, so a votes-ordered "popular" shelf is a list of the same great
-      films every week. That is not a shortcoming of the query, it is the wrong number.
-
-      Second, under "recently added", because it answers the other half of the question a
-      reader opens the front page with -- what is new to ME, then what is new to everyone.
-
-      Empty is the ordinary state without a TMDB key: the sync never runs, the table stays
-      empty, and the filter at the bottom of this function drops the shelf entirely. A
-      keyless finderr simply has one fewer row, which is the same shape `hasRank` gives
-      the Top 250 before an index has been rebuilt.
-    */
-    {
-      id: "trending",
-      title: "Popular right now",
-      subtitle: "what people are watching this week",
-      tier: "tmdb",
-      limit: 30,
-      rows: () => trendingRows(deps, 30),
     },
     {
       id: "top-movies",
