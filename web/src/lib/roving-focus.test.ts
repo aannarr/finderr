@@ -8,6 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { orderSeasons } from "./facet-panes";
+import type { Season } from "./facets";
 import {
   columnsInGrid,
   isTypeAheadKey,
@@ -15,11 +17,17 @@ import {
   rovingStopIndex,
   typeAheadIndex,
 } from "./roving-focus";
+import { defaultSelection } from "./season-select";
 
 /** The browse grid at its widest: 23 titles over 5 columns, so the last row is short. */
 const GRID = { count: 23, columns: 5 };
 /** A shelf: one row, so `columns` is the whole count. */
 const SHELF = { count: 6, columns: 6 };
+
+/** A season stripped to the one field the ordering and the default selection read. */
+function seasonNumbered(number: number): Season {
+  return { number, name: null, episodeCount: 10, premiereDate: null, endDate: null, image: null };
+}
 
 describe("nextRovingIndex", () => {
   test("moves one along the row", () => {
@@ -108,6 +116,31 @@ describe("rovingStopIndex", () => {
     // Which is where a reader arriving at the group would start anyway.
     expect(rovingStopIndex([false, false])).toBe(0);
     expect(rovingStopIndex([])).toBe(0);
+  });
+
+  test("the request dialog's default selection puts the stop on its FIRST chip", () => {
+    /*
+      A modal dialog focuses its first TABBABLE descendant, and a roving group makes that
+      the chosen chip rather than the first one -- so `SeasonRequestDialog` only keeps the
+      focus it had before the group was wired to it if those two are the same element.
+
+      They are, and it is `defaultSelection` that makes them so rather than luck: every
+      real season opens ticked and the specials sort LAST, so the first chip is always one
+      of the ticked ones. Pinned here because the day somebody changes the default to
+      "specials first" or "nothing ticked but the newest season", the dialog quietly starts
+      opening with focus in the middle of the row and no test that reads only one of these
+      two modules can see it.
+    */
+    const stopFor = (...numbers: number[]) => {
+      const seasons = numbers.map(seasonNumbered);
+      const chosen = new Set(defaultSelection(seasons));
+      return rovingStopIndex(orderSeasons(seasons).map((s) => chosen.has(s.number)));
+    };
+
+    expect(stopFor(0, 1, 2)).toBe(0);
+    expect(stopFor(1)).toBe(0);
+    // Nothing but specials ticks nothing at all, and the first chip is still the stop.
+    expect(stopFor(0)).toBe(0);
   });
 });
 

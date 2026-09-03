@@ -243,15 +243,21 @@ export function PersonRoute() {
     A prolific person has a dozen roles, which is a dozen tab stops between their name and
     their filmography, so the role row is ONE stop and ← → move within it.
 
-    `selectionFollowsFocus` even though choosing here NAVIGATES, which is the opposite call
-    from the refinement bar. The difference is single- versus multi-select, not the cost of
-    the click: exactly one role is shown at a time, so every position the arrows pass
-    through is a view somebody could have asked for on purpose ("only their directing
-    credits"). The refinement bar is a set of independent toggles, where the same walk
-    accumulates a filter combination nobody chose. See `showRole` for what stops the walk
-    from filling the history stack.
+    > [!CAUTION] NO `selectionFollowsFocus`, even though this row is single-select
+    > The season selector is single-select and takes it, so this row looks like the same
+    > case and is not. Choosing a role NAVIGATES, and this route blanks itself while the
+    > filtered page loads (`if (!page) return null`, a few lines down) -- so the chip that
+    > focus is sitting on is UNMOUNTED by its own selection. Measured in a browser: one →
+    > moves the selection and then drops focus to the document, and the second → does
+    > nothing at all. A row you can enter and take exactly one step in is worse than the
+    > plain tab order it replaced. Space and Enter still choose, natively.
+    >
+    > The blanking is not this row's bug and predates the arrow keys -- a mouse click loses
+    > focus the same way. It is filed as
+    > `the-person-page-blanks-itself-and-drops-focus-while-a-role-f`, and landing it is what
+    > re-opens this line.
   */
-  const roleChips = useChipGroup({ selectionFollowsFocus: true });
+  const roleChips = useChipGroup();
 
   if (error) {
     return (
@@ -270,16 +276,9 @@ export function PersonRoute() {
 
   const years = lifespan(page.person);
   const roles = mergedCategories(page.categories);
-  /*
-    `replace` because the role row is a view of THIS person rather than a place you went.
-
-    It has to be, now that ← and → change the role: a push per keystroke would mean six
-    arrow presses cost six Back presses to undo, and Back from a person page should return
-    to the title you opened them from. The mouse gets the same rule for the same reason --
-    two behaviours for one control is how a control starts lying about itself.
-  */
-  const showRole = (search: Pick<SearchParams, "role" | "sort">) =>
-    navigate({ to: "/person/$nconst", params: { nconst }, search, replace: true });
+  /** Both chip rows below go to the same place with a different question. */
+  const showCredits = (search: Pick<SearchParams, "role" | "sort">) =>
+    navigate({ to: "/person/$nconst", params: { nconst }, search });
 
   return (
     <>
@@ -302,8 +301,7 @@ export function PersonRoute() {
       {/*
         Only worth a filter when there is something to filter BETWEEN. One role means
         every chip is a no-op, and a control that cannot change anything is noise.
-      */}
-      {/*
+
         A named group, for the same reason the season row has one: ← and → act on the SET
         rather than on any one chip, and a screen reader is told so by the role rather than
         by each button. `group` and not `toolbar` because these chips filter the grid below
@@ -320,7 +318,7 @@ export function PersonRoute() {
           onKeyDown={roleChips.onKeyDown}
           className="mb-2 flex flex-wrap gap-1.5"
         >
-          <ToggleChip label="All" active={!role} onClick={() => showRole({ sort })} />
+          <ToggleChip label="All" active={!role} onClick={() => showCredits({ sort })} />
           {roles.map((r) => {
             const value = r.values.join(",");
             return (
@@ -329,7 +327,7 @@ export function PersonRoute() {
                 label={r.label}
                 count={r.count}
                 active={role === value}
-                onClick={() => showRole({ role: value, sort })}
+                onClick={() => showCredits({ role: value, sort })}
               />
             );
           })}
@@ -353,17 +351,11 @@ export function PersonRoute() {
       {page.total > 1 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">
           <span className="mr-0.5 text-xs text-muted">Sort</span>
-          <ToggleChip
-            label="Popular"
-            active={!byYear}
-            onClick={() => navigate({ to: "/person/$nconst", params: { nconst }, search: { role } })}
-          />
+          <ToggleChip label="Popular" active={!byYear} onClick={() => showCredits({ role })} />
           <ToggleChip
             label="Latest"
             active={Boolean(byYear)}
-            onClick={() =>
-              navigate({ to: "/person/$nconst", params: { nconst }, search: { role, sort: "year" } })
-            }
+            onClick={() => showCredits({ role, sort: "year" })}
           />
         </div>
       )}
