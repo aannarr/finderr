@@ -54,16 +54,29 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
     return 0;
   }
 
-  const models = (flag(argv, "--models") ?? "")
+  // No --models benchmarks whatever this deployment would actually use, which is the more
+  // useful default: `FINDERR_AI_MODELS` is the list the server calls, so the harness and
+  // production cannot silently be measuring different things.
+  const models = (flag(argv, "--models") ?? loadConfig().ai.models.join(","))
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean);
   if (models.length === 0) {
-    console.error("Need --models <a,b,c>. Try --list to see the scenarios.");
+    console.error("Need --models <a,b,c>, or set FINDERR_AI_MODELS. Try --list for the scenarios.");
     return 2;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.error("OPENROUTER_API_KEY is not set.");
+  /*
+    Either name works, and that is not laziness.
+
+    `FINDERR_OPENROUTER_API_KEY` is what the container sees, so a shell on a deployed host
+    already has the right variable exported and the benchmark runs with no extra step. Bare
+    `OPENROUTER_API_KEY` is what a `.env` in this repo carries, because .env names are
+    deliberately unprefixed here -- a FINDERR_ name in that file configures every `bun test`
+    on the host, which `env-hygiene.test.ts` fails the suite over.
+  */
+  const apiKey = loadConfig().ai.openrouterApiKey ?? process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    console.error("Set OPENROUTER_API_KEY (or FINDERR_OPENROUTER_API_KEY).");
     return 2;
   }
 
@@ -111,6 +124,7 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
           store: new MemoryResumeStore(),
           compact: mode,
           cacheSystem,
+          apiKey,
         });
         const g = grade(db, scenario, result);
         rows.push({ model, mode, scenario, result, grade: g });

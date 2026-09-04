@@ -6,6 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import type { AiCallRow, AiCallSink } from "./ai-spend";
 import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
 import { AUTH_SCHEMA } from "./auth-store";
 import type { Nomination } from "./awards";
@@ -627,6 +628,44 @@ create table if not exists search_click (
   at     integer not null
 );
 create index if not exists ix_search_click_at on search_click(at);
+
+-- THE SINGLE OWNER OF MONEY. What every model call cost, and which day's budget it came out
+-- of. The rule that reads it is in src/lib/ai-spend.ts; the daily cap counts THIS TABLE and
+-- never a running total of its own -- the same shape per-user-request-quota already landed
+-- with, for the same reason: a counter is a second owner of a fact the log already holds.
+--
+-- NOTE: no backticks anywhere in this comment. SCHEMA is a template literal.
+--
+-- EVERY OUTCOME WRITES A ROW, including error, max_turns, max_tool_calls and refused. A run
+-- that timed out on turn six still spent five turns of tokens, and a cap that ignores
+-- failures leaks. A refused row carries usd 0 and exists so "how often are people hitting
+-- the wall" is answerable rather than merely guessable.
+--
+-- > [!IMPORTANT] day IS STORED, NOT DERIVED AT QUERY TIME
+-- > It is YYYY-MM-DD in the CONTAINER'S timezone -- a day is a day where the users are, not
+-- > in UTC. Deriving it would make every quota check do timezone arithmetic over every row,
+-- > and a container whose TZ changed would silently re-bucket its whole history into
+-- > different days. Stamping it at write time makes the row say which day it belonged to,
+-- > which is a fact about the past and cannot be revised by a later config change.
+--
+-- No user_id foreign key, matching request.requested_by: deleting a user must not erase the
+-- spend they caused, and set null would destroy the attribution an admin is deleting them in
+-- order to examine.
+create table if not exists ai_call (
+  id integer primary key,
+  user_id     text not null,
+  conv_id     text not null,
+  at          text not null,
+  day         text not null,
+  model       text not null,
+  tok_in      integer not null,
+  tok_out     integer not null,
+  tok_cached  integer not null default 0,
+  usd         real    not null,
+  ms          integer not null,
+  outcome     text not null
+);
+create index if not exists ix_ai_call_day on ai_call(user_id, day);
 `;
 
 /**
@@ -774,7 +813,7 @@ const ADDED_COLUMNS: {
   { table: "search_log", column: "filters", ddl: "alter table search_log add column filters text" },
 ];
 
-export class Store implements SearchLogSink {
+export class Store implements SearchLogSink, AiCallSink {
   readonly db: Database;
 
   constructor(cfg: Config) {
@@ -1381,6 +1420,38 @@ export class Store implements SearchLogSink {
       .query("select count(*) c from request where requested_by = ? and created_at >= ?")
       .get(userId, sinceIso) as { c: number };
     return row.c;
+  }
+
+  // --- the AI ledger -------------------------------------------------------
+
+  /**
+   * Append one model call. `Store` IS the `AiCallSink`, as it is the `SearchLogSink`.
+   *
+   * Append-only and never updated: a row is what one call cost, which is a fact about the
+   * past. Nothing amends it, so there is no version of this table in which the day's total
+   * can disagree with the calls that made it.
+   */
+  recordAiCall(r: AiCallRow): void {
+    this.db.run(
+      `insert into ai_call (user_id, conv_id, at, day, model, tok_in, tok_out, tok_cached, usd, ms, outcome)
+       values (?,?,?,?,?,?,?,?,?,?,?)`,
+      [r.userId, r.convId, r.at, r.day, r.model, r.tokIn, r.tokOut, r.tokCached, r.usd, r.ms, r.outcome],
+    );
+  }
+
+  /**
+   * What this person has spent on the given local day. The quota's only input.
+   *
+   * `sum()` over an empty set is SQL NULL rather than 0, so the coalesce is the difference
+   * between "spent nothing today" and a NaN that compares false against every limit and
+   * silently opens the gate. `day` is matched as a stored string -- see the `ai_call`
+   * comment in SCHEMA for why it is not derived here.
+   */
+  aiSpendUsd(userId: string, day: string): number {
+    const row = this.db
+      .query("select coalesce(sum(usd), 0) s from ai_call where user_id = ? and day = ?")
+      .get(userId, day) as { s: number };
+    return row.s;
   }
 
   /**

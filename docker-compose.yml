@@ -158,6 +158,31 @@ services:
       # unlike the per-IP limiters above.
       FINDERR_REQUEST_QUOTA_PER_DAY: ${REQUEST_QUOTA_PER_DAY:-0}
 
+      # --- the assistant. OPTIONAL, same `:-` rule as TMDB and Plex.
+      # No key means the feature does not exist rather than that it failed: no route, no
+      # affordance, no error. That is deliberate, and it is the shape the tmdb plugin ships.
+      #
+      # > [!CAUTION] The key reaches OpenRouter in an Authorization header, never a URL
+      # > Anything that logs an upstream URL goes through safeUrl. The lesson tmdb bought
+      # > with ?api_key= and Plex bought with its token.
+      FINDERR_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # A comma list, best first, so an admin can benchmark an alternative without a deploy.
+      #
+      # > [!IMPORTANT] This list and the daily limit below are ONE decision
+      # > The cap is a naive `if (spent > limit) refuse` with no reservation machinery, and
+      # > that is only correct because one conversation cannot overshoot it far. Measured
+      # > 2026-09-04: one conversation is ~$0.003 on the default model -- 0.3% of a $1 cap.
+      # > On anthropic/claude-fable-5.1 the same check leaks ~90%. Adding an expensive model
+      # > here without re-checking that turns the cap into a suggestion.
+      FINDERR_AI_MODELS: ${AI_MODELS:-z-ai/glm-5.3-flash}
+      # USD per user per day. 0 is unlimited. A "day" is a day in THIS CONTAINER'S timezone,
+      # not in UTC, and every message about it states the reset as a delta. Admins are exempt
+      # from this limit and from nothing else. Counted from the ai_call ledger, never a counter.
+      FINDERR_AI_DAILY_LIMIT_USD: ${AI_DAILY_LIMIT_USD:-1}
+      # Beta: administrators only. ON by default -- the safe audience for a surface that
+      # spends money at a third party is the small one, and widening it is a choice.
+      FINDERR_AI_ADMIN_ONLY: ${AI_ADMIN_ONLY:-true}
+
       # --- the arr callback
       # Radarr and Sonarr push request state changes to /api/webhook/arr instead of finderr
       # waiting up to thirty seconds to poll for them. Configure it as a Webhook connection

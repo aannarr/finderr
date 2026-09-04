@@ -484,6 +484,68 @@ export interface Config {
     keepRows: number;
   };
 
+  /**
+   * The conversational assistant: which models, whose money, and who may use it at all.
+   *
+   * Three independent gates, and each is a separate decision rather than one switch --
+   * `aiGate` in `./ai-spend.ts` is the single place they are evaluated. THE DEPLOYMENT opts
+   * in by providing `openrouterApiKey`; with no key the feature does not exist rather than
+   * failing, which is the shape `tmdb` already ships. THE AUDIENCE is limited by
+   * `adminOnly`. THE SPEND is limited by `dailyLimitUsd`, counted from the `ai_call` ledger.
+   */
+  ai: {
+    /**
+     * The OpenRouter credential. NO KEY MEANS NO FEATURE, silently and deliberately.
+     *
+     * `OPENROUTER_API_KEY` in `.env`, unprefixed, reaching the container as
+     * `FINDERR_OPENROUTER_API_KEY` -- the same mapping compose performs for every other
+     * credential here.
+     *
+     * > [!CAUTION] It travels in an `Authorization` header and NEVER in a query parameter
+     * > The lesson `tmdb` bought with `?api_key=` and the Plex mirror bought with its token:
+     * > a credential in a URL is a logging problem, and every log line is a place it leaks.
+     * > Anything that logs an OpenRouter URL goes through `safeUrl`.
+     */
+    openrouterApiKey?: string;
+    /**
+     * Which models may be used, best first. A LIST so an admin can benchmark an alternative
+     * without a deploy -- aannarr, 2026-09-04.
+     *
+     * > [!IMPORTANT] This list and `dailyLimitUsd` are ONE decision, not two
+     * > The cap is the naive `if (spent > limit) refuse`, with no reservation machinery, and
+     * > that is only correct because the worst overshoot is one conversation. Measured
+     * > 2026-09-04: one conversation costs ~$0.003 on the default model, which is 0.3% of a
+     * > $1 cap. On `anthropic/claude-fable-5.1` it is ~90%. Adding an expensive model here
+     * > without re-checking that number quietly turns the cap into a suggestion.
+     *
+     * The default is `z-ai/glm-5.3-flash`: 5/5 on the advanced tier, $0.0006 a question,
+     * and 84% of its prompt tokens served from provider-side cache.
+     */
+    models: string[];
+    /**
+     * USD one ordinary user may spend per day. Zero or less is UNLIMITED.
+     *
+     * A day is a day in the CONTAINER'S timezone, not in UTC -- see `localDay`. Admins are
+     * exempt from this and from nothing else. The spend is counted from the `ai_call` table
+     * and never from a running total.
+     */
+    dailyLimitUsd: number;
+    /**
+     * Beta: only administrators may use the assistant. ON by default.
+     *
+     * aannarr, 2026-09-04: "only admins should be able to click a button, to launch the
+     * feature for now." It is on by default because the safe state for a surface that spends
+     * money at a third party is the small audience, and an operator turning it off is
+     * choosing to widen it.
+     *
+     * It also stands in for the per-account opt-in the design calls for and which is not
+     * built yet: while the audience is administrators, everybody who can reach the feature
+     * turned it on. Widening past admins needs that opt-in, because a question typed here
+     * leaves the house.
+     */
+    adminOnly: boolean;
+  };
+
   /** What one person may ask the library for. */
   requests: {
     /**
@@ -728,6 +790,9 @@ const DEFAULTS: Config = {
   },
   // On, and bounded. See the field for why this is the one default that is not opt-in.
   searchLog: { enabled: true, keepRows: 50_000 },
+  // No key by default, so a checkout of this repo has no assistant and says nothing about
+  // it. $1/day and admins-only are aannarr's calls of 2026-09-04; see the fields.
+  ai: { models: ["z-ai/glm-5.3-flash"], dailyLimitUsd: 1, adminOnly: true },
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
@@ -759,6 +824,20 @@ function envInt(key: string): number | undefined {
   if (v === undefined) return undefined;
   const n = Number.parseInt(v, 10);
   if (Number.isNaN(n)) throw new ConfigError(`${key} must be an integer, got ${JSON.stringify(v)}`);
+  return n;
+}
+
+/**
+ * A number that may have a fractional part. Only money needs this so far.
+ *
+ * Separate from `envInt` rather than replacing it: every other numeric setting here is a
+ * count, a port or a duration, and `envInt` rejecting "2.5" for those is the check working.
+ */
+function envNum(key: string): number | undefined {
+  const v = envStr(key);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new ConfigError(`${key} must be a number, got ${JSON.stringify(v)}`);
   return n;
 }
 
@@ -883,6 +962,15 @@ function envOverrides(): Record<string, unknown> {
       enabled: envBool("FINDERR_SEARCH_LOG"),
       keepRows: envInt("FINDERR_SEARCH_LOG_KEEP_ROWS"),
     },
+    ai: {
+      openrouterApiKey: envStr("FINDERR_OPENROUTER_API_KEY"),
+      models: envStr("FINDERR_AI_MODELS")
+        ?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      dailyLimitUsd: envNum("FINDERR_AI_DAILY_LIMIT_USD"),
+      adminOnly: envBool("FINDERR_AI_ADMIN_ONLY"),
+    },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
     push: {
       enabled: envBool("FINDERR_PUSH_ENABLED"),
@@ -965,6 +1053,19 @@ function validate(c: Config): void {
   // health payload and a weak key looks like security.
   if (c.auth.adminApiKey !== undefined && c.auth.adminApiKey.length < 24)
     problems.push("auth.adminApiKey is too short to be a credential -- use at least 24 characters");
+
+  /*
+    An empty model list with a key present is the one AI misconfiguration that fails LATE and
+    silently: the gate says yes -- there is a key -- and the runner then has nothing to call.
+    Caught here, where the message can say which variable was emptied.
+
+    A NEGATIVE limit is not caught, because zero-or-less means unlimited by convention across
+    every limit in this file, and a -1 someone typed means the same thing as the 0 they meant.
+  */
+  if (c.ai.openrouterApiKey !== undefined && c.ai.models.length === 0)
+    problems.push("ai.models is empty -- FINDERR_AI_MODELS must name at least one model");
+  if (!Number.isFinite(c.ai.dailyLimitUsd))
+    problems.push("ai.dailyLimitUsd must be a number of dollars per day");
 
   if (problems.length) {
     throw new ConfigError(`invalid configuration:\n  - ${problems.join("\n  - ")}`);
