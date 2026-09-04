@@ -43,6 +43,13 @@
 
 import { Database } from "bun:sqlite";
 import type { Config } from "./config";
+// `index-builder` imports `stampStages` from this file, so this is a cycle -- and it is a
+// SAFE one, because the only use is inside a recipe function that runs long after both
+// modules have initialised. Written as an import rather than a second copy of the number on
+// purpose: `browse_count.n_floor` is a count of rows clearing this floor, so a stamp holding
+// a stale copy would report an index as current while its stored totals answered a different
+// question. `index-builder.ts` owns the constant because the build bakes it into a column.
+import { BROWSE_VOTE_FLOOR } from "./index-builder";
 import { STOPWORD_VOTE_FLOOR } from "./search-stopwords";
 
 /**
@@ -167,14 +174,15 @@ export const INDEX_STAGES = {
   episodes: (cfg) => JSON.stringify({ v: 1, minVotes: cfg.index.episodeSeriesMinVotes }),
 
   /**
-   * `ix_year_votes`, the single-year seek a decade browse is split into.
+   * `ix_year` WIDENED to `(year, votes desc)`, the single-year seek a decade browse splits into.
    *
    * Invisible when absent, like `rank` and `popularTitles`: `browseIndex` still splits a
    * decade into ten per-year queries and still returns the right rows, each one just falls
-   * back to `ix_year` plus a sort. Measured on the real index, `decade=2010`: 0.92 ms with
-   * this index against 161 ms for the range scan it replaced.
+   * back to the narrow `ix_year(year)` and sorts. Measured on the real index, `decade=2010`:
+   * 0.92 ms with the widened index against 161 ms for the range scan it replaced.
    *
-   * Constant recipe -- there is no knob, only present or absent.
+   * It needs its own stamp even though the index NAME is unchanged -- which is exactly why a
+   * presence check would not do. An old file has an `ix_year` and would look complete.
    */
   yearVotes: () => JSON.stringify({ v: 1 }),
 
@@ -191,6 +199,21 @@ export const INDEX_STAGES = {
    * and nothing on screen would say so.
    */
   shelfGenres: () => JSON.stringify({ v: 1, minVotes: 20_000, minRating: 7.0 }),
+
+  /**
+   * `browse_count`, every browse total answered at build time.
+   *
+   * Invisible when absent -- `browseTotal` falls back to the live count and returns the same
+   * number, more slowly. Measured on the real index: a genre+decade count is 137.48 ms live
+   * and 0.34 ms stored, an unfiltered ranked count 11.16 ms against 0.50 ms.
+   *
+   * **The floor is in the recipe because it is baked into a stored COLUMN.** `n_floor` is a
+   * count of rows clearing `BROWSE_VOTE_FLOOR` at the moment of the build; moving that
+   * constant without a rebuild would leave a table whose numbers quietly answer a different
+   * question from the one the query is asking, and a wrong total is worse than a slow one --
+   * it is printed to the reader as a fact.
+   */
+  browseCounts: () => JSON.stringify({ v: 1, floor: BROWSE_VOTE_FLOOR }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

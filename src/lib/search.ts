@@ -28,7 +28,7 @@ import type { PersonCredit } from "./facets";
 // `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
 // the point: the live fallback and the build must compute the same answer or the precompute
 // silently changes what the front page draws.
-import { computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
+import { BROWSE_VOTE_FLOOR, computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
   type Collaborator,
@@ -259,6 +259,9 @@ export class SearchEngine {
    */
   readonly hasGenreVotes: boolean;
 
+  /** Whether `browse_count` is in this file -- see `BrowseOptions.browseCounts`. */
+  readonly hasBrowseCounts: boolean;
+
   /**
    * Every title kind this index actually holds, read once at construction.
    *
@@ -345,6 +348,7 @@ export class SearchEngine {
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
+    this.hasBrowseCounts = this.tableExists("browse_count");
     this.hasEpisodes = this.tableExists("episode");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
@@ -1052,7 +1056,11 @@ export class SearchEngine {
     // `genreVotes` is a CAPABILITY, so it comes from the open file and is never something a
     // caller passes in -- same split as the downgrade above: policy in `browseIndex`, "what
     // can this particular file do" here.
-    return browseIndex(this.db, { ...safe, genreVotes: this.hasGenreVotes });
+    return browseIndex(this.db, {
+      ...safe,
+      genreVotes: this.hasGenreVotes,
+      browseCounts: this.hasBrowseCounts,
+    });
   }
 
   /**
@@ -1178,6 +1186,15 @@ export interface BrowseOptions extends BrowseFilters {
    * function is deliberately callable against any database somebody hands it.
    */
   genreVotes?: boolean;
+  /**
+   * Whether this index carries `browse_count` -- `SearchEngine.hasBrowseCounts`.
+   *
+   * A CAPABILITY of the open file, passed in for the same reason `genreVotes` is: `browseIndex`
+   * is pure policy over a database somebody hands it, and "what can this particular file do"
+   * is not policy. An index built before the stage existed answers every total correctly down
+   * the live-count path.
+   */
+  browseCounts?: boolean;
 }
 
 /**
@@ -1204,7 +1221,10 @@ export interface BrowseResult {
  * The default vote floor for an unfiltered grid: below this, "all movies by votes"
  * opens on titles nobody has heard of.
  */
-const BROWSE_VOTE_FLOOR = 1000;
+// Re-exported rather than redeclared: the build BAKES this into `browse_count.n_floor`, so
+// the floor a query applies and the floor a stored count was built at must be one constant.
+// `index-builder.ts` owns it for that reason.
+export { BROWSE_VOTE_FLOOR };
 
 /**
  * The vote floor a browse query gets when the caller does not name one.
@@ -1346,12 +1366,86 @@ function browseSql(
   };
 }
 
-function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
+/**
+ * The total, from `browse_count` when that table can answer and from a live count otherwise.
+ *
+ * > [!IMPORTANT] Once the rows became seeks, the COUNT was the whole cost of a browse
+ * > Measured on the real 2.18 GB index with the rank indexes in place: a genre+decade browse
+ * > spent 137.48 ms counting and 0.32 ms fetching its forty rows; an unfiltered ranked count
+ * > was 11.16 ms and a genre+kind ranked count 10.69 ms. A count has to visit every matching
+ * > row by definition, so unlike an ordered read it cannot be turned into a seek -- the only
+ * > way to stop paying it while a reader waits is to have paid it at build time.
+ * >
+ * > From `browse_count` those become 0.34 ms, 0.50 ms and 0.02 ms.
+ *
+ * **It answers only what it can answer EXACTLY.** `countFromTable` returns null for any
+ * filter set the grain does not express -- a custom `minVotes` the table was not built at,
+ * or an index built before the stage existed -- and the live count runs instead. A total is
+ * printed to the reader as a fact ("1,132 titles"), so a close-enough answer is not an
+ * available trade: it is either the same number the live query would give or it is not used.
+ * `browse-count.test.ts` asserts that equality across a matrix rather than asserting any
+ * particular number.
+ */
+function browseTotal(
+  db: Database,
+  sql: ReturnType<typeof browseSql>,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+  hasBrowseCounts: boolean,
+): number {
+  if (hasBrowseCounts) {
+    const stored = countFromTable(db, opts, minVotes, sort);
+    if (stored !== null) return stored;
+  }
   return (
     db.query(`select count(*) c from ${sql.countFrom} where ${sql.where}`).get(...(sql.args as never[])) as {
       c: number;
     }
   ).c;
+}
+
+/**
+ * One `sum()` over the precomputed grain, or null when the grain cannot express the question.
+ *
+ * The three columns are the three populations the UI asks about and there is deliberately no
+ * fourth: a `minVotes` other than 0 or `BROWSE_VOTE_FLOOR` reaches the live count, because
+ * storing an arbitrary threshold would mean storing a histogram rather than a count. Today
+ * the only caller that passes a custom floor is the "show all" escape hatch, which passes 0.
+ */
+function countFromTable(
+  db: Database,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+): number | null {
+  // A ranked list counts ranked rows and ignores the floor entirely -- `browseVoteFloor`
+  // already returns 0 for it, and membership is `rank is not null`.
+  const column =
+    sort === "rank" ? "n_ranked" : minVotes === 0 ? "n" : minVotes === BROWSE_VOTE_FLOOR ? "n_floor" : null;
+  if (column === null) return null;
+
+  const where: string[] = [];
+  const args: unknown[] = [];
+  // `''` is the ANY-GENRE grain, written by a second pass over `title` alone. Summing the
+  // real genre rows instead would count a three-genre title three times.
+  where.push("genre = ?");
+  args.push(opts.genre ?? "");
+  if (opts.kind) {
+    where.push("kind = ?");
+    args.push(opts.kind);
+  }
+  if (opts.year !== undefined) {
+    where.push("year = ?");
+    args.push(opts.year);
+  } else if (opts.decade !== undefined) {
+    where.push("year >= ? and year <= ?");
+    args.push(opts.decade, opts.decade + 9);
+  }
+  const row = db
+    .query(`select coalesce(sum(${column}), 0) c from browse_count where ${where.join(" and ")}`)
+    .get(...(args as never[])) as { c: number };
+  return row.c;
 }
 
 /** The ten years a decade filter covers. */
@@ -1443,7 +1537,8 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
   const sql = browseSql(opts, minVotes, sort, opts.genreVotes);
-  const total = browseTotal(db, sql);
+  const counts = opts.browseCounts ?? false;
+  const total = browseTotal(db, sql, opts, minVotes, sort, counts);
   const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
@@ -1464,7 +1559,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   // A rank browse takes no floor, so it never reaches here and never offers a hatch it
   // has nothing behind: an empty ranked list is empty because nothing is ranked.
   if (total > 0 || minVotes === 0) return { rows, total };
-  const unfloored = browseTotal(db, browseSql(opts, 0, sort, opts.genreVotes));
+  const unfloored = browseTotal(db, browseSql(opts, 0, sort, opts.genreVotes), opts, 0, sort, counts);
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }
 

@@ -186,6 +186,44 @@ create table title_genre (
 );
 create table meta (key text primary key, value text not null);
 
+-- EVERY BROWSE COUNT THE PRODUCT CAN ASK FOR, ANSWERED AT BUILD TIME.
+--
+-- browseIndex returns a total beside its rows, and once the row queries became seeks the
+-- COUNT was the whole remaining cost of a browse. Measured on the real 2.18 GB index after
+-- the rank indexes landed: a genre+decade count was 137.48 ms while its rows were 0.32 ms,
+-- an unfiltered ranked count 11.16 ms, a genre+kind ranked count 10.69 ms. A count cannot
+-- be turned into a seek the way an ordered read can, because it has to visit every matching
+-- row -- so the only way to stop paying it at render time is to have paid it already.
+--
+-- This is the grain every filter combination reduces to: one row per (kind, genre, year),
+-- carrying the three populations the UI can ask about. 9,102 rows, 0.30 MB, 6.75 s to build.
+-- Every count in the product becomes a sum over at most a few hundred rows; the 137 ms one
+-- becomes 0.34 ms.
+--
+-- THE ONE THING TO GET RIGHT: genre = '' is the ANY-GENRE row, NOT "titles with no genre".
+-- A title with three genres has three title_genre rows, so summing across genres
+-- double-counts it and an unfiltered total would come out larger than the corpus. The build
+-- writes a SECOND set of rows, grouped by (kind, year) over title alone, under the sentinel
+-- genre ''. A genre-filtered count sums the real genre rows; an unfiltered one sums only the
+-- '' rows; the two are never mixed. browse-count.test.ts pins this by asserting the stored
+-- count EQUALS the live count over a matrix of filters, rather than by asserting any
+-- particular number -- a total is printed to the reader as a fact, so close is not a trade.
+--
+-- without rowid because the primary key IS the row's identity and the table is read by
+-- prefix: it halves the size and makes every lookup a single b-tree descent.
+create table browse_count (
+  kind   text    not null,
+  genre  text    not null,
+  year   integer not null,
+  -- Every title at this grain, no floor. What ?year=1901 counts.
+  n        integer not null,
+  -- Those clearing BROWSE_VOTE_FLOOR. What a broad grid counts.
+  n_floor  integer not null,
+  -- Those carrying a rank. What every computed top list counts.
+  n_ranked integer not null,
+  primary key (kind, genre, year)
+) without rowid;
+
 -- People, and the credits that connect them to titles.
 --
 -- Integer rowids rather than the text ids: at 1.4M credit rows they are what keep the
@@ -388,23 +426,28 @@ export const INDEXES = {
   /** Built after the cast, crosswalk and people-search stages have filled their tables. */
   secondary: [
     "create index ix_votes on title(votes desc)",
-    "create index ix_year on title(year)",
     /*
-      (year, votes desc), and it is ONLY useful to a query that pins ONE year.
+      (year, votes desc) -- WIDENED from (year), not added beside it.
 
-      A decade browse asks `year >= ? and year <= ?`, and a RANGE on the leading column means
-      the second column is not globally ordered across the range -- so this index cannot
-      serve `order by votes desc` over ten years and **SQLite correctly refuses to use it**.
-      Measured: adding it changed `decade=2010` by nothing at all, 161.11 ms before and
-      164.61 ms after, plan unchanged.
+      `ix_year(year)` is a leading-column PREFIX of this, so this serves every query the
+      narrow one served and the pair would be two indexes that are genuinely one. That is the
+      same argument already made for `ix_kind` and for the removal of `ix_tg_genre`; a
+      separate `ix_year_votes` shipped first and was folded in here, saving 14 MB against
+      carrying both.
 
-      It pays off only because `browseIndex` now SPLITS a decade into ten single-year seeks
-      and merges them (see `decadeRows` in `search.ts`). One year is `SEARCH ix_year_votes
-      (year=?)` at 0.14 ms; ten of them merged is 0.92 ms against the 161 ms range scan.
-      The index and the split are one change and neither works alone -- do not delete either
-      believing the other covers it.
+      **What the extra column buys, and the trap in it.** A decade browse asks `year >= ? and
+      year <= ?`, and a RANGE on the leading column means `votes` is not ordered ACROSS the
+      range -- so no index can serve `order by votes desc` over ten years, and SQLite is right
+      to refuse. Measured: with the range query still in place, adding this changed
+      `decade=2010` by nothing at all, 161.11 ms before and 164.61 ms after, same plan.
+
+      It pays only because `browseIndex` SPLITS a decade into ten single-year seeks and merges
+      them (`decadeRows` in `search.ts`). One pinned year is a seek at 0.14 ms; ten merged is
+      0.92 ms against 161 ms. **The widening and the split are one change and neither works
+      alone** -- do not narrow this back believing the split covers it, and do not delete the
+      split believing the index does.
     */
-    "create index ix_year_votes on title(year, votes desc)",
+    "create index ix_year on title(year, votes desc)",
     // (kind, votes desc), not (kind). The narrower index is a leading-column PREFIX of this
     // one and so serves nothing this does not -- the same argument that removed
     // ix_tg_genre below. What the extra column buys: `?kind=movie` was 466ms to count and
@@ -453,6 +496,47 @@ export const INDEXES = {
     "create index ix_ep_rating on episode(parent, rating desc, season, number, tconst, title, votes, year)",
   ],
 } satisfies Record<string, readonly string[]>;
+
+/**
+ * The vote floor a broad browse applies, and the one `browse_count.n_floor` is built at.
+ *
+ * Declared HERE rather than in `search.ts` because the build has to bake it into a stored
+ * column: a floor the query applies and a floor the table was built at are the same number or
+ * the count is wrong, and only one of them can be the owner. `search.ts` imports it, and
+ * `INDEX_STAGES.browseCounts` carries it in its recipe so moving it orders a rebuild rather
+ * than silently invalidating every stored total.
+ */
+export const BROWSE_VOTE_FLOOR = 1000;
+
+/**
+ * Fill `browse_count`: one row per (kind, genre, year), plus the any-genre rows.
+ *
+ * Runs AFTER `title_genre` is exploded and after `applyRank`, because it reads both. The
+ * second insert is not a duplicate of the first -- see the schema comment: it is the
+ * `genre = ''` grain that makes an unfiltered total possible without double-counting a title
+ * that has more than one genre.
+ *
+ * `coalesce(year, 0)` because a title with no year still has to be counted somewhere, and 0
+ * is a year no filter can ask for -- so those rows are included in a total and excluded from
+ * every year and decade slice, which is exactly what the live query does with a null year.
+ */
+export function buildBrowseCounts(db: Database): number {
+  const grain = `count(*), sum(case when t.votes >= ${BROWSE_VOTE_FLOOR} then 1 else 0 end),
+                 sum(case when t.rank is not null then 1 else 0 end)`;
+  db.run("delete from browse_count");
+  db.run(
+    `insert into browse_count (kind, genre, year, n, n_floor, n_ranked)
+     select t.kind, g.genre, coalesce(t.year, 0), ${grain}
+     from title t join title_genre g on g.title_rowid = t.rowid_
+     group by t.kind, g.genre, coalesce(t.year, 0)`,
+  );
+  db.run(
+    `insert into browse_count (kind, genre, year, n, n_floor, n_ranked)
+     select t.kind, '', coalesce(t.year, 0), ${grain}
+     from title t group by t.kind, coalesce(t.year, 0)`,
+  );
+  return (db.query("select count(*) c from browse_count").get() as { c: number }).c;
+}
 
 /**
  * The `meta` key holding the genres worth a shelf, computed once at build.
@@ -751,6 +835,9 @@ export async function buildIndex(
   log("building secondary indexes ...");
   for (const sql of INDEXES.secondary) db.run(sql);
 
+  log("counting every browse slice ...");
+  const countRows = buildBrowseCounts(db);
+  log(`  ${countRows.toLocaleString()} browse-count rows`);
   const shelfGenres = computeShelfGenres(db);
 
   const now = new Date().toISOString();
