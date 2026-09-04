@@ -26,6 +26,7 @@
 import type { Database } from "bun:sqlite";
 import { MemoryResumeStore } from "../lib/agent/connections";
 import { historyFor, isRememberable, toMessages } from "../lib/agent/conversation";
+import { type Mention, resolveMentions } from "../lib/agent/mentions";
 import { type RunEvent, type RunResult, run } from "../lib/agent/runner";
 import type { AgentContext } from "../lib/agent/schemas";
 import { makeContext } from "../lib/agent/schemas";
@@ -95,6 +96,15 @@ export interface ChatResponse {
     title: string | null;
     rating: number | null;
   }[];
+  /**
+   * Every id the ANSWER mentions, resolved against our index.
+   *
+   * The client turns `Name [tt…]` into a link using these; a bracket with no entry here is
+   * stripped and the name stays plain text. That is the dead-end rule -- a model can emit a
+   * well-formed id that never existed, and a link built from the SHAPE of an id would hand
+   * the reader a confident 404. See ../lib/agent/mentions.ts.
+   */
+  mentions: Mention[];
   usage: { costUsd: number; ms: number };
 }
 
@@ -339,6 +349,7 @@ function streamResponse(
             ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
           })),
           ...surfaced(result, deps.live.current, deps.store),
+          mentions: resolveMentions(deps.indexDb(), result.answer),
           usage: { costUsd: result.costUsd, ms: result.ms },
         }),
       );
@@ -518,6 +529,7 @@ export function makeChatHandler(deps: ChatDeps) {
         ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
       })),
       ...surfaced(result, deps.live.current, deps.store),
+      mentions: resolveMentions(deps.indexDb(), result.answer),
       usage: { costUsd: result.costUsd, ms: result.ms },
     };
     return json(payload);
