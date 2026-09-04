@@ -83,6 +83,13 @@ export const INDEX_STAGES = {
    * The `rank` column on `title` and its copy on `title_genre` -- and, since `v: 2`, the
    * `votes` copy beside it plus `ix_tg_votes`.
    *
+   * **`v: 3` (2026-09-05) reshaped `ix_tg_rank` and added `ix_rank_all`**, and it is the
+   * clearest case yet for why this field exists. Nothing about the recipe's INPUTS changed --
+   * same prior, same rows, same answers -- so without the bump an existing index would keep
+   * serving every computed top list down a temp-b-tree path: 807 ms for `?genre=Drama&sort=rank`
+   * against 0.11 ms, and 82 ms for the no-genre Top 250 against 0.06 ms. Green health, correct
+   * results, the optimisation silently never adopted. Exactly the crosswalk's shape.
+   *
    * The `v` is what makes an index built before 2026-09-02 STALE rather than merely slow.
    * Nothing about the recipe's inputs changed, so without it an old file would keep serving
    * a genre browse down the 3.66s path indefinitely -- correct, and quietly a hundred times
@@ -91,7 +98,7 @@ export const INDEX_STAGES = {
    * silently never adopted. Bump it whenever this stage's OUTPUT changes shape, not only
    * when its configuration does.
    */
-  rank: (cfg) => JSON.stringify({ v: 2, priorVotes: cfg.index.rankPriorVotes }),
+  rank: (cfg) => JSON.stringify({ v: 3, priorVotes: cfg.index.rankPriorVotes }),
 
   /**
    * `title_ids`, the bulk `tconst -> tmdb/tvdb` crosswalk.
@@ -158,6 +165,32 @@ export const INDEX_STAGES = {
    * rather than on a rowid, so there is no cheap copy that would be worth the machinery.
    */
   episodes: (cfg) => JSON.stringify({ v: 1, minVotes: cfg.index.episodeSeriesMinVotes }),
+
+  /**
+   * `ix_year_votes`, the single-year seek a decade browse is split into.
+   *
+   * Invisible when absent, like `rank` and `popularTitles`: `browseIndex` still splits a
+   * decade into ten per-year queries and still returns the right rows, each one just falls
+   * back to `ix_year` plus a sort. Measured on the real index, `decade=2010`: 0.92 ms with
+   * this index against 161 ms for the range scan it replaced.
+   *
+   * Constant recipe -- there is no knob, only present or absent.
+   */
+  yearVotes: () => JSON.stringify({ v: 1 }),
+
+  /**
+   * `meta.shelf_genres`, the front page's genre rows answered at build time.
+   *
+   * Its own entry rather than riding on `rank`, because the two are not the same question:
+   * an index can carry every rank index and no precomputed genres, and `SearchEngine` would
+   * then silently fall back to the 25 ms aggregate on every uncached front page -- correct,
+   * and the exact "invisibly slower" shape this whole file exists to catch.
+   *
+   * The FLOORS are in the recipe because they decide the answer. Moving them without a
+   * rebuild would leave a stored list that no longer means what the code believes it means,
+   * and nothing on screen would say so.
+   */
+  shelfGenres: () => JSON.stringify({ v: 1, minVotes: 20_000, minRating: 7.0 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

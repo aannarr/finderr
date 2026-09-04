@@ -305,6 +305,209 @@ with split(id, one, rest) as (
 select s.id, s.one, t.kind, t.rank, t.votes from split s join title t on t.rowid_ = s.id where s.one != ''
 `;
 
+/**
+ * Every index the read path depends on, in ONE place, grouped by the stage that builds it.
+ *
+ * > [!IMPORTANT] This list exists so a TEST FIXTURE can be faithful, and that is not tidying
+ * > These eleven statements used to be inline `db.run(...)` calls spread across four
+ * > functions, with nothing exporting them. The consequence was not untidiness, it was that
+ * > **no test in this tree could build a fixture the query planner treats like production**.
+ * > Measured 2026-09-05 while writing `query-plans.test.ts`: a fixture built from `SCHEMA` +
+ * > `EXPLODE_GENRES` at n=5,000, 20,000, 60,000 and 150,000 rows returned `SCAN` for every
+ * > query at every size, with and without `analyze`, because it had no indexes at all.
+ * > `browse.test.ts` has the same blind spot -- it pins the vote-floor POLICY correctly and
+ * > could not have noticed the 807ms plan that `ix_tg_rank` was serving.
+ *
+ * GROUPED, not one flat list, because WHEN an index is built is part of the build's
+ * semantics: the rank indexes must follow `applyRank` and `EXPLODE_GENRES` or they index a
+ * column of nulls, and the cast indexes must follow the stage that fills their tables.
+ * `allIndexes()` flattens it for a fixture, which has no such ordering to respect.
+ */
+export const INDEXES = {
+  /**
+   * Built by `buildRankLayer`, AFTER `applyRank` and `EXPLODE_GENRES`.
+   *
+   * **The column order is the whole optimisation and none of it is arbitrary.** The rule
+   * these three share: pin the equality columns a caller actually fixes, put the sort column
+   * next, and put a column that is only ever FILTERED last -- where it is still covered, so
+   * the filter is answered from the index rather than by reaching into `title`.
+   */
+  rank: [
+    // (kind, rank desc): `rankedSeek` pins one kind at a time precisely so this can be read
+    // in order. See its docstring for why leaving `kind` free was the 933ms "Best in Drama".
+    "create index ix_rank on title(kind, rank desc)",
+    /*
+      `kind` sits AFTER `rank desc`, and this was measured rather than reasoned.
+
+      It was `(genre, kind, rank desc)` until 2026-09-05, which is the same mistake
+      `ix_tg_votes` below already carries a comment about -- with `kind` in the middle the
+      ordering is split across four groups, so a genre browse that pins NO kind cannot read
+      rank in order and SQLite sorts the whole genre in a temp b-tree instead. Every
+      computed top list in the product runs exactly that query (`browseIndex` with
+      `sort: "rank"`, and `browseMembers` under it), so all of them paid it.
+
+      Measured on the real 2.18 GB index, `?genre=Drama&sort=rank`:
+        (genre, kind, rank desc)   807.48 ms   SEARCH ix_tg_votes + USE TEMP B-TREE
+        (genre, rank desc, kind)     0.11 ms   SEARCH ix_tg_rank, no sort
+      and at offset 200, which is what a reader paging a top-250 list hits:
+        (genre, kind, rank desc)  1074.78 ms
+        (genre, rank desc, kind)     0.24 ms
+
+      It costs NOTHING: it is a reshape rather than an addition, 48.7 MB either way. And the
+      kind-PINNED form `rankedSeek` runs got faster too (0.34ms -> 0.15ms), so there is no
+      trade here at all -- one index now serves both shapes, which the old order did not.
+
+      The trailing `title_rowid, votes` are payload, +9.9 MB, taking the seek to 0.07 ms and
+      the offset page to 0.13 ms by covering the join key so the row lookup never leaves the
+      index. Bytes are the cheap axis on a file written once and read forever.
+    */
+    "create index ix_tg_rank on title_genre(genre, rank desc, kind, title_rowid, votes)",
+    /*
+      The kind-free ranked browse with NO genre either -- "finderr Top 250" itself.
+
+      `ix_rank` leads with `kind`, so it cannot serve a query that pins none, and the planner
+      fell back to `SCAN t | USE TEMP B-TREE FOR ORDER BY` over all 541,657 ranked rows.
+      Measured on the real index: 82.23 ms -> 0.06 ms, and 0.05 ms at offset 200. 15.9 MB.
+
+      Not merged into `ix_rank` by dropping its leading column: `rankedSeek` pins `kind` on
+      every call and would lose its seek. These are two genuinely different questions, so
+      they are two indexes -- unlike `ix_tg_genre(genre)`, removed above because it WAS a
+      leading-column prefix of `ix_tg_rank` and so served nothing that index did not.
+    */
+    "create index ix_rank_all on title(rank desc)",
+    // The VOTES twin of ix_tg_rank, and the column order is not the same shape by accident.
+    // `kind` sits LAST here, after the sort column, because a genre browse most often pins
+    // no kind at all -- with `kind` in the middle the ordering would be split across two
+    // groups and SQLite would fall back to a temp b-tree for the one query this exists to
+    // remove. Last, it is still covered, so `?genre=Comedy&kind=movie` filters from the
+    // index rather than from `title`. Both queries are answered without touching the title
+    // table at all, which is what takes the count from 1151ms to a seek.
+    "create index ix_tg_votes on title_genre(genre, votes desc, kind)",
+  ],
+
+  /** Built after the cast, crosswalk and people-search stages have filled their tables. */
+  secondary: [
+    "create index ix_votes on title(votes desc)",
+    "create index ix_year on title(year)",
+    /*
+      (year, votes desc), and it is ONLY useful to a query that pins ONE year.
+
+      A decade browse asks `year >= ? and year <= ?`, and a RANGE on the leading column means
+      the second column is not globally ordered across the range -- so this index cannot
+      serve `order by votes desc` over ten years and **SQLite correctly refuses to use it**.
+      Measured: adding it changed `decade=2010` by nothing at all, 161.11 ms before and
+      164.61 ms after, plan unchanged.
+
+      It pays off only because `browseIndex` now SPLITS a decade into ten single-year seeks
+      and merges them (see `decadeRows` in `search.ts`). One year is `SEARCH ix_year_votes
+      (year=?)` at 0.14 ms; ten of them merged is 0.92 ms against the 161 ms range scan.
+      The index and the split are one change and neither works alone -- do not delete either
+      believing the other covers it.
+    */
+    "create index ix_year_votes on title(year, votes desc)",
+    // (kind, votes desc), not (kind). The narrower index is a leading-column PREFIX of this
+    // one and so serves nothing this does not -- the same argument that removed
+    // ix_tg_genre below. What the extra column buys: `?kind=movie` was 466ms to count and
+    // 354ms to page on the live NAS index, because SQLite picked ix_kind, walked every
+    // movie row to test `votes`, and then sorted. Both halves are now covered seeks.
+    "create index ix_kind on title(kind, votes desc)",
+    // The stopword-only query's whole cost, removed. PARTIAL so it holds ~24k rows of 1.27M
+    // (672 KB, 2.1s to build) and COVERING so `title like 'the %'` is answered from index
+    // pages without fetching a single row -- that fetch was a 51.8ms median and a 1461ms worst
+    // case. See `search-stopwords.ts`, which owns the DDL so its floor cannot drift from the
+    // floor the query asks for.
+    POPULAR_TITLE_INDEX,
+    "create index ix_tg_title on title_genre(title_rowid)",
+    // ix_tg_genre(genre) is gone: ix_tg_rank leads with `genre`, so it serves every query
+    // the narrower index served -- a leading-column prefix is the one case where two
+    // indexes are genuinely one. Keeping both would cost build time and pages for nothing.
+    // ix_tp_person is the REVERSE index and the entire reason the cast tables exist:
+    // person -> filmography. ix_tp_title serves the other direction, which the title
+    // page needs to turn a cast name into a link.
+    "create index ix_tp_person on title_principal(person_rowid)",
+    "create index ix_tp_title on title_principal(title_rowid)",
+    "create index ix_person_name on person(name)",
+    /*
+      TWO COVERING INDEXES, and they carry the payload columns on purpose.
+
+      The leading columns are what decide the seek, and they are not interchangeable:
+      `parent` is the equality every caller pins, and what follows it is the ORDER BY -- so a
+      season list is one seek and no sort, the same argument as ix_tg_rank. A `season` filter
+      is then a second equality inside that same seek rather than a filter over it.
+
+      aannarr's standing rule of 2026-09-04: build time and index size are the cheap axis, query
+      time at render is the expensive one. `titles.db` is written once and never updated, so an
+      index costs bytes and build seconds and nothing else -- no write amplification to pay
+      back, no lock contention, no vacuum.
+
+      `ix_ep_parent` answers "the episodes of this series, in order" ENTIRELY from the index:
+      every column the pane and `episodesOf` read is in the trailing list, so SQLite never
+      touches the table's own pages. `ix_ep_rating` answers "which of them clear 8.0" the same
+      way, ordered by rating descending so `min_rating` is a range scan from one end rather
+      than a filter over the series.
+
+      Storing title/votes/year in both is deliberate duplication -- three copies of a fact to
+      turn a join and a table lookup into one index read. That is the shape the rule asks for.
+    */
+    "create index ix_ep_parent on episode(parent, season, number, tconst, title, rating, votes, year)",
+    "create index ix_ep_rating on episode(parent, rating desc, season, number, tconst, title, votes, year)",
+  ],
+} satisfies Record<string, readonly string[]>;
+
+/**
+ * The `meta` key holding the genres worth a shelf, computed once at build.
+ *
+ * Exported so `SearchEngine.topGenres` reads the same name the builder writes -- two string
+ * literals is exactly the drift this file's other single-owner rules exist to prevent.
+ */
+export const SHELF_GENRES_META_KEY = "shelf_genres";
+
+/** How many genres the front page can draw. Stored generously; a caller slices. */
+const SHELF_GENRES_STORED = 12;
+
+/**
+ * Which genres have enough well-rated titles to be worth a shelf -- answered at BUILD time.
+ *
+ * > [!IMPORTANT] This is the purest form of "runtime beats build time" in the tree
+ * > The answer is a pure function of the finished index, so it is **constant for the whole
+ * > life of the file** -- and it was being recomputed on every uncached front-page assembly.
+ * > Measured on the real 2.18 GB index: **25.05 ms**, as an aggregate over `title_genre`
+ * > joined to `title` with a temp b-tree for the GROUP BY and a second for the ORDER BY.
+ * > Reading it back out of `meta` is a single row.
+ * >
+ * > The build pays it once, unattended, at 09:00 UTC. Nobody is waiting for that; somebody
+ * > is always waiting for the front page.
+ *
+ * The floors are the ones `topGenres` used and are deliberately unchanged -- this moves WHEN
+ * the question is answered, never WHAT the answer is, so a build and a live query must agree
+ * exactly. `search.ts`'s fallback runs this same SQL against an index built before the key
+ * existed, which is the one place the two copies must match; the constants live here because
+ * this is where the answer is produced.
+ */
+export function computeShelfGenres(db: Database): string[] {
+  return (
+    db
+      .query(
+        `select g.genre, count(*) c
+         from title_genre g join title t on t.rowid_ = g.title_rowid
+         where t.votes >= 20000 and t.rating >= 7.0
+         group by g.genre order by c desc limit ?`,
+      )
+      .all(SHELF_GENRES_STORED) as { genre: string }[]
+  ).map((r) => r.genre);
+}
+
+/**
+ * Every index, flat, for a test fixture that has no build order to respect.
+ *
+ * The spellfix vocabulary's index is deliberately absent: it is created inside the vocabulary
+ * stage against a table that stage also creates, and a fixture without that table would fail
+ * on the statement rather than on anything it was testing.
+ */
+export function allIndexes(): string[] {
+  return Object.values(INDEXES).flat();
+}
+
 /** What ranked the index, recorded so a list page can say how it was ordered. */
 export interface RankPrior {
   /** The prior's strength in votes -- `index.rankPriorVotes`. */
@@ -382,20 +585,7 @@ export function buildRankLayer(db: Database, cfg: Config, log: (msg: string) => 
   db.run("begin");
   db.run(EXPLODE_GENRES);
   db.run("commit");
-  // (kind, rank desc) and (genre, kind, rank desc): the leading equality columns are what
-  // a list actually pins, and `rank desc` last is what removes the sort. A decade slice
-  // adds a range on `year` that no prefix can cover, so it walks this order and filters --
-  // 3.1ms measured for "top comedies of the 2020s" against 180ms for the live expression.
-  db.run("create index ix_rank on title(kind, rank desc)");
-  db.run("create index ix_tg_rank on title_genre(genre, kind, rank desc)");
-  // The VOTES twin of ix_tg_rank, and the column order is not the same shape by accident.
-  // `kind` sits LAST here, after the sort column, because a genre browse most often pins
-  // no kind at all -- with `kind` in the middle the ordering would be split across two
-  // groups and SQLite would fall back to a temp b-tree for the one query this exists to
-  // remove. Last, it is still covered, so `?genre=Comedy&kind=movie` filters from the
-  // index rather than from `title`. Both queries are answered without touching the title
-  // table at all, which is what takes the count from 1151ms to a seek.
-  db.run("create index ix_tg_votes on title_genre(genre, votes desc, kind)");
+  for (const sql of INDEXES.rank) db.run(sql);
   log(
     `rank: ${prior.ranked.toLocaleString()} titles ranked, prior C=${prior.c.toLocaleString()} ` +
       `mean=${prior.mean.toFixed(3)} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
@@ -559,56 +749,9 @@ export async function buildIndex(
   const personIdRows = personCrosswalkStage(db, dumpDir, log);
 
   log("building secondary indexes ...");
-  db.run("create index ix_votes on title(votes desc)");
-  db.run("create index ix_year on title(year)");
-  // (kind, votes desc), not (kind). The narrower index is a leading-column PREFIX of this
-  // one and so serves nothing this does not -- the same argument that removed
-  // ix_tg_genre below. What the extra column buys: `?kind=movie` was 466ms to count and
-  // 354ms to page on the live NAS index, because SQLite picked ix_kind, walked every
-  // movie row to test `votes`, and then sorted. Both halves are now covered seeks.
-  db.run("create index ix_kind on title(kind, votes desc)");
-  // The stopword-only query's whole cost, removed. PARTIAL so it holds ~24k rows of 1.27M
-  // (672 KB, 2.1s to build) and COVERING so `title like 'the %'` is answered from index
-  // pages without fetching a single row -- that fetch was a 51.8ms median and a 1461ms worst
-  // case. See `search-stopwords.ts`, which owns the DDL so its floor cannot drift from the
-  // floor the query asks for.
-  db.run(POPULAR_TITLE_INDEX);
-  db.run("create index ix_tg_title on title_genre(title_rowid)");
-  // ix_tg_genre(genre) is gone: ix_tg_rank leads with `genre`, so it serves every query
-  // the narrower index served -- a leading-column prefix is the one case where two
-  // indexes are genuinely one. Keeping both would cost build time and pages for nothing.
-  // ix_tp_person is the REVERSE index and the entire reason the cast tables exist:
-  // person -> filmography. ix_tp_title serves the other direction, which the title
-  // page needs to turn a cast name into a link.
-  db.run("create index ix_tp_person on title_principal(person_rowid)");
-  db.run("create index ix_tp_title on title_principal(title_rowid)");
-  db.run("create index ix_person_name on person(name)");
-  /*
-    TWO COVERING INDEXES, and they carry the payload columns on purpose.
+  for (const sql of INDEXES.secondary) db.run(sql);
 
-    The leading columns are what decide the seek, and they are not interchangeable:
-    `parent` is the equality every caller pins, and what follows it is the ORDER BY -- so a
-    season list is one seek and no sort, the same argument as ix_tg_rank. A `season` filter
-    is then a second equality inside that same seek rather than a filter over it.
-
-    aannarr's standing rule of 2026-09-04: build time and index size are the cheap axis, query
-    time at render is the expensive one. `titles.db` is written once and never updated, so an
-    index costs bytes and build seconds and nothing else -- no write amplification to pay
-    back, no lock contention, no vacuum.
-
-    `ix_ep_parent` answers "the episodes of this series, in order" ENTIRELY from the index:
-    every column the pane and `episodesOf` read is in the trailing list, so SQLite never
-    touches the table's own pages. `ix_ep_rating` answers "which of them clear 8.0" the same
-    way, ordered by rating descending so `min_rating` is a range scan from one end rather
-    than a filter over the series.
-
-    Storing title/votes/year in both is deliberate duplication -- three copies of a fact to
-    turn a join and a table lookup into one index read. That is the shape the rule asks for.
-  */
-  db.run("create index ix_ep_parent on episode(parent, season, number, tconst, title, rating, votes, year)");
-  db.run(
-    "create index ix_ep_rating on episode(parent, rating desc, season, number, tconst, title, votes, year)",
-  );
+  const shelfGenres = computeShelfGenres(db);
 
   const now = new Date().toISOString();
   const setMeta = db.prepare("insert or replace into meta (key, value) values (?, ?)");
@@ -630,6 +773,7 @@ export async function buildIndex(
   setMeta.run("rank_prior_votes", String(prior.c));
   setMeta.run("rank_prior_mean", prior.mean.toFixed(4));
   setMeta.run("ranked", String(prior.ranked));
+  setMeta.run(SHELF_GENRES_META_KEY, shelfGenres.join(","));
   // WHICH stages this file carries, so the next release can tell that an index predates a
   // stage rather than only that it cannot read one. Written here, after every stage has
   // run, and never by a stage itself -- see `stampStages`.

@@ -24,6 +24,11 @@ import { Database } from "bun:sqlite";
 import type { Config } from "./config";
 import { type TitleIds, titleIds } from "./crosswalk";
 import type { PersonCredit } from "./facets";
+// The builder is already in the server's module graph (`src/server/index.ts` imports
+// `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
+// the point: the live fallback and the build must compute the same answer or the precompute
+// silently changes what the front page draws.
+import { computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
   type Collaborator,
@@ -1008,18 +1013,28 @@ export class SearchEngine {
     return out.slice(0, limit);
   }
 
-  /** Which genres actually have enough good titles to be worth a shelf. */
+  /**
+   * Which genres actually have enough good titles to be worth a shelf.
+   *
+   * **Read from `meta`, computed at build.** The answer is a pure function of the finished
+   * index, so it cannot change while a file is open -- and it was costing **25.05 ms on every
+   * uncached front-page assembly**, measured on the real 2.18 GB index, as an aggregate over
+   * `title_genre` joined to `title` with a temp b-tree for the GROUP BY and another for the
+   * ORDER BY. It is one row read now.
+   *
+   * The fallback runs the original aggregate, for an index built before the key existed --
+   * the same rule `hasRank` and `hasIds` follow: an older file keeps serving, more slowly,
+   * until the stage stamp orders the rebuild that fixes it. `computeShelfGenres` is shared
+   * with the builder rather than copied, so the live answer and the stored one cannot drift.
+   */
   topGenres(limit = 6): string[] {
-    return (
-      this.db
-        .query(
-          `select g.genre, count(*) c
-           from title_genre g join title t on t.rowid_ = g.title_rowid
-           where t.votes >= 20000 and t.rating >= 7.0
-           group by g.genre order by c desc limit ?`,
-        )
-        .all(limit) as { genre: string }[]
-    ).map((r) => r.genre);
+    const stored = this.db.query("select value from meta where key = ?").get(SHELF_GENRES_META_KEY) as
+      | { value: string }
+      | undefined;
+    // An empty string is a legitimately empty answer (an index with no genre clearing the
+    // floors), so the fallback is keyed on the ROW being absent, never on the value.
+    if (stored) return stored.value === "" ? [] : stored.value.split(",").slice(0, limit);
+    return computeShelfGenres(this.db).slice(0, limit);
   }
 
   /**
@@ -1339,6 +1354,79 @@ function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
   ).c;
 }
 
+/** The ten years a decade filter covers. */
+const DECADE_YEARS = 10;
+
+/**
+ * A decade page, served as TEN single-year seeks merged in memory.
+ *
+ * > [!IMPORTANT] An index cannot fix this, and one was built and measured before this was written
+ * > `where year >= ? and year <= ? order by votes desc` puts a RANGE on the leading column,
+ * > so the second column is not globally ordered across the range and no `(year, votes desc)`
+ * > index can serve the sort. **SQLite is right to refuse it**: `ix_year_votes` was added and
+ * > `decade=2010` did not move -- 161.11 ms before, 164.61 ms after, identical plan, still
+ * > `SEARCH ix_year (year>? AND year<?) | USE TEMP B-TREE FOR ORDER BY` over 89,694 rows.
+ * >
+ * > Pinning ONE year makes the same index a pure seek, and ten seeks plus a merge of a few
+ * > hundred rows is not close: **decade=2010 goes 161 ms -> 0.92 ms**, 1990 -> 0.43 ms,
+ * > 2020 -> 1.31 ms, measured on the real 2.18 GB index.
+ * >
+ * > So the index and this split are ONE change and neither works without the other. Deleting
+ * > `ix_year_votes` leaves ten sorted scans; deleting this leaves the index unused.
+ *
+ * This is the same shape `rankedSeek` uses for `kind`, and for the same underlying reason:
+ * when an index can only be read in order once a leading column is FIXED, fix it and merge.
+ *
+ * It reuses `browseSql` with `year` substituted for `decade` rather than writing its own
+ * WHERE, so a genre, a kind or a vote floor on a decade browse keeps working with no second
+ * copy of the membership rules to drift.
+ */
+function decadeRows<T extends { tconst: string }>(
+  db: Database,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+  select: string,
+  limit: number,
+  offset: number,
+): T[] {
+  const decade = opts.decade as number;
+  const merged: (T & { _sort: number | null })[] = [];
+  for (let year = decade; year < decade + DECADE_YEARS; year++) {
+    // `decade: undefined` and `year` set: one seek per year, every other filter intact.
+    const per = browseSql({ ...opts, decade: undefined, year }, minVotes, sort, opts.genreVotes);
+    // The order EXPRESSION is aliased and selected rather than re-derived here, so `votes`
+    // and `rank` are merged by whichever column `browseSql` actually ordered on. Naming a
+    // column would be a second owner of the sort and would silently mis-merge a ranked page.
+    const key = per.order.replace(/\s+desc$/i, "");
+    merged.push(
+      ...(db
+        .query(
+          `select ${select}, ${key} as _sort from title t ${per.join} where ${per.where}
+           order by ${per.order} limit ?`,
+        )
+        // Each year must offer the whole page, because the merge cannot know in advance
+        // which year the top rows come from -- one year could supply all forty.
+        .all(...([...per.args, limit + offset] as never[])) as (T & { _sort: number | null })[]),
+    );
+  }
+  /*
+    `tconst` breaks a tie, and that is a deliberate improvement rather than a copy.
+
+    The range query this replaces had no tiebreak at all, so rows with equal votes came back
+    in whatever order the scan happened to reach them -- stable only by accident, and a
+    page-2 request could legitimately repeat or skip a title. Ordering the merge on a unique
+    column makes the sequence total, which is what the standing rule asks for: an order that
+    reshuffles between pages is worse than one that is merely imperfect.
+  */
+  merged.sort(
+    (a, b) => (b._sort ?? 0) - (a._sort ?? 0) || (a.tconst < b.tconst ? -1 : a.tconst > b.tconst ? 1 : 0),
+  );
+  // `_sort` is an internal key, not a fact about the title -- the same reason `rankedSeek`
+  // strips `rank_` rather than returning it.
+  return merged.slice(offset, offset + limit).map(({ _sort: _drop, ...row }) => row as unknown as T);
+}
+
 /**
  * Paginated browse over the index, ordered by votes or by the computed rank.
  *
@@ -1356,13 +1444,20 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
   const sql = browseSql(opts, minVotes, sort, opts.genreVotes);
   const total = browseTotal(db, sql);
-  const rows = db
-    .query(
-      `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
-       from title t ${sql.join} where ${sql.where}
-       order by ${sql.order} limit ? offset ?`,
-    )
-    .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as TitleRow[];
+  const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
+  const limit = opts.limit ?? 60;
+  const offset = opts.offset ?? 0;
+  // The COUNT is left on the range: it is a covering seek either way (1.59ms measured) and
+  // has no ORDER BY to serve, so it is only the ROW fetch that the range hurts.
+  const rows =
+    opts.decade === undefined
+      ? (db
+          .query(
+            `select ${cols} from title t ${sql.join} where ${sql.where}
+             order by ${sql.order} limit ? offset ?`,
+          )
+          .all(...([...sql.args, limit, offset] as never[])) as TitleRow[])
+      : decadeRows<TitleRow>(db, opts, minVotes, sort, cols, limit, offset);
 
   // The second count only runs when the floor could be what emptied the page, so the
   // overwhelmingly common case -- a query that found rows -- pays for one count, not two.
@@ -1388,15 +1483,22 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
  */
 export function browseMembers(db: Database, opts: BrowseOptions): string[] {
   const sort = opts.sort ?? "votes";
-  const sql = browseSql(opts, opts.minVotes ?? browseVoteFloor(opts, sort), sort, opts.genreVotes);
-  return (
-    db
-      .query(
-        `select t.tconst from title t ${sql.join} where ${sql.where}
-         order by ${sql.order} limit ? offset ?`,
-      )
-      .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as { tconst: string }[]
-  ).map((r) => r.tconst);
+  const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes);
+  const limit = opts.limit ?? 60;
+  const offset = opts.offset ?? 0;
+  // Splits a decade the same way `browseIndex` does -- "best comedies of the 2020s" is a
+  // computed list, so this path pays the range scan too if it is left out.
+  const rows =
+    opts.decade === undefined
+      ? (db
+          .query(
+            `select t.tconst from title t ${sql.join} where ${sql.where}
+             order by ${sql.order} limit ? offset ?`,
+          )
+          .all(...([...sql.args, limit, offset] as never[])) as { tconst: string }[])
+      : decadeRows<{ tconst: string }>(db, opts, minVotes, sort, "t.tconst", limit, offset);
+  return rows.map((r) => r.tconst);
 }
 
 /** One episode of one series, as the index holds it. */
