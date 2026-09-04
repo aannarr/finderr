@@ -50,7 +50,13 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
-import { allIndexes, computeShelfGenres, SHELF_GENRES_META_KEY } from "../lib/index-builder";
+import {
+  allIndexes,
+  BROWSE_COUNT_SCHEMA,
+  buildBrowseCounts,
+  computeShelfGenres,
+  SHELF_GENRES_META_KEY,
+} from "../lib/index-builder";
 import { SearchEngine } from "../lib/search";
 
 interface Args {
@@ -175,8 +181,17 @@ function reindex(path: string): void {
     if (name && existing.includes(name)) db.run(`drop index ${name}`);
     db.run(sql);
   }
-  // The precomputed shelf genres are part of the shape too: without this the benchmark would
-  // measure the fallback aggregate and report the precompute as having done nothing.
+  /*
+    The PRECOMPUTES are part of the shape too, and forgetting them is a silent wrong answer.
+
+    Both of these fall back to a live query when absent, by design -- so a clone missing them
+    still returns every correct number and the benchmark quietly reports the fallback's cost
+    as if it were the shipping cost. That happened: the first run after `browse_count` landed
+    showed a genre browse at 5.43 ms and the precompute as having done nothing, because the
+    cloned file predated the table and `hasBrowseCounts` was false.
+  */
+  db.run(BROWSE_COUNT_SCHEMA.replace("create table", "create table if not exists"));
+  buildBrowseCounts(db);
   db.run("insert or replace into meta (key, value) values (?, ?)", [
     SHELF_GENRES_META_KEY,
     computeShelfGenres(db).join(","),

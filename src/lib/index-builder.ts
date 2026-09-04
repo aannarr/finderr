@@ -138,6 +138,53 @@ export interface BuildStats {
  * The index schema, exported so a test can stand up a handful of rows in a temp file
  * that is shaped exactly like the real index rather than like somebody's memory of it.
  */
+/**
+ * The browse-count table, split out so the benchmark harness can add it to an older file.
+ *
+ * Interpolated into `SCHEMA` rather than living only inside it: `bun run bench --reindex`
+ * brings a CLONE up to this checkout's shape without a full rebuild, and a clone of an index
+ * built before this stage has no such table. One owner, two callers.
+ */
+export const BROWSE_COUNT_SCHEMA = `
+-- EVERY BROWSE COUNT THE PRODUCT CAN ASK FOR, ANSWERED AT BUILD TIME.
+--
+-- browseIndex returns a total beside its rows, and once the row queries became seeks the
+-- COUNT was the whole remaining cost of a browse. Measured on the real 2.18 GB index after
+-- the rank indexes landed: a genre+decade count was 137.48 ms while its rows were 0.32 ms,
+-- an unfiltered ranked count 11.16 ms, a genre+kind ranked count 10.69 ms. A count cannot
+-- be turned into a seek the way an ordered read can, because it has to visit every matching
+-- row -- so the only way to stop paying it at render time is to have paid it already.
+--
+-- This is the grain every filter combination reduces to: one row per (kind, genre, year),
+-- carrying the three populations the UI can ask about. 9,102 rows, 0.30 MB, 6.75 s to build.
+-- Every count in the product becomes a sum over at most a few hundred rows; the 137 ms one
+-- becomes 0.34 ms.
+--
+-- THE ONE THING TO GET RIGHT: genre = '' is the ANY-GENRE row, NOT "titles with no genre".
+-- A title with three genres has three title_genre rows, so summing across genres
+-- double-counts it and an unfiltered total would come out larger than the corpus. The build
+-- writes a SECOND set of rows, grouped by (kind, year) over title alone, under the sentinel
+-- genre ''. A genre-filtered count sums the real genre rows; an unfiltered one sums only the
+-- '' rows; the two are never mixed. browse-count.test.ts pins this by asserting the stored
+-- count EQUALS the live count over a matrix of filters, rather than by asserting any
+-- particular number -- a total is printed to the reader as a fact, so close is not a trade.
+--
+-- without rowid because the primary key IS the row's identity and the table is read by
+-- prefix: it halves the size and makes every lookup a single b-tree descent.
+create table browse_count (
+  kind   text    not null,
+  genre  text    not null,
+  year   integer not null,
+  -- Every title at this grain, no floor. What ?year=1901 counts.
+  n        integer not null,
+  -- Those clearing BROWSE_VOTE_FLOOR. What a broad grid counts.
+  n_floor  integer not null,
+  -- Those carrying a rank. What every computed top list counts.
+  n_ranked integer not null,
+  primary key (kind, genre, year)
+) without rowid;
+`;
+
 export const SCHEMA = `
 create table title (
   rowid_    integer primary key,
@@ -186,43 +233,7 @@ create table title_genre (
 );
 create table meta (key text primary key, value text not null);
 
--- EVERY BROWSE COUNT THE PRODUCT CAN ASK FOR, ANSWERED AT BUILD TIME.
---
--- browseIndex returns a total beside its rows, and once the row queries became seeks the
--- COUNT was the whole remaining cost of a browse. Measured on the real 2.18 GB index after
--- the rank indexes landed: a genre+decade count was 137.48 ms while its rows were 0.32 ms,
--- an unfiltered ranked count 11.16 ms, a genre+kind ranked count 10.69 ms. A count cannot
--- be turned into a seek the way an ordered read can, because it has to visit every matching
--- row -- so the only way to stop paying it at render time is to have paid it already.
---
--- This is the grain every filter combination reduces to: one row per (kind, genre, year),
--- carrying the three populations the UI can ask about. 9,102 rows, 0.30 MB, 6.75 s to build.
--- Every count in the product becomes a sum over at most a few hundred rows; the 137 ms one
--- becomes 0.34 ms.
---
--- THE ONE THING TO GET RIGHT: genre = '' is the ANY-GENRE row, NOT "titles with no genre".
--- A title with three genres has three title_genre rows, so summing across genres
--- double-counts it and an unfiltered total would come out larger than the corpus. The build
--- writes a SECOND set of rows, grouped by (kind, year) over title alone, under the sentinel
--- genre ''. A genre-filtered count sums the real genre rows; an unfiltered one sums only the
--- '' rows; the two are never mixed. browse-count.test.ts pins this by asserting the stored
--- count EQUALS the live count over a matrix of filters, rather than by asserting any
--- particular number -- a total is printed to the reader as a fact, so close is not a trade.
---
--- without rowid because the primary key IS the row's identity and the table is read by
--- prefix: it halves the size and makes every lookup a single b-tree descent.
-create table browse_count (
-  kind   text    not null,
-  genre  text    not null,
-  year   integer not null,
-  -- Every title at this grain, no floor. What ?year=1901 counts.
-  n        integer not null,
-  -- Those clearing BROWSE_VOTE_FLOOR. What a broad grid counts.
-  n_floor  integer not null,
-  -- Those carrying a rank. What every computed top list counts.
-  n_ranked integer not null,
-  primary key (kind, genre, year)
-) without rowid;
+${BROWSE_COUNT_SCHEMA}
 
 -- People, and the credits that connect them to titles.
 --
