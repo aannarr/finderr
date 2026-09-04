@@ -42,9 +42,16 @@ async function main(): Promise<number> {
   let anyChanged = force;
 
   if (!noFetch) {
-    // principals last: it is 744 MB, five times the other three combined, so a failure
+    // principals last: it is 744 MB, five times the other four combined, so a failure
     // in a cheap dump surfaces before we have spent ten minutes on the expensive one.
-    for (const dump of ["title.ratings", "title.basics", "name.basics", "title.principals"] as const) {
+    // title.episode (52 MB) rides in front of it for the same reason.
+    for (const dump of [
+      "title.ratings",
+      "title.basics",
+      "name.basics",
+      "title.episode",
+      "title.principals",
+    ] as const) {
       let lastPct = -1;
       const res = await fetchDump(dump, p.dumps, state, (recv, total) => {
         if (!total) return;
@@ -86,7 +93,7 @@ async function main(): Promise<number> {
     Upstream drift was the only reason until 2026-09-01, and that left the upgrade path
     depending on IMDb's publishing schedule. The crosswalk is fetched a few lines above and
     deliberately does NOT set `anyChanged` -- a fresher crosswalk is not worth six minutes
-    on its own -- so on a day when all four dumps answer 304 the file was downloaded and
+    on its own -- so on a day when every IMDb dump answers 304 the file was downloaded and
     then ignored, by an index that had no `title_ids` table at all.
 
     It self-healed within a day because IMDb publishes daily. That is an accident rather

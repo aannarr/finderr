@@ -1462,13 +1462,25 @@ export function clearPersistedCaches(): Promise<void> {
 }
 
 /**
+ * The three fields a poster is drawn from, and nothing else.
+ *
+ * A `Pick` rather than a new interface, so it cannot drift from `Title` and every existing
+ * caller keeps passing a whole row unchanged. It exists because the assistant's answers
+ * name titles WITHOUT the twenty-odd fields a decorated index row carries -- library state,
+ * votes, request status, none of which a poster has ever read. Widening the parameter is
+ * how that gets to reuse `Poster` instead of growing a second `<img>` with its own idea of
+ * the fallback, which is the whole reason that component exists.
+ */
+export type PosterSubject = Pick<Title, "tconst" | "title" | "posterUrl">;
+
+/**
  * Posters always come from OUR proxy. finderr will be internet-facing while
  * Radarr/Sonarr stay on the LAN, so the browser is never handed an upstream URL.
  *
  * `null` means we already looked and there genuinely is no artwork -- render the
  * fallback tile immediately rather than firing a request that will 404.
  */
-export function posterUrl(t: Title, size = "w342"): string | null {
+export function posterUrl(t: Pick<Title, "tconst" | "posterUrl">, size = "w342"): string | null {
   if (t.posterUrl === null) return null;
   return `${t.posterUrl ?? `/img/t/${t.tconst}`}?size=${size}`;
 }

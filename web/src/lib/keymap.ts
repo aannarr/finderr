@@ -24,7 +24,8 @@ export type ActionId =
   | "focusSearch"
   | "prevSeason"
   | "nextSeason"
-  | "jumpMode";
+  | "jumpMode"
+  | "assistant";
 
 /** Which key the machine calls "the command modifier": ⌘ on a Mac, Ctrl everywhere else. */
 export type Platform = "mac" | "other";
@@ -87,6 +88,23 @@ export const KEYMAP: Record<ActionId, KeyBinding> = {
     `lib/jump-keys.ts`.
   */
   jumpMode: { key: "/", mod: "command", glyph: "/" },
+  /*
+    Open and close the assistant panel.
+
+    IT CARRIES `mod` FOR THE SAME REASON `jumpMode` DOES: the search box is autofocused and
+    holds the caret nearly always, so `firesWhileTyping` is the only way a key reaches this
+    from where a reader actually is.
+
+    ⌘K IS NOT TAKEN, DELIBERATELY. It is the obvious chord and this table has reserved it
+    for a command palette since before the assistant existed -- see the note above. Spending
+    it on the first feature that wanted a shortcut would mean the palette either arrives
+    without its convention or takes the key back from somebody who has learnt it.
+
+    `.` is what is left that is worth having: unclaimed by Chrome, Firefox and Safari on
+    both platforms, present on every keyboard layout without a modifier, and adjacent to
+    nothing destructive. ⌘J is the browser's downloads, ⌘I is Safari's mail-this-page.
+  */
+  assistant: { key: ".", mod: "command", glyph: "." },
 };
 
 const MOD_GLYPH: Record<Platform, string> = { mac: "⌘", other: "Ctrl" };

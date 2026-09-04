@@ -10,6 +10,41 @@
   --color-accent: oklch(0.72 0.16 155);
   --color-danger: oklch(0.65 0.19 25);
   --color-warn: oklch(0.78 0.15 75);
+
+  /* THE SHADCN VOCABULARY, POINTED AT THE PALETTE ABOVE. Aliases, never new colours.
+
+     `components.json` is real, so `shadcn add <thing>` is a supported move here -- and the
+     registry writes `bg-background`, `text-foreground`, `bg-primary` and friends. Without
+     these names those classes do not exist, and Tailwind emits nothing at all for an unknown
+     utility: the component builds, ships, and renders unstyled. Mapping them onto the nine
+     colours finderr already had is what makes an added component wear this product's skin
+     instead of importing shadcn's neutral one.
+
+     > [!CAUTION] `muted` MEANS THE OPPOSITE HERE, and it is the one name not aliased
+     > shadcn's `--muted` is a SURFACE and `--muted-foreground` is the text on it. finderr's
+     > `--color-muted` is a FOREGROUND -- `text-muted` is on nearly every screen in this
+     > tree. Redefining it to a surface colour would restyle the whole product in one line,
+     > so it keeps its meaning and `--color-muted-foreground` is added beside it as the same
+     > value. The cost is that **`bg-muted` is a trap**: it paints a pale grey block on a
+     > dark page. A pasted component using it wants `bg-surface-2`. */
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-ink);
+  --color-popover: var(--color-surface);
+  --color-popover-foreground: var(--color-ink);
+  --color-primary: var(--color-accent);
+  /* Black on accent, matching `RequestAction` -- the accent is a bright green and this is
+     the only pairing on it that clears 4.5:1. */
+  --color-primary-foreground: oklch(0 0 0);
+  --color-secondary: var(--color-surface-2);
+  --color-secondary-foreground: var(--color-ink);
+  --color-muted-foreground: var(--color-muted);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: var(--color-ink);
+  --color-border: var(--color-line);
+  --color-input: var(--color-line);
+  --color-ring: var(--color-accent);
 }
 
 html,

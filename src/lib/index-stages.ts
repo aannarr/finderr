@@ -17,7 +17,7 @@
  *
  * The daily refresh did not fix it either, and that is the second half. `build-index.ts`
  * only builds when a DUMP drifted upstream, and a newly downloaded crosswalk deliberately
- * does not count as drift. On a day when all four dumps answer 304, the crosswalk is
+ * does not count as drift. On a day when every IMDb dump answers 304, the crosswalk is
  * fetched and then ignored. It self-heals eventually because IMDb publishes daily -- by
  * accident, not by design, and an accident is not an upgrade path.
  *
@@ -59,9 +59,9 @@ export const STAGES_META_KEY = "stages";
  *
  * A stage belongs here once it can be ABSENT from an otherwise valid index -- which is the
  * same test as needing a capability probe in `SearchEngine` (`hasPeople`, `hasRank`,
- * `hasIds`, `hasPersonIds`, `hasPeopleSearch`) or, for `popularTitles`, of being invisibly
- * slower without it. A stage that every index has always had needs no stamp: there is no
- * version of the file without it.
+ * `hasIds`, `hasPersonIds`, `hasPeopleSearch`, `hasEpisodes`) or, for `popularTitles`, of
+ * being invisibly slower without it. A stage that every index has always had needs no
+ * stamp: there is no version of the file without it.
  *
  * The recipe is a canonical string. Two builds of the same configuration must produce the
  * same one, so anything set-like is sorted -- an unsorted list would report a difference
@@ -143,6 +143,21 @@ export const INDEX_STAGES = {
    * anywhere saying why.
    */
   peopleSearch: () => JSON.stringify({ v: 1 }),
+
+  /**
+   * `episode` -- per-episode ratings, floored on the SERIES rather than on the episode.
+   *
+   * The floor is IN the recipe for the same reason `cast`'s categories are: it decides which
+   * rows exist, so lowering it is a change that would otherwise be swallowed until a dump
+   * happened to drift upstream. The symptom of that swallowing is the bad one -- a mid-sized
+   * show whose episode list is simply absent reads as missing data rather than as a stale
+   * index, and there is nothing on screen to say a threshold is responsible.
+   *
+   * It carries no `castRefreshDays` equivalent because there is nothing to carry forward:
+   * the stage rebuilds from a 52 MB dump on every build, and its rows are keyed on tconst
+   * rather than on a rowid, so there is no cheap copy that would be worth the machinery.
+   */
+  episodes: (cfg) => JSON.stringify({ v: 1, minVotes: cfg.index.episodeSeriesMinVotes }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

@@ -132,6 +132,64 @@ export interface Config {
      * 0 means "every build", which is what a machine fast enough not to care should use.
      */
     castRefreshDays: number;
+    /**
+     * Episodes are indexed for series clearing this vote count -- **the SERIES, never the
+     * episode**, and that distinction is the whole design of the stage.
+     *
+     * An episode-level floor would delete exactly the episodes a reader asks about first.
+     * IMDb ratings accumulate over weeks, so the episode that aired on Tuesday has almost
+     * no votes on Wednesday and would be censored on the one day anybody wants it; the
+     * series it belongs to has had years to earn its own. Floored on the parent, a show
+     * anybody has heard of carries its complete run from the day each episode airs.
+     *
+     * **THIS COMMENT IS THE ONE OWNER OF THE EPISODE CENSUS**, the same way `castMinVotes`
+     * above owns the cast one -- the `episode` table's comment and `episodeStage` in
+     * `./index-builder.ts` cite it and state no figure of their own. What this does NOT own
+     * is what the stage COSTS to build, or what a different floor would save: both of those
+     * are build cost and live in the BUILD COST block of `./index-builder.ts`.
+     *
+     * Measured against the 2026-09-04 dumps:
+     *
+     * | | |
+     * |---|---|
+     * | rows in `title.episode` | 9,866,824 |
+     * | under a series clearing 1,000 votes | 1,265,492 |
+     * | of those, with no season or episode number | 137,808 (dropped -- see `episodeStage`) |
+     * | of those, whose series the adult filter kept out of `title` | 4 (pruned) |
+     * | kept | 1,127,680 |
+     * | of the kept, carrying a ratings row of their own | 517,002 (45.8%) |
+     *
+     * That last line is why `episode.rating` is nullable rather than defaulted: the common
+     * case is an episode nobody has rated.
+     *
+     * > [!IMPORTANT] THE DEFAULT IS 0 -- EVERY EPISODE OF EVERY SERIES -- AND THE FLOOR THAT
+     * > SHIPPED HERE FIRST WAS THE WRONG TRADE
+     * > It was 1000, matching `castMinVotes` and `browseVoteFloor` on the reasoning that one
+     * > threshold across the product is one fewer number to keep meaningful. That symmetry is
+     * > real but it was answering the wrong question, because those two floors and this one
+     * > exist for DIFFERENT reasons: `browseVoteFloor` keeps an unfiltered grid INTERESTING
+     * > and is a product judgement, while this one only ever bounded SCAN COST.
+     * >
+     * > aannarr's standing rule of 2026-09-04 closes that argument: *"I will rather give up
+     * > BUILD TIME/INDEX TIME, for faster/more efficient/less ram usage RUN TIME."* Build
+     * > cost is the cheap axis, so a floor whose only justification was build cost has no
+     * > justification left.
+     * >
+     * > What it buys is that **"that series has no episode data" stops being an answer**. At
+     * > 1000 the index covered 12,797 series out of 240,909 -- about one in nineteen -- so
+     * > every question about a smaller show got a shrug from a product whose stated goal is
+     * > that every aspect of the system is indexed and navigable.
+     * >
+     * > **Query speed does not change.** Both episode reads are covering-index lookups keyed
+     * > on `parent` (see `ix_ep_parent` / `ix_ep_rating` in `./index-builder.ts`), so they
+     * > are O(log n) in the table's size and touch the same handful of pages either way. The
+     * > cost is paid in build seconds and file bytes, which is exactly what the rule trades.
+     *
+     * Raising it is still supported and is a PRODUCT decision -- what each step costs in
+     * coverage is measured in the `BUILD COST` block of `./index-builder.ts`, which owns
+     * those figures. Do not restate them here.
+     */
+    episodeSeriesMinVotes: number;
     /** When the daily refresh runs, read in `refreshTz`. */
     refreshCron: string;
     /**
@@ -737,6 +795,9 @@ const DEFAULTS: Config = {
       "writer",
     ],
     castRefreshDays: 7,
+    // 0 = every episode of every series. See the field's own doc comment for why the floor
+    // that shipped here first was the wrong trade.
+    episodeSeriesMinVotes: 0,
     refreshCron: "0 9 * * *", // after TMDB publishes (~07:20 UTC observed) and IMDb's drop
     refreshTz: "UTC",
     refreshOnBoot: true,
@@ -893,6 +954,7 @@ function envOverrides(): Record<string, unknown> {
       castRefreshDays: envInt("FINDERR_INDEX_CAST_REFRESH_DAYS"),
       refreshOnBoot: envBool("FINDERR_INDEX_REFRESH_ON_BOOT"),
       castMinVotes: envInt("FINDERR_INDEX_CAST_MIN_VOTES"),
+      episodeSeriesMinVotes: envInt("FINDERR_INDEX_EPISODE_SERIES_MIN_VOTES"),
       titleTypes: envStr("FINDERR_INDEX_TITLE_TYPES")
         ?.split(",")
         .map((s) => s.trim())
@@ -1007,6 +1069,7 @@ function validate(c: Config): void {
   if (c.index.fuzzyMinVotes < 0) problems.push("index.fuzzyMinVotes must be >= 0");
   if (c.index.titleTypes.length === 0) problems.push("index.titleTypes must not be empty");
   if (c.index.castMinVotes < 0) problems.push("index.castMinVotes must be >= 0");
+  if (c.index.episodeSeriesMinVotes < 0) problems.push("index.episodeSeriesMinVotes must be >= 0");
   // Zero would divide by zero for an unrated title and make every rank its own rating,
   // which is the exact failure the prior exists to prevent.
   if (c.index.rankPriorVotes < 1) problems.push("index.rankPriorVotes must be >= 1");

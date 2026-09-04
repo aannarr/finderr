@@ -41,6 +41,58 @@
  * which cannot be carried forward the same way because titles DO change daily: 12.76M rows
  * of `title.basics` parsed, then rank, then FTS and the spellfix vocabulary. Anything that
  * closes the last 36s has to come from there, not from cast.
+ *
+ * ## The episode stage, measured 2026-09-05 on the Mac -- AND IT IS NOT CHEAP
+ *
+ * An A/B over one set of on-disk dumps in an isolated data directory, `--no-fetch
+ * --dry-run`, no previous index so both runs rescan the cast, and spellfix1 unavailable so
+ * the vocabulary stage was skipped in both. The ONLY difference is whether
+ * `title.episode.tsv.gz` was on disk, which is exactly the switch `episodeStage` reads. The
+ * rank stage came out 8.4s and 8.5s across the pair, so run-to-run noise was small:
+ *
+ * | build | wall | index | peak RSS |
+ * |---|---|---|---|
+ * | without the episode dump -- the stage skips | **83.2s** | 690.4 MB | 2,083 MB |
+ * | with it, 1,127,680 episodes kept | **110.4s** | 815.8 MB | 1,978 MB |
+ *
+ * **So the stage is +27.2s and +125 MB of index, a third again on top of this build.** Peak
+ * RSS did not move -- the work is SQLite's, not the JS heap's, which is the property the
+ * ordering in `buildIndex` was chosen for.
+ *
+ * Of the 27.2s, four components were isolated separately against the same data: streaming
+ * `title.episode` and inserting the rows, 4.7s; the `title`/`year` probes during the basics
+ * pass, ~2s; building the episode index, 2.0s; `pruneOrphanEpisodes`, 2.4s. The remaining
+ * ~16s is not attributed to a named step and is most likely the extra 125 MB of pages this
+ * build now writes. **Do not quote the components as if they summed to the total.**
+ *
+ * > **THE PAIR ABOVE IS ALREADY A FLOOR, AND KNOWING WHY MATTERS MORE THAN THE NUMBER.** It
+ * > was measured against ONE narrow `episode(parent, season, number)` index. The stage now
+ * > builds TWO covering indexes carrying every payload column, on the standing rule that
+ * > index size and build time are the cheap axis and render latency is not -- so the real
+ * > wall time and the real 125 MB are both higher than what is written here. The 2.0s
+ * > component above is the narrow index and no longer describes what is built. **Re-run the
+ * > A/B before quoting any of this**; the recipe is in the paragraph above it.
+ *
+ * **NOT RE-MEASURED ON THE SYNOLOGY EITHER.** Scaled by the ~3.8x this Mac differs from it
+ * on the refresh build, +27.2s here implies roughly +100s there -- which would put the
+ * carry-forward NAS build near 260s against the ~120s condition that was already open at
+ * 155.7s. That is an ESTIMATE off an under-measurement, and the two rows above are neither;
+ * it wants a real run before anybody plans on it.
+ *
+ * **The dial, if that cost has to come down, is `index.episodeSeriesMinVotes`**, because
+ * the stage's cost is dominated by the number of rows it keeps. The shipped floor's census
+ * is on that setting in `./config.ts`, which owns it; what belongs here is what raising it
+ * would BUY, measured over the same dump on the same day:
+ *
+ * | floor | episodes kept | series covered |
+ * |---|---|---|
+ * | 2,500 | 680,147 | 7,550 |
+ * | 5,000 | 411,336 | 4,726 |
+ * | 10,000 | 209,790 | 2,832 |
+ * | 25,000 | 92,154 | 1,334 |
+ *
+ * Every one of those is bought by making finderr unable to answer about smaller shows, so
+ * it is a product decision rather than a tuning one.
  */
 
 import { Database } from "bun:sqlite";
@@ -72,6 +124,8 @@ export interface BuildStats {
   creditRows: number;
   /** Distinct people named by those credits. */
   people: number;
+  /** Episode rows kept. 0 when `title.episode.tsv.gz` is not on disk. */
+  episodeRows: number;
   /** Titles carrying a bulk-loaded TMDB or TVDB id. 0 when the crosswalk was unavailable. */
   idRows: number;
   /** People carrying a bulk-loaded TMDB person id. 0 when that crosswalk was unavailable. */
@@ -165,6 +219,47 @@ create table title_principal (
   ordering     integer not null,
   -- The role as IMDb records it, already unwrapped from its JSON array form.
   characters   text
+);
+
+-- Episodes, with their own ratings, so "every Star Trek episode over 8.0" is a query
+-- against local SQLite rather than a walk of somebody else's API.
+--
+-- ITS OWN TABLE AND NEVER MORE ROWS IN title. An episode is not a browsable title: it must
+-- not appear in search, in a browse grid, on a shelf or in a facet count. Adding tvEpisode
+-- to index.titleTypes would put the whole of title.episode in front of every query in the
+-- product in order to serve one pane -- an order of magnitude more rows than the index
+-- holds today, and every vote-ordered list filling with individual episodes of popular
+-- shows. The census is on episodeSeriesMinVotes in ./config.ts, which owns it.
+--
+-- parent is the SERIES tconst as TEXT rather than a title_rowid, and that is a departure
+-- from title_principal above worth stating. Rowids are assigned by insertion order while
+-- streaming title.basics, which is why the cast carry-forward has to remap them through
+-- tconst -- but this table is rebuilt from the dump on every build and is never carried,
+-- so there is no remapping hazard to design against. What the text key buys is that the
+-- one query this table exists for arrives holding a series tconst and is answered without
+-- a join at all.
+--
+-- rating IS NULLABLE, and that is the column's whole point. Fewer than half the episodes
+-- this build keeps carry a ratings row at all -- a brand-new episode has none for weeks,
+-- and the census is on episodeSeriesMinVotes in ./config.ts. Writing 0.0 for those would
+-- mean "rated terribly" where the truth is "not rated yet": a filter for "over 8.0" has to
+-- exclude both, but a pane has to be able to say "no score yet" for the second and "1.9"
+-- for the first. votes stays NOT NULL because nobody having voted IS a count, and it is
+-- zero.
+--
+-- (No backticks anywhere in here: this block is inside a template literal.)
+create table episode (
+  rowid_  integer primary key,
+  tconst  text not null unique,
+  parent  text not null,
+  season  integer not null,
+  number  integer not null,
+  -- From title.basics under the EPISODE's own tconst. Null when the two dumps disagree,
+  -- the same way a credit can outrun name.basics.
+  title   text,
+  rating  real,
+  votes   integer not null default 0,
+  year    integer
 );
 ${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}`;
 
@@ -347,6 +442,27 @@ export async function buildIndex(
   }
   log(`  ${ratings.size.toLocaleString()} rated titles`);
 
+  /*
+    --- episodes, part ONE of two, and it runs BEFORE the basics stream by necessity
+    rather than by preference.
+
+    An episode's NAME and YEAR live only in title.basics -- the most expensive file we read,
+    at 12.76M rows and 226 MB. Deciding WHICH episodes to keep needs title.episode and the
+    ratings map, and both are available right here, so the skeleton rows go in first and the
+    basics pass we are making anyway fills the two columns only it carries. The alternative
+    is a SECOND full read of title.basics, which would cost more than this whole stage does
+    (BUILD COST, module docstring) on a build that is already over its budget on the NAS.
+
+    Deliberately NOT solved with a JS membership set of the kept episode ids. That would
+    make the probes in the loop below unnecessary and cost almost nothing in time -- but it
+    is over a million live entries held across the whole basics pass, beside the ratings map
+    that is already the largest thing this build holds, and docker-compose.yml runs the
+    container under a 1500 MB limit. The probes are cheap enough that the memory would be
+    bought for nothing.
+  */
+  const episodeRows = await episodeStage(db, cfg, dumpDir, ratings, log);
+  const nameEpisode = db.prepare("update episode set title = ?, year = ? where tconst = ?");
+
   // --- basics: the big one (226 MB compressed, 12.7M rows)
   const keepTypes = new Set(cfg.index.titleTypes);
   const insert = db.prepare(
@@ -361,6 +477,17 @@ export async function buildIndex(
   for await (const cols of streamTsv(`${dumpDir}/title.basics.tsv.gz`, "title.basics")) {
     scanned++;
     const [tconst, kind, primaryTitle, originalTitle, isAdult] = cols;
+
+    // Episodes, part TWO of two: the name and the year, which this file alone carries.
+    //
+    // The probe runs for EVERY tvEpisode row rather than being gated on a set of the ones
+    // the stage kept, which is the trade part one names: it is one index seek into a table
+    // an order of magnitude smaller than the rows being scanned, and it holds nothing.
+    // `episodeRows` guards it so a build with no episode dump does not pay for it at all.
+    if (episodeRows > 0 && kind === "tvEpisode") {
+      nameEpisode.run(primaryTitle || null, intOrNull(cols[5]), tconst);
+    }
+
     if (!keepTypes.has(kind)) continue;
     if (!cfg.index.includeAdult && isAdult === "1") continue;
     if (!primaryTitle) continue;
@@ -393,6 +520,8 @@ export async function buildIndex(
   }
   db.run("commit");
   log(`  scanned ${scanned.toLocaleString()}, kept ${kept.toLocaleString()}`);
+
+  const episodesKept = pruneOrphanEpisodes(db, episodeRows, log);
 
   // --- the rank column, then genres exploded into a join table carrying a copy of it.
   // One step, in that order, because the copy cannot precede the value. Facet counts are
@@ -454,6 +583,32 @@ export async function buildIndex(
   db.run("create index ix_tp_person on title_principal(person_rowid)");
   db.run("create index ix_tp_title on title_principal(title_rowid)");
   db.run("create index ix_person_name on person(name)");
+  /*
+    TWO COVERING INDEXES, and they carry the payload columns on purpose.
+
+    The leading columns are what decide the seek, and they are not interchangeable:
+    `parent` is the equality every caller pins, and what follows it is the ORDER BY -- so a
+    season list is one seek and no sort, the same argument as ix_tg_rank. A `season` filter
+    is then a second equality inside that same seek rather than a filter over it.
+
+    aannarr's standing rule of 2026-09-04: build time and index size are the cheap axis, query
+    time at render is the expensive one. `titles.db` is written once and never updated, so an
+    index costs bytes and build seconds and nothing else -- no write amplification to pay
+    back, no lock contention, no vacuum.
+
+    `ix_ep_parent` answers "the episodes of this series, in order" ENTIRELY from the index:
+    every column the pane and `episodesOf` read is in the trailing list, so SQLite never
+    touches the table's own pages. `ix_ep_rating` answers "which of them clear 8.0" the same
+    way, ordered by rating descending so `min_rating` is a range scan from one end rather
+    than a filter over the series.
+
+    Storing title/votes/year in both is deliberate duplication -- three copies of a fact to
+    turn a join and a table lookup into one index read. That is the shape the rule asks for.
+  */
+  db.run("create index ix_ep_parent on episode(parent, season, number, tconst, title, rating, votes, year)");
+  db.run(
+    "create index ix_ep_rating on episode(parent, rating desc, season, number, tconst, title, votes, year)",
+  );
 
   const now = new Date().toISOString();
   const setMeta = db.prepare("insert or replace into meta (key, value) values (?, ?)");
@@ -466,6 +621,8 @@ export async function buildIndex(
   setMeta.run("credit_rows", String(cast.creditRows));
   setMeta.run("people", String(cast.people));
   setMeta.run("cast_min_votes", String(cfg.index.castMinVotes));
+  setMeta.run("episode_rows", String(episodesKept));
+  setMeta.run("episode_series_min_votes", String(cfg.index.episodeSeriesMinVotes));
   setMeta.run("id_rows", String(idRows));
   setMeta.run("person_id_rows", String(personIdRows));
   // How the lists were ranked, so a list page can say it rather than restate a constant
@@ -493,6 +650,7 @@ export async function buildIndex(
     genreRows,
     creditRows: cast.creditRows,
     people: cast.people,
+    episodeRows: episodesKept,
     idRows,
     personIdRows,
     bytes,
@@ -552,6 +710,119 @@ function personCrosswalkStage(db: Database, dumpDir: string, log: (m: string) =>
   log(
     `  ${kept.toLocaleString()} of our people carry a TMDB id (${rows.length.toLocaleString()} in the source)`,
   );
+  return kept;
+}
+
+// ---------------------------------------------------------------------------
+// Episodes
+// ---------------------------------------------------------------------------
+
+/**
+ * Fill `episode` from `title.episode.tsv.gz`, floored on the SERIES.
+ *
+ * **THE FLOOR IS ON THE PARENT, AND PUTTING IT ON THE EPISODE WOULD BE THE BUG.** IMDb
+ * ratings accumulate over weeks, so an episode that aired on Tuesday has almost no votes on
+ * Wednesday -- an episode-level floor would delete exactly the episodes a reader asks about
+ * first, on the one day they want them, while keeping every episode of every show that
+ * finished airing in 2004. The series has had years to earn its own votes, so flooring
+ * there keeps a popular show's complete run from the day each episode airs. The threshold
+ * and the counts behind it live on `episodeSeriesMinVotes` in `./config.ts`, which owns
+ * them.
+ *
+ * **A MISSING DUMP IS NOT AN ERROR**, the same rule the cast stage follows for the same
+ * reason: a checkout that has never fetched it still builds a complete, promotable index,
+ * and `episode` is simply empty. `SearchEngine.hasEpisodes` is what keeps that index
+ * serving rather than throwing.
+ *
+ * **An episode with no season or episode number is DROPPED, not filed under zero.** This is
+ * about a tenth of what the floor would otherwise keep -- the count is in the census on
+ * `episodeSeriesMinVotes` -- and they are mostly talk shows and other unnumbered runs. The
+ * one surface this table exists for is an ordered season list, so a row with no place in
+ * that order has nowhere to go, and season 0 is already taken: it is the specials, which is
+ * a different fact from "we do not know". They are counted into the log line rather than
+ * swallowed, because a tenth of the input disappearing should be visible somewhere.
+ *
+ * **READS THE DISK AND NEVER THE NETWORK**, like every other stage here: the job downloads,
+ * this builds.
+ */
+async function episodeStage(
+  db: Database,
+  cfg: Config,
+  dumpDir: string,
+  ratings: Map<string, { rating: number; votes: number }>,
+  log: (msg: string) => void,
+): Promise<number> {
+  const path = `${dumpDir}/title.episode.tsv.gz`;
+  if (!existsSync(path)) {
+    log("episodes: title.episode not on disk, skipping -- the index is still valid, just without episodes");
+    return 0;
+  }
+
+  const floor = cfg.index.episodeSeriesMinVotes;
+  log(`reading title.episode (series floor ${floor.toLocaleString()} votes) ...`);
+  const insert = db.prepare(
+    "insert or ignore into episode (tconst, parent, season, number, rating, votes) values (?,?,?,?,?,?)",
+  );
+  let scanned = 0;
+  let kept = 0;
+  let unnumbered = 0;
+
+  db.run("begin");
+  for await (const cols of streamTsv(path, "title.episode")) {
+    scanned++;
+    const [tconst, parent] = cols;
+    // The parent's votes come from the ratings map rather than from `title`, because that
+    // table has not been FILLED yet -- see the ordering note at the call site. The two
+    // agree by construction: `title.votes` is written from this same map, so a parent that
+    // clears the floor here clears it there. What the map cannot answer is whether the
+    // parent survives the titleType and adult filters, which is `pruneOrphanEpisodes`' job.
+    const parentVotes = ratings.get(parent)?.votes ?? 0;
+    if (parentVotes < floor) continue;
+
+    const season = intOrNull(cols[2]);
+    const number = intOrNull(cols[3]);
+    if (season === null || number === null) {
+      unnumbered++;
+      continue;
+    }
+
+    // The episode's OWN rating, and `null` rather than 0 when it has none. See the table's
+    // comment: 0.0 would be a well-formed score for a title nobody has scored.
+    const own = ratings.get(tconst);
+    insert.run(tconst, parent, season, number, own?.rating ?? null, own?.votes ?? 0);
+    kept++;
+  }
+  db.run("commit");
+
+  log(
+    `  scanned ${scanned.toLocaleString()}, kept ${kept.toLocaleString()} episodes ` +
+      `(${unnumbered.toLocaleString()} dropped for having no season or episode number)`,
+  );
+  return kept;
+}
+
+/**
+ * Drop episodes whose parent series did not make it into `title`.
+ *
+ * The floor in `episodeStage` is applied against the ratings map, which knows a title's
+ * votes and nothing about its TYPE or its adult flag -- so a series `titleTypes` or
+ * `includeAdult` excluded would otherwise leave its whole run behind as rows nothing can
+ * reach and nothing can explain.
+ *
+ * **It is not a theoretical guard, which is worth knowing before anybody optimises it
+ * away.** A real build against the 2026-09-04 dumps deleted four rows here, and all four
+ * were episodes of adult series that `includeAdult: false` had kept out of `title`. An
+ * estimate made beforehand said zero, because it checked `titleTypes` and forgot the adult
+ * filter -- exactly the kind of second condition a prune written against the finished table
+ * catches for free and one written against the ratings map would not.
+ */
+function pruneOrphanEpisodes(db: Database, episodeRows: number, log: (msg: string) => void): number {
+  if (episodeRows === 0) return 0;
+  db.run("delete from episode where parent not in (select tconst from title)");
+  const kept = (db.query("select count(*) c from episode").get() as { c: number }).c;
+  if (kept < episodeRows) {
+    log(`  ${(episodeRows - kept).toLocaleString()} episodes dropped -- their series is not in the index`);
+  }
   return kept;
 }
 

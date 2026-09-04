@@ -11,6 +11,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { Assistant } from "../components/Assistant";
 import { JumpKeysProvider } from "../components/JumpKeys";
 import { Kbd, type KeyAction, mergeKeyProps, useKeyAction } from "../components/Kbd";
 import {
@@ -396,6 +397,13 @@ export function RootLayout() {
                   <SearchGlyph />
                 </button>
               )}
+              {/*
+                It draws NOTHING unless the server says there is an assistant here, so this
+                is unconditional on purpose -- gating it on `me?.role` would be a second,
+                client-side copy of a rule `/api/agent/chat` already owns. `me?.id` is only
+                the key its conversation is stored under; the panel is not gated on it.
+              */}
+              <Assistant userId={me?.id ?? null} />
               {me?.role === "admin" && (
                 <Link to="/admin" className="hover:text-ink">
                   Admin

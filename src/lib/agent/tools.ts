@@ -22,6 +22,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { BrowseSort, SearchEngine, TitleRow } from "../search.js";
+import type { AgentActions, RequestResult } from "./actions.js";
 
 /**
  * What the tools read through.
@@ -39,6 +40,16 @@ import type { BrowseSort, SearchEngine, TitleRow } from "../search.js";
 export interface AgentContext {
   db: Database;
   engine: SearchEngine;
+  /**
+   * The write capability. ABSENT means read-only, and that is the default.
+   *
+   * Optional rather than always-present because the benchmark harness must not be able to
+   * start a download, and because "the tool is not offered" is a cleaner read-only mode than
+   * "the tool is offered and always errors" -- `toolSchemasFor` never advertises `request`
+   * to a context without this, so a model is never taught to reach for something that
+   * cannot work. See `./actions.ts`.
+   */
+  actions?: AgentActions;
 }
 
 /** How much the caller trusts the string it is passing. Never about spelling ability. */
@@ -485,6 +496,156 @@ export function getPerson(ctx: AgentContext, nconst: string, opts: { credits?: n
       shared: c.shared,
     })),
   };
+}
+
+export interface ListEpisodesArgs {
+  tconst: string;
+  season?: number;
+  min_rating?: number;
+  min_votes?: number;
+  limit?: number;
+}
+
+/**
+ * The episodes of one series, with their own IMDb scores.
+ *
+ * Reads the episode stage of the index -- see `SearchEngine.episodesOf`. Local SQLite like
+ * every other read here; no provider, no call.
+ *
+ * > [!IMPORTANT] AN UNRATED EPISODE HAS `rating: null`, AND NULL IS NOT A LOW SCORE
+ * > A brand-new episode has almost no votes, and one that aired last night may have no
+ * > ratings row at all. `min_rating` therefore EXCLUDES nulls rather than treating them as
+ * > zero -- but they are still returned when no filter is applied, because "the last two
+ * > have no score yet" is a true and useful answer and silently dropping them would make
+ * > the newest episodes invisible in exactly the week people ask about them.
+ * >
+ * > This is also why the index floors on the SERIES rather than the episode. An
+ * > episode-level vote floor would delete the newest episodes permanently.
+ */
+export function listEpisodes(ctx: AgentContext, args: ListEpisodesArgs) {
+  if (!ctx.engine.hasEpisodes) {
+    return {
+      error:
+        "This index has no episode data. It was built before the episode stage existed and " +
+        "will have it after the next nightly rebuild. Answer at the series level instead.",
+    };
+  }
+  const rows = ctx.engine.episodesOf(args.tconst, {
+    season: args.season,
+    minRating: args.min_rating,
+    minVotes: args.min_votes,
+    limit: clamp(args.limit, 200, 500),
+  });
+  if (rows.length === 0) {
+    // An honest empty, in the shape the other tools use: say WHY nothing came back, so the
+    // model reports "no episodes clear 8.0" rather than inventing some that do.
+    return {
+      tconst: args.tconst,
+      episodes: [],
+      note: "No episodes matched. The series may not be in the episode index, or nothing clears the filter.",
+    };
+  }
+  return {
+    tconst: args.tconst,
+    episodes: rows.map((e) => ({
+      tconst: e.tconst,
+      season: e.season,
+      episode: e.number,
+      title: e.title,
+      rating: e.rating,
+      votes: e.votes,
+    })),
+    /*
+      Counted here rather than left for the model to work out.
+
+      A model asked "how many are over 8" that has to count a 73-row list itself will
+      sometimes get it wrong, and the miscount reads as a fact about the library. The
+      database already knows.
+    */
+    total: rows.length,
+    unrated: rows.filter((e) => e.rating === null).length,
+  };
+}
+
+export interface RequestArgs {
+  tconst: string | string[];
+  episodes?: { season: number; episode: number }[];
+}
+
+/**
+ * THE ONLY TOOL THAT CHANGES ANYTHING. It starts real downloads.
+ *
+ * Everything else in this file answers a question. This one spends disk, bandwidth and an
+ * indexer's goodwill, and undoing it is a human deleting things in Radarr. aannarr chose
+ * immediate execution over a confirmation step on 2026-09-04 with that trade stated; the
+ * guard rails are in `./actions.ts` and are about BOUNDING a runaway rather than asking
+ * permission.
+ *
+ * Two grains in one tool, deliberately -- "get me the series" and "get me these six
+ * episodes of it" are the same verb with a different object, and splitting them would give
+ * one rule two implementations to drift apart in. That is the same reasoning
+ * `/api/requests/season` already applies to a list of seasons.
+ */
+export function requestTitles(ctx: AgentContext, args: RequestArgs): RequestResult | { error: string } {
+  const actions = ctx.actions;
+  if (!actions) {
+    return { error: "This session cannot make requests." };
+  }
+
+  const ids = (Array.isArray(args.tconst) ? args.tconst : [args.tconst]).filter(
+    (t): t is string => typeof t === "string" && t.startsWith("tt"),
+  );
+  if (ids.length === 0) {
+    return { error: "Expected tt… ids. This tool never takes names -- call find_title first." };
+  }
+
+  // The episode grain is scoped to ONE series, because an episode number means nothing
+  // without the series it belongs to and a flat list of pairs across several would be
+  // ambiguous in exactly the way that starts the wrong download.
+  if (args.episodes && args.episodes.length > 0) {
+    if (ids.length !== 1) {
+      return { error: "Requesting episodes takes exactly one series tconst." };
+    }
+    const wanted = args.episodes
+      .filter((e) => Number.isInteger(e?.season) && Number.isInteger(e?.episode))
+      .map((e) => ({ season: e.season, number: e.episode }));
+    if (wanted.length === 0) return { error: "episodes must be {season, episode} integer pairs." };
+
+    const { allowed, capped } = admitted(actions, wanted);
+    const results = allowed.length > 0 ? actions.requestEpisodes(ids[0] as string, allowed) : [];
+    return finish(actions, results, capped);
+  }
+
+  const { allowed, capped } = admitted(actions, ids);
+  const results = allowed.length > 0 ? actions.requestTitles(allowed) : [];
+  return finish(actions, results, capped);
+}
+
+/** Apply the conversation cap before anything is started, never after. */
+function admitted<T>(actions: AgentActions, items: T[]) {
+  const room = actions.remaining();
+  if (items.length <= room) return { allowed: items, capped: undefined };
+  return {
+    allowed: items.slice(0, room),
+    capped: { asked: items.length, limit: room + 0, remaining: room },
+  };
+}
+
+/**
+ * Charge the budget for what actually STARTED, and report the cap when it bit.
+ *
+ * Only `queued` is charged: a title already in the library cost nothing to refuse, and
+ * charging for it would let a reader's existing collection eat the allowance for the one
+ * thing they actually wanted.
+ */
+function finish(
+  actions: AgentActions,
+  results: RequestResult["results"],
+  capped: RequestResult["capped"],
+): RequestResult {
+  const queued = results.filter((r) => r.status === "queued").length;
+  actions.spend(queued);
+  return { results, queued, ...(capped ? { capped } : {}) };
 }
 
 /** The "...and now show me" verb. Terminal: an agent that navigates mid-reasoning thrashes the screen. */

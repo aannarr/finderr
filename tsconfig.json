@@ -18,7 +18,15 @@
 		"verbatimModuleSyntax": true,
 		"noEmit": true,
 
-		"types": ["bun", "vite/client"]
+		"types": ["bun", "vite/client"],
+
+		// `@/` IS THE BROWSER TREE AND NOTHING ELSE. It exists because `components.json`
+		// declares it: the shadcn CLI writes `@/lib/utils` and `@/components/ui/...` into
+		// every component it emits, so without this mapping `shadcn add` produces files that
+		// do not resolve. Server code under `src/` has never used it and must not start --
+		// a `@/` import there would silently reach into the browser bundle's tree.
+		// `web/vite.config.ts` carries the same mapping for the bundler.
+		"paths": { "@/*": ["./web/src/*"] }
 	},
 	"include": ["src/**/*", "web/src/**/*", "web/*.ts"],
 	// The service worker is checked by `tsconfig.sw.json` instead, against the `webworker`

@@ -16,6 +16,7 @@ const CSS = await Bun.file(new URL("./styles.css", import.meta.url)).text();
 /** The two sources that consume `--safe-top`. See "every fixed overlay" at the bottom. */
 const ROOT_LAYOUT = await Bun.file(new URL("./routes/RootLayout.tsx", import.meta.url)).text();
 const TOASTS = await Bun.file(new URL("./lib/toasts.tsx", import.meta.url)).text();
+const ASSISTANT_PANEL = await Bun.file(new URL("./components/AssistantPanel.tsx", import.meta.url)).text();
 
 /** The declaration block following the first occurrence of `prelude`, braces balanced. */
 function ruleBody(css: string, prelude: RegExp): string | null {
@@ -163,5 +164,29 @@ describe("every fixed overlay carries the top inset", () => {
 
   test("the toast stack does too -- it is the one overlay that is pure text", () => {
     expect(TOASTS).toContain("top-[calc(0.75rem+var(--safe-top))]");
+  });
+
+  /**
+   * The assistant drawer is `inset-y-0`, so it starts at the PHYSICAL top of the screen --
+   * further up than the sticky header ever goes. Without the inset its own title row sits
+   * under the clock on an installed iPhone, which is the exact defect the other two carry
+   * their padding for.
+   *
+   * It is bare `var(--safe-top)` rather than a `calc()` because the row under it brings its
+   * own padding; there is no design spacing to add the inset to.
+   */
+  test("the assistant drawer does too -- it is `fixed` and starts above the header", () => {
+    expect(ASSISTANT_PANEL).toContain("pt-[var(--safe-top)]");
+  });
+
+  /**
+   * And the BOTTOM, which only this overlay needs.
+   *
+   * `body` carries `padding-bottom: env(safe-area-inset-bottom)` for everything in normal
+   * flow, and a `fixed` element is not in it -- so the composer, which is pinned to the
+   * bottom edge, would sit under the home indicator with its send button half-unreachable.
+   */
+  test("and its composer clears the home indicator", () => {
+    expect(ASSISTANT_PANEL).toContain("env(safe-area-inset-bottom,0px)");
   });
 });
