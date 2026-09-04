@@ -717,12 +717,43 @@ export async function buildIndex(
   // SQLite, and on macOS that is a process-global choice that cannot be made later.
   prepareSqlite(log);
 
+  /*
+    SQLite's scratch files go BESIDE THE INDEX, and this is not a tidiness choice.
+
+    > [!CAUTION] `temp_store = memory` OOM-KILLED THE BUILD ON THE NAS. Measured 2026-09-05.
+    > The container runs under `mem_limit: 1500m`. Creating the covering index over the
+    > 7,799,819-row `episode` table needs a sorter far larger than that, and with
+    > `temp_store = memory` the sorter has nowhere to go but RAM -- so the build was SIGKILLed
+    > at "building secondary indexes", `index refresh build exited 137`, leaving a 1.42 GB
+    > `titles.new.db` that was correctly never promoted. The old index kept serving, which is
+    > the one thing that went right.
+    >
+    > It had never been caught because the episode stage had never built on the NAS: that
+    > deployment was still on a pre-episode index, and every earlier build of this stage ran
+    > on a dev machine with no cgroup limit at all.
+
+    So the sorter spills to DISK. That is slower -- on nine spinning disks in RAID5,
+    noticeably so -- and under the standing rule that is the correct side of the trade:
+    build time is the cheap axis, and a build that dies is infinitely slow.
+
+    **The directory has to be named explicitly.** SQLite's default scratch locations are
+    `/var/tmp`, `/usr/tmp`, `/tmp`; the container mounts its root `read_only: true` and gives
+    `/tmp` a **64 MB tmpfs** -- which is both far too small AND counted against the very
+    memory limit being escaped. The data directory is the one writable path with real disk
+    behind it, so both the pragma and `SQLITE_TMPDIR` point there. Both, because the pragma is
+    deprecated and the env var is read when SQLite first needs scratch space; setting one and
+    not the other is a silent fall back to the 64 MB tmpfs.
+  */
+  const scratch = dest.slice(0, dest.lastIndexOf("/"));
+  process.env.SQLITE_TMPDIR = scratch;
+
   const db = new Database(dest, { create: true });
   // These are safe here: we are building a throwaway file. If the process dies the
   // partial DB is discarded, never promoted.
   db.run("pragma journal_mode = off");
   db.run("pragma synchronous = off");
-  db.run("pragma temp_store = memory");
+  db.run("pragma temp_store = file");
+  db.run(`pragma temp_store_directory = '${scratch.replace(/'/g, "''")}'`);
   db.run(SCHEMA);
 
   // --- ratings first: small (8.6 MB) and needed while streaming basics
