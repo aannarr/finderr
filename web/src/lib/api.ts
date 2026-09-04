@@ -196,6 +196,22 @@ export interface MediaRequest extends RequestStateView {
   root_folder_path?: string | null;
   search_on_add?: number | null;
   /**
+   * WHO asked for this, ABSENT for everybody who is not an admin.
+   *
+   * > [!IMPORTANT] The ABSENCE is the permission, and the log reads it as one
+   * > `attributedRequest` (`src/lib/auth.ts`) omits both keys for a non-admin rather than
+   * > sending them null, so "may I show a Who column" is answered by whether the server
+   * > sent one. `LogRoute` asks exactly that and nothing in the browser re-decides the
+   * > rule -- which is what stops a second reader of the log shipping with the id in its
+   * > JSON and a component politely declining to draw it.
+   *
+   * `requested_by` is the user id and `requestedByName` is what to print. For an admin the
+   * name is `null` only for a genuinely unattributed row, and `(removed)` for an account
+   * that no longer exists.
+   */
+  requested_by?: string | null;
+  requestedByName?: string | null;
+  /**
    * This arrived and YOU have not been shown it yet.
    *
    * Derived by the server per reader, never the stored `available_seen_at` column: the

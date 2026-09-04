@@ -19,6 +19,7 @@
  */
 
 import {
+  attributedRequest,
   clearedSessionCookie,
   hashToken,
   isoIn,
@@ -1115,13 +1116,21 @@ export class AuthService {
        */
       "/api/admin/requests": {
         GET: (req) =>
-          this.asAdmin(req, () => {
+          this.asAdmin(req, (p) => {
             const users = new Map(this.deps.auth.listUsers().map((u) => [u.id, u.displayName]));
             return json({
-              requests: this.deps.store.listRequests(undefined, 500).map((r) => ({
-                ...r,
-                requestedByName: r.requested_by ? (users.get(r.requested_by) ?? "(removed)") : null,
-              })),
+              /*
+                Through `attributedRequest` like `/api/requests`, rather than spreading the
+                raw row.
+
+                It is admin-only either way, so the strip changes nothing about what this
+                route sends -- what it buys is that there is ONE resolver of a requester's
+                name. The inline join that used to live here worded a deleted account its
+                own way, and a second reader of the log would have had to copy it.
+              */
+              requests: this.deps.store
+                .listRequests(undefined, 500)
+                .map((r) => attributedRequest(r, p.role, (id) => users.get(id) ?? null)),
             });
           }),
       },

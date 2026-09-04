@@ -17,9 +17,8 @@
  * is "Request". That distinction is the reason this is a component rather than a ternary.
  */
 
-import { VERDICT_COPY } from "../../../src/lib/request-diagnostics";
 import type { Title } from "../lib/api";
-import { ProgressBar } from "./RequestProgress";
+import { VerdictChip } from "./RequestProgress";
 
 /**
  * `block` fills its container -- a card's footer. `inline` is a chip sized to its text, for
@@ -62,29 +61,12 @@ export function RequestAction({
     );
   }
 
+  // A dead end and a request still being worked on are both "not yours yet", but only one of
+  // them is something the reader can do anything about -- so they are never the same colour.
+  // Which is which is `VERDICT_COPY`'s `tone`, read by `VerdictChip`, which the request log
+  // draws too: three surfaces, one table, no branch written out here.
   if (t.requestVerdict !== null) {
-    // A dead end and a request still being worked on are both "not yours yet", but only one
-    // of them is something the reader can do anything about -- so they are never the same
-    // colour. Which is which is `VERDICT_COPY`'s `tone`, not a check written out here: the
-    // panel on the title page asks the same table and gets the same answer.
-    const copy = VERDICT_COPY[t.requestVerdict];
-    return (
-      <span
-        className={`${shell} border text-ink ${
-          copy.tone === "dead_end" ? "border-danger/50 bg-danger/10" : "border-warn/40 bg-warn/10"
-        }`}
-        title={copy.sentence}
-      >
-        {copy.label}
-        {/* The bar only appears while something is actually coming down, so a card in a
-            grid gains a line of chrome exactly when there is progress to report. */}
-        {t.requestProgress !== null && (
-          <span className="mt-1 block">
-            <ProgressBar value={t.requestProgress} />
-          </span>
-        )}
-      </span>
-    );
+    return <VerdictChip verdict={t.requestVerdict} progress={t.requestProgress} shell={shell} />;
   }
 
   return (

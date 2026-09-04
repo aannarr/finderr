@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  attributedRequest,
   clearedSessionCookie,
   hashToken,
   isExpired,
@@ -154,6 +155,40 @@ describe("who may see what", () => {
     const row = { id: 1, requested_by: "u9" };
     visibleRequest(row, "user");
     expect(row.requested_by).toBe("u9");
+  });
+
+  /*
+    The NAME rides on the same decision as the id. The request log prints a person rather
+    than a user id, and resolving that name in whichever route happened to want it would put
+    half the privacy rule in `visibleRequest` and half in a handler -- which is how the
+    second reader of the log ships without the strip.
+  */
+  test("the requester's name is present for an admin and ABSENT for everybody else", () => {
+    const row = { tconst: "tt0111161", title: "x", requested_by: "u9" };
+    const names = (id: string) => (id === "u9" ? "Ada" : null);
+
+    expect(attributedRequest(row, "admin", names).requestedByName).toBe("Ada");
+    expect(Object.hasOwn(attributedRequest(row, "user", names), "requestedByName")).toBe(false);
+    expect(Object.hasOwn(attributedRequest(row, null, names), "requestedByName")).toBe(false);
+  });
+
+  /*
+    The absence IS the permission: `LogRoute` decides whether to draw a Who column by asking
+    whether the server sent one, so a non-admin's rows must carry neither the name nor the
+    id to draw it from.
+  */
+  test("a non-admin gets neither the name nor the id it would be drawn from", () => {
+    const out = attributedRequest({ tconst: "tt1", title: "x", requested_by: "u9" }, "user", () => "Ada");
+    expect(out).toEqual({ tconst: "tt1", title: "x" });
+  });
+
+  test("an unattributed row is null, and a deleted account is (removed) -- they are not the same fact", () => {
+    const gone = attributedRequest({ tconst: "tt1", requested_by: "u404" }, "admin", () => null);
+    const nobody = attributedRequest({ tconst: "tt1", requested_by: null }, "admin", () => "Ada");
+
+    // Nobody will ever answer for the first; nobody ever asked in the second.
+    expect(gone.requestedByName).toBe("(removed)");
+    expect(nobody.requestedByName).toBe(null);
   });
 
   test("publicUser carries no plex id and no disabled timestamp", () => {

@@ -61,6 +61,9 @@ const NAV_LINKS: { to: string; label: string }[] = [
   { to: "/lists", label: "Lists" },
   { to: "/awards/oscars", label: "Awards" },
   { to: "/requests", label: "Requests" },
+  // The whole house's log, beside your own requests. Not admin-gated: everybody may see
+  // WHAT was asked for, and only an admin is sent WHO asked. See `LogRoute`.
+  { to: "/log", label: "Log" },
 ];
 
 /**
