@@ -127,3 +127,66 @@ export function stripMentions(answer: string): string {
     .replace(/\s{2,}/g, " ")
     .trim();
 }
+
+/**
+ * Rewrite an inline markdown tree so bracketed ids become links.
+ *
+ * > [!IMPORTANT] OVER THE TREE'S `text` NODES, NEVER OVER THE RAW STRING
+ * > Two things break if you split the raw answer first. A `[tt0903747]` inside a code span
+ * > or a link label would be rewritten, when the whole point of a code span is that its
+ * > contents are literal. And splitting the string hands `parseMarkdown` fragments with
+ * > unbalanced markers -- half a `**bold**` in one part and half in the next -- so the
+ * > emphasis silently stops rendering.
+ * >
+ * > Walking the tree afterwards means only prose is eligible, which is exactly the set of
+ * > places a link belongs.
+ *
+ * `code` and `image` nodes are returned untouched. A `link` node's children are walked but
+ * a resolved mention inside one is left as its label text: a link inside a link is invalid
+ * HTML and the outer destination is the one the author asked for.
+ */
+export function linkMentionsInInlines<T extends { type: string }>(
+  nodes: readonly T[],
+  resolved: readonly ResolvedMention[],
+  make: {
+    text: (text: string) => T;
+    link: (m: { label: string; path: string; entity: "title" | "person"; id: string }) => T;
+    childrenOf: (n: T) => readonly T[] | null;
+    withChildren: (n: T, children: T[]) => T;
+  },
+): T[] {
+  const out: T[] = [];
+  for (const node of nodes) {
+    if (node.type === "code" || node.type === "image") {
+      out.push(node);
+      continue;
+    }
+    if (node.type === "text") {
+      const raw = (node as unknown as { text: string }).text;
+      for (const part of splitMentions(raw, resolved)) {
+        out.push(part.kind === "text" ? make.text(part.text) : make.link(part));
+      }
+      continue;
+    }
+    const kids = make.childrenOf(node);
+    if (!kids) {
+      out.push(node);
+      continue;
+    }
+    if (node.type === "link") {
+      // Inside an existing link, flatten a mention to its label. Nested anchors are invalid
+      // and the outer href is the destination the text was written for.
+      const flat = kids.flatMap((k) =>
+        k.type === "text"
+          ? splitMentions((k as unknown as { text: string }).text, resolved).map((p) =>
+              p.kind === "text" ? make.text(p.text) : make.text(p.label),
+            )
+          : [k],
+      );
+      out.push(make.withChildren(node, flat));
+      continue;
+    }
+    out.push(make.withChildren(node, linkMentionsInInlines(kids, resolved, make)));
+  }
+  return out;
+}

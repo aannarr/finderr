@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { splitMentions, stripMentions } from "./mentions";
+import { linkMentionsInInlines, splitMentions, stripMentions } from "./mentions";
 
 const FURIOUS = { id: "tt36303968", kind: "title" as const, label: "Furious", path: "/title/tt36303968/" };
 const ROSSUM = { id: "nm0002536", kind: "person" as const, label: "Emmy Rossum", path: "/person/nm0002536/" };
@@ -88,5 +88,69 @@ describe("splitMentions", () => {
 describe("stripMentions", () => {
   test("removes every bracket regardless of resolution", () => {
     expect(stripMentions("Furious [tt36303968] and Ghost [tt99999999].")).toBe("Furious and Ghost.");
+  });
+});
+
+describe("linkMentionsInInlines", () => {
+  type N =
+    | { type: "text"; text: string }
+    | { type: "code"; text: string }
+    | { type: "strong"; children: N[] }
+    | { type: "link"; href: string; children: N[] }
+    | { type: "mention"; label: string; path: string };
+
+  const make = {
+    text: (text: string): N => ({ type: "text", text }),
+    link: (m: { label: string; path: string }): N => ({ type: "mention", label: m.label, path: m.path }),
+    childrenOf: (n: N): readonly N[] | null => ("children" in n ? n.children : null),
+    withChildren: (n: N, children: N[]): N => ({ ...n, children }) as N,
+  };
+
+  test("rewrites prose", () => {
+    const out = linkMentionsInInlines<N>(
+      [{ type: "text", text: "Watch Furious [tt36303968]." }],
+      [FURIOUS],
+      make,
+    );
+    expect(out).toEqual([
+      { type: "text", text: "Watch " },
+      { type: "mention", label: "Furious", path: "/title/tt36303968/" },
+      { type: "text", text: "." },
+    ]);
+  });
+
+  test("LEAVES A CODE SPAN ALONE -- its contents are literal by definition", () => {
+    const out = linkMentionsInInlines<N>([{ type: "code", text: "[tt36303968]" }], [FURIOUS], make);
+    expect(out).toEqual([{ type: "code", text: "[tt36303968]" }]);
+  });
+
+  test("descends into emphasis", () => {
+    const out = linkMentionsInInlines<N>(
+      [{ type: "strong", children: [{ type: "text", text: "Furious [tt36303968]" }] }],
+      [FURIOUS],
+      make,
+    );
+    expect(out[0]).toMatchObject({ type: "strong" });
+    expect((out[0] as { children: N[] }).children).toEqual([
+      { type: "mention", label: "Furious", path: "/title/tt36303968/" },
+    ]);
+  });
+
+  test("never nests a link inside a link", () => {
+    // Invalid HTML, and the outer href is the destination the text was written for.
+    const out = linkMentionsInInlines<N>(
+      [
+        {
+          type: "link",
+          href: "https://example.com/",
+          children: [{ type: "text", text: "Furious [tt36303968]" }],
+        },
+      ],
+      [FURIOUS],
+      make,
+    );
+    const kids = (out[0] as { children: N[] }).children;
+    expect(kids.some((k) => k.type === "mention")).toBe(false);
+    expect(kids.map((k) => ("text" in k ? k.text : "")).join("")).toContain("Furious");
   });
 });

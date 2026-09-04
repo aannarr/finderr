@@ -121,7 +121,11 @@ export function Assistant({ userId }: { userId: string | null }) {
               messages={chat.messages}
               busy={chat.busy}
               refusal={chat.refusal}
+              queued={chat.queued}
+              queueHalted={chat.queueHalted}
               onSend={chat.send}
+              onCancelQueued={chat.cancelQueued}
+              onResumeQueue={chat.resumeQueue}
               onClear={chat.clear}
               onClose={() => setOpen(false)}
             />

@@ -21,6 +21,7 @@
  */
 
 import type { AgentEpisode, AgentRequested, AgentTitle, AgentToolCall, AgentUsage } from "./agent-api";
+import type { TranscriptEntry } from "./agent-transcript";
 import type { FacetProblem } from "./facets";
 
 /**
@@ -44,6 +45,26 @@ export interface StoredMessage {
    * bubble restored as `pending` would spin forever against a request nobody is making.
    */
   pending?: boolean;
+  /**
+   * HOW the answer was arrived at: the reasoning, and every lookup, in the order they
+   * happened.
+   *
+   * Persisted, unlike `pending`, because it is a record rather than a live state -- a reader
+   * coming back to a conversation should still be able to see that the answer consulted the
+   * index rather than the model's memory, which is the difference between a fact about this
+   * library and a plausible sentence. `pruneConversation` is what bounds its size, the same
+   * way it bounds everything else here.
+   */
+  transcript?: TranscriptEntry[];
+  /**
+   * The stream died before the answer finished.
+   *
+   * What arrived is kept and the bubble says it is incomplete. **A truncated answer drawn as
+   * a finished one is the failure this field exists to prevent** -- the reader has no way to
+   * tell a model that stopped mid-sentence from one that had nothing more to say, and only
+   * the transport knows which happened.
+   */
+  incomplete?: boolean;
   toolCalls?: AgentToolCall[];
   requested?: AgentRequested[];
   titles?: AgentTitle[];
@@ -107,6 +128,8 @@ export const MAX_BYTES = 96_000;
  */
 function storableMessage(m: StoredMessage): StoredMessage {
   const out: StoredMessage = { id: m.id, role: m.role, text: m.text, at: m.at };
+  if (m.transcript?.length) out.transcript = m.transcript;
+  if (m.incomplete) out.incomplete = true;
   if (m.toolCalls?.length) out.toolCalls = m.toolCalls;
   if (m.requested?.length) out.requested = m.requested;
   if (m.titles?.length) out.titles = m.titles;

@@ -9,10 +9,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRequested } from "./agent-api";
 import {
+  argLabel,
   declinedOf,
   declinedPhrase,
   episodeCode,
   episodeScore,
+  formatArgValue,
   formatCost,
   formatDuration,
   formatToolArgs,
@@ -23,6 +25,9 @@ import {
   requestedNoun,
   retryPhrase,
   toolCallSummary,
+  toolLabel,
+  toolResultText,
+  toolSubject,
 } from "./assistant-view";
 
 describe("episode codes", () => {
@@ -203,5 +208,81 @@ describe("queued versus merely attempted", () => {
     for (const status of ["already_have", "already_requested", "not_found", "refused"] as const) {
       expect(declinedPhrase(status)).not.toBe("not requested");
     }
+  });
+});
+
+/**
+ * A TOOL CALL, IN A READER'S WORDS.
+ *
+ * `list_episodes` with `{"tconst":"tt0944947","season":2}` beside it is a log line somebody
+ * left on the page. These four functions are what turn it into a sentence, and each one is
+ * a string that can be wrong quietly.
+ */
+describe("how a tool call reads", () => {
+  test("every tool the agent has is named in English", () => {
+    // The list is `TOOL_SCHEMAS` in `src/lib/agent/schemas.ts`. A tool added there without
+    // an entry here still renders -- it just renders less well, which this pins as the
+    // deliberate fallback rather than as an accident.
+    for (const name of [
+      "find_title",
+      "find_person",
+      "list_cast",
+      "list_credits",
+      "get_title",
+      "get_person",
+      "browse_titles",
+      "find_connections",
+      "navigate",
+      "list_episodes",
+      "request",
+    ]) {
+      expect(toolLabel(name)).not.toContain("_");
+    }
+  });
+
+  /** Forward compatibility: a twelfth tool gets a slightly ugly row, never a blank one. */
+  test("an unknown tool falls back to its own identifier, readably", () => {
+    expect(toolLabel("count_awards")).toBe("count awards");
+  });
+
+  /** A row that could be about anything is a row nobody can follow. */
+  test("the subject is the argument worth reading, not all of them", () => {
+    expect(toolSubject("find_title", { name: "Heat", year: 1995, match: "loose" })).toBe('"Heat" · 1995');
+    expect(toolSubject("list_episodes", { tconst: "tt0944947", season: 2, limit: 200 })).toBe(
+      '"tt0944947" · 2',
+    );
+  });
+
+  test("a tool with no arguments has no subject rather than an empty one", () => {
+    expect(toolSubject("get_title", {})).toBe("");
+  });
+
+  /** IMDb's words for its two id spaces appear nowhere a reader would have learnt them. */
+  test("tconst and nconst get names a reader knows", () => {
+    expect(argLabel("tconst")).toBe("title");
+    expect(argLabel("nconst")).toBe("person");
+    expect(argLabel("min_rating")).toBe("min rating");
+  });
+
+  /** An array is a comma list; punctuation a reader has to parse past is not legibility. */
+  test("values are formatted rather than stringified", () => {
+    expect(formatArgValue(["actor", "actress"])).toBe('"actor", "actress"');
+    expect(formatArgValue(8)).toBe("8");
+    expect(formatArgValue(null)).toBe("—");
+  });
+
+  test("a long value is truncated rather than pushing the answer off screen", () => {
+    expect(formatArgValue("x".repeat(400)).length).toBeLessThan(130);
+  });
+
+  /**
+   * The server read the payload and we did not, so a count invented here would be a second,
+   * worse answer. No summary means the row prints only its duration.
+   */
+  test("the result line is the server's own summary, or nothing", () => {
+    expect(toolResultText("24 episodes", null)).toBe("24 episodes");
+    expect(toolResultText(null, null)).toBeNull();
+    expect(toolResultText("  ", null)).toBeNull();
+    expect(toolResultText("24 episodes", "upstream refused")).toBe("upstream refused");
   });
 });

@@ -164,7 +164,7 @@ export class AgentError extends Error {
   }
 }
 
-const CHAT_PATH = "/api/agent/chat";
+export const CHAT_PATH = "/api/agent/chat";
 
 /**
  * Turn a refused response into the refusal it means.
@@ -173,7 +173,7 @@ const CHAT_PATH = "/api/agent/chat";
  * JSON at all, and a client that assumed the documented shape would throw a `SyntaxError`
  * inside its own error path and report the wrong thing entirely.
  */
-async function refusalOf(res: Response): Promise<AgentRefusal> {
+export async function refusalOf(res: Response): Promise<AgentRefusal> {
   if (res.status === 404) return { kind: "absent" };
   const body = (await res.json().catch(() => ({}))) as {
     error?: string;

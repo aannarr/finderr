@@ -387,7 +387,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         // What came BACK, in one line a person can read. `factsFrom` already renders a tool
         // payload as prose for the model to re-read; reusing it means the reader and the
         // model are told the same thing rather than two descriptions drifting apart.
-        summary: summarizeResult(call.function.name, done.payload),
+        summary: summarizeResult(done.payload),
         ...(trace?.error ? { error: trace.error } : {}),
       });
       messages.push(done.message);
@@ -427,11 +427,16 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 /**
  * One line describing what a tool RETURNED, for a human watching the transcript.
  *
+ * Takes the payload alone: it took the tool NAME too until the shapes turned out to be
+ * self-describing -- a `found` array is a resolver, an `episodes` array is a list -- so the
+ * name was a parameter nothing read. A dead argument is a claim that the function needs
+ * something it does not.
+ *
  * Deliberately shallow: counts and names, never the payload. The transcript is a progress
  * view, not a data dump -- a reader who wants the rows opens the cards the answer draws, and
  * a `list_cast` result rendered in full would bury the answer it exists to support.
  */
-function summarizeResult(tool: string, payload: unknown): string {
+function summarizeResult(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "no result";
   if ("error" in payload) return `refused: ${String((payload as { error: unknown }).error).slice(0, 120)}`;
   if (Array.isArray(payload)) return `${payload.length} ${payload.length === 1 ? "row" : "rows"}`;
