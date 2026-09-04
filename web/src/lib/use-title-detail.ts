@@ -27,6 +27,7 @@ import {
   type TitleDetail,
   titleStateVersion,
 } from "./api";
+import type { EpisodeScore } from "./episode-scores";
 import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
 /**
@@ -169,6 +170,15 @@ export interface TitleDetailView {
    */
   episodeState: EpisodeState[] | undefined;
   /**
+   * What the world scored each episode of this series, from our own index.
+   *
+   * Undefined until the response lands, and EMPTY for a series the index holds no
+   * episodes for -- which includes every series on an index built before the episode
+   * stage existed. Like `awards` and unlike a facet, it arrives complete with the first
+   * response and never sits `pending`, so nothing about it belongs in the poll.
+   */
+  episodeScores: EpisodeScore[] | undefined;
+  /**
    * What the Academy gave this film. `null` for nearly every title, undefined before the
    * response lands -- and the pane draws nothing in either case.
    *
@@ -246,6 +256,7 @@ export function useTitleDetail(tconst: string): TitleDetailView {
     problems: detail?.work.problems ?? [],
     arrLink: detail?.arrLink ?? null,
     episodeState: detail?.episodeState,
+    episodeScores: detail?.episodeScores,
     awards: detail?.awards,
     error,
   };

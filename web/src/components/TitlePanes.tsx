@@ -26,6 +26,7 @@ import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import type { EpisodeState, PersonLinks, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
+import type { EpisodeScore } from "../lib/episode-scores";
 import {
   byBillingOrder,
   entityKindOf,
@@ -70,6 +71,7 @@ import type {
 } from "../lib/facets";
 import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
+import { EpisodeScores } from "./EpisodeScores";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
 import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
 import { PluginPanes, panesForSlot } from "./PluginPane";
@@ -126,6 +128,12 @@ export interface TitlePanesProps {
    * provider's, so it travels beside the facets like `people` and `collectionTitles`.
    */
   episodeState?: readonly EpisodeState[];
+  /**
+   * What the world scored each episode, from our index. Ours rather than a provider's, so
+   * it travels beside the facets exactly as `episodeState` does -- and it answers the
+   * other question about the same rows: that one is what we HOLD, this is what it is WORTH.
+   */
+  episodeScores?: readonly EpisodeScore[];
   /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
   onRequestEpisode?: (season: number, episode: number) => void;
   /** Ask Sonarr for the rest of one season. Absent means the season control is not offered. */
@@ -351,6 +359,7 @@ export function TitleLowerPanes({
   relatedTitles,
   panes,
   episodeState,
+  episodeScores,
   awards,
   terms,
   onRequestEpisode,
@@ -373,6 +382,17 @@ export function TitleLowerPanes({
         onRequestEpisode={onRequestEpisode}
         onRequestSeason={onRequestSeason}
       />
+      {/*
+        Directly under the seasons panel, and keyed the same way for the same reason --
+        the chosen view and season are component state, and without the key opening a
+        second series would land on the last one's selection.
+
+        It sits BELOW rather than inside `SeriesPane` because the two answer different
+        questions about the same rows: that pane is air dates and what Sonarr holds, this
+        one is quality. Reading them as one control would put a request button beside a
+        rating, which are not the same decision.
+      */}
+      <EpisodeScores key={`${title.tconst}-scores`} {...shared} variant="panel" scores={episodeScores} />
       {slot("title.after-seasons")}
 
       <FacetPane

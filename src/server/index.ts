@@ -77,6 +77,7 @@ import {
   perSession,
   REVALIDATED,
 } from "./cache-policy";
+import { episodeScoresFor } from "./episode-scores";
 import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload } from "./health";
@@ -1583,6 +1584,23 @@ const appRoutes = {
             precedence between the two halves.
           */
         people: live.current.personLinks(row.tconst, creditsIn(cached)),
+        /*
+            WHAT THE WORLD SCORED EACH EPISODE, from our own index.
+
+            Beside the facets for the same reason `people` and `episodeState` are: the
+            `episodes` facet is skyhook's answer to "what exists", and this is OUR index
+            answering "what did anyone think of it". They join in the browser on the
+            (season, number) pair.
+
+            Sent on the title payload rather than fetched separately on purpose. It is a
+            local SQLite read of a few dozen rows, and a second round trip would put a
+            waterfall in front of the one view a reader opens this page for.
+
+            An EMPTY array is a real answer and the pane still draws: an unaired episode
+            has no IMDb row and never will until it airs, so the grid renders its skeleton
+            from the facet with those cells blank. See `./episode-scores.ts`.
+          */
+        episodeScores: episodeScoresFor(live.current, row.tconst, entity.kind === "series"),
         /*
             The collection's other films as OUR rows, decorated like any search hit.
 
