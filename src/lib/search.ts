@@ -283,6 +283,23 @@ export class SearchEngine {
    */
   readonly hasEpisodes: boolean;
 
+  /**
+   * The engine's OWN handle, for the one caller that needs raw SQL.
+   *
+   * `findConnections` walks the cast graph with SQL this class does not expose, and the
+   * agent context needs a `Database` to give it. It returns THIS engine's connection rather
+   * than opening a second one on the same path, which is the difference between a reader
+   * that follows the daily swap and one that does not: a second handle pins the old inode
+   * and, after a promote, either throws SQLITE_IOERR_VNODE or -- under load -- quietly
+   * serves yesterday. Read it through `LiveIndex` at the moment of use and that cannot
+   * happen, because the engine you asked is the engine you are using.
+   *
+   * Read-only in practice AND enforced: `query_only` is set in the constructor.
+   */
+  get rawDb(): Database {
+    return this.db;
+  }
+
   constructor(
     dbPath: string,
     private cfg: Config,

@@ -35,14 +35,32 @@ import {
  * Ids for bubbles, and they are deliberately not `crypto.randomUUID`.
  *
  * A React key needs to be unique within this list and stable across renders; it is never
- * sent anywhere and never compared to a server id. A counter is both, costs nothing, and
- * works in the one place `randomUUID` does not -- a non-secure context, which is exactly
- * what a plain-http LAN address is and what most of this product runs on.
+ * sent anywhere and never compared to a server id. `randomUUID` is also unavailable in the
+ * one place this product mostly runs -- a plain-http LAN address is not a secure context.
+ *
+ * > [!CAUTION] A BARE COUNTER IS NOT ENOUGH, AND THE FAILURE IS DATA LOSS
+ * > It was `m1`, `m2`, `m3` from a module-level counter, and that counter restarts at 1 on
+ * > every page load while the conversation it is numbering does NOT -- it is read back from
+ * > `localStorage`. So the first bubble of a reloaded session was handed the id of a
+ * > restored bubble, and `send`'s `messages.map(m => m.id === answerId ? ... : m)` rewrote
+ * > BOTH: one turn's answer was replaced by the next turn's, and the reader watched an
+ * > answer they had already read turn into an error.
+ * >
+ * > Caught in a browser on 2026-09-05, not by a test: within one page load the ids are
+ * > perfectly unique, so nothing in a single process can see it. The salt is what makes two
+ * > page loads two id spaces, and `idsFrom` is what makes that testable -- two factories
+ * > stand in for two loads.
+ *
+ * `Math.random` is fine for this and `randomUUID` would not be an upgrade: the requirement
+ * is "does not collide with the last session's", not unguessability.
  */
-let nextBubbleId = 1;
-function bubbleId(): string {
-  return `m${nextBubbleId++}`;
+export function idsFrom(): () => string {
+  const salt = Math.random().toString(36).slice(2, 8);
+  let n = 0;
+  return () => `${salt}-${++n}`;
 }
+
+const bubbleId = idsFrom();
 
 /** What the assistant answered, folded into a bubble. */
 function answerBubble(id: string, at: number, answer: AgentAnswer): StoredMessage {

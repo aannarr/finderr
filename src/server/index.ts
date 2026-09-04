@@ -65,6 +65,7 @@ import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
+import { makeChatHandler } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
@@ -230,6 +231,24 @@ const auth = new AuthService({
   log: (m) => log(m),
   // Read at call time, so the closure can name `server` before Bun.serve has returned it.
   addressOf: (req: Request) => server.requestIP(req)?.address ?? null,
+});
+
+/*
+  The assistant handler, built once.
+
+  `indexDb` and `live.current` are both read AT CALL TIME rather than captured here: the
+  daily refresh swaps the engine underneath us, and a handle taken at construction would be
+  the retired-connection bug LiveIndex exists to prevent -- it either throws or, under load,
+  quietly serves yesterday's row with no error at all.
+*/
+const chat = makeChatHandler({
+  cfg,
+  store,
+  live,
+  indexDb: () => live.rawDb(),
+  worker,
+  has: { radarr: Boolean(radarr), sonarr: Boolean(sonarr) },
+  log: (m) => log(m),
 });
 
 /*
@@ -1945,6 +1964,18 @@ const appRoutes = {
    * >
    * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
    */
+  /**
+   * The assistant. One turn in, one answer out.
+   *
+   * Private by omission from `publicPaths()`, which is the design `withAuth` exists for --
+   * a new route is behind the login wall by having been added. Everything else it enforces
+   * (the admin-only beta, the daily spend cap, the ledger) lives in `./agent-chat.ts` and
+   * `../lib/ai-spend.ts`, so this line is a mount and not a second owner of any of it.
+   */
+  "/api/agent/chat": {
+    POST: (req: Request) => chat(req, auth.principal(req)),
+  },
+
   "/api/discover": () =>
     json({ shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) }),
 
