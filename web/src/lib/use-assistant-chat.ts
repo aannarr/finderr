@@ -89,6 +89,7 @@ function answerBubble(id: string, at: number, answer: AgentAnswer): StoredMessag
     toolCalls: answer.toolCalls,
     requested: answer.requested,
     titles: answer.titles,
+    mentions: answer.mentions,
     episodes: answer.episodes,
     problems: answer.problems,
     usage: answer.usage,

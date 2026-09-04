@@ -33,7 +33,15 @@ export type Inline =
   | { type: "strong"; children: Inline[] }
   | { type: "em"; children: Inline[] }
   | { type: "link"; href: string; children: Inline[] }
-  | { type: "image"; src: string; alt: string };
+  | { type: "image"; src: string; alt: string }
+  /**
+   * A resolved `Name [tt…]` mention, put here by `linkMentionsInInlines` AFTER parsing.
+   *
+   * The parser never produces one -- it is a post-pass over the tree, which is the only
+   * correct place for it: rewriting the raw string first would rewrite ids inside code spans
+   * and hand the parser unbalanced emphasis markers. See `./mentions.ts`.
+   */
+  | { type: "mention"; id: string; label: string; path: string; entity: "title" | "person" };
 
 export type Block =
   | { type: "paragraph"; children: Inline[] }

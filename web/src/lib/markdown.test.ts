@@ -27,6 +27,10 @@ function textOf(nodes: readonly Inline[]): string {
           return n.text;
         case "image":
           return n.alt;
+        case "mention":
+          // Never produced by the parser -- it is a post-pass over the tree. Its rendered
+          // text is our label, so that is what a text extraction should see.
+          return n.label;
         default:
           return textOf(n.children);
       }

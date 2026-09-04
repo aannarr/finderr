@@ -15,6 +15,7 @@
  */
 
 import type { FacetProblem } from "./facets";
+import type { ResolvedMention } from "./mentions";
 
 export interface AgentToolCall {
   /** The tool the model called. Shown verbatim -- it is our own vocabulary, not free text. */
@@ -107,11 +108,21 @@ export interface AgentUsage {
  * > in a browser 2026-09-05. **Whether the server grows them or the client drops them is a
  * > decision, not a bug**, and it is the orchestrator's to take.
  */
+export type { ResolvedMention };
+
 export interface AgentAnswer {
   conversationId: string;
   answer: string;
   toolCalls: AgentToolCall[];
   requested: AgentRequested[];
+  /**
+   * Ids the server RESOLVED in the answer text. Absent on an older server.
+   *
+   * The client links `Name [tt…]` from these and strips any bracket not in the list -- a
+   * link built from the SHAPE of an id would hand the reader a confident 404. See
+   * `./mentions.ts`.
+   */
+  mentions?: ResolvedMention[];
   titles?: AgentTitle[];
   episodes?: AgentEpisode[];
   usage: AgentUsage;

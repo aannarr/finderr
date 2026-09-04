@@ -23,6 +23,7 @@
 import { Brain, Check, ChevronRight, CircleSlash, LoaderCircle, TriangleAlert } from "lucide-react";
 import type { ToolEntry, TranscriptEntry } from "../lib/agent-transcript";
 import { formatDuration, toolArgFields, toolLabel, toolResultText, toolSubject } from "../lib/assistant-view";
+import type { ResolvedMention } from "../lib/mentions";
 import { Markdown } from "./Markdown";
 
 /**
@@ -32,7 +33,14 @@ import { Markdown } from "./Markdown";
  * CONTENT here, and a stable sort by anything else would be a second, wrong story about
  * what the agent did.
  */
-export function AssistantTranscript({ entries }: { entries: readonly TranscriptEntry[] }) {
+export function AssistantTranscript({
+  entries,
+  mentions,
+}: {
+  entries: readonly TranscriptEntry[];
+  /** Resolved ids for this turn, so prose the transcript owns links like the answer does. */
+  mentions?: readonly ResolvedMention[];
+}) {
   if (entries.length === 0) return null;
   // A turn divider is drawn only when there IS more than one turn. Labelling a single pass
   // "Step 1" is chrome around a thing that has no second half to be told apart from.
@@ -47,7 +55,7 @@ export function AssistantTranscript({ entries }: { entries: readonly TranscriptE
         return (
           <div key={e.key} className="space-y-1.5">
             {opensTurn && <TurnDivider n={e.turn} />}
-            <Entry entry={e} />
+            <Entry entry={e} mentions={mentions} />
           </div>
         );
       })}
@@ -72,10 +80,10 @@ function TurnDivider({ n }: { n: number }) {
   );
 }
 
-function Entry({ entry }: { entry: TranscriptEntry }) {
+function Entry({ entry, mentions }: { entry: TranscriptEntry; mentions?: readonly ResolvedMention[] }) {
   if (entry.kind === "tool") return <ToolCall entry={entry} />;
   if (entry.kind === "reasoning") return <Reasoning text={entry.text} />;
-  return <Markdown text={entry.text} />;
+  return <Markdown text={entry.text} mentions={mentions} />;
 }
 
 /**

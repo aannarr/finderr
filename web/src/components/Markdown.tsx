@@ -19,9 +19,11 @@
  * still had words in it, and dropping them would silently delete part of an answer.
  */
 
+import { Link } from "@tanstack/react-router";
 import { externalHref, localImageUrl } from "../lib/facet-panes";
 import type { Block, Inline } from "../lib/markdown";
 import { parseMarkdown } from "../lib/markdown";
+import { linkMentionsInInlines, type ResolvedMention } from "../lib/mentions";
 
 /**
  * Render a markdown string.
@@ -29,8 +31,24 @@ import { parseMarkdown } from "../lib/markdown";
  * `className` reaches the wrapper rather than each block, so a caller sizes the whole answer
  * once instead of restyling six element types.
  */
-export function Markdown({ text, className }: { text: string; className?: string }) {
-  const blocks = parseMarkdown(text);
+export function Markdown({
+  text,
+  className,
+  mentions,
+}: {
+  text: string;
+  className?: string;
+  /**
+   * Ids the SERVER resolved, if any. Absent means render the prose as written.
+   *
+   * Applied as a post-pass over the parsed tree rather than to `text`, because a mention
+   * inside a code span must stay literal and splitting the string first would hand the
+   * parser half a `**bold**` in one fragment and half in the next. `./mentions.ts` says so
+   * at length; this prop is the only place the two systems meet.
+   */
+  mentions?: readonly ResolvedMention[];
+}) {
+  const blocks = withMentions(parseMarkdown(text), mentions);
   if (blocks.length === 0) return null;
   return (
     <div className={`space-y-2 text-sm leading-relaxed ${className ?? ""}`}>
@@ -57,11 +75,42 @@ function headingTag(level: number): "h3" | "h4" | "h5" | "h6" {
   return "h6";
 }
 
+/** Underlined like every other entity link in the product, so it reads as one. */
+const MENTION_CLASS = "underline decoration-dotted underline-offset-2 hover:decoration-solid";
+
 const HEADING_CLASS: Record<number, string> = {
   1: "text-base font-semibold tracking-tight",
   2: "text-sm font-semibold tracking-tight",
   3: "text-sm font-medium",
 };
+
+/**
+ * Rewrite every inline run in a block list so resolved ids become links.
+ *
+ * A no-op when there is nothing resolved, which is the common case while a stream is still
+ * arriving -- mentions land with the `done` frame, so tokens render as plain prose and the
+ * brackets resolve at the end. That is a visible flicker of `[tt…]` on a slow answer and it
+ * is the honest trade: linking mid-stream would mean resolving ids the model has not
+ * finished writing.
+ */
+function withMentions(blocks: Block[], mentions?: readonly ResolvedMention[]): Block[] {
+  if (!mentions || mentions.length === 0) return blocks;
+  const make = {
+    text: (text: string): Inline => ({ type: "text", text }),
+    link: (m: { id: string; label: string; path: string; entity: "title" | "person" }): Inline => ({
+      type: "mention",
+      ...m,
+    }),
+    childrenOf: (n: Inline): readonly Inline[] | null => ("children" in n ? n.children : null),
+    withChildren: (n: Inline, children: Inline[]): Inline => ({ ...n, children }) as Inline,
+  };
+  const run = (nodes: Inline[]): Inline[] => linkMentionsInInlines<Inline>(nodes, mentions, make);
+  return blocks.map((b) => {
+    if (b.type === "list") return { ...b, items: b.items.map(run) };
+    if ("children" in b) return { ...b, children: run(b.children) };
+    return b;
+  });
+}
 
 function BlockView({ block }: { block: Block }) {
   switch (block.type) {
@@ -132,6 +181,24 @@ function InlineList({ nodes }: { nodes: readonly Inline[] }) {
 
 function InlineView({ node }: { node: Inline }) {
   switch (node.type) {
+    case "mention":
+      /*
+        An INTERNAL link, so it goes through the router rather than through `externalHref`.
+
+        `externalHref` guards a link OUT and allows only absolute http(s) -- it would refuse
+        `/title/tt…` correctly and uselessly. The safety here comes from the other end: the
+        path was built by the server from a row it found in the index, never from anything
+        the model wrote, so there is no untrusted string in it to guard.
+      */
+      return node.entity === "person" ? (
+        <Link to="/person/$nconst" params={{ nconst: node.id }} search={{}} className={MENTION_CLASS}>
+          {node.label}
+        </Link>
+      ) : (
+        <Link to="/title/$tconst" params={{ tconst: node.id }} className={MENTION_CLASS}>
+          {node.label}
+        </Link>
+      );
     case "text":
       return <>{node.text}</>;
 

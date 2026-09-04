@@ -327,7 +327,7 @@ function Bubble({ message: m }: { message: StoredMessage }) {
         the answer was arrived at, and reading them under the conclusion would be reading the
         turn backwards.
       */}
-      {m.transcript && <AssistantTranscript entries={m.transcript} />}
+      {m.transcript && <AssistantTranscript entries={m.transcript} mentions={m.mentions} />}
 
       {/*
         THINKING, and only while there is nothing to read AND nothing to watch.
@@ -345,7 +345,7 @@ function Bubble({ message: m }: { message: StoredMessage }) {
       ) : (
         // MARKDOWN, not `whitespace-pre-wrap` text. `Markdown` renders React elements and
         // never HTML -- see its header; this is model output and that is an injection path.
-        !transcriptOwnsProse && m.text.length > 0 && <Markdown text={m.text} />
+        !transcriptOwnsProse && m.text.length > 0 && <Markdown text={m.text} mentions={m.mentions} />
       )}
 
       {/*

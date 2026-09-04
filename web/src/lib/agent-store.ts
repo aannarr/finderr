@@ -23,6 +23,7 @@
 import type { AgentEpisode, AgentRequested, AgentTitle, AgentToolCall, AgentUsage } from "./agent-api";
 import type { TranscriptEntry } from "./agent-transcript";
 import type { FacetProblem } from "./facets";
+import type { ResolvedMention } from "./mentions";
 
 /**
  * One bubble.
@@ -56,6 +57,14 @@ export interface StoredMessage {
    * way it bounds everything else here.
    */
   transcript?: TranscriptEntry[];
+  /**
+   * Resolved ids for THIS answer, so a reload still renders its links.
+   *
+   * Persisted with the turn rather than re-fetched: they are small (an id, a label, a path),
+   * they belong to the text they were resolved against, and asking the server again on every
+   * page load to re-link an answer nobody changed would be a request for nothing.
+   */
+  mentions?: ResolvedMention[];
   /**
    * The stream died before the answer finished.
    *
@@ -133,6 +142,10 @@ function storableMessage(m: StoredMessage): StoredMessage {
   if (m.toolCalls?.length) out.toolCalls = m.toolCalls;
   if (m.requested?.length) out.requested = m.requested;
   if (m.titles?.length) out.titles = m.titles;
+  // Small -- an id, a label, a path -- and the answer's links are unrenderable without them.
+  // A stored turn whose mentions were dropped renders its brackets raw on the next reload,
+  // which is exactly the bug this line was added to fix.
+  if (m.mentions?.length) out.mentions = m.mentions;
   if (m.episodes?.length) out.episodes = m.episodes;
   if (m.problems?.length) out.problems = m.problems;
   if (m.usage) out.usage = m.usage;

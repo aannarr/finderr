@@ -20,13 +20,29 @@
  */
 
 import { Sparkles } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { type AgentAvailability, probeAgent } from "../lib/agent-api";
 import { useAssistantChat } from "../lib/use-assistant-chat";
-import { AssistantPanel } from "./AssistantPanel";
 import { useKeyAction } from "./Kbd";
 import { Button } from "./ui/button";
+
+/*
+  THE PANEL IS ITS OWN CHUNK, and this import is the whole mechanism.
+
+  Everything the assistant needs -- the transcript, the markdown parser, the shadcn
+  primitives, lucide's icons -- is reachable only from `AssistantPanel`. A static import
+  would weld all of it into the main bundle for every reader, including the ones who never
+  open it and the ones an unconfigured deployment never even shows a launcher to.
+
+  There is precedent in this tree for splitting on exactly this reasoning: `login.html` is a
+  SECOND vite entry so an anonymous visitor is never handed the application chunk. Same
+  mechanism, different reason.
+
+  The LAUNCHER stays in the main bundle deliberately -- it is a button and a fetch, and
+  deferring it would trade a few hundred bytes for a visible pop-in on every page load.
+*/
+const AssistantPanel = lazy(() => import("./AssistantPanel").then((m) => ({ default: m.AssistantPanel })));
 
 export function Assistant({ userId }: { userId: string | null }) {
   /** `null` until the probe answers. Nothing is drawn in the meantime. */
@@ -117,18 +133,28 @@ export function Assistant({ userId }: { userId: string | null }) {
               onClick={() => setOpen(false)}
               className="fixed inset-0 z-30 bg-black/50 sm:hidden"
             />
-            <AssistantPanel
-              messages={chat.messages}
-              busy={chat.busy}
-              refusal={chat.refusal}
-              queued={chat.queued}
-              queueHalted={chat.queueHalted}
-              onSend={chat.send}
-              onCancelQueued={chat.cancelQueued}
-              onResumeQueue={chat.resumeQueue}
-              onClear={chat.clear}
-              onClose={() => setOpen(false)}
-            />
+            {/*
+              `fallback={null}` rather than a skeleton, on purpose.
+
+              The chunk is fetched the instant the panel is asked for, from the same origin
+              that just served the page, so the wait is a few milliseconds on any connection
+              that got this far. A skeleton would flash and leave -- which reads as a glitch,
+              where nothing reads as instant.
+            */}
+            <Suspense fallback={null}>
+              <AssistantPanel
+                messages={chat.messages}
+                busy={chat.busy}
+                refusal={chat.refusal}
+                queued={chat.queued}
+                queueHalted={chat.queueHalted}
+                onSend={chat.send}
+                onCancelQueued={chat.cancelQueued}
+                onResumeQueue={chat.resumeQueue}
+                onClear={chat.clear}
+                onClose={() => setOpen(false)}
+              />
+            </Suspense>
           </>,
           document.body,
         )}
