@@ -24,6 +24,11 @@ import { Database } from "bun:sqlite";
 import type { Config } from "./config";
 import { type TitleIds, titleIds } from "./crosswalk";
 import type { PersonCredit } from "./facets";
+// The builder is already in the server's module graph (`src/server/index.ts` imports
+// `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
+// the point: the live fallback and the build must compute the same answer or the precompute
+// silently changes what the front page draws.
+import { BROWSE_VOTE_FLOOR, computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
   type Collaborator,
@@ -254,6 +259,20 @@ export class SearchEngine {
    */
   readonly hasGenreVotes: boolean;
 
+  /** Whether `browse_count` is in this file -- see `BrowseOptions.browseCounts`. */
+  readonly hasBrowseCounts: boolean;
+
+  /**
+   * Whether the rank-ordered indexes this file would be PINNED to actually exist.
+   *
+   * `INDEXED BY` is not a hint -- SQLite refuses to prepare a statement naming an index that
+   * is not there. So a browse that pins one against an index built before `ix_rank_all`
+   * existed would not be slow, it would THROW. This probe is what keeps the pin an
+   * optimisation rather than a version requirement, the same rule `hasRank` and `hasIds`
+   * follow: an older file keeps serving, down the planner's own path, until a rebuild.
+   */
+  readonly hasRankIndexes: boolean;
+
   /**
    * Every title kind this index actually holds, read once at construction.
    *
@@ -340,6 +359,8 @@ export class SearchEngine {
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
+    this.hasBrowseCounts = this.tableExists("browse_count");
+    this.hasRankIndexes = this.indexExists("ix_rank") && this.indexExists("ix_rank_all");
     this.hasEpisodes = this.tableExists("episode");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
@@ -1008,18 +1029,28 @@ export class SearchEngine {
     return out.slice(0, limit);
   }
 
-  /** Which genres actually have enough good titles to be worth a shelf. */
+  /**
+   * Which genres actually have enough good titles to be worth a shelf.
+   *
+   * **Read from `meta`, computed at build.** The answer is a pure function of the finished
+   * index, so it cannot change while a file is open -- and it was costing **25.05 ms on every
+   * uncached front-page assembly**, measured on the real 2.18 GB index, as an aggregate over
+   * `title_genre` joined to `title` with a temp b-tree for the GROUP BY and another for the
+   * ORDER BY. It is one row read now.
+   *
+   * The fallback runs the original aggregate, for an index built before the key existed --
+   * the same rule `hasRank` and `hasIds` follow: an older file keeps serving, more slowly,
+   * until the stage stamp orders the rebuild that fixes it. `computeShelfGenres` is shared
+   * with the builder rather than copied, so the live answer and the stored one cannot drift.
+   */
   topGenres(limit = 6): string[] {
-    return (
-      this.db
-        .query(
-          `select g.genre, count(*) c
-           from title_genre g join title t on t.rowid_ = g.title_rowid
-           where t.votes >= 20000 and t.rating >= 7.0
-           group by g.genre order by c desc limit ?`,
-        )
-        .all(limit) as { genre: string }[]
-    ).map((r) => r.genre);
+    const stored = this.db.query("select value from meta where key = ?").get(SHELF_GENRES_META_KEY) as
+      | { value: string }
+      | undefined;
+    // An empty string is a legitimately empty answer (an index with no genre clearing the
+    // floors), so the fallback is keyed on the ROW being absent, never on the value.
+    if (stored) return stored.value === "" ? [] : stored.value.split(",").slice(0, limit);
+    return computeShelfGenres(this.db).slice(0, limit);
   }
 
   /**
@@ -1037,7 +1068,12 @@ export class SearchEngine {
     // `genreVotes` is a CAPABILITY, so it comes from the open file and is never something a
     // caller passes in -- same split as the downgrade above: policy in `browseIndex`, "what
     // can this particular file do" here.
-    return browseIndex(this.db, { ...safe, genreVotes: this.hasGenreVotes });
+    return browseIndex(this.db, {
+      ...safe,
+      genreVotes: this.hasGenreVotes,
+      browseCounts: this.hasBrowseCounts,
+      rankIndexes: this.hasRankIndexes,
+    });
   }
 
   /**
@@ -1052,11 +1088,27 @@ export class SearchEngine {
    */
   rankedMembers(filters: BrowseFilters, size: number): string[] {
     if (!this.hasRank) return [];
-    return browseMembers(this.db, { ...filters, sort: "rank", limit: size, genreVotes: this.hasGenreVotes });
+    return browseMembers(this.db, {
+      ...filters,
+      sort: "rank",
+      limit: size,
+      genreVotes: this.hasGenreVotes,
+      rankIndexes: this.hasRankIndexes,
+    });
   }
 
   private tableExists(name: string): boolean {
     return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
+  }
+
+  /**
+   * Is this index in the file? Asked before any `INDEXED BY` names one.
+   *
+   * A missing index is a PREPARE error rather than a slow plan, so this is the difference
+   * between an older file serving slowly and an older file throwing on every browse.
+   */
+  private indexExists(name: string): boolean {
+    return this.db.query("select 1 from sqlite_master where type = 'index' and name = ?").get(name) !== null;
   }
 
   /** Does `table` have `column`? Answers false for a table that does not exist at all. */
@@ -1163,6 +1215,22 @@ export interface BrowseOptions extends BrowseFilters {
    * function is deliberately callable against any database somebody hands it.
    */
   genreVotes?: boolean;
+  /**
+   * Whether this index carries `browse_count` -- `SearchEngine.hasBrowseCounts`.
+   *
+   * A CAPABILITY of the open file, passed in for the same reason `genreVotes` is: `browseIndex`
+   * is pure policy over a database somebody hands it, and "what can this particular file do"
+   * is not policy. An index built before the stage existed answers every total correctly down
+   * the live-count path.
+   */
+  browseCounts?: boolean;
+  /**
+   * Whether the rank indexes a decade browse PINS to exist -- `SearchEngine.hasRankIndexes`.
+   *
+   * A capability of the open file, like `genreVotes` and `browseCounts`. False means the
+   * query is built without `INDEXED BY` and the planner chooses, which is correct and slower.
+   */
+  rankIndexes?: boolean;
 }
 
 /**
@@ -1189,7 +1257,10 @@ export interface BrowseResult {
  * The default vote floor for an unfiltered grid: below this, "all movies by votes"
  * opens on titles nobody has heard of.
  */
-const BROWSE_VOTE_FLOOR = 1000;
+// Re-exported rather than redeclared: the build BAKES this into `browse_count.n_floor`, so
+// the floor a query applies and the floor a stored count was built at must be one constant.
+// `index-builder.ts` owns it for that reason.
+export { BROWSE_VOTE_FLOOR };
 
 /**
  * The vote floor a browse query gets when the caller does not name one.
@@ -1241,7 +1312,16 @@ function browseSql(
   minVotes: number,
   sort: BrowseSort = "votes",
   genreVotes = false,
-): { join: string; countFrom: string; where: string; order: string; args: unknown[] } {
+  rankIndexes = false,
+): {
+  join: string;
+  countFrom: string;
+  where: string;
+  order: string;
+  args: unknown[];
+  /** ` indexed by <name>`, or empty. Goes straight after `title t`. See the rank pin below. */
+  indexedBy: string;
+} {
   const where: string[] = [];
   const args: unknown[] = [];
   // Set by any clause that names a column only `title` has. It is what decides whether the
@@ -1316,6 +1396,39 @@ function browseSql(
   */
   const ranked = join ? "g.rank" : "t.rank";
   let order = `${voted} desc`;
+  /*
+    PINNING THE RANK INDEX ON A DECADE, and it is the one place this file overrides the planner.
+
+    A ranked list over a YEAR RANGE is the query SQLite gets wrong here, and it gets it wrong
+    because of an index that is right for everything else. `ix_year(year, votes desc)` looks
+    cheap for `year >= ? and year <= ?`, so the planner seeks it and then sorts every ranked
+    title in the decade -- while `ix_rank(kind, rank desc)` would read rows in rank order and
+    stop at `limit`. Measured on the deployment NAS, "Best of the 2010s" at 250 rows:
+
+      planner's choice        469.01 ms   SEARCH ix_year + USE TEMP B-TREE FOR ORDER BY
+      indexed by ix_rank        1.25 ms   SEARCH ix_rank (kind=? AND rank>?)
+      no kind, free choice     459.20 ms
+      no kind, ix_rank_all       0.80 ms
+
+    It is not a cost model that can be tuned around: `analyze` has run, and the estimate is
+    reasonable in isolation -- the range really does match few rows. What it cannot see is that
+    walking a rank-ordered index reaches `limit` almost immediately. `INDEXED BY` states the
+    thing the planner cannot infer, and it FAILS LOUDLY if the index is missing rather than
+    silently going slow, which is why it is guarded on a capability rather than assumed.
+
+    A GENRE decade is deliberately left alone: `ix_tg_rank` leads with `genre`, so the planner
+    already picks it and measures 0.93 ms. Pinning it would be a second owner of a decision
+    that is currently correct.
+
+    Do NOT "fix" this instead by adding `(kind, year, rank desc)`. It was built and measured:
+    the per-year ranked seek does drop to 0.48 ms, and the new index then STEALS the per-year
+    VOTES query, which goes 0.10 ms -> 25.24 ms. Every index here is a global change; the
+    benchmark re-explains every scenario for exactly this reason.
+  */
+  let indexedBy = "";
+  if (sort === "rank" && f.decade !== undefined && !join && rankIndexes) {
+    indexedBy = f.kind ? " indexed by ix_rank" : " indexed by ix_rank_all";
+  }
   if (sort === "rank") {
     where.push(`${ranked} is not null`);
     order = `${ranked} desc`;
@@ -1323,6 +1436,9 @@ function browseSql(
   }
   return {
     join,
+    indexedBy,
+    // The COUNT never pins: it has no ORDER BY to serve, so the planner's choice is right
+    // there, and `browse_count` answers most of them without a query at all.
     countFrom: join && !touchesTitle ? "title_genre g" : `title t ${join}`,
     // A browse with no filters at all and no floor has nothing to put in a WHERE.
     where: where.length > 0 ? where.join(" and ") : "1",
@@ -1331,12 +1447,187 @@ function browseSql(
   };
 }
 
-function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
+/**
+ * The total, from `browse_count` when that table can answer and from a live count otherwise.
+ *
+ * > [!IMPORTANT] Once the rows became seeks, the COUNT was the whole cost of a browse
+ * > Measured on the real 2.18 GB index with the rank indexes in place: a genre+decade browse
+ * > spent 137.48 ms counting and 0.32 ms fetching its forty rows; an unfiltered ranked count
+ * > was 11.16 ms and a genre+kind ranked count 10.69 ms. A count has to visit every matching
+ * > row by definition, so unlike an ordered read it cannot be turned into a seek -- the only
+ * > way to stop paying it while a reader waits is to have paid it at build time.
+ * >
+ * > From `browse_count` those become 0.34 ms, 0.50 ms and 0.02 ms.
+ *
+ * **It answers only what it can answer EXACTLY.** `countFromTable` returns null for any
+ * filter set the grain does not express -- a custom `minVotes` the table was not built at,
+ * or an index built before the stage existed -- and the live count runs instead. A total is
+ * printed to the reader as a fact ("1,132 titles"), so a close-enough answer is not an
+ * available trade: it is either the same number the live query would give or it is not used.
+ * `browse-count.test.ts` asserts that equality across a matrix rather than asserting any
+ * particular number.
+ */
+function browseTotal(
+  db: Database,
+  sql: ReturnType<typeof browseSql>,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+  hasBrowseCounts: boolean,
+): number {
+  if (hasBrowseCounts) {
+    const stored = countFromTable(db, opts, minVotes, sort);
+    if (stored !== null) return stored;
+  }
   return (
     db.query(`select count(*) c from ${sql.countFrom} where ${sql.where}`).get(...(sql.args as never[])) as {
       c: number;
     }
   ).c;
+}
+
+/**
+ * One `sum()` over the precomputed grain, or null when the grain cannot express the question.
+ *
+ * The three columns are the three populations the UI asks about and there is deliberately no
+ * fourth: a `minVotes` other than 0 or `BROWSE_VOTE_FLOOR` reaches the live count, because
+ * storing an arbitrary threshold would mean storing a histogram rather than a count. Today
+ * the only caller that passes a custom floor is the "show all" escape hatch, which passes 0.
+ */
+function countFromTable(
+  db: Database,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+): number | null {
+  // A ranked list counts ranked rows and ignores the floor entirely -- `browseVoteFloor`
+  // already returns 0 for it, and membership is `rank is not null`.
+  const column =
+    sort === "rank" ? "n_ranked" : minVotes === 0 ? "n" : minVotes === BROWSE_VOTE_FLOOR ? "n_floor" : null;
+  if (column === null) return null;
+
+  const where: string[] = [];
+  const args: unknown[] = [];
+  // `''` is the ANY-GENRE grain, written by a second pass over `title` alone. Summing the
+  // real genre rows instead would count a three-genre title three times.
+  where.push("genre = ?");
+  args.push(opts.genre ?? "");
+  if (opts.kind) {
+    where.push("kind = ?");
+    args.push(opts.kind);
+  }
+  if (opts.year !== undefined) {
+    where.push("year = ?");
+    args.push(opts.year);
+  } else if (opts.decade !== undefined) {
+    where.push("year >= ? and year <= ?");
+    args.push(opts.decade, opts.decade + 9);
+  }
+  const row = db
+    .query(`select coalesce(sum(${column}), 0) c from browse_count where ${where.join(" and ")}`)
+    .get(...(args as never[])) as { c: number };
+  return row.c;
+}
+
+/** The ten years a decade filter covers. */
+const DECADE_YEARS = 10;
+
+/**
+ * Is this browse one the per-year split actually helps?
+ *
+ * > [!IMPORTANT] Only a VOTES sort. A ranked decade is made WORSE by splitting, and that was measured
+ * > The split shipped for both sorts and it was a regression on the ranked one. `/lists`
+ * > draws seven "Best of the <decade>s" lists at 250 rows each, and on the deployment NAS
+ * > they cost **1,233 ms of members** -- `decade-2010` alone was 372 ms -- against a
+ * > docstring in `src/server/lists.ts` claiming 36 ms for the whole payload.
+ * >
+ * > The reason is that the two sorts want opposite things. A votes decade has no index that
+ * > can order across a year RANGE, so ten pinned-year seeks beat it (161 ms -> 0.92 ms). A
+ * > RANK decade already has one -- `ix_rank(kind, rank desc)` reads rows in the output order
+ * > and stops at `limit` -- so splitting it throws away that ordering and pays ten sorts
+ * > instead of one walk (0.48 ms per year x10 against 1.25 ms for the whole decade).
+ * >
+ * > What the ranked path needs is not a split but a PIN, because the planner picks `ix_year`
+ * > and sorts. See `indexedBy` in `browseSql`.
+ */
+function splitsByYear(opts: BrowseOptions, sort: BrowseSort): boolean {
+  return opts.decade !== undefined && sort === "votes";
+}
+
+/**
+ * A decade page, served as TEN single-year seeks merged in memory.
+ *
+ * > [!IMPORTANT] An index cannot fix this, and one was built and measured before this was written
+ * > `where year >= ? and year <= ? order by votes desc` puts a RANGE on the leading column,
+ * > so the second column is not globally ordered across the range and no `(year, votes desc)`
+ * > index can serve the sort. **SQLite is right to refuse it**: `ix_year_votes` was added and
+ * > `decade=2010` did not move -- 161.11 ms before, 164.61 ms after, identical plan, still
+ * > `SEARCH ix_year (year>? AND year<?) | USE TEMP B-TREE FOR ORDER BY` over 89,694 rows.
+ * >
+ * > Pinning ONE year makes the same index a pure seek, and ten seeks plus a merge of a few
+ * > hundred rows is not close: **decade=2010 goes 161 ms -> 0.92 ms**, 1990 -> 0.43 ms,
+ * > 2020 -> 1.31 ms, measured on the real 2.18 GB index.
+ * >
+ * > So the index and this split are ONE change and neither works without the other. Deleting
+ * > `ix_year_votes` leaves ten sorted scans; deleting this leaves the index unused.
+ *
+ * This is the same shape `rankedSeek` uses for `kind`, and for the same underlying reason:
+ * when an index can only be read in order once a leading column is FIXED, fix it and merge.
+ *
+ * It reuses `browseSql` with `year` substituted for `decade` rather than writing its own
+ * WHERE, so a genre, a kind or a vote floor on a decade browse keeps working with no second
+ * copy of the membership rules to drift.
+ */
+function decadeRows<T extends { tconst: string }>(
+  db: Database,
+  opts: BrowseOptions,
+  minVotes: number,
+  sort: BrowseSort,
+  select: string,
+  limit: number,
+  offset: number,
+): T[] {
+  const decade = opts.decade as number;
+  const merged: (T & { _sort: number | null })[] = [];
+  for (let year = decade; year < decade + DECADE_YEARS; year++) {
+    // `decade: undefined` and `year` set: one seek per year, every other filter intact.
+    const per = browseSql(
+      { ...opts, decade: undefined, year },
+      minVotes,
+      sort,
+      opts.genreVotes,
+      opts.rankIndexes,
+    );
+    // The order EXPRESSION is aliased and selected rather than re-derived here, so `votes`
+    // and `rank` are merged by whichever column `browseSql` actually ordered on. Naming a
+    // column would be a second owner of the sort and would silently mis-merge a ranked page.
+    const key = per.order.replace(/\s+desc$/i, "");
+    merged.push(
+      ...(db
+        .query(
+          `select ${select}, ${key} as _sort from title t${per.indexedBy} ${per.join} where ${per.where}
+           order by ${per.order} limit ?`,
+        )
+        // Each year must offer the whole page, because the merge cannot know in advance
+        // which year the top rows come from -- one year could supply all forty.
+        .all(...([...per.args, limit + offset] as never[])) as (T & { _sort: number | null })[]),
+    );
+  }
+  /*
+    `tconst` breaks a tie, and that is a deliberate improvement rather than a copy.
+
+    The range query this replaces had no tiebreak at all, so rows with equal votes came back
+    in whatever order the scan happened to reach them -- stable only by accident, and a
+    page-2 request could legitimately repeat or skip a title. Ordering the merge on a unique
+    column makes the sequence total, which is what the standing rule asks for: an order that
+    reshuffles between pages is worse than one that is merely imperfect.
+  */
+  merged.sort(
+    (a, b) => (b._sort ?? 0) - (a._sort ?? 0) || (a.tconst < b.tconst ? -1 : a.tconst > b.tconst ? 1 : 0),
+  );
+  // `_sort` is an internal key, not a fact about the title -- the same reason `rankedSeek`
+  // strips `rank_` rather than returning it.
+  return merged.slice(offset, offset + limit).map(({ _sort: _drop, ...row }) => row as unknown as T);
 }
 
 /**
@@ -1354,22 +1645,36 @@ function browseTotal(db: Database, sql: ReturnType<typeof browseSql>): number {
 export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
-  const sql = browseSql(opts, minVotes, sort, opts.genreVotes);
-  const total = browseTotal(db, sql);
-  const rows = db
-    .query(
-      `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
-       from title t ${sql.join} where ${sql.where}
-       order by ${sql.order} limit ? offset ?`,
-    )
-    .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as TitleRow[];
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes);
+  const counts = opts.browseCounts ?? false;
+  const total = browseTotal(db, sql, opts, minVotes, sort, counts);
+  const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
+  const limit = opts.limit ?? 60;
+  const offset = opts.offset ?? 0;
+  // The COUNT is left on the range: it is a covering seek either way (1.59ms measured) and
+  // has no ORDER BY to serve, so it is only the ROW fetch that the range hurts.
+  const rows = splitsByYear(opts, sort)
+    ? decadeRows<TitleRow>(db, opts, minVotes, sort, cols, limit, offset)
+    : (db
+        .query(
+          `select ${cols} from title t${sql.indexedBy} ${sql.join} where ${sql.where}
+           order by ${sql.order} limit ? offset ?`,
+        )
+        .all(...([...sql.args, limit, offset] as never[])) as TitleRow[]);
 
   // The second count only runs when the floor could be what emptied the page, so the
   // overwhelmingly common case -- a query that found rows -- pays for one count, not two.
   // A rank browse takes no floor, so it never reaches here and never offers a hatch it
   // has nothing behind: an empty ranked list is empty because nothing is ranked.
   if (total > 0 || minVotes === 0) return { rows, total };
-  const unfloored = browseTotal(db, browseSql(opts, 0, sort, opts.genreVotes));
+  const unfloored = browseTotal(
+    db,
+    browseSql(opts, 0, sort, opts.genreVotes, opts.rankIndexes),
+    opts,
+    0,
+    sort,
+    counts,
+  );
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }
 
@@ -1388,15 +1693,21 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
  */
 export function browseMembers(db: Database, opts: BrowseOptions): string[] {
   const sort = opts.sort ?? "votes";
-  const sql = browseSql(opts, opts.minVotes ?? browseVoteFloor(opts, sort), sort, opts.genreVotes);
-  return (
-    db
-      .query(
-        `select t.tconst from title t ${sql.join} where ${sql.where}
-         order by ${sql.order} limit ? offset ?`,
-      )
-      .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as { tconst: string }[]
-  ).map((r) => r.tconst);
+  const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes);
+  const limit = opts.limit ?? 60;
+  const offset = opts.offset ?? 0;
+  // Splits a decade the same way `browseIndex` does -- "best comedies of the 2020s" is a
+  // computed list, so this path pays the range scan too if it is left out.
+  const rows = splitsByYear(opts, sort)
+    ? decadeRows<{ tconst: string }>(db, opts, minVotes, sort, "t.tconst", limit, offset)
+    : (db
+        .query(
+          `select t.tconst from title t${sql.indexedBy} ${sql.join} where ${sql.where}
+           order by ${sql.order} limit ? offset ?`,
+        )
+        .all(...([...sql.args, limit, offset] as never[])) as { tconst: string }[]);
+  return rows.map((r) => r.tconst);
 }
 
 /** One episode of one series, as the index holds it. */
@@ -1457,8 +1768,16 @@ export const EPISODE_PAGE = 200;
  * that does not pin a rating, carrying `rating: null`, so a pane can say "no score yet"
  * rather than pretending they do not exist.
  *
- * Ordered by season then episode number, which `ix_ep_parent` covers -- so this is a seek
- * and never a sort, whatever the filters are.
+ * `ix_ep_parent` covers the SEEK and every column read, so the table's own pages are never
+ * touched -- but the ORDER is `season = 0, season, number`, and that leading expression is
+ * not a column any index can carry, so **this does sort**. An earlier version of this comment
+ * claimed "a seek and never a sort", which was wrong: `explain query plan` reports
+ * `USE TEMP B-TREE FOR ORDER BY` on every shape of this query.
+ *
+ * It is left that way ON PURPOSE. Measured, the sort costs 0.03-1.5 ms depending on how many
+ * episodes the series has -- 0.071 ms against 0.042 ms for an index-served order on Breaking
+ * Bad. Season 0 sorting last is a product rule (see below, and `orderSeasons`), and a
+ * millisecond is the right price for keeping it.
  */
 /**
  * > [!IMPORTANT] SEASON 0 SORTS LAST, AND THE LIMIT IS WHY IT MATTERS

@@ -193,7 +193,14 @@ export function ceremonyPayload(deps: AwardsDeps, ceremony: number): CeremonyPay
     if (row) indexed.push(row);
   }
 
-  const counts = store.awardCeremonyCounts(def.id).find((c) => c.ceremony === ceremony);
+  // ONE call, held in a local. It was called twice -- once here and once for the neighbours
+  // below -- and the second call's comment already claimed it used "the counts we already
+  // hold", which is exactly what this now makes true. Measured on the real app database: the
+  // aggregate is 4.4 ms (a `count(distinct)` over every nomination for the award, plus a join
+  // to the library mirror), so the duplicate was most of a ceremony page's query budget spent
+  // computing an answer already in memory.
+  const ceremonyCounts = store.awardCeremonyCounts(def.id);
+  const counts = ceremonyCounts.find((c) => c.ceremony === ceremony);
   // The anchor category when the award has one, and otherwise the edition's first win --
   // which for a one-prize award is the only win there is.
   const anchorGroup =
@@ -202,7 +209,7 @@ export function ceremonyPayload(deps: AwardsDeps, ceremony: number): CeremonyPay
 
   // Neighbours from the counts we already hold, so stepping through editions costs no
   // extra query and cannot walk off either end.
-  const all = store.awardCeremonyCounts(def.id).map((c) => c.ceremony);
+  const all = ceremonyCounts.map((c) => c.ceremony);
 
   return {
     award: awardIdentity(def),

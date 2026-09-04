@@ -43,6 +43,13 @@
 
 import { Database } from "bun:sqlite";
 import type { Config } from "./config";
+// `index-builder` imports `stampStages` from this file, so this is a cycle -- and it is a
+// SAFE one, because the only use is inside a recipe function that runs long after both
+// modules have initialised. Written as an import rather than a second copy of the number on
+// purpose: `browse_count.n_floor` is a count of rows clearing this floor, so a stamp holding
+// a stale copy would report an index as current while its stored totals answered a different
+// question. `index-builder.ts` owns the constant because the build bakes it into a column.
+import { BROWSE_VOTE_FLOOR } from "./index-builder";
 import { STOPWORD_VOTE_FLOOR } from "./search-stopwords";
 
 /**
@@ -83,6 +90,13 @@ export const INDEX_STAGES = {
    * The `rank` column on `title` and its copy on `title_genre` -- and, since `v: 2`, the
    * `votes` copy beside it plus `ix_tg_votes`.
    *
+   * **`v: 3` (2026-09-05) reshaped `ix_tg_rank` and added `ix_rank_all`**, and it is the
+   * clearest case yet for why this field exists. Nothing about the recipe's INPUTS changed --
+   * same prior, same rows, same answers -- so without the bump an existing index would keep
+   * serving every computed top list down a temp-b-tree path: 807 ms for `?genre=Drama&sort=rank`
+   * against 0.11 ms, and 82 ms for the no-genre Top 250 against 0.06 ms. Green health, correct
+   * results, the optimisation silently never adopted. Exactly the crosswalk's shape.
+   *
    * The `v` is what makes an index built before 2026-09-02 STALE rather than merely slow.
    * Nothing about the recipe's inputs changed, so without it an old file would keep serving
    * a genre browse down the 3.66s path indefinitely -- correct, and quietly a hundred times
@@ -91,7 +105,7 @@ export const INDEX_STAGES = {
    * silently never adopted. Bump it whenever this stage's OUTPUT changes shape, not only
    * when its configuration does.
    */
-  rank: (cfg) => JSON.stringify({ v: 2, priorVotes: cfg.index.rankPriorVotes }),
+  rank: (cfg) => JSON.stringify({ v: 3, priorVotes: cfg.index.rankPriorVotes }),
 
   /**
    * `title_ids`, the bulk `tconst -> tmdb/tvdb` crosswalk.
@@ -153,11 +167,59 @@ export const INDEX_STAGES = {
    * show whose episode list is simply absent reads as missing data rather than as a stale
    * index, and there is nothing on screen to say a threshold is responsible.
    *
+   * **`v: 2` (2026-09-05) DROPPED `ix_ep_rating`**, which was 445 MB and interchangeable with
+   * `ix_ep_parent` across every measured query. The bump is what reclaims those bytes from an
+   * existing file: without it the index would keep the dead index forever, and on the
+   * deployment array that is ~1.5 s added to every boot and every swap, because the whole file
+   * is read into the page cache at startup.
+   *
    * It carries no `castRefreshDays` equivalent because there is nothing to carry forward:
    * the stage rebuilds from a 52 MB dump on every build, and its rows are keyed on tconst
    * rather than on a rowid, so there is no cheap copy that would be worth the machinery.
    */
-  episodes: (cfg) => JSON.stringify({ v: 1, minVotes: cfg.index.episodeSeriesMinVotes }),
+  episodes: (cfg) => JSON.stringify({ v: 2, minVotes: cfg.index.episodeSeriesMinVotes }),
+
+  /**
+   * `ix_year` WIDENED to `(year, votes desc)`, the single-year seek a decade browse splits into.
+   *
+   * Invisible when absent, like `rank` and `popularTitles`: `browseIndex` still splits a
+   * decade into ten per-year queries and still returns the right rows, each one just falls
+   * back to the narrow `ix_year(year)` and sorts. Measured on the real index, `decade=2010`:
+   * 0.92 ms with the widened index against 161 ms for the range scan it replaced.
+   *
+   * It needs its own stamp even though the index NAME is unchanged -- which is exactly why a
+   * presence check would not do. An old file has an `ix_year` and would look complete.
+   */
+  yearVotes: () => JSON.stringify({ v: 1 }),
+
+  /**
+   * `meta.shelf_genres`, the front page's genre rows answered at build time.
+   *
+   * Its own entry rather than riding on `rank`, because the two are not the same question:
+   * an index can carry every rank index and no precomputed genres, and `SearchEngine` would
+   * then silently fall back to the 25 ms aggregate on every uncached front page -- correct,
+   * and the exact "invisibly slower" shape this whole file exists to catch.
+   *
+   * The FLOORS are in the recipe because they decide the answer. Moving them without a
+   * rebuild would leave a stored list that no longer means what the code believes it means,
+   * and nothing on screen would say so.
+   */
+  shelfGenres: () => JSON.stringify({ v: 1, minVotes: 20_000, minRating: 7.0 }),
+
+  /**
+   * `browse_count`, every browse total answered at build time.
+   *
+   * Invisible when absent -- `browseTotal` falls back to the live count and returns the same
+   * number, more slowly. Measured on the real index: a genre+decade count is 137.48 ms live
+   * and 0.34 ms stored, an unfiltered ranked count 11.16 ms against 0.50 ms.
+   *
+   * **The floor is in the recipe because it is baked into a stored COLUMN.** `n_floor` is a
+   * count of rows clearing `BROWSE_VOTE_FLOOR` at the moment of the build; moving that
+   * constant without a rebuild would leave a table whose numbers quietly answer a different
+   * question from the one the query is asking, and a wrong total is worse than a slow one --
+   * it is printed to the reader as a fact.
+   */
+  browseCounts: () => JSON.stringify({ v: 1, floor: BROWSE_VOTE_FLOOR }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

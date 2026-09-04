@@ -497,6 +497,69 @@ describe("LiveIndex with no index yet", () => {
     expect(() => live.close()).not.toThrow();
   });
 
+  /*
+    THE PAGE-CACHE PREFAULT.
+
+    On the deployment array -- nine SATA spinners in RAID5 behind a Celeron -- a query that
+    misses the page cache costs 0.6 to 3.5 SECONDS against 0.02-49ms warm, because every page
+    it touches is a head seek. Reading the file sequentially once costs 2.41s for 730 MB and
+    removes that tax for every reader after it.
+
+    These tests pin the two properties that are easy to lose and impossible to notice: that
+    it happens AT ALL, and that it happens AGAIN after a swap. The second is the one that
+    would rot silently -- a promoted index is a new inode with a cold cache, so a refresh
+    without this hands the whole penalty back every night at 09:00 UTC while every test that
+    only checks the boot path stays green.
+
+    They assert the LOG rather than a timing: whether the OS actually cached the pages is the
+    kernel's business and is not observable from here, and a wall-clock assertion on a warm
+    CI box measures nothing. What this owns is that the read is issued.
+  */
+  test("the index is read into the page cache at boot", async () => {
+    const path = freshPath("prefault");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Warm", tconst: "tt-warm" });
+    const lines: string[] = [];
+
+    const live = new LiveIndex({ path, cfg, floor: 0, log: (m) => lines.push(m) });
+    // Fire and forget by design, so the server can answer during it -- which means the test
+    // has to yield rather than assert straight after construction.
+    await Bun.sleep(50);
+
+    expect(lines.some((l) => l.startsWith("index warm:"))).toBe(true);
+    live.close();
+  });
+
+  test("a SWAP re-warms, because the promoted file is a different inode", async () => {
+    const path = freshPath("prefault-swap");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Before", tconst: "tt-before" });
+    const lines: string[] = [];
+
+    const live = new LiveIndex({ path, cfg, floor: 0, log: (m) => lines.push(m) });
+    await Bun.sleep(50);
+    const afterBoot = lines.filter((l) => l.startsWith("index warm:")).length;
+
+    promoteOver(path, { builtAt: "2026-09-05T00:00:00.000Z", title: "After", tconst: "tt-after" });
+    live.reload();
+    await Bun.sleep(50);
+
+    expect(lines.filter((l) => l.startsWith("index warm:")).length).toBeGreaterThan(afterBoot);
+    live.close();
+  });
+
+  test("prefault: false opens the index and reads nothing extra", async () => {
+    // The opt-out a test or a memory-tight host uses. It must not change what is SERVED.
+    const path = freshPath("prefault-off");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Cold", tconst: "tt-cold" });
+    const lines: string[] = [];
+
+    const live = new LiveIndex({ path, cfg, floor: 0, prefault: false, log: (m) => lines.push(m) });
+    await Bun.sleep(50);
+
+    expect(lines.some((l) => l.startsWith("index warm:"))).toBe(false);
+    expect(live.current.byTconst("tt-cold")?.title).toBe("Cold");
+    live.close();
+  });
+
   test("an existing file is opened normally even with `allowMissing`", () => {
     // The flag says "tolerate absence", not "start empty". The boot path passes it whenever
     // the file was missing at the check, and a file appearing in between must still be used.
