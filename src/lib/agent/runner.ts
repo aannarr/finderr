@@ -43,6 +43,26 @@ If a tool finds nothing, say so plainly. "It is not in the index" is a good answ
 
 Answer in one or two sentences. Name the specific titles and people you found.`;
 
+/**
+ * How much of the transcript to condense, and the distinction is the whole experiment.
+ *
+ * - **`off`** -- every previous tool result is re-sent as raw JSON, keys repeated per row.
+ * - **`results`** -- the transcript keeps its SHAPE. Every assistant message survives with
+ *   its own prose intact, every tool message stays in place answering its `tool_call_id`;
+ *   only the CONTENT of tool results from earlier turns is swapped for the distilled facts.
+ *   The current turn's result stays raw, because that is the one being reasoned about now.
+ * - **`ledger`** -- the payload is rebuilt from scratch each turn: system, question, and one
+ *   facts block. Cheapest, and it throws away the model's own reasoning along with the JSON.
+ *
+ * > [!IMPORTANT] `ledger` removes the CHAIN OF THOUGHT, and that is not a free saving
+ * > Measured 2026-09-04: under `ledger`, `glm-5.3-flash` gave up on the two-hop query after
+ * > two calls, and `gemini-3.8-flash` emitted 2.7x the output tokens -- both re-deriving a
+ * > plan they had already made and could no longer see. `results` exists because condensing
+ * > the bulky JSON and deleting the model's own notes are two different operations, and only
+ * > the first one was ever the goal.
+ */
+export type CompactMode = "off" | "results" | "ledger";
+
 export interface ToolTrace {
   name: string;
   args: Record<string, unknown>;
@@ -79,12 +99,9 @@ export interface RunOptions {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   /**
-   * Replace the accumulated call/result transcript with a distilled facts ledger.
-   *
-   * Off by default so the harness can A/B it. See `./facts.ts` for what survives and why the
-   * distillation is typed code rather than a summarising model call.
+   * How much of the transcript to condense. See `CompactMode`.
    */
-  compact?: boolean;
+  compact?: CompactMode;
   /** Ask for a cache breakpoint after the stable prefix. Only some providers honour it. */
   cacheSystem?: boolean;
 }
@@ -110,8 +127,11 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     { role: "user", content: opts.question },
   ];
 
+  const mode: CompactMode = opts.compact ?? "off";
   const facts: Facts = [];
   const priorCalls: string[] = [];
+  /** Distilled replacement for a tool message, keyed by its index in `messages`. */
+  const condensed = new Map<number, { text: string; turn: number }>();
 
   const toolCalls: ToolTrace[] = [];
   let promptTokens = 0;
@@ -123,13 +143,24 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   for (let turn = 1; turn <= maxTurns; turn++) {
     // The ledger message is REBUILT rather than appended, and it sits after the question so
     // the stable prefix (tools, system) stays byte-identical and remains cacheable.
-    const payload: ChatMessage[] = opts.compact
-      ? [
-          { role: "system", content: system },
-          { role: "user", content: opts.question },
-          ...(facts.length > 0 ? [{ role: "user" as const, content: ledgerMessage(facts, priorCalls) }] : []),
-        ]
-      : messages;
+    const payload: ChatMessage[] =
+      mode === "ledger"
+        ? [
+            { role: "system", content: system },
+            { role: "user", content: opts.question },
+            ...(facts.length > 0
+              ? [{ role: "user" as const, content: ledgerMessage(facts, priorCalls) }]
+              : []),
+          ]
+        : mode === "results"
+          ? messages.map((m, i) => {
+              // Only a tool result, and only one from a PREVIOUS turn. The current turn's raw
+              // result is what the model is reasoning about right now; swapping it would be
+              // condensing a conversation that has not happened yet.
+              const c = condensed.get(i);
+              return c && c.turn < turn ? { ...m, content: c.text } : m;
+            })
+          : messages;
 
     let reply: Awaited<ReturnType<typeof chat>>;
     try {
@@ -197,9 +228,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     for (const call of calls) {
       const done = executeOne(opts, call, toolCalls);
       messages.push(done.message);
-      if (opts.compact) {
-        facts.push(...factsFrom(call.function.name, done.args, done.payload));
+      if (mode === "off") continue;
+      const lines = factsFrom(call.function.name, done.args, done.payload);
+      if (mode === "ledger") {
+        facts.push(...lines);
         priorCalls.push(callSignature(call.function.name, done.args));
+      } else {
+        condensed.set(messages.length - 1, { text: lines.join("\n"), turn });
       }
     }
   }

@@ -19,7 +19,7 @@
 
 import { Database } from "bun:sqlite";
 import { MemoryResumeStore } from "../lib/agent/connections";
-import { type RunResult, run } from "../lib/agent/runner";
+import { type CompactMode, type RunResult, run } from "../lib/agent/runner";
 import { type Grade, grade, SCENARIOS, type Scenario } from "../lib/agent/scenarios";
 import { loadConfig, paths } from "../lib/config";
 import { SearchEngine } from "../lib/search";
@@ -34,11 +34,13 @@ interface Row {
 }
 
 /**
- * `plain` re-sends every previous tool result verbatim; `compact` replaces them with a
- * distilled facts ledger. `--compact both` runs each scenario twice so the delta is measured
- * rather than argued about, which is the only reason this flag exists.
+ * Which transcript treatment an arm ran under -- see `CompactMode` in the runner.
+ *
+ * `--compact off,results` runs each scenario once per named mode so the delta is measured
+ * rather than argued about, which is the only reason this flag exists. The FIRST mode named
+ * is the baseline every other arm is compared against.
  */
-type Mode = "plain" | "compact";
+type Mode = CompactMode;
 
 function flag(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -87,8 +89,14 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
   console.log(`models  ${models.join(", ")}\n`);
 
   const compactFlag = flag(argv, "--compact") ?? "off";
-  const modes: Mode[] =
-    compactFlag === "both" ? ["plain", "compact"] : compactFlag === "on" ? ["compact"] : ["plain"];
+  const modes: Mode[] = (compactFlag === "all" ? "off,results,ledger" : compactFlag)
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m): m is Mode => m === "off" || m === "results" || m === "ledger");
+  if (modes.length === 0) {
+    console.error('--compact takes "off", "results", "ledger", a comma list of them, or "all".');
+    return 2;
+  }
   const cacheSystem = argv.includes("--cache");
 
   const rows: Row[] = [];
@@ -100,7 +108,7 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
           question: scenario.question,
           ctx,
           store: new MemoryResumeStore(),
-          compact: mode === "compact",
+          compact: mode,
           cacheSystem,
         });
         const g = grade(db, scenario, result);
@@ -184,22 +192,28 @@ function summary(rows: Row[]): string {
 
   // The A/B line only exists when both arms actually ran; a delta against one arm is a
   // number with nothing to compare to, and printing it anyway is how a benchmark starts lying.
-  if (modes.length === 2) {
-    lines.push("", "compaction delta (compact vs plain, negative is better):");
+  // The FIRST mode that ran is the baseline; every other arm is reported against it.
+  const baseline = modes[0];
+  if (modes.length > 1 && baseline) {
+    lines.push("", `delta vs "${baseline}" (negative is better):`);
     for (const model of models) {
-      const plain = bucket(model, "plain");
-      const comp = bucket(model, "compact");
-      if (plain.length === 0 || comp.length === 0) continue;
-      const sum = (rs: Row[], f: (r: Row) => number) => rs.reduce((a, r) => a + f(r), 0);
-      const tokPlain = sum(plain, (r) => r.result.promptTokens);
-      const tokComp = sum(comp, (r) => r.result.promptTokens);
-      const costPlain = sum(plain, (r) => r.result.costUsd);
-      const costComp = sum(comp, (r) => r.result.costUsd);
-      const pass = `${comp.filter((r) => r.grade.pass).length}/${comp.length} vs ${plain.filter((r) => r.grade.pass).length}/${plain.length}`;
-      lines.push(
-        `  ${model.padEnd(30)} tokens ${pct(tokComp, tokPlain).padStart(7)}   ` +
-          `cost ${pct(costComp, costPlain).padStart(7)}   pass ${pass}`,
-      );
+      for (const arm of modes.slice(1)) {
+        const plain = bucket(model, baseline);
+        const comp = bucket(model, arm);
+        if (plain.length === 0 || comp.length === 0) continue;
+        const sum = (rs: Row[], f: (r: Row) => number) => rs.reduce((a, r) => a + f(r), 0);
+        const tokBase = sum(plain, (r) => r.result.promptTokens);
+        const tokArm = sum(comp, (r) => r.result.promptTokens);
+        const outBase = sum(plain, (r) => r.result.completionTokens);
+        const outArm = sum(comp, (r) => r.result.completionTokens);
+        const costBase = sum(plain, (r) => r.result.costUsd);
+        const costArm = sum(comp, (r) => r.result.costUsd);
+        const pass = `${comp.filter((r) => r.grade.pass).length}/${comp.length} vs ${plain.filter((r) => r.grade.pass).length}/${plain.length}`;
+        lines.push(
+          `  ${model.padEnd(28)} ${arm.padEnd(8)} in ${pct(tokArm, tokBase).padStart(7)}   ` +
+            `out ${pct(outArm, outBase).padStart(7)}   cost ${pct(costArm, costBase).padStart(7)}   pass ${pass}`,
+        );
+      }
     }
   }
   return lines.join("\n");
