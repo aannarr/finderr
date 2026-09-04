@@ -16,6 +16,7 @@ import {
   aiGate,
   chargeRefusal,
   chargeRun,
+  dailyCapVerdict,
   localDay,
   outcomeOf,
   resetDelta,
@@ -65,7 +66,7 @@ describe("resetDelta -- a delta, never a wall clock", () => {
 });
 
 describe("the gate, in the order it decides", () => {
-  const base = { role: "user" as const, configured: true, adminOnly: false, limitUsd: 1 };
+  const base = { role: "user" as const, configured: true, limitUsd: 1 };
 
   test("no deployment key means the feature does not exist", () => {
     const v = aiGate({ ...base, configured: false, spentToday: () => 0 });
@@ -86,58 +87,79 @@ describe("the gate, in the order it decides", () => {
     expect(read).toBe(0);
   });
 
-  test("during the beta a non-admin is refused before any spend is counted", () => {
+  test("a non-admin is refused, and no configuration can change that", () => {
+    // The admin-only beta, enforced with no switch to widen it. `base` carries every other
+    // setting at its most permissive and the answer is still no.
+    const v = aiGate({ ...base, spentToday: () => 0 });
+    expect(v.allowed).toBe(false);
+    if (!v.allowed) expect(v.reason).toBe("beta_admin_only");
+  });
+
+  test("a non-admin is refused before any spend is counted", () => {
     let read = 0;
-    const v = aiGate({
+    aiGate({
       ...base,
-      adminOnly: true,
       spentToday: () => {
         read++;
         return 0;
       },
     });
-    expect(v.allowed).toBe(false);
-    if (!v.allowed) expect(v.reason).toBe("beta_admin_only");
     expect(read).toBe(0);
   });
 
   test("an admin passes the beta gate", () => {
-    expect(aiGate({ ...base, role: "admin", adminOnly: true, spentToday: () => 0 }).allowed).toBe(true);
+    expect(aiGate({ ...base, role: "admin", spentToday: () => 0 }).allowed).toBe(true);
   });
 
+  test("admins are exempt from the CAP and from nothing else", () => {
+    expect(aiGate({ ...base, role: "admin", spentToday: () => 999 }).allowed).toBe(true);
+    // Still needs the deployment key. The exemption is exactly one gate wide.
+    expect(aiGate({ ...base, role: "admin", configured: false, spentToday: () => 0 }).allowed).toBe(false);
+  });
+});
+
+/*
+  The cap's own branches, called directly.
+
+  NONE OF THIS FIRES IN PRODUCTION TODAY and that is worth saying plainly rather than burying:
+  the admin-only beta means the only people who reach the cap are the people exempt from it,
+  so `aiGate` cannot get here. It is tested anyway because the rule has to be right BEFORE the
+  audience widens, and because widening is deleting one early return -- at which point this
+  suite is the only thing standing between a household and an unbounded bill.
+*/
+describe("the daily cap, once somebody can reach it", () => {
+  const cap = (spent: number, limitUsd = 1) => dailyCapVerdict({ limitUsd, spentToday: () => spent });
+
   test("under the limit is allowed", () => {
-    expect(aiGate({ ...base, spentToday: () => 0.42 }).allowed).toBe(true);
+    expect(cap(0.42).allowed).toBe(true);
   });
 
   test("EXACTLY at the limit is still allowed -- the check is `spent > limit`", () => {
-    // The plan states the naive form and this pins it: a user whose spend has landed
-    // exactly on the cap has not yet exceeded it.
-    expect(aiGate({ ...base, spentToday: () => 1 }).allowed).toBe(true);
+    // The plan states the naive form and this pins it: spend landing exactly on the cap has
+    // not exceeded it.
+    expect(cap(1).allowed).toBe(true);
   });
 
   test("over the limit is refused", () => {
-    const v = aiGate({ ...base, spentToday: () => 1.01 });
+    const v = cap(1.01);
     expect(v.allowed).toBe(false);
     if (!v.allowed) expect(v.reason).toBe("over_daily_limit");
   });
 
   test("zero or less is unlimited, the same reading every other limit here uses", () => {
-    expect(aiGate({ ...base, limitUsd: 0, spentToday: () => 999 }).allowed).toBe(true);
+    expect(cap(999, 0).allowed).toBe(true);
   });
 
-  test("admins are exempt from the CAP and from nothing else", () => {
-    expect(aiGate({ ...base, role: "admin", spentToday: () => 999 }).allowed).toBe(true);
-    // Still needs the deployment key. The exemption is one gate wide.
-    const v = aiGate({ ...base, role: "admin", configured: false, spentToday: () => 0 });
-    expect(v.allowed).toBe(false);
+  test("an admin passes the same spend the cap would refuse", () => {
+    expect(cap(999).allowed).toBe(false);
+    expect(aiGate({ role: "admin", configured: true, limitUsd: 1, spentToday: () => 999 }).allowed).toBe(
+      true,
+    );
   });
 });
 
 describe("what a refused person is told", () => {
-  const v = aiGate({
-    role: "user",
-    configured: true,
-    adminOnly: false,
+  const v = dailyCapVerdict({
     limitUsd: 1,
     spentToday: () => 1.04,
     now: new Date(2026, 8, 4, 18, 48),
@@ -270,11 +292,8 @@ describe("the ledger is the quota's only input", () => {
     expect(store.aiSpendUsd(USER, day)).toBeCloseTo(0.7, 6);
   });
 
-  test("the gate reads it end to end", () => {
-    const verdict = aiGate({
-      role: "user",
-      configured: true,
-      adminOnly: false,
+  test("the cap reads the table end to end", () => {
+    const verdict = dailyCapVerdict({
       limitUsd: 0.5,
       spentToday: () => store.aiSpendUsd(USER, day),
       now,

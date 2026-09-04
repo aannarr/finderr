@@ -179,9 +179,15 @@ services:
       # not in UTC, and every message about it states the reset as a delta. Admins are exempt
       # from this limit and from nothing else. Counted from the ai_call ledger, never a counter.
       FINDERR_AI_DAILY_LIMIT_USD: ${AI_DAILY_LIMIT_USD:-1}
-      # Beta: administrators only. ON by default -- the safe audience for a surface that
-      # spends money at a third party is the small one, and widening it is a choice.
-      FINDERR_AI_ADMIN_ONLY: ${AI_ADMIN_ONLY:-true}
+      #
+      # > [!CAUTION] THIS IS AN ADMIN-ONLY BETA AND THERE IS NO VARIABLE THAT WIDENS IT
+      # > Deliberately not configurable. What people type here goes to a third party, and the
+      # > per-account opt-in that would let each user decide is NOT BUILT -- so a switch here
+      # > would put the whole household one env var away from a consent problem. The switch
+      # > ships with the opt-in or not at all.
+      #
+      # NOTE: admins are exempt from the daily limit, so while the audience is admins the cap
+      # records spend without limiting it. The ledger still sees every call.
 
       # --- the arr callback
       # Radarr and Sonarr push request state changes to /api/webhook/arr instead of finderr

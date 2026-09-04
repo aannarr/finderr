@@ -210,18 +210,6 @@ export interface AiGateInput {
    * already ships: read the config, log why it is going dark, offer nothing.
    */
   configured: boolean;
-  /**
-   * The beta gate. aannarr, 2026-09-04: "only admins should be able to click a button, to
-   * launch the feature for now."
-   *
-   * Distinct from the cap and checked before it, because it answers a different question --
-   * WHO may use this at all, rather than how much. It also stands in for the per-account
-   * opt-in the design doc calls for, which is not built: while only admins can reach the
-   * feature there is nobody to ask for consent who has not already given it by turning the
-   * thing on. When the audience widens past admins, the opt-in is the next gate, not a
-   * replacement for this one.
-   */
-  adminOnly: boolean;
   /** USD per local day. Zero or less is UNLIMITED, the same reading every limit here uses. */
   limitUsd: number;
   /**
@@ -252,11 +240,30 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
     };
   }
 
-  if (input.adminOnly && input.role !== "admin") {
+  /*
+    THIS IS AN ADMIN-ONLY BETA, AND THERE IS DELIBERATELY NO SWITCH THAT WIDENS IT.
+
+    aannarr, 2026-09-04: "we're building a ADMIN ONLY beta." An earlier draft made this a
+    config flag defaulting to on, and that was wrong -- a setting one env var away from
+    letting the whole household in is the footgun, not the safeguard, because the thing that
+    would make a wider audience acceptable IS NOT BUILT.
+
+    What has to exist before this line may take a parameter: THE PER-ACCOUNT OPT-IN. A
+    question typed into finderr is sent to a third party, so what someone searches for leaves
+    the house. That is a fact about the feature rather than a risk to be mitigated, and the
+    honest handling is to say so at the opt-in and let each account decide -- an admin
+    enabling it globally must not enable it for anybody else. While the audience is
+    administrators there is nobody to ask who has not already answered by turning the feature
+    on, which is exactly why admin-only is what makes shipping without the opt-in defensible.
+
+    So: build the opt-in, THEN widen this. Adding a flag first inverts the order and ships
+    the consent problem to production ahead of the consent mechanism.
+  */
+  if (input.role !== "admin") {
     return {
       allowed: false,
       reason: "beta_admin_only",
-      message: "The assistant is in beta and is limited to administrators for now.",
+      message: "The assistant is in beta and is limited to administrators.",
     };
   }
 
@@ -267,9 +274,39 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
     still run under the same turn caps. The exemption is narrow on purpose: an admin
     benchmarking a model is the person most likely to spend, and the person least likely to
     be doing it by accident.
+
+    > [!CAUTION] DURING THE ADMIN-ONLY BETA THIS EXEMPTION MAKES THE CAP INERT, AND THAT IS
+    > TWO DECISIONS COMPOSING RATHER THAN A BUG IN EITHER
+    > "Only admins may use it" and "admins are exempt from the cap" are both aannarr's, both
+    > 2026-09-04, and together they mean NOBODY IS CAPPED until the audience widens. Every
+    > branch below is reachable and unit-tested, and none of it fires in production today.
+    >
+    > The ledger still records every call, so the spend is VISIBLE even while it is not
+    > LIMITED -- which is what makes this survivable rather than blind. If a benchmark ever
+    > runs away, the one-word fix is to drop this early return; the refusal machinery under
+    > it already works and is pinned by tests.
   */
   if (input.role === "admin") return { allowed: true };
 
+  return dailyCapVerdict(input);
+}
+
+/**
+ * The money half of the gate, on its own.
+ *
+ * Split out because during the admin-only beta `aiGate` can never reach it: the only people
+ * who pass the role check are the people exempt from the cap. A rule that production cannot
+ * execute is a rule that rots, so it is a function with its own tests rather than a branch
+ * nothing runs -- and when the audience widens, widening is deleting one early return above
+ * rather than writing this.
+ *
+ * The check is `spent > limit`: landing exactly on the cap has not exceeded it.
+ */
+export function dailyCapVerdict(input: {
+  limitUsd: number;
+  spentToday: () => number;
+  now?: Date;
+}): AiGateVerdict {
   // Zero or less is unlimited, matching `RateLimiter.take` and `quotaVerdict`. It also makes
   // a typo that lands a 0 in the env open the gate rather than lock everybody out.
   if (input.limitUsd <= 0) return { allowed: true };

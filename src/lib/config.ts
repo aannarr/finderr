@@ -487,11 +487,12 @@ export interface Config {
   /**
    * The conversational assistant: which models, whose money, and who may use it at all.
    *
-   * Three independent gates, and each is a separate decision rather than one switch --
-   * `aiGate` in `./ai-spend.ts` is the single place they are evaluated. THE DEPLOYMENT opts
-   * in by providing `openrouterApiKey`; with no key the feature does not exist rather than
-   * failing, which is the shape `tmdb` already ships. THE AUDIENCE is limited by
-   * `adminOnly`. THE SPEND is limited by `dailyLimitUsd`, counted from the `ai_call` ledger.
+   * Three gates, and only two of them are configurable -- `aiGate` in `./ai-spend.ts` is the
+   * single place all three are evaluated. THE DEPLOYMENT opts in by providing
+   * `openrouterApiKey`; with no key the feature does not exist rather than failing, which is
+   * the shape `tmdb` already ships. THE AUDIENCE is administrators, full stop, and there is
+   * no key here for it. THE SPEND is limited by `dailyLimitUsd`, counted from the `ai_call`
+   * ledger.
    */
   ai: {
     /**
@@ -530,20 +531,14 @@ export interface Config {
      * and never from a running total.
      */
     dailyLimitUsd: number;
-    /**
-     * Beta: only administrators may use the assistant. ON by default.
-     *
-     * aannarr, 2026-09-04: "only admins should be able to click a button, to launch the
-     * feature for now." It is on by default because the safe state for a surface that spends
-     * money at a third party is the small audience, and an operator turning it off is
-     * choosing to widen it.
-     *
-     * It also stands in for the per-account opt-in the design calls for and which is not
-     * built yet: while the audience is administrators, everybody who can reach the feature
-     * turned it on. Widening past admins needs that opt-in, because a question typed here
-     * leaves the house.
-     */
-    adminOnly: boolean;
+    /*
+      THERE IS NO adminOnly KEY HERE, AND ITS ABSENCE IS THE POINT.
+
+      This is an admin-only beta and `aiGate` enforces that with no switch to widen it. A
+      config flag would put the whole household one env var away from a surface whose consent
+      mechanism -- the per-account opt-in -- is not built. The flag arrives WITH that opt-in
+      or not at all; see the comment on the `role` check in `./ai-spend.ts`.
+    */
   };
 
   /** What one person may ask the library for. */
@@ -792,7 +787,7 @@ const DEFAULTS: Config = {
   searchLog: { enabled: true, keepRows: 50_000 },
   // No key by default, so a checkout of this repo has no assistant and says nothing about
   // it. $1/day and admins-only are aannarr's calls of 2026-09-04; see the fields.
-  ai: { models: ["z-ai/glm-5.3-flash"], dailyLimitUsd: 1, adminOnly: true },
+  ai: { models: ["z-ai/glm-5.3-flash"], dailyLimitUsd: 1 },
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
@@ -969,7 +964,6 @@ function envOverrides(): Record<string, unknown> {
         .map((s) => s.trim())
         .filter(Boolean),
       dailyLimitUsd: envNum("FINDERR_AI_DAILY_LIMIT_USD"),
-      adminOnly: envBool("FINDERR_AI_ADMIN_ONLY"),
     },
     requests: { quotaPerDay: envInt("FINDERR_REQUEST_QUOTA_PER_DAY") },
     push: {
