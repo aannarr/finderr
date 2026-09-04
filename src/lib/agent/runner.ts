@@ -13,6 +13,7 @@
  * make impossible.
  */
 
+import { callSignature, type Facts, factsFrom, ledgerMessage } from "./facts.js";
 import { type ChatMessage, chat, type ToolCall } from "./openrouter.js";
 import { dispatch, type ResumeStore, TOOL_SCHEMAS } from "./schemas.js";
 import type { AgentContext } from "./tools.js";
@@ -58,6 +59,8 @@ export interface RunResult {
   ms: number;
   promptTokens: number;
   completionTokens: number;
+  /** Of `promptTokens`, how many the provider served from its cache. 0 where unsupported. */
+  cachedTokens: number;
   costUsd: number;
   provider?: string;
   /** Set when the run did not end with the model answering. */
@@ -75,6 +78,15 @@ export interface RunOptions {
   systemPrompt?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Replace the accumulated call/result transcript with a distilled facts ledger.
+   *
+   * Off by default so the harness can A/B it. See `./facts.ts` for what survives and why the
+   * distillation is typed code rather than a summarising model call.
+   */
+  compact?: boolean;
+  /** Ask for a cache breakpoint after the stable prefix. Only some providers honour it. */
+  cacheSystem?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 8;
@@ -84,27 +96,50 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const started = Bun.nanoseconds();
+  const system = opts.systemPrompt ?? SYSTEM_PROMPT;
 
+  /**
+   * The append-only transcript, used when NOT compacting.
+   *
+   * Under compaction this is never sent: the request is rebuilt from the ledger each turn,
+   * which also sidesteps the protocol rule that every `tool_calls` id needs a matching
+   * `tool` message -- there is no assistant tool_calls message in the payload to match.
+   */
   const messages: ChatMessage[] = [
-    { role: "system", content: opts.systemPrompt ?? SYSTEM_PROMPT },
+    { role: "system", content: system },
     { role: "user", content: opts.question },
   ];
+
+  const facts: Facts = [];
+  const priorCalls: string[] = [];
 
   const toolCalls: ToolTrace[] = [];
   let promptTokens = 0;
   let completionTokens = 0;
+  let cachedTokens = 0;
   let costUsd = 0;
   let provider: string | undefined;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
+    // The ledger message is REBUILT rather than appended, and it sits after the question so
+    // the stable prefix (tools, system) stays byte-identical and remains cacheable.
+    const payload: ChatMessage[] = opts.compact
+      ? [
+          { role: "system", content: system },
+          { role: "user", content: opts.question },
+          ...(facts.length > 0 ? [{ role: "user" as const, content: ledgerMessage(facts, priorCalls) }] : []),
+        ]
+      : messages;
+
     let reply: Awaited<ReturnType<typeof chat>>;
     try {
       reply = await chat({
         model: opts.model,
-        messages,
+        messages: payload,
         tools: TOOL_SCHEMAS,
         apiKey: opts.apiKey,
         fetchImpl: opts.fetchImpl,
+        cacheSystem: opts.cacheSystem,
       });
     } catch (err) {
       return {
@@ -114,6 +149,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         ms: elapsed(started),
         promptTokens,
         completionTokens,
+        cachedTokens,
         costUsd,
         provider,
         failure: "error",
@@ -123,6 +159,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     promptTokens += reply.usage.prompt_tokens;
     completionTokens += reply.usage.completion_tokens;
+    cachedTokens += reply.usage.prompt_tokens_details?.cached_tokens ?? 0;
     costUsd += reply.usage.cost ?? 0;
     provider ??= reply.provider;
     messages.push(reply.message);
@@ -136,6 +173,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         ms: elapsed(started),
         promptTokens,
         completionTokens,
+        cachedTokens,
         costUsd,
         provider,
       };
@@ -149,6 +187,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         ms: elapsed(started),
         promptTokens,
         completionTokens,
+        cachedTokens,
         costUsd,
         provider,
         failure: "max_tool_calls",
@@ -156,7 +195,12 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     }
 
     for (const call of calls) {
-      messages.push(executeOne(opts, call, toolCalls));
+      const done = executeOne(opts, call, toolCalls);
+      messages.push(done.message);
+      if (opts.compact) {
+        facts.push(...factsFrom(call.function.name, done.args, done.payload));
+        priorCalls.push(callSignature(call.function.name, done.args));
+      }
     }
   }
 
@@ -167,6 +211,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     ms: elapsed(started),
     promptTokens,
     completionTokens,
+    cachedTokens,
     costUsd,
     provider,
     failure: "max_turns",
@@ -181,7 +226,11 @@ export async function run(opts: RunOptions): Promise<RunResult> {
  * refusal messages were written for, and a harness that crashed instead would never measure
  * whether a model actually recovers.
  */
-function executeOne(opts: RunOptions, call: ToolCall, trace: ToolTrace[]): ChatMessage {
+function executeOne(
+  opts: RunOptions,
+  call: ToolCall,
+  trace: ToolTrace[],
+): { message: ChatMessage; payload: unknown; args: Record<string, unknown> } {
   const t0 = Bun.nanoseconds();
   let args: Record<string, unknown> = {};
   let payload: unknown;
@@ -212,7 +261,11 @@ function executeOne(opts: RunOptions, call: ToolCall, trace: ToolTrace[]): ChatM
     ...(error ? { error } : {}),
   });
 
-  return { role: "tool", tool_call_id: call.id, name: call.function.name, content: body };
+  return {
+    message: { role: "tool", tool_call_id: call.id, name: call.function.name, content: body },
+    payload,
+    args,
+  };
 }
 
 function elapsed(fromNs: number): number {

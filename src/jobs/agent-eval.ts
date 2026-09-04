@@ -27,10 +27,18 @@ import { prepareSqlite } from "../lib/spellfix";
 
 interface Row {
   model: string;
+  mode: Mode;
   scenario: Scenario;
   result: RunResult;
   grade: Grade;
 }
+
+/**
+ * `plain` re-sends every previous tool result verbatim; `compact` replaces them with a
+ * distilled facts ledger. `--compact both` runs each scenario twice so the delta is measured
+ * rather than argued about, which is the only reason this flag exists.
+ */
+type Mode = "plain" | "compact";
 
 function flag(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -78,28 +86,37 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
   console.log(`cases   ${cases.length}  (${cases.map((c) => c.id).join(", ")})`);
   console.log(`models  ${models.join(", ")}\n`);
 
+  const compactFlag = flag(argv, "--compact") ?? "off";
+  const modes: Mode[] =
+    compactFlag === "both" ? ["plain", "compact"] : compactFlag === "on" ? ["compact"] : ["plain"];
+  const cacheSystem = argv.includes("--cache");
+
   const rows: Row[] = [];
   for (const model of models) {
     for (const scenario of cases) {
-      const result = await run({
-        model,
-        question: scenario.question,
-        ctx,
-        store: new MemoryResumeStore(),
-      });
-      const g = grade(db, scenario, result);
-      rows.push({ model, scenario, result, grade: g });
-      const mark = g.pass ? "PASS" : "FAIL";
-      const tools = result.toolCalls.map((c) => c.name).join(" -> ") || "(none)";
-      console.log(
-        `${mark}  ${model.padEnd(34)} ${scenario.id.padEnd(30)} ` +
-          `${result.ms.toFixed(0).padStart(6)}ms ${String(result.toolCalls.length).padStart(2)} calls ` +
-          `$${result.costUsd.toFixed(4)}`,
-      );
-      console.log(`      ${tools}`);
-      if (!g.pass) for (const r of g.reasons) console.log(`      ! ${r}`);
-      if (result.answer) console.log(`      "${result.answer.replaceAll("\n", " ").slice(0, 160)}"`);
-      console.log();
+      for (const mode of modes) {
+        const result = await run({
+          model,
+          question: scenario.question,
+          ctx,
+          store: new MemoryResumeStore(),
+          compact: mode === "compact",
+          cacheSystem,
+        });
+        const g = grade(db, scenario, result);
+        rows.push({ model, mode, scenario, result, grade: g });
+        const mark = g.pass ? "PASS" : "FAIL";
+        const tools = result.toolCalls.map((c) => c.name).join(" -> ") || "(none)";
+        console.log(
+          `${mark}  ${model.padEnd(30)} ${mode.padEnd(8)} ${scenario.id.padEnd(28)} ` +
+            `${result.ms.toFixed(0).padStart(6)}ms ${String(result.toolCalls.length).padStart(2)} calls ` +
+            `${String(result.promptTokens).padStart(6)}tok $${result.costUsd.toFixed(4)}`,
+        );
+        console.log(`      ${tools}`);
+        if (!g.pass) for (const r of g.reasons) console.log(`      ! ${r}`);
+        if (result.answer) console.log(`      "${result.answer.replaceAll("\n", " ").slice(0, 160)}"`);
+        console.log();
+      }
     }
   }
 
@@ -126,35 +143,72 @@ function median(ns: number[]): number {
  */
 function summary(rows: Row[]): string {
   const models = [...new Set(rows.map((r) => r.model))];
+  const modes = [...new Set(rows.map((r) => r.mode))];
   const head =
-    "model".padEnd(34) +
-    "pass".padStart(8) +
-    "med ms".padStart(9) +
+    "model".padEnd(30) +
+    "mode".padEnd(9) +
+    "pass".padStart(7) +
+    "med ms".padStart(8) +
     "calls".padStart(7) +
     "tok in".padStart(9) +
+    "cached".padStart(8) +
     "tok out".padStart(9) +
     "cost".padStart(10) +
-    "  from-memory";
+    "  memory";
   const lines = [head, "-".repeat(head.length)];
 
+  const bucket = (model: string, mode: Mode) => rows.filter((r) => r.model === model && r.mode === mode);
+
   for (const model of models) {
-    const mine = rows.filter((r) => r.model === model);
-    const passed = mine.filter((r) => r.grade.pass).length;
-    const memory = mine.filter((r) => r.grade.unresolved.length > 0).length;
-    lines.push(
-      model.padEnd(34) +
-        `${passed}/${mine.length}`.padStart(8) +
-        median(mine.map((r) => r.result.ms))
-          .toFixed(0)
-          .padStart(9) +
-        (mine.reduce((a, r) => a + r.result.toolCalls.length, 0) / mine.length).toFixed(1).padStart(7) +
-        String(mine.reduce((a, r) => a + r.result.promptTokens, 0)).padStart(9) +
-        String(mine.reduce((a, r) => a + r.result.completionTokens, 0)).padStart(9) +
-        `$${mine.reduce((a, r) => a + r.result.costUsd, 0).toFixed(4)}`.padStart(10) +
-        `  ${memory}`,
-    );
+    for (const mode of modes) {
+      const mine = bucket(model, mode);
+      if (mine.length === 0) continue;
+      const passed = mine.filter((r) => r.grade.pass).length;
+      const memory = mine.filter((r) => r.grade.unresolved.length > 0).length;
+      lines.push(
+        model.padEnd(30) +
+          mode.padEnd(9) +
+          `${passed}/${mine.length}`.padStart(7) +
+          median(mine.map((r) => r.result.ms))
+            .toFixed(0)
+            .padStart(8) +
+          (mine.reduce((a, r) => a + r.result.toolCalls.length, 0) / mine.length).toFixed(1).padStart(7) +
+          String(mine.reduce((a, r) => a + r.result.promptTokens, 0)).padStart(9) +
+          String(mine.reduce((a, r) => a + r.result.cachedTokens, 0)).padStart(8) +
+          String(mine.reduce((a, r) => a + r.result.completionTokens, 0)).padStart(9) +
+          `$${mine.reduce((a, r) => a + r.result.costUsd, 0).toFixed(4)}`.padStart(10) +
+          `  ${memory}`,
+      );
+    }
+  }
+
+  // The A/B line only exists when both arms actually ran; a delta against one arm is a
+  // number with nothing to compare to, and printing it anyway is how a benchmark starts lying.
+  if (modes.length === 2) {
+    lines.push("", "compaction delta (compact vs plain, negative is better):");
+    for (const model of models) {
+      const plain = bucket(model, "plain");
+      const comp = bucket(model, "compact");
+      if (plain.length === 0 || comp.length === 0) continue;
+      const sum = (rs: Row[], f: (r: Row) => number) => rs.reduce((a, r) => a + f(r), 0);
+      const tokPlain = sum(plain, (r) => r.result.promptTokens);
+      const tokComp = sum(comp, (r) => r.result.promptTokens);
+      const costPlain = sum(plain, (r) => r.result.costUsd);
+      const costComp = sum(comp, (r) => r.result.costUsd);
+      const pass = `${comp.filter((r) => r.grade.pass).length}/${comp.length} vs ${plain.filter((r) => r.grade.pass).length}/${plain.length}`;
+      lines.push(
+        `  ${model.padEnd(30)} tokens ${pct(tokComp, tokPlain).padStart(7)}   ` +
+          `cost ${pct(costComp, costPlain).padStart(7)}   pass ${pass}`,
+      );
+    }
   }
   return lines.join("\n");
+}
+
+function pct(now: number, before: number): string {
+  if (before === 0) return "n/a";
+  const d = ((now - before) / before) * 100;
+  return `${d > 0 ? "+" : ""}${d.toFixed(0)}%`;
 }
 
 if (import.meta.main) {

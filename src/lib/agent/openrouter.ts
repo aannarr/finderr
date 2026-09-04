@@ -30,6 +30,21 @@ export interface Usage {
   total_tokens: number;
   /** OpenRouter's own figure, in USD. Present when `usage.include` was requested. */
   cost?: number;
+  /**
+   * Cache accounting, where the provider does any.
+   *
+   * > [!WARNING] Caching is provider-roulette -- measured 2026-09-04, not assumed
+   * > Identical back-to-back calls with a 2-3k token prefix: `z-ai/glm-5.3-flash` served
+   * > 2,432 of 2,463 prompt tokens from cache and cost fell 3.3x; `google/gemini-3.8-flash`
+   * > cached NOTHING despite the docs listing it as automatic; `anthropic/claude-haiku-4.5`
+   * > with an explicit `cache_control` breakpoint cached NOTHING and cost the same on both
+   * > passes. So a design that needs caching to be affordable is a design that only works on
+   * > some providers. GLM's hit exceeded the message content, which does settle one thing
+   * > the docs are silent on: where caching fires at all, the `tools` array is inside the
+   * > cached prefix.
+   */
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+  cache_discount?: number;
 }
 
 export interface ChatResponse {
@@ -41,6 +56,20 @@ export interface ChatResponse {
 }
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+
+/**
+ * Rewrite the system message as a content array carrying a cache breakpoint.
+ *
+ * Only the system message, and only the first one: a breakpoint marks a PREFIX, so putting
+ * one further down would cache text that changes between turns and buy nothing.
+ */
+function withCacheBreakpoint(messages: ChatMessage[]): unknown[] {
+  return messages.map((m) =>
+    m.role === "system" && typeof m.content === "string"
+      ? { role: m.role, content: [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }] }
+      : m,
+  );
+}
 
 export class OpenRouterError extends Error {
   constructor(
@@ -62,6 +91,15 @@ export interface ChatOptions {
   signal?: AbortSignal;
   apiKey?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Mark the system block as a cache breakpoint.
+   *
+   * Anthropic and Qwen need this; OpenAI, Gemini and Z.AI are documented as automatic. It
+   * goes on the SYSTEM message because the cached prefix is ordered `tools -> system ->
+   * messages`, so a breakpoint here is the only one that can cover the schemas -- which are
+   * 2,041 of the 2,362 fixed tokens and therefore the whole point.
+   */
+  cacheSystem?: boolean;
 }
 
 export async function chat(opts: ChatOptions): Promise<ChatResponse> {
@@ -85,7 +123,7 @@ export async function chat(opts: ChatOptions): Promise<ChatResponse> {
     },
     body: JSON.stringify({
       model: opts.model,
-      messages: opts.messages,
+      messages: opts.cacheSystem ? withCacheBreakpoint(opts.messages) : opts.messages,
       ...(opts.tools?.length ? { tools: opts.tools, tool_choice: "auto" } : {}),
       temperature: opts.temperature ?? 0,
       ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
