@@ -21,6 +21,7 @@ import type { PersonLinks } from "../../../src/lib/people";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor } from "../../../src/lib/search";
 import type { Term, TermDimension } from "../../../src/lib/terms";
+import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
 import { Cache } from "./cache";
 import {
@@ -423,6 +424,19 @@ export interface TitleDetail extends Title {
    * thing here -- there is nothing to say about any episode, so nothing is drawn.
    */
   episodeState?: EpisodeState[];
+  /**
+   * What the world scored each episode, from our own index's IMDb-derived table.
+   *
+   * NOT a facet, and it must not be routed through `paneView`: no provider owes it an
+   * answer, so it is complete the moment the response arrives. Absent for a film, and
+   * EMPTY for a series the index holds no episodes for -- which includes every series on
+   * an index built before the episode stage existed. The grid still draws in that case,
+   * from the `episodes` facet, with every cell blank.
+   *
+   * It joins the `episodes` facet on the (season, number) pair. A missing entry is the
+   * NORMAL answer for an unaired episode: IMDb lists one only once it exists.
+   */
+  episodeScores?: EpisodeScore[];
   /**
    * What the Academy gave this film, from our own imported tables.
    *

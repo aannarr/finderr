@@ -26,6 +26,7 @@ import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import type { EpisodeState, PersonLinks, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
+import type { EpisodeScore } from "../lib/episode-scores";
 import {
   byBillingOrder,
   entityKindOf,
@@ -126,6 +127,12 @@ export interface TitlePanesProps {
    * provider's, so it travels beside the facets like `people` and `collectionTitles`.
    */
   episodeState?: readonly EpisodeState[];
+  /**
+   * What the world scored each episode, from our index. Ours rather than a provider's, so
+   * it travels beside the facets exactly as `episodeState` does -- and it answers the
+   * other question about the same rows: that one is what we HOLD, this is what it is WORTH.
+   */
+  episodeScores?: readonly EpisodeScore[];
   /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
   onRequestEpisode?: (season: number, episode: number) => void;
   /** Ask Sonarr for the rest of one season. Absent means the season control is not offered. */
@@ -351,6 +358,7 @@ export function TitleLowerPanes({
   relatedTitles,
   panes,
   episodeState,
+  episodeScores,
   awards,
   terms,
   onRequestEpisode,
@@ -372,6 +380,7 @@ export function TitleLowerPanes({
         episodeState={episodeState}
         onRequestEpisode={onRequestEpisode}
         onRequestSeason={onRequestSeason}
+        scores={episodeScores}
       />
       {slot("title.after-seasons")}
 

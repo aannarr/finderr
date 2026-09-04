@@ -51,7 +51,15 @@ const GOT_EPISODES: Episode[] = [
  * a reader has to count commas in.
  */
 function render(facets: ResolvedFacets | undefined, over: Partial<SeriesPaneProps> = {}): string {
-  return renderToStaticMarkup(<SeriesPane facets={facets} working={["seasons", "episodes"]} {...over} />);
+  /*
+    `initialTab="episodes"` because the panel now opens on the score GRID, and everything
+    below is about the season browser -- the chips, the air dates, the gap line, the
+    request buttons -- which lives behind the Episodes tab. Static markup cannot press a
+    chip, so the tab is seeded instead. Any case that is about the grid passes its own.
+  */
+  return renderToStaticMarkup(
+    <SeriesPane facets={facets} working={["seasons", "episodes"]} initialTab="episodes" {...over} />,
+  );
 }
 
 describe("a film", () => {

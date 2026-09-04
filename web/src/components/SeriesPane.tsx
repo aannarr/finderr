@@ -27,6 +27,7 @@
 import { type ReactNode, useState } from "react";
 import { type EpisodeStanding, episodeStanding, todayUtc } from "../../../src/lib/episodes";
 import type { EpisodeState } from "../lib/api";
+import { bandFor, type EpisodeScore, scoreIndex } from "../lib/episode-scores";
 import {
   adjacentSeasonNumber,
   defaultSeasonNumber,
@@ -45,6 +46,7 @@ import {
 import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
 import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
+import { EpisodeCard, GridView, Legend, ScoreBadge, TimelineView, useHoverCard } from "./EpisodeScores";
 import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
 import { useChipGroup } from "./RovingFocus";
@@ -65,6 +67,23 @@ export interface SeriesPaneProps {
   onRequestEpisode?: (season: number, episode: number) => void;
   /** Ask Sonarr for the rest of one season. Absent means the control is not offered at all. */
   onRequestSeason?: (season: number) => void;
+  /**
+   * What the world scored each episode, from our own index.
+   *
+   * Undefined or empty is ordinary and everything still draws: the Grid and Timeline tabs
+   * render from the skeleton with no numbers, and the episode rows simply carry no badge.
+   * That is the path an index built before the episode stage takes.
+   */
+  scores?: readonly EpisodeScore[];
+  /**
+   * Which tab opens first. Grid, unless a caller says otherwise.
+   *
+   * Seeded rather than forced: it sets the INITIAL value and the reader still owns the
+   * choice from the first click. It exists because the tab a panel opens on is a product
+   * decision that has already changed once, and because a server-rendered test has no way
+   * to press a chip -- the season browser's own assertions live behind the Episodes tab.
+   */
+  initialTab?: TabName;
 }
 
 export function SeriesPane({
@@ -75,6 +94,8 @@ export function SeriesPane({
   episodeState,
   onRequestEpisode,
   onRequestSeason,
+  scores,
+  initialTab,
 }: SeriesPaneProps) {
   return (
     <FacetPane
@@ -94,11 +115,39 @@ export function SeriesPane({
           episodeState={episodeState}
           onRequestEpisode={onRequestEpisode}
           onRequestSeason={onRequestSeason}
+          scores={scores}
+          initialTab={initialTab}
         />
       )}
     />
   );
 }
+
+/**
+ * ONE panel, three tabs, and that is aannarr's call of 2026-09-05: "merge these..
+ * seasons/scores .. tabs!.. not two panels!"
+ *
+ * The scores began as a second panel stacked under this one, which put two season
+ * selectors and two episode lists on one page describing the same rows. They are one
+ * subject -- the episodes of this series -- looked at three ways:
+ *
+ * - **Grid** (default): every season at once, colour-banded, for the SHAPE of the show.
+ * - **Episodes**: one season in full, with air dates, overviews, what Sonarr holds and
+ *   what may be asked for -- and now a score badge on each row.
+ * - **Timeline**: the trend across the whole run.
+ *
+ * The Episodes tab is this pane's own list rather than a second one written beside it,
+ * which is what the merge bought: a row already carrying a date, a standing mark and a
+ * request button gains a number, instead of that number living in a parallel list that
+ * knows none of those things.
+ */
+type TabName = "grid" | "episodes" | "timeline";
+
+const TABS: readonly { name: TabName; label: string }[] = [
+  { name: "grid", label: "Grid" },
+  { name: "episodes", label: "Episodes" },
+  { name: "timeline", label: "Timeline" },
+];
 
 // --- the selector and what it selects ---------------------------------------
 
@@ -118,6 +167,8 @@ function SeasonBrowser({
   episodeState,
   onRequestEpisode,
   onRequestSeason,
+  scores,
+  initialTab,
 }: {
   seasons: Season[];
   facets: ResolvedFacets | undefined;
@@ -126,7 +177,11 @@ function SeasonBrowser({
   episodeState?: readonly EpisodeState[];
   onRequestEpisode?: (season: number, episode: number) => void;
   onRequestSeason?: (season: number) => void;
+  scores?: readonly EpisodeScore[];
+  initialTab?: TabName;
 }) {
+  const [tab, setTab] = useState<TabName>(initialTab ?? "grid");
+  const card = useHoverCard();
   const ordered = orderSeasons(seasons);
   const [chosen, setChosen] = useState<number | null>(null);
   const selected = ordered.some((s) => s.number === chosen) ? chosen : defaultSeasonNumber(ordered);
@@ -161,11 +216,42 @@ function SeasonBrowser({
   */
   const chips = useChipGroup({ selectionFollowsFocus: true });
 
+  const scoreViews = episodes.state === "content" && (
+    <>
+      <Legend />
+      {tab === "grid" && <GridView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />}
+      {tab === "timeline" && (
+        <TimelineView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />
+      )}
+    </>
+  );
+
   return (
     <>
-      <SeasonStandingLine gap={gap} />
-
       {/*
+        The tab row comes FIRST, above the standing line and the season chips, because it
+        chooses which of the two controls below it even applies: the chips belong to the
+        Episodes tab and nothing else. Same `ToggleChip` as everywhere -- these narrow the
+        view under them without navigating, which is exactly what that control is for.
+      */}
+      <div role="tablist" aria-label="Episode views" className="mb-3 flex flex-wrap gap-1.5">
+        {TABS.map((t) => (
+          <ToggleChip key={t.name} label={t.label} active={tab === t.name} onClick={() => setTab(t.name)} />
+        ))}
+      </div>
+
+      {tab !== "episodes" && (
+        <div className="flex flex-col gap-3">
+          {scoreViews}
+          <EpisodeCard state={card.state} />
+        </div>
+      )}
+
+      {tab === "episodes" && (
+        <>
+          <SeasonStandingLine gap={gap} />
+
+          {/*
         A named group, which this row did NOT have before the arrow keys.
 
         Each chip still carries its own name ("Season 1 · Winter is Coming") and its own
@@ -175,56 +261,59 @@ function SeasonBrowser({
         go through `mergeKeyProps` -- ARIA takes a space-separated list and two spreads
         would silently keep only the last.
       */}
-      {/* biome-ignore lint/a11y/useSemanticElements: the rule's suggested <fieldset> is for form
+          {/* biome-ignore lint/a11y/useSemanticElements: the rule's suggested <fieldset> is for form
           fields, and brings a `min-inline-size: min-content` that fights this row's horizontal
           overflow. These are toggle buttons, and `role="group"` is the ARIA that describes them. */}
-      <div
-        role="group"
-        aria-label="Seasons"
-        ref={chips.ref}
-        onKeyDown={chips.onKeyDown}
-        {...mergeKeyProps(prevKey, nextKey)}
-        className="flex gap-1.5"
-      >
-        {/*
+          <div
+            role="group"
+            aria-label="Seasons"
+            ref={chips.ref}
+            onKeyDown={chips.onKeyDown}
+            {...mergeKeyProps(prevKey, nextKey)}
+            className="flex gap-1.5"
+          >
+            {/*
           The keys sit OUTSIDE the scrolling row, before it. Nine seasons overflow the
           width, so a hint at the end of the chips is off-screen until you have already
           scrolled to the last one -- visible exactly when it has nothing left to teach.
         */}
-        {prevKey.hint && (
-          <span className="flex shrink-0 items-center">
-            {prevKey.hint}
-            {nextKey.hint}
-          </span>
-        )}
-        <div className="shelf-row flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-2">
-          {ordered.map((s) => (
-            <ToggleChip
-              key={s.number}
-              label={seasonLabel(s)}
-              count={s.episodeCount ?? undefined}
-              active={s.number === selected}
-              onClick={() => setChosen(s.number)}
-            />
-          ))}
-        </div>
-      </div>
+            {prevKey.hint && (
+              <span className="flex shrink-0 items-center">
+                {prevKey.hint}
+                {nextKey.hint}
+              </span>
+            )}
+            <div className="shelf-row flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-2">
+              {ordered.map((s) => (
+                <ToggleChip
+                  key={s.number}
+                  label={seasonLabel(s)}
+                  count={s.episodeCount ?? undefined}
+                  active={s.number === selected}
+                  onClick={() => setChosen(s.number)}
+                />
+              ))}
+            </div>
+          </div>
 
-      {season && (
-        <SeasonHeader
-          season={season}
-          gap={gap.find((g) => g.season === season.number) ?? null}
-          onRequestSeason={onRequestSeason}
-        />
-      )}
-      {season && (
-        <SeasonEpisodes
-          season={season}
-          episodes={episodes}
-          episodeState={episodeState}
-          today={today}
-          onRequestEpisode={onRequestEpisode}
-        />
+          {season && (
+            <SeasonHeader
+              season={season}
+              gap={gap.find((g) => g.season === season.number) ?? null}
+              onRequestSeason={onRequestSeason}
+            />
+          )}
+          {season && (
+            <SeasonEpisodes
+              season={season}
+              episodes={episodes}
+              episodeState={episodeState}
+              today={today}
+              onRequestEpisode={onRequestEpisode}
+              scores={scores}
+            />
+          )}
+        </>
       )}
     </>
   );
@@ -342,12 +431,14 @@ function SeasonEpisodes({
   episodeState,
   today,
   onRequestEpisode,
+  scores,
 }: {
   season: Season;
   episodes: PaneView<"episodes">;
   episodeState?: readonly EpisodeState[];
   today: string;
   onRequestEpisode?: (season: number, episode: number) => void;
+  scores?: readonly EpisodeScore[];
 }) {
   if (view.state === "hidden") return null;
 
@@ -370,6 +461,9 @@ function SeasonEpisodes({
   const episodes = episodesForSeason(view.data, season.number);
   if (episodes.length === 0) return null;
 
+  // Built once for the season rather than looked up per row: the same reason `state` is.
+  const byPair = scoreIndex(scores);
+
   // Built once per season rather than per row: `episodeState` is the whole series, and a
   // find() per row is quadratic on a show with 73 of them.
   const state = episodeStateIndex(episodeState);
@@ -382,6 +476,7 @@ function SeasonEpisodes({
           episode={episode}
           standing={episodeStanding(state.get(`${episode.season}:${episode.number}`), today)}
           onRequest={onRequestEpisode}
+          score={byPair.get(`${episode.season}:${episode.number}`) ?? null}
         />
       ))}
     </EpisodeRows>
@@ -408,14 +503,39 @@ function EpisodeRow({
   episode,
   standing,
   onRequest,
+  score,
 }: {
   episode: Episode;
   standing: EpisodeStanding;
   onRequest?: (season: number, episode: number) => void;
+  /** Null for an unrated or unaired episode, which draws no badge at all. */
+  score?: { rating: number | null; votes: number } | null;
 }) {
   return (
     <li className={EPISODE_ROW_CLASS}>
       <span className={EPISODE_NUMBER_CLASS}>{episode.number}</span>
+      {/*
+        The score sits between the number and the name, in the same colours the grid uses,
+        so a reader who has just come from the Grid tab recognises it without a legend.
+        An episode nobody has rated draws nothing rather than a placeholder -- a row is
+        about the episode, and a missing number should not take a column's width.
+      */}
+      {score?.rating != null && (
+        <ScoreBadge
+          episode={{
+            season: episode.season,
+            number: episode.number,
+            label: episodeLabel(episode),
+            airDate: episode.airDate,
+            rating: score.rating,
+            votes: score.votes,
+            band: bandFor(score.rating),
+            image: episode.image,
+            overview: episode.overview,
+          }}
+          className="h-fit shrink-0 px-1.5 py-0.5 text-xs"
+        />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="text-sm font-medium text-ink">{episodeLabel(episode)}</span>
