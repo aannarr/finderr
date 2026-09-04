@@ -12,9 +12,10 @@
  * while the container is up: two processes on one SQLite file over a Docker bind mount is
  * how this project's database has been corrupted twice.
  *
- * What it prints is per-model: pass rate, median wall time, tool calls per question, tokens
- * and the cost OpenRouter itself reports. Cost is read from the response rather than
- * computed from a price table, because a price table is a fact with an expiry date.
+ * What it prints is per-model: the two verdicts (`correct` and `route` -- see `Grade`),
+ * median wall time, tool calls per question, tokens and the cost OpenRouter itself reports.
+ * Cost is read from the response rather than computed from a price table, because a price
+ * table is a fact with an expiry date.
  */
 
 import { Database } from "bun:sqlite";
@@ -113,7 +114,10 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
         });
         const g = grade(db, scenario, result);
         rows.push({ model, mode, scenario, result, grade: g });
-        const mark = g.pass ? "PASS" : "FAIL";
+        // Two marks, because they are two verdicts. A correct answer that took a wasteful
+        // route reads as `PASS/slow` rather than being scored as wrong -- which is the whole
+        // reason the grader was split. See `Grade` in ../lib/agent/scenarios.ts.
+        const mark = `${g.correct ? "PASS" : "FAIL"}/${g.efficient ? "route" : "slow "}`;
         const tools = result.toolCalls.map((c) => c.name).join(" -> ") || "(none)";
         console.log(
           `${mark}  ${model.padEnd(30)} ${mode.padEnd(8)} ${scenario.id.padEnd(28)} ` +
@@ -121,7 +125,8 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
             `${String(result.promptTokens).padStart(6)}tok $${result.costUsd.toFixed(4)}`,
         );
         console.log(`      ${tools}`);
-        if (!g.pass) for (const r of g.reasons) console.log(`      ! ${r}`);
+        if (!g.correct) for (const r of g.reasons) console.log(`      ! ${r}`);
+        if (!g.efficient) for (const r of g.routeNotes) console.log(`      ~ route: ${r}`);
         if (result.answer) console.log(`      "${result.answer.replaceAll("\n", " ").slice(0, 160)}"`);
         console.log();
       }
@@ -131,7 +136,9 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2)): Promise
   console.log(summary(rows));
   engine.close();
   db.close();
-  return rows.every((r) => r.grade.pass) ? 0 : 1;
+  // CORRECTNESS owns the exit code and the route does not. A model that answered every
+  // question truthfully by a path no case author predicted has not failed a benchmark.
+  return rows.every((r) => r.grade.correct) ? 0 : 1;
 }
 
 function median(ns: number[]): number {
@@ -144,10 +151,15 @@ function median(ns: number[]): number {
 /**
  * The comparison table.
  *
- * `resolve fails` is broken out from the pass rate on purpose: a model can get the right
- * answer while never calling a resolver, which is a PASS on the question and a failure of
- * the discipline -- and the second one predicts the next answer being wrong. Reporting them
- * as one number would hide exactly the behaviour this harness exists to detect.
+ * FOUR numbers describe a model here and each answers a question the others cannot.
+ *
+ * - `correct` -- was the answer true and backed by the tools. The headline.
+ * - `route` -- did it get there the way the case expected. A model can be correct and
+ *   wasteful, which costs money and latency without being wrong, and folding this into the
+ *   pass rate is what previously scored a right answer as a failure.
+ * - `memory` -- answered while never resolving a proper noun. Right today, wrong next week.
+ * - `inferred` -- stated a connection no tool result carried. The one that a correct-looking
+ *   answer hides completely: every noun checks out and the sentence is still false.
  */
 function summary(rows: Row[]): string {
   const models = [...new Set(rows.map((r) => r.model))];
@@ -155,14 +167,15 @@ function summary(rows: Row[]): string {
   const head =
     "model".padEnd(30) +
     "mode".padEnd(9) +
-    "pass".padStart(7) +
+    "correct".padStart(8) +
+    "route".padStart(8) +
     "med ms".padStart(8) +
     "calls".padStart(7) +
     "tok in".padStart(9) +
     "cached".padStart(8) +
     "tok out".padStart(9) +
     "cost".padStart(10) +
-    "  memory";
+    "  memory  inferred";
   const lines = [head, "-".repeat(head.length)];
 
   const bucket = (model: string, mode: Mode) => rows.filter((r) => r.model === model && r.mode === mode);
@@ -171,12 +184,15 @@ function summary(rows: Row[]): string {
     for (const mode of modes) {
       const mine = bucket(model, mode);
       if (mine.length === 0) continue;
-      const passed = mine.filter((r) => r.grade.pass).length;
+      const correct = mine.filter((r) => r.grade.correct).length;
+      const efficient = mine.filter((r) => r.grade.efficient).length;
       const memory = mine.filter((r) => r.grade.unresolved.length > 0).length;
+      const inferred = mine.filter((r) => r.grade.inferredJoins.length > 0).length;
       lines.push(
         model.padEnd(30) +
           mode.padEnd(9) +
-          `${passed}/${mine.length}`.padStart(7) +
+          `${correct}/${mine.length}`.padStart(8) +
+          `${efficient}/${mine.length}`.padStart(8) +
           median(mine.map((r) => r.result.ms))
             .toFixed(0)
             .padStart(8) +
@@ -185,7 +201,7 @@ function summary(rows: Row[]): string {
           String(mine.reduce((a, r) => a + r.result.cachedTokens, 0)).padStart(8) +
           String(mine.reduce((a, r) => a + r.result.completionTokens, 0)).padStart(9) +
           `$${mine.reduce((a, r) => a + r.result.costUsd, 0).toFixed(4)}`.padStart(10) +
-          `  ${memory}`,
+          `  ${String(memory).padStart(6)}  ${String(inferred).padStart(8)}`,
       );
     }
   }
@@ -208,7 +224,7 @@ function summary(rows: Row[]): string {
         const outArm = sum(comp, (r) => r.result.completionTokens);
         const costBase = sum(plain, (r) => r.result.costUsd);
         const costArm = sum(comp, (r) => r.result.costUsd);
-        const pass = `${comp.filter((r) => r.grade.pass).length}/${comp.length} vs ${plain.filter((r) => r.grade.pass).length}/${plain.length}`;
+        const pass = `${comp.filter((r) => r.grade.correct).length}/${comp.length} vs ${plain.filter((r) => r.grade.correct).length}/${plain.length}`;
         lines.push(
           `  ${model.padEnd(28)} ${arm.padEnd(8)} in ${pct(tokArm, tokBase).padStart(7)}   ` +
             `out ${pct(outArm, outBase).padStart(7)}   cost ${pct(costArm, costBase).padStart(7)}   pass ${pass}`,

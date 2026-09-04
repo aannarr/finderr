@@ -126,6 +126,8 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         "Who is in these titles? Takes an ARRAY -- pass every title at once, never one call " +
         "each. mode:'intersection' returns only people in ALL of them, computed in the " +
         "database, which is far cheaper than reading a union and filtering it yourself. " +
+        "TWO SEPARATE CALLS CANNOT ANSWER WHAT TWO TITLES SHARE -- a name appearing in both " +
+        "results is your inference, not ours. Use mode:'intersection' here, or find_connections. " +
         "Rows carry 'billing' (IMDb order): when a user says 'the guy from X' they almost " +
         "always mean a low billing number. " +
         "Cost: limit is a TOTAL across all ids, default 20, max 50.",
@@ -237,9 +239,14 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       name: "find_connections",
       description:
         "How are these two connected through who worked with whom? Answers 'the actor in X " +
-        "who is also in a show that someone from Y is in' in ONE call -- do not try to walk " +
-        "that by hand with list_cast and list_credits. max_hops 1 means somebody was in " +
-        "both; 2 means somebody from one worked with somebody from the other. " +
+        "who is also in a show that someone from Y is in' in ONE call. " +
+        "IF YOU ARE ABOUT TO COMPARE TWO CAST LISTS YOURSELF, CALL THIS INSTEAD. Reading two " +
+        "list_cast results and spotting a shared name is a guess, not a lookup: each of those " +
+        "rows only says which of the titles YOU ASKED ABOUT that person was found in, so an " +
+        "overlap you notice across two separate calls is not something the index told you. " +
+        "This tool returns the join itself, as a path. " +
+        "max_hops 1 means somebody was in both; 2 means somebody from one worked with " +
+        "somebody from the other. " +
         "Cost: budget is a LOOKUP ceiling, default 100. " +
         "IF status IS 'budget_exhausted' THE TWO ARE NOT NECESSARILY UNCONNECTED -- we " +
         "stopped looking. Call again with the 'resume' handle and a fresh budget to continue.",

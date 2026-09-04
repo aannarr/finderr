@@ -13,6 +13,7 @@
  * make impossible.
  */
 
+import { type Evidence, evidenceFrom } from "./evidence.js";
 import { callSignature, type Facts, factsFrom, ledgerMessage } from "./facts.js";
 import { type ChatMessage, chat, type ToolCall } from "./openrouter.js";
 import { dispatch, type ResumeStore, TOOL_SCHEMAS } from "./schemas.js";
@@ -21,10 +22,26 @@ import type { AgentContext } from "./tools.js";
 /**
  * The standing instructions.
  *
- * The last paragraph is the one that matters and it is written from a real failure: asked
- * about a 2026 series, a model answered from its weights, concluded no such show existed,
- * and was wrong -- the title was in the index the whole time. Absence from memory is not
- * evidence of absence, and for anything recent the inference is invalid by construction.
+ * Two paragraphs are written from real failures rather than from taste, and they guard
+ * different things.
+ *
+ * WHAT YOU MAY ASSERT came first: asked about a 2026 series, a model answered from its
+ * weights, concluded no such show existed, and was wrong -- the title was in the index the
+ * whole time. Absence from memory is not evidence of absence, and for anything recent the
+ * inference is invalid by construction. The ids-only type wall enforces it, and it works:
+ * every model measured on 2026-09-04 scored zero from-memory failures.
+ *
+ * > [!IMPORTANT] A CLAIM IS NOT A NOUN, AND DISCIPLINING NOUNS DID NOTHING FOR CLAIMS
+ * > CONNECTIONS is the second rule and it exists because the first one passed while the
+ * > answer was still false. Measured 2026-09-04: `claude-haiku-4.5` resolved both titles
+ * > correctly, pulled both cast lists, and then asserted that actors from *The Bear* appear
+ * > in *Furious*. Every proper noun in that sentence had come back from a tool. The
+ * > RELATIONSHIP between them had not -- the link runs through *Shameless* -- and nothing in
+ * > the prompt or the schemas said that a relationship is a claim too.
+ * >
+ * > So the rule names the specific move that produced it: reading two results and spotting
+ * > an overlap yourself is not a lookup. `src/lib/agent/evidence.ts` is the mechanical half
+ * > of the same rule, and `S13-inferred-join` is the case that goes red when it is broken.
  */
 export const SYSTEM_PROMPT = `You answer questions about films and television for finderr, using ONLY the tools provided.
 
@@ -40,6 +57,12 @@ WHAT YOU MAY ASSERT
 Every title and every person you name in your answer must have come back from a tool in THIS conversation.
 Your training data is not evidence. The index knows about titles released after your knowledge cutoff, and it is right and you are wrong about anything recent.
 If a tool finds nothing, say so plainly. "It is not in the index" is a good answer. Inventing a plausible one is not.
+
+CONNECTIONS ARE CLAIMS TOO, AND THIS IS THE RULE MOST OFTEN BROKEN
+A link between two titles, or two people, or a person and a title -- "X is also in Y", "A and B worked together", "they share a cast member" -- is a CLAIM, and a single tool result must have returned that link. Resolving both ends does not license the link between them.
+COMPARING TWO RESULTS BY EYE IS NOT EVIDENCE. If you called list_cast twice, once per title, you have two lists and NO fact about what they share; noticing a name in both is your inference, not the index's answer. Ask for the join instead: list_cast or list_credits with mode:"intersection", or find_connections.
+A tool answers a connection question only when ONE result carries both ends -- a row whose seen_in or seen_with names both ids, or a path from find_connections.
+If no tool returned the link, say what you do know and say the link is unverified. Do not state it.
 
 Answer in one or two sentences. Name the specific titles and people you found.`;
 
@@ -70,6 +93,14 @@ export interface ToolTrace {
   /** Serialized size of what went back to the model -- the real token driver. */
   bytes: number;
   error?: string;
+  /**
+   * The entities and the RELATIONS this call actually returned. See `./evidence.ts`.
+   *
+   * Recorded on the trace rather than recomputed later because the payload is gone by then:
+   * only `bytes` survives, and a grader cannot ask "did a tool return this connection" of a
+   * byte count. It is the evidence half of the run, sitting beside the cost half.
+   */
+  evidence: Evidence;
 }
 
 export interface RunResult {
@@ -293,6 +324,7 @@ function executeOne(
     args,
     ms: elapsed(t0),
     bytes: body.length,
+    evidence: evidenceFrom(call.function.name, payload),
     ...(error ? { error } : {}),
   });
 
