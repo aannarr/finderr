@@ -1,6 +1,11 @@
 node_modules/
 web/dist/
 data/
+# Any sibling dev data directory. A dev server pointed at its own dir (data-dev/,
+# data-scratch/, ...) writes a multi-GB SQLite index and poster cache that must never be
+# committed -- and, more immediately, an untracked one blocks integrate.sh's dirty-tree
+# preflight for every other agent in the repo. Measured: a 2.2 GB data-dev/ stopped a merge.
+data-*/
 *.db
 *.db-wal
 *.db-shm
