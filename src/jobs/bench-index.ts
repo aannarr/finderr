@@ -131,18 +131,35 @@ export function assertNotLiveIndex(path: string): void {
 }
 
 /**
- * A copy-on-write clone where the platform has one, a real copy where it does not.
+ * A copy-on-write clone where the filesystem has one, a real copy where it does not.
  *
- * `cp -c` fails rather than falling back on a non-APFS filesystem, which is why the plain
- * copy is a fallback rather than the default: on the Mac this ships from, the reflink makes a
- * 2.18 GB clone free, and paying two gigabytes of writes per cold sample would make the cold
- * measurement itself the slowest thing in the run.
+ * > [!IMPORTANT] The reflink is what makes a per-scenario COLD measurement affordable
+ * > Cold is measured against a fresh clone -- a new inode the page cache has never read --
+ * > so a run makes one clone per scenario. At 730 MB to 2.3 GB each, a real copy would mean
+ * > tens of gigabytes of writes per run, and the copying would dwarf what is being measured.
+ * > A reflink is instant and costs no space until something writes to it.
+ *
+ * BOTH spellings are tried, because the two filesystems that matter here disagree: macOS
+ * APFS takes `cp -c`, and Linux btrfs -- which is what the Synology this deploys to runs,
+ * across nine spinning disks in RAID5 -- takes `cp --reflink`. Trying only the Mac's spelling
+ * meant the NAS fell silently through to copying the whole file once per scenario, onto the
+ * slowest storage in the system.
+ *
+ * `--reflink=always` rather than `auto` on purpose: `auto` falls back to a full copy INSIDE
+ * `cp` and reports success, so the slow path would be taken with nothing to show it had been.
  */
 async function cloneIndex(src: string, dest: string): Promise<void> {
   mkdirSync(dirname(dest), { recursive: true });
   rmSync(dest, { force: true });
-  const reflink = Bun.spawnSync(["cp", "-c", src, dest]);
-  if (reflink.exitCode !== 0) await Bun.write(dest, Bun.file(src));
+  for (const argv of [
+    ["cp", "-c", src, dest], // APFS
+    ["cp", "--reflink=always", src, dest], // btrfs, XFS
+  ]) {
+    if (Bun.spawnSync(argv).exitCode === 0) return;
+    // A half-written destination from a failed attempt must not be measured.
+    rmSync(dest, { force: true });
+  }
+  await Bun.write(dest, Bun.file(src));
 }
 
 /**
@@ -171,16 +188,32 @@ function reindex(path: string): void {
       name: string;
     }[]
   ).map((r) => r.name);
+  // Which tables this file actually has. An index built before a stage existed has no
+  // `episode` table, and `allIndexes()` names two indexes over it -- so a blind loop dies
+  // with `no such table: main.episode` against exactly the older index this flag is most
+  // useful on. Measured against the live NAS file, which predates the episode stage.
+  const tables = new Set(
+    (db.query("select name from sqlite_master where type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
   const t0 = Bun.nanoseconds();
   db.run("pragma journal_mode = off");
   db.run("pragma synchronous = off");
+  let skipped = 0;
   for (const sql of allIndexes()) {
     // The name is needed to drop the OLD shape before creating the new one -- a reshape is a
     // drop plus a create, and `create index if not exists` would silently keep the old order.
     const name = sql.match(/create index (?:if not exists )?(\w+)/i)?.[1];
+    const table = sql.match(/\bon\s+(\w+)\s*\(/i)?.[1];
+    if (table && !tables.has(table)) {
+      skipped++;
+      continue;
+    }
     if (name && existing.includes(name)) db.run(`drop index ${name}`);
     db.run(sql);
   }
+  if (skipped > 0) console.log(`# skipped ${skipped} index(es) over tables this index does not have`);
   /*
     The PRECOMPUTES are part of the shape too, and forgetting them is a silent wrong answer.
 

@@ -161,6 +161,15 @@ export interface LiveIndexOptions {
    */
   recover?: () => void;
   /**
+   * Read the index into the OS page cache after opening or swapping it. Defaults to ON.
+   *
+   * Opt-OUT rather than opt-in because the machine that needs it least (an SSD dev box,
+   * where it costs a second of background I/O) is the one a developer is looking at, and
+   * the machine that needs it most is the unattended NAS nobody is watching. A test turns
+   * it off so a fixture index is not read end to end on every construction.
+   */
+  prefault?: boolean;
+  /**
    * Start with NO engine, because there is no index file yet.
    *
    * The boot-time build path (`./index-build.ts`) needs the server listening before an
@@ -207,12 +216,75 @@ export class LiveIndex {
     this.log = opts.log ?? (() => {});
     this.floor = opts.floor ?? 0.9;
     this.recover = opts.recover;
+    this.prefault = opts.prefault ?? true;
     if (opts.allowMissing && !existsSync(this.path)) {
       this.engine = null;
     } else {
       this.engine = new SearchEngine(this.path, this.cfg);
       this.engine.prepareFuzzy((m) => this.log(m));
+      this.warmPageCache();
     }
+  }
+
+  /** Whether to pull the index into the OS page cache after opening it. */
+  private readonly prefault: boolean;
+
+  /** The prefault in flight, so a swap during one does not start a second. */
+  private warming: Promise<void> | null = null;
+
+  /**
+   * Read the index file end to end, so the OS page cache holds it before a reader arrives.
+   *
+   * > [!IMPORTANT] This is the single biggest win available on SPINNING DISKS, and it is measured
+   * > A query that misses the page cache pays a random seek per page it touches, and on a
+   * > 7200rpm array that is ~10ms each. Measured on the deployment Synology -- a Celeron
+   * > J4125 with nine SATA disks in RAID5 -- against a freshly cloned index the page cache
+   * > had never read: **every scenario cost between 0.6 and 3.5 SECONDS cold**, against
+   * > 0.02-49ms warm. `discover.topGenres` alone was 4,635ms cold and 13ms warm.
+   * >
+   * > Reading the whole file SEQUENTIALLY costs **2.41s at 303 MB/s** for a 730 MB index on
+   * > that same array (0.17s once cached, at 4.2 GB/s). So one background read replaces the
+   * > random-seek tax on every distinct query the first users happen to make. Sequential is
+   * > the whole trick: a striped array is fast at it and terrible at the seeks it replaces.
+   *
+   * **Fire and forget, and deliberately not awaited.** The server must answer during it --
+   * a request that arrives mid-warm is no worse off than it would have been with no warm at
+   * all, because it competes for the same disk it was going to seek on anyway.
+   *
+   * **It also runs after a SWAP**, which is the case that is easy to miss: a promoted index
+   * is a different inode the cache has never seen, so a nightly refresh would otherwise hand
+   * every user the cold penalty back at 09:00 UTC.
+   *
+   * Not `posix_fadvise(WILLNEED)`, which is what this wants to be and which Bun does not
+   * expose -- so the bytes are read into userspace and dropped. The extra cost is one memcpy
+   * of the file, which is noise next to the seeks it removes.
+   */
+  private warmPageCache(): void {
+    if (!this.prefault || this.warming) return;
+    const path = this.path;
+    const t0 = Date.now();
+    this.warming = (async () => {
+      let bytes = 0;
+      try {
+        // Streamed rather than read whole: `Bun.file().arrayBuffer()` would hold the entire
+        // index in the heap at once, which is exactly the 1,514 MB mistake the trigram index
+        // made. The chunks here are discarded as they arrive and nothing accumulates.
+        const stream = Bun.file(path).stream();
+        for await (const chunk of stream) bytes += chunk.length;
+      } catch (err) {
+        // A warm that fails costs nothing but the warm -- the index is open and serving, and
+        // the next reader simply pays the seeks it would have paid anyway.
+        this.log(`index warm: skipped -- ${(err as Error).message}`);
+        return;
+      } finally {
+        this.warming = null;
+      }
+      const ms = Date.now() - t0;
+      this.log(
+        `index warm: ${(bytes / 1e6).toFixed(0)} MB into the page cache in ${(ms / 1000).toFixed(1)}s ` +
+          `(${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s)`,
+      );
+    })();
   }
 
   /**
@@ -554,6 +626,10 @@ export class LiveIndex {
     const outgoing = this.engine;
     this.engine = next;
     this.fileMovedUnderUs = false;
+    // A promoted index is a DIFFERENT INODE the page cache has never read, so without this
+    // the nightly refresh hands every reader the cold-disk penalty back at 09:00 UTC --
+    // 0.6 to 3.5 seconds a query on the deployment array. See `warmPageCache`.
+    this.warmPageCache();
     // `null` on the first open of a boot-time build -- there was never an engine to retire.
     if (!outgoing) return;
     try {
