@@ -1460,6 +1460,19 @@ export const EPISODE_PAGE = 200;
  * Ordered by season then episode number, which `ix_ep_parent` covers -- so this is a seek
  * and never a sort, whatever the filters are.
  */
+/**
+ * > [!IMPORTANT] SEASON 0 SORTS LAST, AND THE LIMIT IS WHY IT MATTERS
+ * > Season 0 is the specials, every series has one, and it can be enormous -- Rick and
+ * > Morty's holds 187 entries, more than all its real seasons together. Ordered naively by
+ * > season number it comes FIRST, so a caller taking the first 200 rows gets 187
+ * > behind-the-scenes clips and 13 episodes, and an agent asked for the best episodes
+ * > answers from bloopers.
+ * >
+ * > `order by season = 0` is the whole fix: SQLite sorts the boolean 0 before 1, so every
+ * > real season leads and the specials trail. This is the same rule `orderSeasons()` in
+ * > `web/src/lib/facet-panes.ts` already applies to the season selector -- the ordering of
+ * > seasons has one answer in this product and this is it, in SQL.
+ */
 export function queryEpisodes(db: Database, parent: string, opts: EpisodeQuery = {}): EpisodeRow[] {
   const where = ["parent = ?"];
   const args: unknown[] = [parent];
@@ -1481,7 +1494,7 @@ export function queryEpisodes(db: Database, parent: string, opts: EpisodeQuery =
   return db
     .query(
       `select tconst, parent, season, number, title, rating, votes, year from episode
-       where ${where.join(" and ")} order by season, number limit ?`,
+       where ${where.join(" and ")} order by season = 0, season, number limit ?`,
     )
     .all(...([...args, Math.max(1, opts.limit ?? EPISODE_PAGE)] as never[])) as EpisodeRow[];
 }

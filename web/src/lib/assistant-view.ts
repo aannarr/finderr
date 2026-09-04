@@ -7,7 +7,7 @@
  * never a zero, and a request is never described vaguely -- are testable as strings.
  */
 
-import type { AgentRequested, AgentToolCall } from "./agent-api";
+import type { AgentRequested, AgentToolCall, RequestedStatus } from "./agent-api";
 import { formatAge } from "./timestamps";
 
 /** `S02E09`. Zero-padded so a season list lines up, which is the whole point of the form. */
@@ -114,9 +114,58 @@ export function requestedNoun(kind: AgentRequested["kind"]): string {
   return REQUESTED_NOUN[kind] ?? "title";
 }
 
-export function requestedHeading(requested: readonly AgentRequested[]): string {
-  if (requested.length === 1) {
-    return `Started downloading 1 ${requestedNoun(requested[0].kind)}`;
+/**
+ * The two halves of a `requested` list, and splitting them is not cosmetic.
+ *
+ * `queued` is the only status that spent anything. The other four -- we already have it,
+ * somebody already asked, the id did not resolve, the arr said no -- are things the
+ * assistant TRIED and did not do, and drawing them under "Started downloading" would be a
+ * claim about disk and bandwidth that nobody can check from the panel.
+ *
+ * **An ABSENT status counts as queued.** The contract this client was built against carried
+ * no status at all, so treating "did not say" as a refusal would silently demote every real
+ * download on such a server to a footnote -- the more dangerous of the two mistakes.
+ */
+export function queuedOf(requested: readonly AgentRequested[]): AgentRequested[] {
+  return requested.filter((r) => (r.status ?? "queued") === "queued");
+}
+
+export function declinedOf(requested: readonly AgentRequested[]): AgentRequested[] {
+  return requested.filter((r) => (r.status ?? "queued") !== "queued");
+}
+
+/**
+ * What each non-`queued` status says, in a reader's words rather than the enum's.
+ *
+ * `refused` deliberately does not try to say WHY: the reason travels in `RequestOutcome`
+ * but not on this payload, and the model has already been told to relay it in the prose
+ * above -- inventing a cause here would be a second, worse answer beside a real one.
+ */
+const DECLINED_PHRASE: Record<Exclude<RequestedStatus, "queued">, string> = {
+  already_have: "already in your library",
+  already_requested: "already requested",
+  not_found: "not found",
+  refused: "refused",
+};
+
+export function declinedPhrase(status: RequestedStatus | undefined): string {
+  return status && status !== "queued" ? (DECLINED_PHRASE[status] ?? "not requested") : "not requested";
+}
+
+/** `S02E09` for an episode grain, or null for a whole title. Both fields or neither. */
+export function requestedDetail(r: AgentRequested): string | null {
+  return r.season !== undefined && r.episode !== undefined ? episodeCode(r.season, r.episode) : null;
+}
+
+/**
+ * The heading over the things that ACTUALLY went out.
+ *
+ * Counts the queued list, never the whole `requested` array -- a turn that tried four and
+ * queued one says one.
+ */
+export function requestedHeading(queued: readonly AgentRequested[]): string {
+  if (queued.length === 1) {
+    return `Started downloading 1 ${requestedNoun(queued[0].kind)}`;
   }
-  return `Started downloading ${requested.length} titles`;
+  return `Started downloading ${queued.length} titles`;
 }

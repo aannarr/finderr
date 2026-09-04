@@ -342,14 +342,38 @@ const RUN: Partial<EpisodeRow>[] = [
 describe("queryEpisodes", () => {
   const open = (rows = RUN) => new Database(episodeIndex(rows), { readonly: true });
 
-  test("ordered by season then episode number, specials first because season 0 is first", () => {
+  test("ordered by season then episode number, with SEASON 0 LAST", () => {
     const db = open();
     expect(queryEpisodes(db, "tt-s").map((e) => e.tconst)).toEqual([
-      "e-s0e1",
       "e-s1e1",
       "e-s1e2",
       "e-s2e1",
       "e-s2e2",
+      "e-s0e1",
+    ]);
+  });
+
+  test("a huge specials season cannot crowd out the real ones under a limit", () => {
+    /*
+      THE MEASURED CASE: Rick and Morty's season 0 holds 187 entries.
+
+      Sorted naively, season 0 comes first, so `list_episodes` at its 200 default would
+      return 187 behind-the-scenes clips and 13 real episodes -- and an agent asked for the
+      best episodes would answer from bloopers. The limit is what makes the ordering matter:
+      without one, order is cosmetic; with one, it decides what is even visible.
+    */
+    const many: Partial<EpisodeRow>[] = [];
+    for (let i = 1; i <= 187; i++) {
+      many.push({ tconst: `e-s0e${i}`, season: 0, number: i, title: `Special ${i}`, rating: 6, votes: 20 });
+    }
+    many.push({ tconst: "e-s1e1", season: 1, number: 1, title: "Pilot", rating: 9.1, votes: 50_000 });
+    const db = open(many);
+    expect(queryEpisodes(db, "tt-s", { limit: 5 }).map((e) => e.tconst)).toEqual([
+      "e-s1e1",
+      "e-s0e1",
+      "e-s0e2",
+      "e-s0e3",
+      "e-s0e4",
     ]);
   });
 
@@ -370,9 +394,9 @@ describe("queryEpisodes", () => {
     // is over 8.0. The row is still reachable by a query that pins no rating.
     const db = open();
     expect(queryEpisodes(db, "tt-s", { minRating: 8.0 }).map((e) => e.tconst)).toEqual([
-      "e-s0e1",
       "e-s1e1",
       "e-s2e1",
+      "e-s0e1",
     ]);
     expect(queryEpisodes(db, "tt-s").map((e) => e.tconst)).toContain("e-s2e2");
   });
@@ -403,7 +427,7 @@ describe("queryEpisodes", () => {
 
   test("the limit defaults to a page and is honoured when given", () => {
     const db = open();
-    expect(queryEpisodes(db, "tt-s", { limit: 2 }).map((e) => e.tconst)).toEqual(["e-s0e1", "e-s1e1"]);
+    expect(queryEpisodes(db, "tt-s", { limit: 2 }).map((e) => e.tconst)).toEqual(["e-s1e1", "e-s1e2"]);
     expect(queryEpisodes(db, "tt-s").length).toBe(Math.min(RUN.length, EPISODE_PAGE));
     // A nonsensical limit must not turn into "no rows" -- SQLite reads `limit 0` and
     // `limit -1` as two different things, and neither is what a caller passing 0 meant.
@@ -461,9 +485,9 @@ describe("SearchEngine against an index without the episode table", () => {
     const engine = new SearchEngine(episodeIndex(RUN), cfg);
     expect(engine.hasEpisodes).toBe(true);
     expect(engine.episodesOf("tt-s", { minRating: 8 }).map((e) => e.tconst)).toEqual([
-      "e-s0e1",
       "e-s1e1",
       "e-s2e1",
+      "e-s0e1",
     ]);
   });
 });

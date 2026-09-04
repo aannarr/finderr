@@ -31,6 +31,7 @@ import { makeContext } from "../lib/agent/schemas";
 import { aiGate, chargeRefusal, chargeRun, localDay } from "../lib/ai-spend";
 import type { Principal } from "../lib/auth";
 import type { Config } from "../lib/config";
+import type { SearchEngine } from "../lib/search";
 import type { Store } from "../lib/store";
 import { makeAgentActions } from "./agent-actions";
 import { json } from "./json-response";
@@ -69,7 +70,127 @@ export interface ChatResponse {
     season?: number;
     episode?: number;
   }[];
+  /**
+   * Every TITLE the agent looked at, so the panel can draw a poster card instead of a name.
+   *
+   * Collected from the tool EVIDENCE rather than parsed out of the prose -- `evidence.ids`
+   * already records every id each result carried, for the fabricated-join grader, and this
+   * is the same record read for a different purpose. Parsing ids out of the answer text
+   * would be a second owner of "what did it actually find", and the one that lies.
+   */
+  titles: {
+    tconst: string;
+    title: string;
+    year: number | null;
+    kind: string;
+    poster: string | null;
+  }[];
+  /** Every EPISODE it surfaced, with its score. `rating` is null when nobody has voted. */
+  episodes: {
+    tconst: string;
+    parent: string;
+    season: number;
+    number: number;
+    title: string | null;
+    rating: number | null;
+  }[];
   usage: { costUsd: number; ms: number };
+}
+
+/**
+ * "Does this deployment have an assistant, and may I use it?"
+ *
+ * An EXPLICIT endpoint rather than inferring availability from a 405 on the POST route. The
+ * client needs to know whether to draw a launcher at all, and inferring that from
+ * method-not-allowed makes a UI decision depend on how the framework happens to answer an
+ * unmatched verb -- which is not a contract anybody wrote down, and which measured as a 404
+ * here rather than the 405 the client expected. A launcher that never appears is the exact
+ * failure that would have caused, and nothing would have errored.
+ *
+ * 404 when there is no key, so an unconfigured instance says the feature does not exist in
+ * the same voice the POST route does. 403 while the beta excludes this user.
+ */
+/**
+ * The titles and episodes a run actually touched, for the panel to draw.
+ *
+ * Reads `ToolTrace.evidence.ids`, which the run already records, and resolves each against
+ * the SAME engine the tools read through -- so a card can never show a title the tools did
+ * not return, and never a stale one from a retired index.
+ *
+ * Capped, because an agent that browsed 200 titles should not push 200 poster cards at a
+ * browser; the answer names a handful and the rest are noise the reader never asked for.
+ */
+const MAX_CARDS = 24;
+
+function surfaced(result: RunResult, engine: SearchEngine) {
+  const titles: ChatResponse["titles"] = [];
+  const episodes: ChatResponse["episodes"] = [];
+  const seenT = new Set<string>();
+  const seenE = new Set<string>();
+
+  for (const call of result.toolCalls) {
+    for (const id of call.evidence.ids) {
+      if (id.startsWith("tt") && !seenT.has(id) && titles.length < MAX_CARDS) {
+        seenT.add(id);
+        const row = engine.byTconst(id);
+        if (row) {
+          titles.push({
+            tconst: row.tconst,
+            title: row.title,
+            year: row.year,
+            kind: row.kind,
+            poster: null,
+          });
+        }
+      }
+    }
+    /*
+      Episodes come from the CALL ARGUMENTS plus the engine, not from the payload.
+
+      `evidence` deliberately records entity ids and relations, and an episode tconst is
+      neither -- it is not a browsable title and it forms no join. So the parent is read off
+      the list_episodes call that asked, and the rows are re-read from the index, which is
+      cheap (a covering-index lookup) and cannot disagree with what the tool returned.
+    */
+    if (call.name === "list_episodes" && typeof call.args.tconst === "string") {
+      const parent = call.args.tconst;
+      if (seenE.has(parent)) continue;
+      seenE.add(parent);
+      for (const e of engine.episodesOf(parent, {
+        season: typeof call.args.season === "number" ? call.args.season : undefined,
+        minRating: typeof call.args.min_rating === "number" ? call.args.min_rating : undefined,
+        minVotes: typeof call.args.min_votes === "number" ? call.args.min_votes : undefined,
+        limit: MAX_CARDS,
+      })) {
+        episodes.push({
+          tconst: e.tconst,
+          parent: e.parent,
+          season: e.season,
+          number: e.number,
+          title: e.title,
+          rating: e.rating,
+        });
+      }
+    }
+  }
+  return { titles, episodes };
+}
+
+export function makeChatProbe(deps: Pick<ChatDeps, "cfg">) {
+  return (_req: Request, principal: Principal | null): Response => {
+    if (!deps.cfg.ai.openrouterApiKey || !deps.cfg.ai.models[0]) {
+      return new Response("Not Found", { status: 404 });
+    }
+    const role = principal?.user?.role;
+    if (!role) return new Response("Not Found", { status: 404 });
+    if (role !== "admin") {
+      return json(
+        { error: "beta_admin_only", message: "The assistant is limited to administrators." },
+        { status: 403 },
+      );
+    }
+    return json({ available: true, model: deps.cfg.ai.models[0] });
+  };
 }
 
 export function makeChatHandler(deps: ChatDeps) {
@@ -189,6 +310,7 @@ export function makeChatHandler(deps: ChatDeps) {
         status: r.status,
         ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
       })),
+      ...surfaced(result, deps.live.current),
       usage: { costUsd: result.costUsd, ms: result.ms },
     };
     return json(payload);

@@ -23,11 +23,32 @@ export interface AgentToolCall {
   ms: number;
 }
 
-/** Something the assistant actually ASKED FOR. A real download started. */
+/**
+ * Something the assistant tried to ask for -- and what came of it.
+ *
+ * > [!CAUTION] `queued` IS THE ONLY SUCCESS, and drawing this list as if it were all
+ * > successes is a lie the reader cannot check
+ * > `RequestOutcome` (`src/lib/agent/actions.ts`) reports five statuses, four of which mean
+ * > NOTHING was downloaded: the library already had it, somebody already asked, the id did
+ * > not resolve, or the arr refused. The first version of the panel printed "Started
+ * > downloading 1 film" over every entry, which turns a refusal into a claim that disk and
+ * > bandwidth were spent. `queuedOf`/`declinedOf` split them and the pane draws them
+ * > differently.
+ *
+ * `status` is OPTIONAL because the contract this client was written against did not carry
+ * it, and **absent counts as queued**: a server that reports only the things it actually
+ * requested must not have them demoted to a footnote.
+ */
+export type RequestedStatus = "queued" | "already_have" | "already_requested" | "not_found" | "refused";
+
 export interface AgentRequested {
   tconst: string;
   title: string;
   kind: "movie" | "series" | "episode";
+  status?: RequestedStatus;
+  /** Episode grain only -- both present or both absent. */
+  season?: number;
+  episode?: number;
 }
 
 /**
@@ -70,13 +91,29 @@ export interface AgentUsage {
   ms: number;
 }
 
+/**
+ * One answer.
+ *
+ * > [!IMPORTANT] THREE FIELDS ARE OPTIONAL BECAUSE THE SERVER DOES NOT SEND THEM YET
+ * > `ChatResponse` in `src/server/agent-chat.ts` carries `conversationId`, `answer`,
+ * > `toolCalls`, `requested` and `usage` -- and nothing else. `titles`, `episodes` and
+ * > `problems` were in the contract this client was written against and are not in the
+ * > handler that shipped, so they are marked optional rather than trusted: a required field
+ * > that arrives `undefined` is a type that lies, and the next person to write
+ * > `answer.titles.map(...)` would find out in a browser rather than in `tsc`.
+ * >
+ * > Every renderer for them already returns `null` for an absent or empty list, so today's
+ * > server degrades to prose plus the request outcomes with no gap and no error -- verified
+ * > in a browser 2026-09-05. **Whether the server grows them or the client drops them is a
+ * > decision, not a bug**, and it is the orchestrator's to take.
+ */
 export interface AgentAnswer {
   conversationId: string;
   answer: string;
   toolCalls: AgentToolCall[];
   requested: AgentRequested[];
-  titles: AgentTitle[];
-  episodes: AgentEpisode[];
+  titles?: AgentTitle[];
+  episodes?: AgentEpisode[];
   usage: AgentUsage;
   /**
    * Which addon failed while the assistant was working, by CODE.
@@ -85,7 +122,7 @@ export interface AgentAnswer {
    * through the same `problemNote` and the reader is told the same sentence in the same
    * words. The message stays in the server's log for the same reason it does there.
    */
-  problems: FacetProblem[];
+  problems?: FacetProblem[];
 }
 
 /**

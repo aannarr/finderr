@@ -65,7 +65,7 @@ import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
-import { makeChatHandler } from "./agent-chat";
+import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
@@ -241,6 +241,7 @@ const auth = new AuthService({
   the retired-connection bug LiveIndex exists to prevent -- it either throws or, under load,
   quietly serves yesterday's row with no error at all.
 */
+const chatProbe = makeChatProbe({ cfg });
 const chat = makeChatHandler({
   cfg,
   store,
@@ -1973,6 +1974,7 @@ const appRoutes = {
    * `../lib/ai-spend.ts`, so this line is a mount and not a second owner of any of it.
    */
   "/api/agent/chat": {
+    GET: (req: Request) => chatProbe(req, auth.principal(req)),
     POST: (req: Request) => chat(req, auth.principal(req)),
   },
 

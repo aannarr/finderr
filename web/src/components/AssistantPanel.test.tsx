@@ -176,6 +176,60 @@ describe("something the assistant requested", () => {
   test("points at the requests page, where the outcome actually shows up", async () => {
     expect(await panel({ messages: [answer({ requested })] })).toContain('href="/requests"');
   });
+
+  /**
+   * THE REGRESSION. The server reports five statuses and only `queued` spent anything --
+   * `already_have`, `already_requested`, `not_found` and `refused` all mean no download.
+   * This pane drew every entry under "Started downloading" until the server's real shape
+   * was read, which turns a refusal into a claim a reader cannot check.
+   */
+  test("a refusal is NOT drawn as a download", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          requested: [{ tconst: "tt0113277", title: "Heat", kind: "movie", status: "already_have" }],
+        }),
+      ],
+    });
+    expect(html).not.toContain("Started downloading");
+    expect(html).toContain("already in your library");
+  });
+
+  test("a mixed turn draws both halves and counts only the queued one", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          requested: [
+            { tconst: "tt0944947", title: "Game of Thrones", kind: "series", status: "queued" },
+            { tconst: "tt0113277", title: "Heat", kind: "movie", status: "not_found" },
+          ],
+        }),
+      ],
+    });
+    expect(html).toContain("Started downloading 1 series");
+    expect(html).toContain("not found");
+  });
+
+  /** An episode request says WHICH episode, not just that one was asked for. */
+  test("an episode grain prints its code", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          requested: [
+            {
+              tconst: "tt0944947",
+              title: "Game of Thrones",
+              kind: "episode",
+              season: 2,
+              episode: 9,
+              status: "queued",
+            },
+          ],
+        }),
+      ],
+    });
+    expect(html).toContain("S02E09");
+  });
 });
 
 describe("what it did to answer", () => {

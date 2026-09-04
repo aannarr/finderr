@@ -16,11 +16,15 @@ import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ChevronRight, Download } from "lucide-react";
 import type { AgentEpisode, AgentRequested, AgentTitle, AgentToolCall } from "../lib/agent-api";
 import {
+  declinedOf,
+  declinedPhrase,
   episodeCode,
   episodeScore,
   formatDuration,
   formatToolArgs,
   hasScore,
+  queuedOf,
+  requestedDetail,
   requestedHeading,
   requestedNoun,
 } from "../lib/assistant-view";
@@ -150,37 +154,87 @@ export function AgentEpisodes({ episodes }: { episodes: readonly AgentEpisode[] 
  * arr, which is `/requests` and an admin's job, not a chat panel's.
  */
 export function AgentRequests({ requested }: { requested: readonly AgentRequested[] }) {
-  if (requested.length === 0) return null;
+  const queued = queuedOf(requested);
+  const declined = declinedOf(requested);
+  if (queued.length === 0 && declined.length === 0) return null;
   return (
-    <div className="rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-2">
-      <p className="flex items-center gap-1.5 text-xs font-medium text-ink">
-        <Download className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
-        {requestedHeading(requested)}
-      </p>
-      <ul className="mt-1 space-y-0.5">
-        {requested.map((r) => (
-          <li key={`${r.kind}:${r.tconst}`} className="text-xs">
-            <Link
-              to="/title/$tconst"
-              params={{ tconst: r.tconst }}
-              className="outline-none hover:underline focus-visible:underline"
-            >
-              {r.title}
-            </Link>
-            <span className="text-muted"> · {requestedNoun(r.kind)}</span>
-          </li>
-        ))}
-      </ul>
-      {/* Where the outcome actually shows up. A request is asynchronous -- the arr may
-          refuse it minutes later -- and this panel never hears about that. */}
-      <p className="mt-1.5 text-[0.7rem] text-muted">
-        <Link to="/requests" className="underline underline-offset-2 hover:text-ink">
-          Requests
-        </Link>{" "}
-        has the progress and the outcome.
-      </p>
-    </div>
+    <>
+      {/*
+        THE LOUD HALF: things that actually went out. `queuedOf` is what keeps this honest --
+        see its note. A refusal drawn in this panel would be a claim that disk and bandwidth
+        were spent, which is the one thing on this screen a reader cannot check for
+        themselves.
+      */}
+      {queued.length > 0 && (
+        <div className="rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-2">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-ink">
+            <Download className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
+            {requestedHeading(queued)}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {queued.map((r) => (
+              <li key={requestKey(r)} className="text-xs">
+                <Link
+                  to="/title/$tconst"
+                  params={{ tconst: r.tconst }}
+                  className="outline-none hover:underline focus-visible:underline"
+                >
+                  {r.title}
+                </Link>
+                <span className="text-muted">
+                  {" · "}
+                  {requestedDetail(r) ?? requestedNoun(r.kind)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {/* Where the outcome actually shows up. A request is asynchronous -- the arr may
+              refuse it minutes later -- and this panel never hears about that. */}
+          <p className="mt-1.5 text-[0.7rem] text-muted">
+            <Link to="/requests" className="underline underline-offset-2 hover:text-ink">
+              Requests
+            </Link>{" "}
+            has the progress and the outcome.
+          </p>
+        </div>
+      )}
+
+      {/*
+        THE QUIET HALF: things it tried and did not do. Shown rather than dropped, because
+        "I asked for Heat" with nothing on screen leaves a reader believing a download
+        started. It is muted and unpanelled precisely so it cannot be mistaken for the block
+        above at a glance.
+      */}
+      {declined.length > 0 && (
+        <ul className="space-y-0.5">
+          {declined.map((r) => (
+            <li key={requestKey(r)} className="text-[0.7rem] text-muted">
+              <Link
+                to="/title/$tconst"
+                params={{ tconst: r.tconst }}
+                className="outline-none hover:text-ink hover:underline focus-visible:underline"
+              >
+                {r.title}
+              </Link>
+              {requestedDetail(r) && <span> {requestedDetail(r)}</span>}
+              {` · not requested, ${declinedPhrase(r.status)}`}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
+}
+
+/**
+ * A stable key for one outcome.
+ *
+ * The tconst alone is not unique: asking for two episodes of one series produces two
+ * entries under the same id, which React renders as a duplicate key and then reuses the
+ * wrong row when the list changes.
+ */
+function requestKey(r: AgentRequested): string {
+  return `${r.kind}:${r.tconst}:${r.season ?? ""}:${r.episode ?? ""}`;
 }
 
 /**

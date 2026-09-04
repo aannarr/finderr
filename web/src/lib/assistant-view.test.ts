@@ -7,13 +7,18 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { AgentRequested } from "./agent-api";
 import {
+  declinedOf,
+  declinedPhrase,
   episodeCode,
   episodeScore,
   formatCost,
   formatDuration,
   formatToolArgs,
   hasScore,
+  queuedOf,
+  requestedDetail,
   requestedHeading,
   requestedNoun,
   retryPhrase,
@@ -149,6 +154,54 @@ describe("what was requested", () => {
   test("every kind in the contract has a noun", () => {
     for (const kind of ["movie", "series", "episode"] as const) {
       expect(requestedNoun(kind)).not.toBe("title");
+    }
+  });
+
+  test("an episode says which one, rather than only that it was an episode", () => {
+    expect(requestedDetail({ tconst: "tt1", title: "GoT", kind: "episode", season: 2, episode: 9 })).toBe(
+      "S02E09",
+    );
+    expect(requestedDetail({ tconst: "tt1", title: "Heat", kind: "movie" })).toBeNull();
+  });
+});
+
+/**
+ * THE SPLIT THAT KEEPS THE PANEL HONEST.
+ *
+ * `RequestOutcome` on the server reports five statuses and only `queued` spent anything.
+ * The first version of this panel drew all five under "Started downloading", which turns a
+ * refusal into a claim about disk and bandwidth that a reader cannot check.
+ */
+describe("queued versus merely attempted", () => {
+  const outcomes: AgentRequested[] = [
+    { tconst: "tt1", title: "Heat", kind: "movie", status: "queued" },
+    { tconst: "tt2", title: "The Wire", kind: "series", status: "already_have" },
+    { tconst: "tt3", title: "Nope", kind: "movie", status: "not_found" },
+  ];
+
+  test("only `queued` counts as a download", () => {
+    expect(queuedOf(outcomes).map((r) => r.tconst)).toEqual(["tt1"]);
+    expect(declinedOf(outcomes).map((r) => r.tconst)).toEqual(["tt2", "tt3"]);
+  });
+
+  test("the heading counts the queued ones, not everything attempted", () => {
+    expect(requestedHeading(queuedOf(outcomes))).toBe("Started downloading 1 film");
+  });
+
+  /**
+   * The contract this client was written against carried no status at all. Treating "did
+   * not say" as a refusal is the more dangerous mistake of the two -- it would silently
+   * demote every real download on such a server to a footnote.
+   */
+  test("an absent status counts as queued", () => {
+    const noStatus: AgentRequested[] = [{ tconst: "tt1", title: "Heat", kind: "movie" }];
+    expect(queuedOf(noStatus)).toHaveLength(1);
+    expect(declinedOf(noStatus)).toHaveLength(0);
+  });
+
+  test("every declined status has words of its own", () => {
+    for (const status of ["already_have", "already_requested", "not_found", "refused"] as const) {
+      expect(declinedPhrase(status)).not.toBe("not requested");
     }
   });
 });
