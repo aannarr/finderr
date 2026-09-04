@@ -30,6 +30,7 @@ import { BrowseRoute } from "./routes/BrowseRoute";
 import { CeremonyRoute } from "./routes/CeremonyRoute";
 import { CollectionRoute } from "./routes/CollectionRoute";
 import { ListsRoute } from "./routes/ListsRoute";
+import { LogRoute } from "./routes/LogRoute";
 import { PersonRoute } from "./routes/PersonRoute";
 import { RequestsRoute } from "./routes/RequestsRoute";
 import { RootLayout } from "./routes/RootLayout";
@@ -153,6 +154,20 @@ const requestsRoute = createRoute({
 });
 
 /**
+ * `/log` -- everything anybody has asked for, newest first.
+ *
+ * The house's log, where `/requests` is yours. It takes NO search params and no route param
+ * for the person it is filtered to: the filter is a chip, not a URL, because the WHO column
+ * only exists for an admin and a shareable `?who=` would be a link that renders differently
+ * depending on who opens it -- or worse, one that reads as a leak when it lands nowhere.
+ */
+const logRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/log",
+  component: LogRoute,
+});
+
+/**
  * `/account` -- your own devices and sessions.
  *
  * In THIS bundle rather than the sign-in one, because managing a passkey is something a
@@ -218,6 +233,7 @@ const routeTree = rootRoute.addChildren([
   ceremonyRoute,
   listsRoute,
   requestsRoute,
+  logRoute,
   accountRoute,
   adminRoute,
 ]);

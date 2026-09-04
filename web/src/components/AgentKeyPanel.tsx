@@ -22,13 +22,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { type AgentKeySummary, createAgentKey, getAgentKey, revokeAgentKey } from "../lib/auth-api";
+import { formatStamp } from "../lib/timestamps";
 import { LINK_BUTTON } from "../lib/ui";
 import { ShowOnceSecret } from "./ShowOnceSecret";
-
-function when(iso: string | null): string {
-  if (!iso) return "never";
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
 
 export function AgentKeyPanel() {
   const [key, setKey] = useState<AgentKeySummary | null>(null);
@@ -104,7 +100,7 @@ export function AgentKeyPanel() {
 
       <p className="mt-2 text-sm text-muted">
         {key
-          ? `A ${key.readOnly ? "read-only" : "read-write"} key, added ${when(key.createdAt)} · last used ${when(key.lastUsedAt)}.`
+          ? `A ${key.readOnly ? "read-only" : "read-write"} key, added ${formatStamp(key.createdAt, "never")} · last used ${formatStamp(key.lastUsedAt, "never")}.`
           : "Lets a script or an AI agent search, browse and request on your behalf, without a browser."}
       </p>
 

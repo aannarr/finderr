@@ -11,7 +11,12 @@
  */
 
 import { useEffect, useState } from "react";
-import { formatRemaining, VERDICT_COPY, type VerdictTone } from "../../../src/lib/request-diagnostics";
+import {
+  formatRemaining,
+  type RequestVerdict,
+  VERDICT_COPY,
+  type VerdictTone,
+} from "../../../src/lib/request-diagnostics";
 import type { RequestState } from "../lib/api";
 
 /** How often the "about 4 min left" line re-reads the clock. */
@@ -40,6 +45,43 @@ const TONE_SHELL: Record<VerdictTone, string> = {
   done: "border-line",
   dead_end: "border-danger/50 bg-danger/10",
 };
+
+/**
+ * One verdict as a chip: its words, its colour, and its bar if something is coming down.
+ *
+ * The THIRD surface to want this -- the card's request control, and now the request log --
+ * so it stopped being a branch inside `RequestAction` and became the thing both call. The
+ * tone table above is the single owner of the colour either way; what this adds is that the
+ * `done` rung is now reachable, where `RequestAction`'s own two-way ternary painted an
+ * `imported` verdict in the amber it uses for work still in progress.
+ *
+ * `shell` carries the SIZE and nothing else, because that is the only thing its callers
+ * genuinely disagree about: a card footer fills its width, a log row is a chip on a line.
+ * Same reason `RequestAction` takes a `tone` rather than being forked.
+ */
+export function VerdictChip({
+  verdict,
+  progress = null,
+  shell = "inline-block shrink-0 rounded-md px-2 py-0.5 text-[0.7rem] leading-5",
+}: {
+  verdict: RequestVerdict;
+  progress?: number | null;
+  shell?: string;
+}) {
+  const copy = VERDICT_COPY[verdict];
+  return (
+    <span className={`${shell} border text-ink ${TONE_SHELL[copy.tone]}`} title={copy.sentence}>
+      {copy.label}
+      {/* The bar only appears while something is actually coming down, so a row gains a line
+          of chrome exactly when there is progress to report. */}
+      {progress !== null && (
+        <span className="mt-1 block">
+          <ProgressBar value={progress} />
+        </span>
+      )}
+    </span>
+  );
+}
 
 /**
  * A download in progress, as a line.

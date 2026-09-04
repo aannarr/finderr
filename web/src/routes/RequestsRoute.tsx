@@ -14,7 +14,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { RequestVerdictPanel } from "../components/RequestProgress";
 import { getRequests, type MediaRequest, markRequestsSeen } from "../lib/api";
-import { summariseSeasons } from "../lib/season-select";
+import { seasonLine } from "../lib/request-log";
 
 /**
  * Newly-arrived first, then everything else by most recent activity.
@@ -25,16 +25,6 @@ import { summariseSeasons } from "../lib/season-select";
  */
 function newsFirst(requests: readonly MediaRequest[]): MediaRequest[] {
   return [...requests.filter((r) => r.isNew), ...requests.filter((r) => !r.isNew)];
-}
-
-/** "Seasons 1-3", when the reader chose some. Null for a film or for "all". */
-function seasonLine(request: MediaRequest): string | null {
-  if (!request.seasons) return null;
-  const numbers = request.seasons
-    .split(",")
-    .map((s) => Number.parseInt(s, 10))
-    .filter((n) => Number.isFinite(n));
-  return numbers.length > 0 ? summariseSeasons(numbers) : null;
 }
 
 export function RequestsRoute() {

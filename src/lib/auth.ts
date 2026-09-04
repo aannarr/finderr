@@ -263,6 +263,48 @@ export function visibleRequest<
   };
 }
 
+/**
+ * A request row as an ADMIN reading the log should see it: stripped by the rule above, plus
+ * the requester's NAME resolved from their id.
+ *
+ * > [!IMPORTANT] The name rides on the SAME decision as the id, in the same function
+ * > `requested_by` is a user id and means nothing on screen, so every reader of the log
+ * > needs a name beside it -- and a name is the attribution, more legibly than the id was.
+ * > Resolving it in the route that happens to want it would put HALF the privacy rule in
+ * > `visibleRequest` and half in a handler, which is how the second reader of the log ships
+ * > without the strip. There is one owner of "may this caller see who asked", and this is
+ * > the function that reads it.
+ *
+ * **`requestedByName` is ABSENT rather than null for a non-admin**, which is the same
+ * distinction the stripped fields already draw and the client depends on: a Who column
+ * exists because the server sent one, so nothing in the browser re-decides the rule. For an
+ * admin it is `null` only when the row is genuinely unattributed -- a request made before
+ * attribution existed, or by the system key, which is nobody.
+ *
+ * `nameOf` returns null for an id no user answers to; that becomes `(removed)` HERE rather
+ * than in each caller, so the log and the admin page cannot word a deleted account
+ * differently. The row survives a deletion on purpose -- see `User.disabledAt` -- but a
+ * genuinely removed account leaves an id nothing resolves.
+ */
+export function attributedRequest<
+  T extends {
+    requested_by?: string | null;
+    quality_profile_id?: number | null;
+    root_folder_path?: string | null;
+    search_on_add?: number | null;
+    via_agent_key?: number | null;
+  },
+>(
+  row: T,
+  role: Role | null,
+  nameOf: (userId: string) => string | null,
+): ReturnType<typeof visibleRequest<T>> & { requestedByName?: string | null } {
+  const visible = visibleRequest(row, role);
+  if (role !== "admin") return visible;
+  const id = row.requested_by ?? null;
+  return { ...visible, requestedByName: id ? (nameOf(id) ?? "(removed)") : null };
+}
+
 /** The public shape of a user. Same rule: nothing here is a secret, so nothing leaks. */
 export function publicUser(u: User): {
   id: string;

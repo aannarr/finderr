@@ -112,6 +112,13 @@ sentence about why it is slow that the title page gives. Anything that arrived a
 not seen yet is counted in the header, and the count survives closing the app -- one per
 request, so a season pack finishing is one piece of news rather than twenty.
 
+`/log` is the same thing for the whole household: everything the server has ever been asked
+for, newest asked first, with the state of each. Everybody can see WHAT was requested and
+WHEN -- that is what stops three people asking for the same film and makes "is it coming?"
+answerable without finding an admin. **WHO asked is sent only to administrators**, who also
+get a chip per person to narrow the log to one of them. The name is stripped on the server
+rather than hidden in the page, so an ordinary reader is never sent it at all.
+
 Point Radarr and Sonarr back at finderr and they push those states as they happen instead
 of finderr noticing on its next poll -- including the one no poll can see, an import the
 arr has given up on. That one reads **"Needs a manual import"** rather than "Processing"
@@ -678,7 +685,7 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
 | `GET` | `/api/awards/:award` | one award's timeline and its provenance. `oscars`, `palme-dor`, `emmy-drama-series` |
 | `GET` | `/api/awards/:award/:edition` | one edition, categories in their canonical order. The edition is the ceremony number where the source numbers them and the year where it does not |
-| `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side. Also carries `unseen`, your own count of arrivals you have not been shown |
+| `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side. An admin's rows also carry `requestedByName`, and a non-admin's carry neither that nor the id it resolves -- the absence is the permission, which is what `/log` reads to decide whether it has a Who column. Also carries `unseen`, your own count of arrivals you have not been shown |
 | `GET` | `/api/requests?mine=1` | the same shape, narrowed to the caller. A server-side filter, because `requested_by` is stripped before a non-admin ever sees it |
 | `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
 | `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |

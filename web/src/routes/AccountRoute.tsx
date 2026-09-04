@@ -26,12 +26,8 @@ import {
   unlinkPlex,
 } from "../lib/auth-api";
 import { pollPlexPin } from "../lib/plex-poll";
+import { formatStamp } from "../lib/timestamps";
 import { LINK_BUTTON } from "../lib/ui";
-
-function when(iso: string | null): string {
-  if (!iso) return "never";
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
 
 /** Enough of a user agent to tell a phone from a laptop, and no more. */
 function device(ua: string | null): string {
@@ -204,7 +200,7 @@ export function AccountRoute() {
       <section>
         <h1 className="text-xl font-semibold tracking-tight">{user.displayName}</h1>
         <p className="mt-1 text-sm text-muted">
-          {user.role === "admin" ? "Administrator" : "Member"} · joined {when(user.createdAt)}
+          {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")}
         </p>
       </section>
 
@@ -299,7 +295,8 @@ export function AccountRoute() {
                       {c.label ?? c.deviceType ?? "passkey"}
                       <span className="text-muted">
                         {" "}
-                        · added {when(c.createdAt)} · last used {when(c.lastUsedAt)}
+                        · added {formatStamp(c.createdAt, "never")} · last used{" "}
+                        {formatStamp(c.lastUsedAt, "never")}
                       </span>
                     </span>
                     <span className="flex shrink-0 gap-3">
@@ -344,7 +341,7 @@ export function AccountRoute() {
                 {device(s.userAgent)}
                 <span className="text-muted">
                   {" "}
-                  · since {when(s.createdAt)}
+                  · since {formatStamp(s.createdAt, "never")}
                   {s.current ? " · this device" : ""}
                 </span>
               </span>

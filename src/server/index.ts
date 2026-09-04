@@ -17,7 +17,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
-import { isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
+import { attributedRequest, isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
 import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry";
 import { personAwards, titleAwards } from "../lib/awards";
@@ -1978,6 +1978,16 @@ const appRoutes = {
       */
       const mine = new URL(req.url).searchParams.get("mine") === "1";
       const rows = mine ? (me ? store.listRequestsFor(me) : []) : store.listRequests(undefined, 200);
+      /*
+        The name table is built ONCE per response, and only for an admin.
+
+        `attributedRequest` takes a lookup rather than a name because the alternative is a
+        store read per row, and the log is 200 rows. Building it behind the role check keeps
+        an ordinary reader's request off the user table entirely -- there is nothing for them
+        in it, and a query nobody can see the result of is a query worth not making.
+      */
+      const names =
+        role === "admin" ? new Map(authStore.listUsers().map((u) => [u.id, u.displayName])) : null;
       return json({
         /*
           The verdict and the bar ride along, in the same `RequestStateView` shape
@@ -1989,7 +1999,7 @@ const appRoutes = {
           privileged, and it is applied to the row before anything is added to it.
         */
         requests: rows.map((r) => ({
-          ...visibleRequest(r, role),
+          ...attributedRequest(r, role, (id) => names?.get(id) ?? null),
           ...requestStateOf(r, diagnostics.get(r.tconst) ?? null),
           /*
             IS THIS NEWS TO THE PERSON READING IT?

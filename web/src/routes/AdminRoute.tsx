@@ -7,10 +7,13 @@
  * > hidden by not being drawn -- see `visibleRequest` and `asAdmin` in the server for
  * > where the rule actually lives.
  *
- * The request log with names attached is the reason this page exists at all: aannarr,
- * 2026-08-31, only admins may see who requested what.
+ * The attributed request log used to be drawn HERE and is now at `/log`, which every reader
+ * can open and which draws the requester's name only when the server sent one (aannarr,
+ * 2026-08-31: only admins may see who requested what). What is left of it here is the count
+ * and the way in -- one renderer of that list, not two.
  */
 
+import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
 import {
@@ -27,12 +30,8 @@ import {
   resetUser,
   revokeInvite,
 } from "../lib/auth-api";
+import { formatStamp } from "../lib/timestamps";
 import { LINK_BUTTON } from "../lib/ui";
-
-function when(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
 
 export function AdminRoute() {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -145,7 +144,7 @@ export function AdminRoute() {
                     {" "}
                     · {u.role === "admin" ? "administrator" : "member"}
                     {u.disabled ? " · disabled" : ""} · {u.credentials} passkey
-                    {u.credentials === 1 ? "" : "s"} · last seen {when(u.lastSeenAt)}
+                    {u.credentials === 1 ? "" : "s"} · last seen {formatStamp(u.lastSeenAt)}
                   </span>
                 </span>
                 <span className="flex gap-3">
@@ -201,7 +200,9 @@ export function AdminRoute() {
                   <span className="text-muted">
                     {" "}
                     · {i.role}
-                    {i.redeemedAt ? ` · used ${when(i.redeemedAt)}` : ` · expires ${when(i.expiresAt)}`}
+                    {i.redeemedAt
+                      ? ` · used ${formatStamp(i.redeemedAt)}`
+                      : ` · expires ${formatStamp(i.expiresAt)}`}
                   </span>
                 </span>
                 {!i.redeemedAt && (
@@ -215,20 +216,25 @@ export function AdminRoute() {
         )}
       </section>
 
+      {/*
+        The log itself is NOT drawn here any more -- `/log` is the one page that draws it.
+
+        This section used to list every request with its requester, ordered by `updated_at`
+        and stamped with it, which is the wrong fact for a log: the worker rewrites that
+        column on every status change, so it answers "what moved lately" and not "what was
+        asked for when". Two renderers of one list is also two places to fix the next thing
+        wrong with it. What survives here is the COUNT and the way in.
+      */}
       <section>
         <h2 className="text-sm font-medium">Requests</h2>
-        <p className="mt-1 text-xs text-muted">Who asked for what. Only administrators can see this.</p>
-        <ul className="mt-2 flex flex-col gap-1">
-          {requests.map((r) => (
-            <li key={r.tconst} className="text-sm">
-              {r.title}
-              <span className="text-muted">
-                {" "}
-                · {r.status} · {r.requestedByName ?? "unattributed"} · {when(r.updated_at)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <p className="mt-1 text-xs text-muted">
+          {requests.length === 0
+            ? "Nobody has asked for anything yet."
+            : `${requests.length} request${requests.length === 1 ? "" : "s"} so far. The log shows who asked, and it shows that to administrators only.`}
+        </p>
+        <Link to="/log" className={`mt-2 inline-block ${LINK_BUTTON}`}>
+          Open the request log
+        </Link>
       </section>
     </div>
   );
