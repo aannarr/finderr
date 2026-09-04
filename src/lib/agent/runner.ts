@@ -16,6 +16,7 @@
 import { type Evidence, evidenceFrom } from "./evidence.js";
 import { callSignature, type Facts, factsFrom, ledgerMessage } from "./facts.js";
 import { type ChatMessage, chat, chatStream, type ToolCall } from "./openrouter.js";
+import { openRouterRetry, retryableStream } from "./resilience.js";
 import { dispatch, type ResumeStore, toolSchemasFor } from "./schemas.js";
 import type { AgentContext } from "./tools.js";
 
@@ -275,15 +276,29 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         the benchmark harness and every test have no listener, and a stream costs a
         chunk-by-chunk parse to arrive at an identical answer.
       */
+      /*
+        RETRIED, but only while nothing has been shown yet.
+
+        A retry replays the whole request, so once a token has reached the reader a second
+        attempt would render the answer twice, spliced. `emitted` is the guard and it is
+        per-attempt-set rather than per-run: it flips the instant the first delta goes out.
+        See ./resilience.ts for the rest of the reasoning, including why a 4xx is not retried.
+      */
+      let emitted = false;
       reply = opts.onEvent
-        ? await chatStream({
-            ...call,
-            onDelta: (d) => {
-              if (d.content) emit({ type: "token", text: d.content });
-              if (d.reasoning) emit({ type: "reasoning", text: d.reasoning });
-            },
-          })
-        : await chat(call);
+        ? await retryableStream(
+            () =>
+              chatStream({
+                ...call,
+                onDelta: (d) => {
+                  emitted = true;
+                  if (d.content) emit({ type: "token", text: d.content });
+                  if (d.reasoning) emit({ type: "reasoning", text: d.reasoning });
+                },
+              }),
+            () => emitted,
+          )
+        : await openRouterRetry.execute(() => chat(call));
     } catch (err) {
       return {
         answer: "",
