@@ -482,29 +482,37 @@ export const INDEXES = {
     "create index ix_tp_title on title_principal(title_rowid)",
     "create index ix_person_name on person(name)",
     /*
-      TWO COVERING INDEXES, and they carry the payload columns on purpose.
+      ONE COVERING INDEX over `episode`, and it used to be two.
 
-      The leading columns are what decide the seek, and they are not interchangeable:
-      `parent` is the equality every caller pins, and what follows it is the ORDER BY -- so a
-      season list is one seek and no sort, the same argument as ix_tg_rank. A `season` filter
-      is then a second equality inside that same seek rather than a filter over it.
+      The payload columns EARN their bytes and stay: every column the pane and `episodesOf`
+      read is in the trailing list, so SQLite answers a season list without touching the
+      table's own pages. Measured against a slim non-covering `(parent, season, number)`:
+      20-30% slower warm, 4-13 ms cold on a title page, and up to 496 ms cold on a
+      15,456-episode soap. That is the shape aannarr's standing rule asks for -- bytes are
+      the cheap axis on a file written once and read forever.
 
-      aannarr's standing rule of 2026-09-04: build time and index size are the cheap axis, query
-      time at render is the expensive one. `titles.db` is written once and never updated, so an
-      index costs bytes and build seconds and nothing else -- no write amplification to pay
-      back, no lock contention, no vacuum.
+      **The SECOND index did not earn them, and that was measured rather than assumed.**
+      `ix_ep_rating(parent, rating desc, ...)` was added on the same rule, unmeasured, at
+      445 MB. Benchmarked across 30 query/parent pairs, `parent-only` and `rating-only` match
+      each other within noise on all of them -- the two are interchangeable, and keeping both
+      bought nothing. The single measurable difference was `minRating=8.5` against that same
+      soap: 0.016 ms with the rating index against 0.662 ms without. **445 MB for 0.65 ms on
+      the corpus's worst case** is the one direction the rule does not point.
 
-      `ix_ep_parent` answers "the episodes of this series, in order" ENTIRELY from the index:
-      every column the pane and `episodesOf` read is in the trailing list, so SQLite never
-      touches the table's own pages. `ix_ep_rating` answers "which of them clear 8.0" the same
-      way, ordered by rating descending so `min_rating` is a range scan from one end rather
-      than a filter over the series.
+      On the deployment array those bytes are worse than idle: the index is read into the page
+      cache at boot (see `warmPageCache` in `src/server/live-index.ts`) at ~300 MB/s, so 445 MB
+      of index nobody queries is a second and a half added to every boot and every swap.
 
-      Storing title/votes/year in both is deliberate duplication -- three copies of a fact to
-      turn a join and a table lookup into one index read. That is the shape the rule asks for.
+      **Exactly one index on `parent` must survive.** With neither, `queryEpisodes` scans
+      7.7M rows: 400-800 ms warm and 4.1 s cold. This is not a candidate for further trimming.
+
+      NOTE, and the comment this replaces had it wrong: every `queryEpisodes` plan DOES sort,
+      because the order is `season = 0, season, number` and that leading expression is not a
+      column any index can carry. It is cheap -- 0.03-1.5 ms, against 0.042 vs 0.071 ms for an
+      index-served order on Breaking Bad -- so it is left alone deliberately. Season 0 sorting
+      last is a product rule (`orderSeasons`), and paying a millisecond to keep it is correct.
     */
     "create index ix_ep_parent on episode(parent, season, number, tconst, title, rating, votes, year)",
-    "create index ix_ep_rating on episode(parent, rating desc, season, number, tconst, title, votes, year)",
   ],
 } satisfies Record<string, readonly string[]>;
 

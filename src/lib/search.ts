@@ -1654,8 +1654,16 @@ export const EPISODE_PAGE = 200;
  * that does not pin a rating, carrying `rating: null`, so a pane can say "no score yet"
  * rather than pretending they do not exist.
  *
- * Ordered by season then episode number, which `ix_ep_parent` covers -- so this is a seek
- * and never a sort, whatever the filters are.
+ * `ix_ep_parent` covers the SEEK and every column read, so the table's own pages are never
+ * touched -- but the ORDER is `season = 0, season, number`, and that leading expression is
+ * not a column any index can carry, so **this does sort**. An earlier version of this comment
+ * claimed "a seek and never a sort", which was wrong: `explain query plan` reports
+ * `USE TEMP B-TREE FOR ORDER BY` on every shape of this query.
+ *
+ * It is left that way ON PURPOSE. Measured, the sort costs 0.03-1.5 ms depending on how many
+ * episodes the series has -- 0.071 ms against 0.042 ms for an index-served order on Breaking
+ * Bad. Season 0 sorting last is a product rule (see below, and `orderSeasons`), and a
+ * millisecond is the right price for keeping it.
  */
 /**
  * > [!IMPORTANT] SEASON 0 SORTS LAST, AND THE LIMIT IS WHY IT MATTERS

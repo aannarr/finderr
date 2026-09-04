@@ -167,11 +167,17 @@ export const INDEX_STAGES = {
    * show whose episode list is simply absent reads as missing data rather than as a stale
    * index, and there is nothing on screen to say a threshold is responsible.
    *
+   * **`v: 2` (2026-09-05) DROPPED `ix_ep_rating`**, which was 445 MB and interchangeable with
+   * `ix_ep_parent` across every measured query. The bump is what reclaims those bytes from an
+   * existing file: without it the index would keep the dead index forever, and on the
+   * deployment array that is ~1.5 s added to every boot and every swap, because the whole file
+   * is read into the page cache at startup.
+   *
    * It carries no `castRefreshDays` equivalent because there is nothing to carry forward:
    * the stage rebuilds from a 52 MB dump on every build, and its rows are keyed on tconst
    * rather than on a rowid, so there is no cheap copy that would be worth the machinery.
    */
-  episodes: (cfg) => JSON.stringify({ v: 1, minVotes: cfg.index.episodeSeriesMinVotes }),
+  episodes: (cfg) => JSON.stringify({ v: 2, minVotes: cfg.index.episodeSeriesMinVotes }),
 
   /**
    * `ix_year` WIDENED to `(year, votes desc)`, the single-year seek a decade browse splits into.
