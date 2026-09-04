@@ -210,7 +210,10 @@ test("browseMembers seeks too -- every computed top list is this call", () => {
   // twenty-six times on one render.
   expectSeek(
     "browseMembers",
-    plansOf((d) => browseMembers(d, { genre: "Drama", sort: "rank", limit: 250 }), ["Drama", 250, 0]),
+    plansOf(
+      (d) => browseMembers(d, { genre: "Drama", sort: "rank", limit: 250, rankIndexes: true }),
+      ["Drama", 250, 0],
+    ),
   );
 });
 
@@ -280,4 +283,76 @@ test("the recorder captures the statements it claims to", () => {
   const seen = statementsOf((d) => browseIndex(d, { genre: "Drama", sort: "rank", limit: 40 }));
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.some((s) => s.includes("title_genre"))).toBe(true);
+});
+
+/*
+  THE RANKED DECADE -- asserted as a CONTRACT, not as a plan, and the distinction is honest.
+
+  This shape shipped SPLIT, exactly like the votes decade, and that was a regression: `/lists`
+  draws seven "Best of the <decade>s" lists at 250 rows and they cost **1,233 ms of members**
+  on the deployment NAS, `decade-2010` alone at 372 ms, against a claim of 36 ms for the whole
+  payload in `src/server/lists.ts`.
+
+  The two sorts want opposite things. A VOTES decade has no index that can order across a year
+  RANGE, so ten pinned-year seeks beat it. A RANK decade already has one -- `ix_rank(kind, rank
+  desc)` reads rows in the output order and stops at `limit` -- so splitting throws that
+  ordering away and pays ten sorts instead of one walk. Left to itself the planner then picks
+  `ix_year` for the range and sorts anyway.
+
+  Measured on the real 1.27M-row index, "Best of the 2010s" at 250 rows:
+
+    split into ten years        372.53 ms
+    range, planner's choice     469.01 ms   SEARCH ix_year + USE TEMP B-TREE
+    range, indexed by ix_rank     1.25 ms   SEARCH ix_rank (kind=? AND rank>?)
+    no kind, ix_rank_all          0.80 ms
+
+  > [!IMPORTANT] These assert the SQL, not the plan, because a small fixture cannot model this
+  > Every other case in this file asserts `USE TEMP B-TREE` is absent, which a 1,000-row
+  > fixture reproduces faithfully. This one it does NOT: at that size the planner's cost model
+  > reaches a different conclusion than it does at 1.27M rows, so a plan assertion here would
+  > be red against code that is correct in production -- which is worse than no test, because
+  > the fix for it is to weaken the test.
+  >
+  > What IS a property of the code rather than of the planner: that a ranked decade issues ONE
+  > row query rather than ten, and that it names the index. Those are the two halves of the
+  > fix, both would have caught the regression, and neither depends on corpus size. The plan
+  > itself is verified on the real index by `bun run bench`.
+*/
+test("a ranked decade is ONE query, not ten -- the split is for votes only", () => {
+  const ranked = statementsOf((d) =>
+    browseIndex(d, { kind: "movie", decade: 2010, sort: "rank", limit: 250, rankIndexes: true }),
+  ).filter((sql) => sql.includes("select t.tconst, t.title"));
+  expect(ranked.length, "a ranked decade was split into per-year queries -- that is the regression").toBe(1);
+
+  // The votes decade is the case the split exists for, and it must still be split.
+  const voted = statementsOf((d) =>
+    browseIndex(d, { kind: "movie", decade: 2010, limit: 40, rankIndexes: true }),
+  ).filter((sql) => sql.includes("select t.tconst, t.title"));
+  expect(voted.length, "the votes decade stopped splitting -- it is 161ms unsplit").toBe(10);
+});
+
+test("a ranked decade names the rank index, so the planner cannot pick ix_year", () => {
+  const pinned = (opts: BrowseOptions) =>
+    statementsOf((d) => browseIndex(d, { ...opts, rankIndexes: true })).find((sql) =>
+      sql.includes("select t.tconst, t.title"),
+    ) ?? "";
+
+  expect(pinned({ kind: "movie", decade: 2010, sort: "rank", limit: 250 })).toContain("indexed by ix_rank");
+  expect(pinned({ decade: 2010, sort: "rank", limit: 250 })).toContain("indexed by ix_rank_all");
+  // A GENRE decade is deliberately NOT pinned: ix_tg_rank leads with `genre`, the planner
+  // already picks it, and it measures 0.93 ms. A pin there would be a second owner of a
+  // decision that is currently right.
+  expect(pinned({ genre: "Drama", decade: 2010, sort: "rank", limit: 250 })).not.toContain("indexed by");
+  // And no pin at all on the shapes that never needed one.
+  expect(pinned({ kind: "movie", decade: 2010, limit: 40 })).not.toContain("indexed by");
+  expect(pinned({ genre: "Drama", sort: "rank", limit: 40 })).not.toContain("indexed by");
+});
+
+test("an index without the rank indexes is served WITHOUT a pin rather than throwing", () => {
+  // `INDEXED BY` is not a hint -- SQLite refuses to PREPARE a statement naming an index that
+  // is not there. So an older file must take the planner's path, slowly, rather than break.
+  const sql = statementsOf((d) =>
+    browseIndex(d, { kind: "movie", decade: 2010, sort: "rank", limit: 250, rankIndexes: false }),
+  ).find((s) => s.includes("select t.tconst, t.title"));
+  expect(sql).not.toContain("indexed by");
 });
