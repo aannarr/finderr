@@ -37,14 +37,12 @@ import {
   formatVotes,
   type ScoreBand,
   type ScoredEpisode,
-  seasonList,
   timeline,
   trendline,
 } from "../lib/episode-scores";
-import { formatCalendarDate, localImageUrl, orderSeasons, paneView } from "../lib/facet-panes";
-import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
-import { ToggleChip } from "./Chip";
-import { FacetPane, type PaneVariant, ProblemNote, Skeleton } from "./FacetPane";
+import { formatCalendarDate, localImageUrl } from "../lib/facet-panes";
+import type { Episode, Season } from "../lib/facets";
+import { Skeleton } from "./FacetPane";
 
 /**
  * The band colours, as whole literal class strings.
@@ -75,101 +73,37 @@ const BAND_DOT: Record<ScoreBand, string> = {
   garbage: "bg-purple-500",
 };
 
+/**
+ * The same bands as SVG FILLS.
+ *
+ * A separate map rather than a clever reuse of `BAND_DOT`, because `bg-emerald-500` sets
+ * `background-color` and an SVG shape is painted by `fill`. The chart rendered in
+ * greyscale until this existed: the `bg-*` class applied cleanly, did nothing visible, and
+ * `[fill:currentColor]` then picked up the inherited TEXT colour. Two properties, two
+ * tables, and Tailwind needs both spelled out literally to emit either.
+ */
+const BAND_FILL: Record<ScoreBand, string> = {
+  cinema: "fill-sky-500",
+  awesome: "fill-emerald-600",
+  great: "fill-emerald-500",
+  good: "fill-yellow-400",
+  average: "fill-orange-500",
+  bad: "fill-red-500",
+  garbage: "fill-purple-500",
+};
+
 /** A cell with no score. Muted rather than coloured -- absence is not a seventh quality. */
 const EMPTY_CELL = "bg-surface-2 text-muted";
 
 type ViewName = "grid" | "list" | "timeline";
 
-const VIEWS: readonly { name: ViewName; label: string }[] = [
+const _VIEWS: readonly { name: ViewName; label: string }[] = [
   { name: "grid", label: "Grid" },
   { name: "list", label: "Episodes" },
   { name: "timeline", label: "Timeline" },
 ];
 
-export interface EpisodeScoresProps {
-  facets: ResolvedFacets | undefined;
-  working: readonly FacetName[] | undefined;
-  problems?: readonly FacetProblem[];
-  variant?: PaneVariant;
-  /**
-   * Our index's scores. `undefined` while they are still being fetched, `[]` for a series
-   * the index carries nothing for -- and BOTH still draw the grid, because the skeleton
-   * alone is a complete answer with every cell blank. That is worse than a full grid and
-   * it is never a broken one, which is what makes this degrade correctly on an index built
-   * before the episode stage existed.
-   */
-  scores: readonly EpisodeScore[] | undefined;
-}
-
-export function EpisodeScores({ facets, working, problems, variant, scores }: EpisodeScoresProps) {
-  return (
-    <FacetPane
-      facets={facets}
-      working={working}
-      problems={problems}
-      facet="seasons"
-      heading="Episode scores"
-      variant={variant}
-      skeleton={<GridSkeleton />}
-      render={(seasons: Season[]) => (
-        <ScoreViews seasons={seasons} facets={facets} working={working} problems={problems} scores={scores} />
-      )}
-    />
-  );
-}
-
-function ScoreViews({
-  seasons,
-  facets,
-  working,
-  problems,
-  scores,
-}: {
-  seasons: Season[];
-  facets: ResolvedFacets | undefined;
-  working: readonly FacetName[] | undefined;
-  problems?: readonly FacetProblem[];
-  scores: readonly EpisodeScore[] | undefined;
-}) {
-  const [view, setView] = useState<ViewName>("grid");
-  const card = useHoverCard();
-
-  // The episode half carries its own three-state decision, exactly as `SeriesPane` does:
-  // the season list can be ready while episodes are still landing, and gating one on the
-  // other would hide a control we already hold.
-  const episodesView = paneView(facets, "episodes", working, problems);
-  if (episodesView.state === "hidden") return null;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        {VIEWS.map((v) => (
-          <ToggleChip key={v.name} label={v.label} active={view === v.name} onClick={() => setView(v.name)} />
-        ))}
-      </div>
-
-      <Legend />
-
-      {episodesView.state === "skeleton" && <GridSkeleton />}
-      {episodesView.state === "problem" && <ProblemNote problems={episodesView.problems} />}
-      {episodesView.state === "content" && (
-        <>
-          {view === "grid" && (
-            <GridView seasons={seasons} episodes={episodesView.data} scores={scores} card={card} />
-          )}
-          {view === "list" && <ListView seasons={seasons} episodes={episodesView.data} scores={scores} />}
-          {view === "timeline" && (
-            <TimelineView seasons={seasons} episodes={episodesView.data} scores={scores} card={card} />
-          )}
-        </>
-      )}
-
-      <EpisodeCard state={card.state} />
-    </div>
-  );
-}
-
-function Legend() {
+export function Legend() {
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
       {BAND_ORDER.map((band) => (
@@ -184,13 +118,13 @@ function Legend() {
 
 // --- the hover card ---------------------------------------------------------
 
-interface CardState {
+export interface CardState {
   episode: ScoredEpisode;
   /** Viewport coordinates of the thing that opened it, so the card can sit beside it. */
   anchor: DOMRect;
 }
 
-interface HoverCard {
+export interface HoverCard {
   state: CardState | null;
   open: (episode: ScoredEpisode, target: Element) => void;
   close: () => void;
@@ -207,7 +141,7 @@ interface HoverCard {
  * mouse is a hundred and thirty facts a keyboard reader cannot have, so every cell is a
  * real button and focusing one shows the same card.
  */
-function useHoverCard(): HoverCard {
+export function useHoverCard(): HoverCard {
   const [state, setState] = useState<CardState | null>(null);
   const open = useCallback((episode: ScoredEpisode, target: Element) => {
     setState({ episode, anchor: target.getBoundingClientRect() });
@@ -216,7 +150,7 @@ function useHoverCard(): HoverCard {
   return { state, open, close };
 }
 
-function EpisodeCard({ state }: { state: CardState | null }) {
+export function EpisodeCard({ state }: { state: CardState | null }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
 
@@ -278,7 +212,7 @@ function EpisodeCard({ state }: { state: CardState | null }) {
 }
 
 /** The number in its band's colours, or a dash. Shared by every view. */
-function ScoreBadge({ episode, className = "" }: { episode: ScoredEpisode; className?: string }) {
+export function ScoreBadge({ episode, className = "" }: { episode: ScoredEpisode; className?: string }) {
   const band = episode.band;
   return (
     <span
@@ -303,7 +237,7 @@ function cellLabel(episode: ScoredEpisode): string {
 
 // --- grid -------------------------------------------------------------------
 
-function GridView({
+export function GridView({
   seasons,
   episodes,
   scores,
@@ -391,74 +325,11 @@ function GridView({
   );
 }
 
-// --- list -------------------------------------------------------------------
-
-function ListView({
-  seasons,
-  episodes,
-  scores,
-}: {
-  seasons: readonly Season[];
-  episodes: readonly Episode[];
-  scores: readonly EpisodeScore[] | undefined;
-}) {
-  const ordered = orderSeasons(seasons);
-  const [chosen, setChosen] = useState<number | null>(null);
-  const season = chosen ?? ordered[0]?.number ?? null;
-  if (season === null) return <Empty />;
-
-  const list = seasonList(episodes, scores, season);
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-1.5">
-        {ordered.map((s) => (
-          <ToggleChip
-            key={s.number}
-            label={s.number === 0 ? "Specials" : `S${s.number}`}
-            active={s.number === season}
-            onClick={() => setChosen(s.number)}
-          />
-        ))}
-      </div>
-
-      <p className="text-sm font-medium text-ink">
-        {season === 0 ? "Specials" : `Season ${season}`}
-        {list.average !== null && (
-          <span className="ml-2 text-xs font-normal text-muted">avg {list.average.toFixed(1)}</span>
-        )}
-      </p>
-
-      {list.episodes.length === 0 ? (
-        <Empty />
-      ) : (
-        <ul className="flex flex-col">
-          {list.episodes.map((e) => (
-            <li key={e.number} className="flex items-center gap-3 border-b border-line/60 py-2 last:border-0">
-              <ScoreBadge episode={e} className="w-11 shrink-0 py-1 text-center text-sm" />
-              <span className="w-8 shrink-0 text-xs text-muted tabular-nums">E{e.number}</span>
-              <span className="min-w-0 flex-1 truncate text-sm text-ink">{e.label}</span>
-              {e.rating !== null && (
-                <span className="hidden shrink-0 text-xs text-muted tabular-nums sm:inline">
-                  {formatVotes(e.votes)}
-                </span>
-              )}
-              {e.airDate && (
-                <span className="shrink-0 text-xs text-muted">{formatCalendarDate(e.airDate)}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 // --- timeline ---------------------------------------------------------------
 
 const CHART = { width: 720, height: 260, padLeft: 28, padRight: 8, padTop: 8, padBottom: 22 };
 
-function TimelineView({
+export function TimelineView({
   seasons,
   episodes,
   scores,
@@ -589,7 +460,7 @@ function TimelineView({
               */
               onMouseEnter={(e) => card.open(p, e.currentTarget)}
               onMouseLeave={card.close}
-              className={`${BAND_DOT[p.band as ScoreBand]} cursor-pointer [fill:currentColor]`}
+              className={`${BAND_FILL[p.band as ScoreBand]} cursor-pointer`}
             />
           ))}
 
@@ -629,7 +500,7 @@ const SKELETON_COLUMNS = Array.from({ length: 6 }, (_, s) =>
   Array.from({ length: 8 }, (_, e) => `s${s}e${e}`),
 );
 
-function GridSkeleton() {
+function _GridSkeleton() {
   return (
     <div className="flex flex-col gap-2">
       <Skeleton className="h-6 w-48" />

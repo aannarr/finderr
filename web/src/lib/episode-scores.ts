@@ -41,7 +41,7 @@
  * One owner for the shape, no bundle cost, and the two halves cannot drift.
  */
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
-import { episodeLabel, episodesForSeason, orderSeasons } from "./facet-panes";
+import { episodeLabel, episodesForSeason, orderSeasons, SPECIALS_SEASON } from "./facet-panes";
 import type { Episode, Season } from "./facets";
 
 export type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
@@ -189,9 +189,21 @@ export interface GridColumn {
 
 export interface EpisodeGrid {
   columns: GridColumn[];
-  /** Episode numbers down the side, `1..n` where n is the longest season. */
+  /** Episode numbers down the side, `1..n`, clamped by `maxRows`. */
   rows: number[];
+  /** Rows the clamp held back. `0` when the whole grid fits. */
+  hiddenRows: number;
 }
+
+/**
+ * How tall the grid gets before it is clamped.
+ *
+ * A grid is as tall as its LONGEST column, so one enormous season sets the height of every
+ * other one -- and the shape a reader came to see gets pushed off the screen by a column
+ * of blanks. Thirty is comfortably past a normal season and well short of the cases that
+ * break the shape.
+ */
+export const GRID_MAX_ROWS = 30;
 
 /**
  * The grid: a column per season, a row per episode number.
@@ -209,20 +221,36 @@ export function episodeGrid(
   seasons: readonly Season[],
   episodes: readonly Episode[],
   scores: readonly EpisodeScore[] | undefined,
+  maxRows: number = GRID_MAX_ROWS,
 ): EpisodeGrid {
   const index = scoreIndex(scores);
 
+  /*
+    THE SPECIALS ARE NOT IN THE GRID, and this is the rule that keeps the shape readable.
+
+    Measured in a browser 2026-09-05: Rick and Morty's season 0 holds 187 entries against
+    a longest real season of 11, so the grid rendered 187 rows, 94% of them empty, and
+    what a reader opened it for was several screens above the fold. Specials are shorts,
+    recaps and behind-the-scenes clips -- they are not part of a show's shape, and the
+    list view still carries them one season at a time where their length costs nothing.
+  */
+  const real = orderSeasons(seasons).filter((s) => s.number !== SPECIALS_SEASON);
+
   // Join once, per season, before anything needs to know how tall the grid is.
-  const perSeason = orderSeasons(seasons).map((season) => ({
+  const perSeason = real.map((season) => ({
     season: season.number,
     scored: episodesForSeason(episodes, season.number).map((e) => join(e, index)),
   }));
 
   const highest = Math.max(0, ...perSeason.flatMap((s) => s.scored.map((e) => e.number)));
-  const rows = Array.from({ length: highest }, (_, i) => i + 1);
+  const shown = Math.min(highest, Math.max(0, maxRows));
+  const rows = Array.from({ length: shown }, (_, i) => i + 1);
 
   const columns = perSeason.map(({ season, scored }): GridColumn => {
     const byNumber = new Map(scored.map((e) => [e.number, e]));
+    // Averaged over the WHOLE season rather than the visible rows: the clamp is a
+    // rendering limit, and an average that moved when a reader expanded the grid would be
+    // two different answers to one question.
     const average = averageRating(scored);
     return {
       season,
@@ -233,7 +261,7 @@ export function episodeGrid(
     };
   });
 
-  return { columns, rows };
+  return { columns, rows, hiddenRows: highest - shown };
 }
 
 // --- the list ---------------------------------------------------------------

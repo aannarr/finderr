@@ -129,9 +129,26 @@ describe("episodeGrid", () => {
     expect(grid.columns[0].cells[2]?.number).toBe(3);
   });
 
-  it("puts the specials last, following orderSeasons", () => {
-    const grid = episodeGrid([season(0), season(1)], [episode(0, 1), episode(1, 1)], []);
-    expect(grid.columns.map((c) => c.label)).toEqual(["S1", "S0"]);
+  it("leaves the SPECIALS out of the grid entirely", () => {
+    /*
+      Measured in a browser on 2026-09-05, and it is why this rule exists. Rick and Morty's
+      season 0 carries 187 entries -- shorts, recaps, behind-the-scenes clips -- against a
+      longest real season of 11. Because the grid is as tall as its longest column, one
+      specials season turned an 11-row shape into a 187-row one, 94% of it empty, and the
+      thing the grid exists to show was pushed off the screen.
+
+      Specials are not part of a show's shape. They stay reachable in the list view, which
+      is one season at a time and does not pay for their length.
+    */
+    const grid = episodeGrid([season(0), season(1)], [episode(0, 1), episode(0, 187), episode(1, 1)], []);
+    expect(grid.columns.map((c) => c.label)).toEqual(["S1"]);
+    expect(grid.rows).toEqual([1]);
+  });
+
+  it("draws nothing at all for a series that is only specials", () => {
+    const grid = episodeGrid([season(0)], [episode(0, 1)], []);
+    expect(grid.columns).toEqual([]);
+    expect(grid.rows).toEqual([]);
   });
 
   it("averages each column over its rated episodes only", () => {
@@ -146,6 +163,31 @@ describe("episodeGrid", () => {
     const grid = episodeGrid([season(1)], [], []);
     expect(grid.rows).toEqual([]);
     expect(grid.columns[0].cells).toEqual([]);
+  });
+
+  it("CLAMPS the height, and says how many rows it held back", () => {
+    // Even with the specials gone a real season can be enormous -- a daily soap, a
+    // long-run anime cour. The grid is as tall as its longest column, so the height has
+    // to be bounded by the component rather than by the data.
+    const episodes = Array.from({ length: 120 }, (_, i) => episode(1, i + 1));
+    const grid = episodeGrid([season(1)], episodes, [], 30);
+    expect(grid.rows).toHaveLength(30);
+    expect(grid.rows.at(-1)).toBe(30);
+    expect(grid.columns[0].cells).toHaveLength(30);
+    expect(grid.hiddenRows).toBe(90);
+  });
+
+  it("hides nothing when the grid already fits", () => {
+    const grid = episodeGrid(seasons, episodes, [], 30);
+    expect(grid.hiddenRows).toBe(0);
+  });
+
+  it("averages over the WHOLE season, not just the rows on screen", () => {
+    // The clamp is a rendering limit. An average that changed when the reader pressed
+    // "show all" would be two different answers to one question.
+    const eps = Array.from({ length: 4 }, (_, i) => episode(1, i + 1));
+    const scores = [score(1, 1, 10), score(1, 2, 10), score(1, 3, 2), score(1, 4, 2)];
+    expect(episodeGrid([season(1)], eps, scores, 2).columns[0].average).toBe(6);
   });
 });
 

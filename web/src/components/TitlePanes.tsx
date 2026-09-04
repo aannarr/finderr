@@ -71,7 +71,6 @@ import type {
 } from "../lib/facets";
 import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
-import { EpisodeScores } from "./EpisodeScores";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
 import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
 import { PluginPanes, panesForSlot } from "./PluginPane";
@@ -381,18 +380,8 @@ export function TitleLowerPanes({
         episodeState={episodeState}
         onRequestEpisode={onRequestEpisode}
         onRequestSeason={onRequestSeason}
+        scores={episodeScores}
       />
-      {/*
-        Directly under the seasons panel, and keyed the same way for the same reason --
-        the chosen view and season are component state, and without the key opening a
-        second series would land on the last one's selection.
-
-        It sits BELOW rather than inside `SeriesPane` because the two answer different
-        questions about the same rows: that pane is air dates and what Sonarr holds, this
-        one is quality. Reading them as one control would put a request button beside a
-        rating, which are not the same decision.
-      */}
-      <EpisodeScores key={`${title.tconst}-scores`} {...shared} variant="panel" scores={episodeScores} />
       {slot("title.after-seasons")}
 
       <FacetPane
