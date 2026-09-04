@@ -15,7 +15,8 @@
 
 import { type Evidence, evidenceFrom } from "./evidence.js";
 import { callSignature, type Facts, factsFrom, ledgerMessage } from "./facts.js";
-import { type ChatMessage, chat, type ToolCall } from "./openrouter.js";
+import { type ChatMessage, chat, chatStream, type ToolCall } from "./openrouter.js";
+import { openRouterRetry, retryableStream } from "./resilience.js";
 import { dispatch, type ResumeStore, toolSchemasFor } from "./schemas.js";
 import type { AgentContext } from "./tools.js";
 
@@ -58,6 +59,12 @@ Every title and every person you name in your answer must have come back from a 
 Your training data is not evidence. The index knows about titles released after your knowledge cutoff, and it is right and you are wrong about anything recent.
 If a tool finds nothing, say so plainly. "It is not in the index" is a good answer. Inventing a plausible one is not.
 
+NAME THINGS SO THEY BECOME LINKS
+When you name a title or a person in your answer, put its id in square brackets straight after the name: Furious [tt36303968], Emmy Rossum [nm0002536].
+Do it on FIRST mention of each thing, not on every mention -- a paragraph full of brackets is unreadable.
+The reader never sees the brackets. They are turned into a link to that title or person, labelled with the name we hold for it. An id that does not resolve is simply removed, so a wrong one costs the reader nothing but costs you the link.
+Only ever bracket an id a tool returned in THIS conversation. Never one you remember.
+
 REQUESTING IS THE ONE THING YOU DO THAT CANNOT BE UNDONE
 The request tool starts a real download immediately. There is no confirmation step in front of you and no undo behind you -- a person has to go and delete it.
 So only call it when the user has ASKED for something to be fetched. "What are the good episodes of X" is a question; "get me the good episodes of X" is a request. If the sentence could be either, ANSWER IT AND ASK, rather than requesting and apologising.
@@ -92,6 +99,25 @@ Answer in one or two sentences. Name the specific titles and people you found.`;
  * > the first one was ever the goal.
  */
 export type CompactMode = "off" | "results" | "ledger";
+
+/**
+ * What the caller can watch while a run is in flight.
+ *
+ * A question takes tens of seconds and does a MULTI-TURN loop -- think, call tools, read,
+ * think again -- and until this existed all of it was discarded so the reader watched a
+ * spinner and got one bubble at the end. aannarr, 2026-09-05: *"not `hey`
+ * ==============================> `single response to one turn`.. that's not cool!"*
+ *
+ * `token` and `reasoning` are INCREMENTAL fragments, not whole messages. `reasoning` only
+ * arrives from models that emit it, and its absence is the ordinary case rather than a
+ * failure -- do not render an empty thinking block.
+ */
+export type RunEvent =
+  | { type: "turn"; n: number }
+  | { type: "reasoning"; text: string }
+  | { type: "token"; text: string }
+  | { type: "tool"; phase: "start"; id: string; name: string; args: Record<string, unknown> }
+  | { type: "tool"; phase: "end"; id: string; name: string; ms: number; summary: string; error?: string };
 
 export interface ToolTrace {
   name: string;
@@ -129,6 +155,24 @@ export interface RunResult {
 export interface RunOptions {
   model: string;
   question: string;
+  /**
+   * Earlier exchanges in this conversation, oldest first, WITHOUT the system message.
+   *
+   * The runner prepends the system prompt itself and this list is `user`/`assistant` only --
+   * see `./conversation.ts` for why a stored `system` role would be an injection surface.
+   * Empty (the default) is a brand-new conversation and the behaviour every caller had
+   * before memory existed.
+   */
+  history?: ChatMessage[];
+  /**
+   * Where to send progress AS IT HAPPENS. Absent means run silently, which is what the
+   * benchmark harness and every test do.
+   *
+   * Called synchronously from the loop, so an implementation that throws would take the run
+   * down -- `emit` below swallows, because a UI that has hung up must not kill the work that
+   * still has a ledger row to write.
+   */
+  onEvent?: (e: RunEvent) => void;
   ctx: AgentContext;
   store: ResumeStore;
   maxTurns?: number;
@@ -160,10 +204,26 @@ export async function run(opts: RunOptions): Promise<RunResult> {
    * which also sidesteps the protocol rule that every `tool_calls` id needs a matching
    * `tool` message -- there is no assistant tool_calls message in the payload to match.
    */
+  /*
+    History sits BETWEEN the system prompt and the new question, which is the only order that
+    reads as a conversation: the standing instructions, then what was said, then what is being
+    asked now. Putting it after the question would make the model answer the oldest turn.
+  */
+  const history = opts.history ?? [];
   const messages: ChatMessage[] = [
     { role: "system", content: system },
+    ...history,
     { role: "user", content: opts.question },
   ];
+
+  /** Never let a listener's failure kill the run -- the ledger still has to be written. */
+  const emit = (e: RunEvent): void => {
+    try {
+      opts.onEvent?.(e);
+    } catch {
+      // A browser that hung up is not a reason to abandon work that must still be charged.
+    }
+  };
 
   const mode: CompactMode = opts.compact ?? "off";
   const facts: Facts = [];
@@ -179,12 +239,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   let provider: string | undefined;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
+    emit({ type: "turn", n: turn });
     // The ledger message is REBUILT rather than appended, and it sits after the question so
     // the stable prefix (tools, system) stays byte-identical and remains cacheable.
     const payload: ChatMessage[] =
       mode === "ledger"
         ? [
             { role: "system", content: system },
+            ...history,
             { role: "user", content: opts.question },
             ...(facts.length > 0
               ? [{ role: "user" as const, content: ledgerMessage(facts, priorCalls) }]
@@ -202,7 +264,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     let reply: Awaited<ReturnType<typeof chat>>;
     try {
-      reply = await chat({
+      const call = {
         model: opts.model,
         messages: payload,
         // Derived from the CONTEXT, so a read-only session is never shown `request` at all.
@@ -210,7 +272,39 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         apiKey: opts.apiKey,
         fetchImpl: opts.fetchImpl,
         cacheSystem: opts.cacheSystem,
-      });
+      };
+      /*
+        STREAM ONLY WHEN SOMEBODY IS WATCHING.
+
+        Both paths return the same ChatResponse with the same reassembled tool calls, so the
+        loop below does not care which ran -- streaming changes WHEN the caller learns
+        things, never WHAT it ends up with. The non-streaming call stays the default because
+        the benchmark harness and every test have no listener, and a stream costs a
+        chunk-by-chunk parse to arrive at an identical answer.
+      */
+      /*
+        RETRIED, but only while nothing has been shown yet.
+
+        A retry replays the whole request, so once a token has reached the reader a second
+        attempt would render the answer twice, spliced. `emitted` is the guard and it is
+        per-attempt-set rather than per-run: it flips the instant the first delta goes out.
+        See ./resilience.ts for the rest of the reasoning, including why a 4xx is not retried.
+      */
+      let emitted = false;
+      reply = opts.onEvent
+        ? await retryableStream(
+            () =>
+              chatStream({
+                ...call,
+                onDelta: (d) => {
+                  emitted = true;
+                  if (d.content) emit({ type: "token", text: d.content });
+                  if (d.reasoning) emit({ type: "reasoning", text: d.reasoning });
+                },
+              }),
+            () => emitted,
+          )
+        : await openRouterRetry.execute(() => chat(call));
     } catch (err) {
       return {
         answer: "",
@@ -265,7 +359,37 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     }
 
     for (const call of calls) {
+      /*
+        The START event carries the ARGUMENTS, and that is the point of emitting it at all.
+
+        A reader watching "list_episodes" learns nothing; one watching
+        `list_episodes(tt0944947, min_rating: 8)` can see the assistant understood the
+        question -- and can see it did NOT when the arguments are wrong. Emitted before the
+        call so a slow tool shows as running rather than as a gap.
+      */
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        parsedArgs = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+      } catch {
+        // A malformed argument string is reported by `executeOne` as a tool error; here it
+        // just means the start event shows no arguments rather than crashing the emit.
+      }
+      emit({ type: "tool", phase: "start", id: call.id, name: call.function.name, args: parsedArgs });
+
       const done = executeOne(opts, call, toolCalls);
+      const trace = toolCalls[toolCalls.length - 1];
+      emit({
+        type: "tool",
+        phase: "end",
+        id: call.id,
+        name: call.function.name,
+        ms: trace?.ms ?? 0,
+        // What came BACK, in one line a person can read. `factsFrom` already renders a tool
+        // payload as prose for the model to re-read; reusing it means the reader and the
+        // model are told the same thing rather than two descriptions drifting apart.
+        summary: summarizeResult(done.payload),
+        ...(trace?.error ? { error: trace.error } : {}),
+      });
       messages.push(done.message);
       if (mode === "off") continue;
       const lines = factsFrom(call.function.name, done.args, done.payload);
@@ -300,6 +424,40 @@ export async function run(opts: RunOptions): Promise<RunResult> {
  * refusal messages were written for, and a harness that crashed instead would never measure
  * whether a model actually recovers.
  */
+/**
+ * One line describing what a tool RETURNED, for a human watching the transcript.
+ *
+ * Takes the payload alone: it took the tool NAME too until the shapes turned out to be
+ * self-describing -- a `found` array is a resolver, an `episodes` array is a list -- so the
+ * name was a parameter nothing read. A dead argument is a claim that the function needs
+ * something it does not.
+ *
+ * Deliberately shallow: counts and names, never the payload. The transcript is a progress
+ * view, not a data dump -- a reader who wants the rows opens the cards the answer draws, and
+ * a `list_cast` result rendered in full would bury the answer it exists to support.
+ */
+function summarizeResult(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "no result";
+  if ("error" in payload) return `refused: ${String((payload as { error: unknown }).error).slice(0, 120)}`;
+  if (Array.isArray(payload)) return `${payload.length} ${payload.length === 1 ? "row" : "rows"}`;
+
+  const p = payload as Record<string, unknown>;
+  if (Array.isArray(p.found)) return `${p.found.length} match${p.found.length === 1 ? "" : "es"}`;
+  if (Array.isArray(p.episodes)) {
+    const unrated = typeof p.unrated === "number" ? `, ${p.unrated} unrated` : "";
+    return `${p.episodes.length} episodes${unrated}`;
+  }
+  if (Array.isArray(p.titles)) return `${p.titles.length} titles`;
+  if (Array.isArray(p.paths)) return p.paths.length > 0 ? `${p.paths.length} path(s)` : "no connection found";
+  if (Array.isArray(p.results)) {
+    const queued = typeof p.queued === "number" ? p.queued : 0;
+    return `${queued} queued of ${p.results.length}`;
+  }
+  if (typeof p.title === "string") return p.title;
+  if (typeof p.name === "string") return p.name;
+  return "ok";
+}
+
 function executeOne(
   opts: RunOptions,
   call: ToolCall,

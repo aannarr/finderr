@@ -6,6 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
 import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
 import { AUTH_SCHEMA } from "./auth-store";
@@ -666,6 +667,32 @@ create table if not exists ai_call (
   outcome     text not null
 );
 create index if not exists ix_ai_call_day on ai_call(user_id, day);
+
+-- What the assistant REMEMBERS. One row per completed exchange.
+--
+-- Separate from ai_call, which is the MONEY. That table answers "what did this cost" and is
+-- append-only forever; this one answers "what were we talking about" and is deleted when a
+-- reader clears the thread. Same conversation id joins them, and they are still two tables:
+-- clearing a chat must not erase the spend it caused, or the daily cap becomes a thing a
+-- user can reset by pressing a button.
+--
+-- ONLY question and answer are kept -- never the tool traffic that produced them. One
+-- list_episodes result is kilobytes of JSON and replaying it on every later turn is a
+-- six-figure token count in front of a model that can simply ask again. See
+-- src/lib/agent/conversation.ts for the whole reasoning.
+--
+-- NOTE: no backticks in this comment. SCHEMA is a template literal.
+create table if not exists ai_message (
+  id integer primary key,
+  user_id  text not null,
+  conv_id  text not null,
+  question text not null,
+  answer   text not null,
+  at       text not null
+);
+-- Scoped by USER as well as conversation: the id is a UUID the CLIENT sends, so it is not a
+-- secret. Without the user in the key, a guessed id would replay somebody else's chat.
+create index if not exists ix_ai_message_conv on ai_message(user_id, conv_id, id);
 `;
 
 /**
@@ -813,7 +840,7 @@ const ADDED_COLUMNS: {
   { table: "search_log", column: "filters", ddl: "alter table search_log add column filters text" },
 ];
 
-export class Store implements SearchLogSink, AiCallSink {
+export class Store implements SearchLogSink, AiCallSink, ConversationStore {
   readonly db: Database;
 
   constructor(cfg: Config) {
@@ -1447,6 +1474,48 @@ export class Store implements SearchLogSink, AiCallSink {
    * silently opens the gate. `day` is matched as a stored string -- see the `ai_call`
    * comment in SCHEMA for why it is not derived here.
    */
+  // --- what the assistant remembers -------------------------------------
+
+  /**
+   * The last `limit` exchanges of one conversation, OLDEST FIRST.
+   *
+   * The subquery takes the newest rows and the outer select puts them back in order, because
+   * a model reads a conversation forwards and `order by id desc limit ?` would hand it the
+   * thread backwards -- which reads as coherent English and is completely wrong.
+   */
+  conversationTurns(userId: string, convId: string, limit: number): ConversationTurn[] {
+    return this.db
+      .query(
+        `select question, answer, at from (
+           select id, question, answer, at from ai_message
+           where user_id = ? and conv_id = ? order by id desc limit ?
+         ) order by id asc`,
+      )
+      .all(userId, convId, Math.max(1, limit)) as ConversationTurn[];
+  }
+
+  appendConversationTurn(userId: string, convId: string, turn: ConversationTurn): void {
+    this.db.run("insert into ai_message (user_id, conv_id, question, answer, at) values (?,?,?,?,?)", [
+      userId,
+      convId,
+      turn.question,
+      turn.answer,
+      turn.at,
+    ]);
+  }
+
+  /**
+   * Forget one conversation.
+   *
+   * The client's "clear" has to reach HERE and not only localStorage: wiping the browser's
+   * copy while the server still replays the thread would give a reader a blank panel and a
+   * model that remembers everything they just cleared -- the exact opposite of what the
+   * button says it does.
+   */
+  clearConversation(userId: string, convId: string): void {
+    this.db.run("delete from ai_message where user_id = ? and conv_id = ?", [userId, convId]);
+  }
+
   aiSpendUsd(userId: string, day: string): number {
     const row = this.db
       .query("select coalesce(sum(usd), 0) s from ai_call where user_id = ? and day = ?")

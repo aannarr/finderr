@@ -64,6 +64,141 @@ export function formatToolArgs(args: Record<string, unknown>, max = 140): string
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// --- a tool call, in a reader's words --------------------------------------
+
+/**
+ * WHAT EACH TOOL IS CALLED ON SCREEN.
+ *
+ * `list_episodes` is an identifier, not a sentence, and a transcript built out of
+ * identifiers reads as a log file somebody left on the page. The names come from the tool
+ * DESCRIPTIONS in `src/lib/agent/schemas.ts`, shortened to the noun phrase a reader would
+ * use -- "Episode list", not "Every episode of ONE series with its own IMDb score".
+ *
+ * A tool missing from this table falls back to its own identifier with the underscores
+ * taken out, which is the forward-compatible answer: the server growing a twelfth tool must
+ * put a slightly ugly row in the transcript rather than a blank one.
+ */
+const TOOL_LABEL: Record<string, string> = {
+  find_title: "Title search",
+  find_person: "People search",
+  list_cast: "Cast list",
+  list_credits: "Credits",
+  get_title: "Title details",
+  get_person: "Person details",
+  browse_titles: "Browsed the index",
+  find_connections: "Connection search",
+  navigate: "Opened a page",
+  list_episodes: "Episode list",
+  request: "Download request",
+};
+
+export function toolLabel(name: string): string {
+  return TOOL_LABEL[name] ?? name.replace(/_/g, " ");
+}
+
+/**
+ * The one argument worth reading in the collapsed row: WHAT it was asked about.
+ *
+ * A tool row saying "Title search" and nothing else is a row that could be about anything.
+ * Saying `Title search · "Heat" · 1995` costs one line and turns the transcript into
+ * something a reader can follow, which is the entire ask.
+ *
+ * The keys are per-tool and ORDERED, because the interesting argument differs: a browse is
+ * described by its genre and decade, a cast list by which titles it covered. Anything not
+ * named here is diagnostics and lives in the expandable detail instead.
+ */
+const SUBJECT_KEYS: Record<string, readonly string[]> = {
+  find_title: ["name", "year", "decade"],
+  find_person: ["name"],
+  list_cast: ["tconst", "roles"],
+  list_credits: ["nconst", "kind"],
+  get_title: ["tconst"],
+  get_person: ["nconst"],
+  browse_titles: ["genre", "kind", "decade", "year"],
+  find_connections: ["from", "to"],
+  navigate: ["id"],
+  list_episodes: ["tconst", "season"],
+  request: ["tconst"],
+};
+
+export function toolSubject(name: string, args: Record<string, unknown>): string {
+  const keys = SUBJECT_KEYS[name] ?? Object.keys(args).slice(0, 2);
+  const parts: string[] = [];
+  for (const k of keys) {
+    if (!(k in args)) continue;
+    const v = formatArgValue(args[k], 48);
+    if (v) parts.push(v);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * `min_rating` -> `min rating`, and the two id spaces get their real names.
+ *
+ * `tconst` and `nconst` are IMDb's words for "a title id" and "a person id" and they appear
+ * nowhere a reader would have learnt them. Everything else is an underscore away from
+ * English already.
+ */
+const ARG_LABEL: Record<string, string> = {
+  tconst: "title",
+  nconst: "person",
+  q: "query",
+  n: "count",
+};
+
+export function argLabel(key: string): string {
+  return ARG_LABEL[key] ?? key.replace(/_/g, " ");
+}
+
+/**
+ * One argument value, legibly -- NOT `JSON.stringify`.
+ *
+ * A string keeps its quotes so an empty one is visible as `""` rather than as a blank cell.
+ * An array becomes a comma list, because `["actor","actress"]` on screen is punctuation a
+ * reader has to parse past to reach two words. An object is the one case that stays JSON:
+ * `{season: 2, episode: 9}` has no shorter honest spelling and it is rare.
+ *
+ * Truncated, because arguments are context rather than content -- a 900-character blob
+ * would push the answer off the screen it belongs on.
+ */
+export function formatArgValue(value: unknown, max = 120): string {
+  if (value === null || value === undefined) return "—";
+  let text: string;
+  if (typeof value === "string") text = `"${value}"`;
+  else if (typeof value === "number" || typeof value === "boolean") text = String(value);
+  else if (Array.isArray(value)) text = value.map((v) => formatArgValue(v, max)).join(", ");
+  else {
+    try {
+      text = JSON.stringify(value) ?? "—";
+    } catch {
+      // Cannot arrive off the wire, but this runs inside a render and the declared type is
+      // `unknown`.
+      return "{…}";
+    }
+  }
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** Every argument as a `label: value` pair, for the expanded row. Order is the sender's. */
+export function toolArgFields(args: Record<string, unknown>): { label: string; value: string }[] {
+  return Object.entries(args).map(([k, v]) => ({ label: argLabel(k), value: formatArgValue(v) }));
+}
+
+/**
+ * What a finished call gets to say about its result.
+ *
+ * The server's own `summary` where it sent one -- it read the payload and we did not, so a
+ * count invented here would be a second, worse answer. `null` means it sent none, and the
+ * row then prints only its duration rather than a guess like "done".
+ */
+export function toolResultText(
+  summary: string | null | undefined,
+  error: string | null | undefined,
+): string | null {
+  if (error) return error;
+  return summary && summary.trim().length > 0 ? summary.trim() : null;
+}
+
 /** `412ms` under a second, `2.4s` over it. Nothing here is ever worth a minute. */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";

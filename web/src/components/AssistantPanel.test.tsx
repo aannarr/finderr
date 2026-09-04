@@ -19,6 +19,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StoredMessage } from "../lib/agent-store";
+import type { TranscriptEntry } from "../lib/agent-transcript";
 import { AssistantPanel, type AssistantPanelProps } from "./AssistantPanel";
 
 /** Render anything that contains a `<Link>`, with a router that has finished loading. */
@@ -315,5 +316,265 @@ describe("what a turn cost", () => {
     const html = await panel({ messages: [answer({ usage: { costUsd: 0.0031, ms: 2400 } })] });
     expect(html).toContain("$0.0031");
     expect(html).toContain("2.4s");
+  });
+});
+
+/**
+ * THE TRANSCRIPT -- the reason this whole slice exists.
+ *
+ * One question used to produce one bubble after thirty seconds of nothing. These assert the
+ * three things that make the difference visible on screen: a tool call is legible rather
+ * than an identifier plus JSON, the machinery is one click away rather than in your face,
+ * and a call that never came back says so instead of animating forever.
+ */
+describe("the transcript of a turn", () => {
+  const lookup: TranscriptEntry[] = [
+    { kind: "reasoning", key: "e1", turn: 1, text: "Which season is best?" },
+    {
+      kind: "tool",
+      key: "e2",
+      turn: 1,
+      callId: "c1",
+      name: "list_episodes",
+      args: { tconst: "tt0944947", season: 2 },
+      state: "done",
+      ms: 8,
+      summary: "24 episodes",
+      error: null,
+    },
+  ];
+
+  test("names the tool in human terms and says what came back", async () => {
+    const html = await panel({ messages: [answer({ transcript: lookup })] });
+    expect(html).toContain("Episode list");
+    expect(html).toContain("24 episodes");
+    expect(html).toContain("8ms");
+    // The identifier is not what a reader is shown.
+    expect(html).not.toContain("list_episodes");
+  });
+
+  /** Arguments are LEGIBLE, not `{"tconst":"tt0944947","season":2}`. */
+  test("draws arguments as labelled fields rather than as JSON", async () => {
+    const html = await panel({ messages: [answer({ transcript: lookup })] });
+    expect(html).toContain("title");
+    expect(html).toContain("tt0944947");
+    expect(html).not.toContain('{"tconst"');
+  });
+
+  /**
+   * SECONDARY MEANS COLLAPSED. The answer is what the eye should land on; reasoning and raw
+   * arguments are one click away, which is a `<details>` that starts closed.
+   */
+  test("reasoning and arguments start collapsed", async () => {
+    const html = await panel({ messages: [answer({ transcript: lookup })] });
+    expect(html).toContain("Thinking");
+    expect(html).not.toContain("<details open");
+  });
+
+  /** Most models emit none, and a "Thinking" block over nothing advertises a fiction. */
+  test("an empty reasoning entry draws no Thinking block at all", async () => {
+    const html = await panel({
+      messages: [answer({ transcript: [{ kind: "reasoning", key: "e1", turn: 1, text: "  " }] })],
+    });
+    expect(html).not.toContain("Thinking");
+  });
+
+  /** A spinner that outlives its request is a lie nothing on screen can contradict. */
+  test("a tool call that never finished says so rather than spinning", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          transcript: [
+            {
+              kind: "tool",
+              key: "e1",
+              turn: 1,
+              callId: "c1",
+              name: "find_connections",
+              args: { from: "tt1", to: "tt2" },
+              state: "unfinished",
+            },
+          ],
+        }),
+      ],
+    });
+    expect(html).toContain("did not finish");
+    expect(html).not.toContain("animate-spin");
+  });
+
+  /** Turn 2 is a new pass of the loop and must not read as turn 1 continuing. */
+  test("more than one turn draws a visible seam between them", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          transcript: [
+            { kind: "reasoning", key: "e1", turn: 1, text: "look it up" },
+            { kind: "reasoning", key: "e2", turn: 2, text: "now answer" },
+          ],
+        }),
+      ],
+    });
+    expect(html).toContain("Step 2");
+  });
+
+  /** One turn has no second half to be told apart from, so the label would be pure chrome. */
+  test("a single turn is not labelled", async () => {
+    expect(await panel({ messages: [answer({ transcript: lookup })] })).not.toContain("Step 1");
+  });
+
+  /**
+   * The transcript already lists every call, so the old collapsed summary would draw them
+   * twice. It survives only for a bubble restored from before the transcript existed.
+   */
+  test("the old lookup disclosure is not drawn beside a transcript", async () => {
+    const html = await panel({
+      messages: [answer({ transcript: lookup, toolCalls: [{ name: "list_episodes", args: {}, ms: 8 }] })],
+    });
+    expect(html).not.toContain("1 lookup ·");
+  });
+
+  /**
+   * THE DUPLICATE-PROSE REGRESSION, found in a browser 2026-09-05. A streaming bubble
+   * carries the same sentence in two places -- interleaved in the transcript, and in the
+   * bubble's own `text` -- and drawing both printed every answer twice on screen. The
+   * transcript wins whenever it has prose of its own; see `hasProse`.
+   */
+  test("streamed prose is drawn once, not twice", async () => {
+    const html = await panel({
+      messages: [
+        answer({
+          text: "Season 4 is the one.",
+          pending: true,
+          transcript: [{ kind: "text", key: "e1", turn: 1, text: "Season 4 is the one." }],
+        }),
+      ],
+      busy: true,
+    });
+    expect(html.split("Season 4 is the one.").length - 1).toBe(1);
+  });
+
+  /** A settled turn has no transcript prose, so the authoritative answer is what draws. */
+  test("a settled turn draws the authoritative answer", async () => {
+    const html = await panel({
+      messages: [answer({ text: "The revised answer.", transcript: lookup })],
+    });
+    expect(html).toContain("The revised answer.");
+  });
+
+  /** Tool rows ARE the activity indicator; a grey placeholder beside them reports it twice. */
+  test("a pending bubble with a transcript draws no skeleton", async () => {
+    const html = await panel({
+      messages: [answer({ text: "", pending: true, transcript: lookup })],
+      busy: true,
+    });
+    expect(html).not.toContain("animate-pulse");
+  });
+});
+
+describe("markdown in an answer", () => {
+  test("renders bold, lists and inline code as real elements", async () => {
+    const html = await panel({
+      messages: [answer({ text: "**Heat** is:\n\n- long\n- good\n\nrun `find_title`" })],
+    });
+    expect(html).toContain("<strong");
+    expect(html).toContain("<ul");
+    expect(html).toContain("<code");
+    // The markers themselves are gone -- they were syntax, not content.
+    expect(html).not.toContain("**Heat**");
+  });
+
+  /**
+   * THE INJECTION PATH. This is model output carrying whatever a tool result put in front
+   * of it, and `externalHref` is what stops a bad string becoming script on the page. The
+   * words survive; only the address is refused.
+   */
+  test("a javascript: link is not a link", async () => {
+    const html = await panel({ messages: [answer({ text: "[click me](javascript:alert(1))" })] });
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("click me");
+  });
+
+  /** An `<img>` may only load from our own origin -- the opposite guard, same payload. */
+  test("a markdown image from an upstream host does not reach an img tag", async () => {
+    const html = await panel({ messages: [answer({ text: "![poster](https://image.tmdb.org/x.jpg)" })] });
+    expect(html).not.toContain("image.tmdb.org");
+    expect(html).toContain("poster");
+  });
+
+  test("an ordinary http link keeps its href and opens away from the page", async () => {
+    const html = await panel({ messages: [answer({ text: "see [IMDb](https://www.imdb.com/)" })] });
+    expect(html).toContain('href="https://www.imdb.com/"');
+    expect(html).toContain('rel="noreferrer"');
+  });
+});
+
+describe("the composer's own markdown", () => {
+  /**
+   * BOTH ENDS, which is what aannarr asked for. The preview appears only when the draft
+   * would render differently from what was typed, so an ordinary question gets no chrome.
+   */
+  test("nothing is previewed until the draft actually contains markdown", async () => {
+    expect(await panel()).not.toContain("Preview");
+  });
+});
+
+describe("an answer that stopped early", () => {
+  /**
+   * A TRUNCATED ANSWER MUST NEVER LOOK FINISHED. A model that stopped mid-sentence and one
+   * that had nothing more to say produce the same screen otherwise, and only the transport
+   * knows which happened.
+   */
+  test("keeps what arrived and says it is incomplete", async () => {
+    const html = await panel({
+      messages: [answer({ text: "Season 2 is", incomplete: true, error: "The connection dropped." })],
+    });
+    expect(html).toContain("Season 2 is");
+    expect(html).toContain("This answer is incomplete");
+    expect(html).toContain("The connection dropped.");
+  });
+
+  /** With nothing to qualify, it is a plain failure and wears the failure's colour. */
+  test("a turn that produced no text at all is a failure rather than an incomplete answer", async () => {
+    const html = await panel({ messages: [answer({ text: "", error: "Could not reach finderr." })] });
+    expect(html).not.toContain("This answer is incomplete");
+    expect(html).toContain("Could not reach finderr.");
+  });
+});
+
+describe("messages typed while a turn was running", () => {
+  const queued = [
+    { id: "q1", text: "and the worst season?" },
+    { id: "q2", text: "request season 2" },
+  ];
+
+  /** Drawn as pending, never as sent -- an ordinary bubble would read as a question ignored. */
+  test("are shown waiting, with the count", async () => {
+    const html = await panel({ queued, busy: true });
+    expect(html).toContain("Waiting to send (2)");
+    expect(html).toContain("and the worst season?");
+    expect(html).toContain("border-dashed");
+  });
+
+  test("each one offers the control that removes it", async () => {
+    const html = await panel({ queued, onCancelQueued: NOOP });
+    expect(html).toContain('aria-label="Cancel &quot;and the worst season?&quot;"');
+  });
+
+  /**
+   * A failure STOPS the drain rather than firing the rest at a server that just refused.
+   * Saying why, and offering the one control that resumes it, is what stops that being a
+   * queue that sits there forever with no explanation.
+   */
+  test("a halted queue says why and offers to send anyway", async () => {
+    const html = await panel({ queued, queueHalted: true, onResumeQueue: NOOP });
+    expect(html).toContain("Not sent — the last turn failed.");
+    expect(html).toContain("Send now");
+  });
+
+  /** The composer stays live while busy: typing is queued, not refused. */
+  test("the box is not disabled during a turn", async () => {
+    const html = await panel({ busy: true, messages: [answer({ text: "", pending: true })] });
+    expect(html).toContain("it will be sent next");
+    expect(html).not.toContain("<textarea disabled");
   });
 });
