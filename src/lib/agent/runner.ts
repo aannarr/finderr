@@ -16,7 +16,7 @@
 import { type Evidence, evidenceFrom } from "./evidence.js";
 import { callSignature, type Facts, factsFrom, ledgerMessage } from "./facts.js";
 import { type ChatMessage, chat, type ToolCall } from "./openrouter.js";
-import { dispatch, type ResumeStore, TOOL_SCHEMAS } from "./schemas.js";
+import { dispatch, type ResumeStore, toolSchemasFor } from "./schemas.js";
 import type { AgentContext } from "./tools.js";
 
 /**
@@ -57,6 +57,13 @@ WHAT YOU MAY ASSERT
 Every title and every person you name in your answer must have come back from a tool in THIS conversation.
 Your training data is not evidence. The index knows about titles released after your knowledge cutoff, and it is right and you are wrong about anything recent.
 If a tool finds nothing, say so plainly. "It is not in the index" is a good answer. Inventing a plausible one is not.
+
+REQUESTING IS THE ONE THING YOU DO THAT CANNOT BE UNDONE
+The request tool starts a real download immediately. There is no confirmation step in front of you and no undo behind you -- a person has to go and delete it.
+So only call it when the user has ASKED for something to be fetched. "What are the good episodes of X" is a question; "get me the good episodes of X" is a request. If the sentence could be either, ANSWER IT AND ASK, rather than requesting and apologising.
+Never request something to be helpful that nobody asked for. Never request a whole series when the user named one episode.
+The result tells you what actually happened per item -- queued, already_have, already_requested, not_found. Report it honestly; do not say you got something that came back already_have.
+If the result carries a "capped" field, you asked for more than one conversation is allowed to start. SAY SO, and say how many were not started. Never let the reader believe it all went through.
 
 CONNECTIONS ARE CLAIMS TOO, AND THIS IS THE RULE MOST OFTEN BROKEN
 A link between two titles, or two people, or a person and a title -- "X is also in Y", "A and B worked together", "they share a cast member" -- is a CLAIM, and a single tool result must have returned that link. Resolving both ends does not license the link between them.
@@ -198,7 +205,8 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       reply = await chat({
         model: opts.model,
         messages: payload,
-        tools: TOOL_SCHEMAS,
+        // Derived from the CONTEXT, so a read-only session is never shown `request` at all.
+        tools: toolSchemasFor(opts.ctx),
         apiKey: opts.apiKey,
         fetchImpl: opts.fetchImpl,
         cacheSystem: opts.cacheSystem,

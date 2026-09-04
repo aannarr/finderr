@@ -222,6 +222,17 @@ export class LiveIndex {
    * first index exists. A handler must never reach this in that state -- the route gate
    * refuses first -- so the throw is a backstop, not a case to handle.
    */
+  /**
+   * The current engine's raw handle, for a caller that needs SQL the engine does not expose.
+   *
+   * Goes through the holder for the same reason every other read does: it is the one owner
+   * of which file is live, so a caller that asks HERE at the moment of use can never be
+   * left holding a connection to a file that has been renamed out from under it.
+   */
+  rawDb(): Database {
+    return this.current.rawDb;
+  }
+
   get current(): SearchEngine {
     if (!this.engine) {
       throw new Error("no title index is open yet -- the boot-time build has not finished");

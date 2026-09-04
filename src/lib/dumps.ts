@@ -12,7 +12,13 @@ import { mkdirSync } from "node:fs";
 
 export const IMDB_BASE = "https://datasets.imdbws.com";
 
-export type DumpName = "title.basics" | "title.ratings" | "title.akas" | "title.principals" | "name.basics";
+export type DumpName =
+  | "title.basics"
+  | "title.ratings"
+  | "title.akas"
+  | "title.episode"
+  | "title.principals"
+  | "name.basics";
 
 /**
  * The exact header each TSV must present. If IMDb reorders or renames a column we
@@ -24,6 +30,11 @@ export const EXPECTED_HEADERS: Record<DumpName, string> = {
     "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres",
   "title.ratings": "tconst\taverageRating\tnumVotes",
   "title.akas": "titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle",
+  // Which series an episode belongs to, and where in the run it sits. It carries NO title
+  // and NO rating -- both of those are in title.basics and title.ratings under the
+  // episode's own tconst, which is what makes the episode stage a join of three dumps
+  // rather than a read of one.
+  "title.episode": "tconst\tparentTconst\tseasonNumber\tepisodeNumber",
   // By far the largest thing we ingest -- and the reason the cast build is floored rather
   // than complete. The row count lives on `castMinVotes` in ./config.ts, which owns it.
   "title.principals": "tconst\tordering\tnconst\tcategory\tjob\tcharacters",

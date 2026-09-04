@@ -29,7 +29,7 @@
 
 import { Link } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
-import { posterUrl, type Title } from "../lib/api";
+import { type PosterSubject, posterUrl } from "../lib/api";
 
 /**
  * The fallback tile's monogram.
@@ -72,8 +72,15 @@ function hue(tconst: string): number {
 export type PosterFallback = "tile" | "plain" | "label";
 
 export interface PosterProps {
-  /** The row. `undefined` is a title we do not index, and draws an empty frame. */
-  title?: Title | null;
+  /**
+   * The subject. `undefined` is a title we do not index, and draws an empty frame.
+   *
+   * `PosterSubject` is the three fields this component actually reads, not the whole row --
+   * so a caller holding only an id, a name and a poster path (the assistant's answers do)
+   * draws through the same fallback, the same fade and the same link as a grid card.
+   * Every existing caller passes a full `Title`, which satisfies it unchanged.
+   */
+  title?: PosterSubject | null;
   /** TMDB size hint. Match it to the rendered width -- a 40px row does not want `w342`. */
   size?: string;
   /** The FRAME: sizing, rounding, border. The caller owns layout; this component owns fill. */

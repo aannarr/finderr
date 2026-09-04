@@ -26,7 +26,9 @@ import {
   getTitle,
   listCast,
   listCredits,
+  listEpisodes,
   navigate,
+  requestTitles,
   TITLE_KINDS,
 } from "./tools.js";
 
@@ -278,7 +280,84 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_episodes",
+      description:
+        "Every episode of ONE series with its own IMDb score, straight from the local index. " +
+        "This is how you answer 'the good episodes' -- pass min_rating and let the database " +
+        "filter, never pull all 73 and judge them yourself. " +
+        "A rating of null means NOBODY HAS RATED IT YET, which is normal for an episode that " +
+        "aired in the last few days; it is NOT a score of zero and it is not a bad episode. " +
+        "min_rating excludes them. Say 'the newest N have no score yet' when it matters. " +
+        "Cost: free, local.",
+      parameters: {
+        type: "object",
+        properties: {
+          tconst: { type: "string", description: "The SERIES id, from find_title." },
+          season: { type: "number", description: "One season only. Omit for all of them." },
+          min_rating: { type: "number", description: "IMDb score floor, e.g. 8. Excludes unrated." },
+          min_votes: { type: "number", description: "Ignore episodes with fewer votes than this." },
+          limit: { type: "number", description: "Default 200." },
+        },
+        required: ["tconst"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "request",
+      description:
+        "ASK THE LIBRARY TO DOWNLOAD SOMETHING. THIS IS REAL AND IT STARTS IMMEDIATELY. " +
+        "There is no confirmation step and no undo from here -- a person has to delete it in " +
+        "Radarr or Sonarr afterwards. Only call it when the user has actually asked for " +
+        "something to be fetched; 'what are the good episodes' is a QUESTION, not a request. " +
+        "If you are not sure whether they want it downloaded, ask them in your answer instead " +
+        "of calling this. " +
+        "Pass one tconst, or several, to get whole films/series. To get individual episodes, " +
+        "pass ONE series tconst plus `episodes` as {season, episode} pairs -- get those from " +
+        "list_episodes, never from memory. " +
+        "It is capped per conversation: if the result carries `capped`, SAY SO in your answer " +
+        "and name how many were not started. Never imply everything went through when it did " +
+        "not. Cost: free to call, expensive to be wrong about.",
+      parameters: {
+        type: "object",
+        properties: {
+          tconst: {
+            oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+            description: "tt… id, or several. One only when passing `episodes`.",
+          },
+          episodes: {
+            type: "array",
+            description: "Individual episodes of the single series named in tconst.",
+            items: {
+              type: "object",
+              properties: { season: { type: "number" }, episode: { type: "number" } },
+              required: ["season", "episode"],
+            },
+          },
+        },
+        required: ["tconst"],
+      },
+    },
+  },
 ];
+
+/**
+ * The schemas THIS context may actually use.
+ *
+ * A read-only context is never offered `request` at all, rather than being offered it and
+ * refused at dispatch. Two reasons and both are measured behaviour rather than taste: a
+ * model handed a tool that always errors will spend turns retrying it, and the benchmark
+ * harness must not be able to start a download by accident -- it runs the same runner
+ * against the same index and its whole value is that it costs nothing but tokens.
+ */
+export function toolSchemasFor(ctx: AgentContext): typeof TOOL_SCHEMAS {
+  if (ctx.actions) return TOOL_SCHEMAS;
+  return TOOL_SCHEMAS.filter((t) => t.function.name !== "request") as typeof TOOL_SCHEMAS;
+}
 
 export type ToolName = (typeof TOOL_SCHEMAS)[number]["function"]["name"];
 
@@ -314,6 +393,13 @@ export function dispatch(
       return findConnections(ctx.db, args as never, store);
     case "navigate":
       return navigate(String(args.id));
+    case "list_episodes":
+      return guardIds(args.tconst, "tt", "find_title") ?? listEpisodes(ctx, args as never);
+    case "request":
+      // No `guardIds` here: `requestTitles` filters the ids itself because it has to tell a
+      // bad id apart from a bad EPISODE pair, and one refusal naming the wrong problem is
+      // how a model gets stuck retrying the thing that was already right.
+      return requestTitles(ctx, args as never);
     default:
       return { error: `Unknown tool ${name}` };
   }

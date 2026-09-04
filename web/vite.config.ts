@@ -5,6 +5,17 @@ import { defineConfig } from "vite";
 export default defineConfig({
   root: import.meta.dirname,
   plugins: [react(), tailwindcss()],
+  /**
+   * `@/` -> `web/src`, the alias `components.json` declares.
+   *
+   * The bundler's half of the mapping in the root `tsconfig.json`; the two must agree or a
+   * `shadcn add` component typechecks and then fails to build. Only `components/ui/*` uses
+   * it -- the rest of this tree imports relatively, and that is deliberate rather than
+   * untidy: those files are ours, and these are the registry's.
+   */
+  resolve: {
+    alias: { "@": `${import.meta.dirname}/src` },
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

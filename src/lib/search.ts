@@ -268,13 +268,71 @@ export class SearchEngine {
    */
   private readonly kinds: readonly string[];
 
+  /**
+   * Whether this index carries the `episode` table.
+   *
+   * The fifth of these guards, and the reason is the one `hasPeople` states at length: the
+   * index a deploy meets is whatever the LAST refresh built, so `episode` is missing for up
+   * to a day after this ships and every episode query would throw `no such table: episode`
+   * in exactly that window -- on a deployment that is otherwise entirely healthy.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`. That is not a style
+   * note: an initializer runs before the constructor body, so `= this.tableExists(...)`
+   * reads `this.db` while it is still undefined and takes down EVERY construction of this
+   * class, including the canary gate on a real index build.
+   */
+  readonly hasEpisodes: boolean;
+
+  /**
+   * The engine's OWN handle, for the one caller that needs raw SQL.
+   *
+   * `findConnections` walks the cast graph with SQL this class does not expose, and the
+   * agent context needs a `Database` to give it. It returns THIS engine's connection rather
+   * than opening a second one on the same path, which is the difference between a reader
+   * that follows the daily swap and one that does not: a second handle pins the old inode
+   * and, after a promote, either throws SQLITE_IOERR_VNODE or -- under load -- quietly
+   * serves yesterday. Read it through `LiveIndex` at the moment of use and that cannot
+   * happen, because the engine you asked is the engine you are using.
+   *
+   * Read-only in practice AND enforced: `query_only` is set in the constructor.
+   */
+  get rawDb(): Database {
+    return this.db;
+  }
+
   constructor(
     dbPath: string,
     private cfg: Config,
   ) {
     this.db = new Database(dbPath, { readonly: true });
+    /*
+      READ-SIDE PRAGMAS FOR A FILE THAT IS WRITTEN ONCE AND NEVER UPDATED.
+
+      aannarr's standing rule, 2026-09-04: `titles.db` is not a "proper database" and should
+      not be tuned like one. It is built to a temp file, promoted by rename, and from that
+      moment nothing writes a row to it -- so there is no concurrency to protect, no
+      integrity to preserve at runtime, and every compromise that trades durability for
+      speed is free rather than risky. `finderr.db` -- users, requests, sessions -- is the
+      opposite and none of this belongs there.
+
+      - `temp_store = memory`: sorts and temp b-trees never touch disk.
+      - `cache_size = -262144`: 256 MB of page cache, up from 64. The index is now larger
+        than the whole file used to be and this is the single cheapest read win available.
+        Negative means kibibytes rather than pages, so it does not move when page_size does.
+      - `mmap_size`: read pages straight out of the page cache with no copy into user space.
+        2 GB, which is more than the file and therefore effectively "all of it". This is the
+        pragma that most rewards the bigger index -- a mapped page costs nothing to revisit.
+      - `query_only`: refuses a write on this connection at the SQLite level rather than
+        trusting `readonly: true` alone. Belt and braces on the one invariant this whole
+        block assumes, and it makes an accidental write a loud error rather than a surprise.
+
+      NOT set here: `synchronous` and `journal_mode`, which are write-side settings and
+      belong to the BUILD connection, not to a reader that will never write.
+    */
     this.db.run("pragma temp_store = memory");
-    this.db.run("pragma cache_size = -64000"); // 64 MB page cache
+    this.db.run("pragma cache_size = -262144"); // 256 MB page cache
+    this.db.run("pragma mmap_size = 2147483648"); // 2 GB -- larger than the file
+    this.db.run("pragma query_only = 1");
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasPeopleSearch =
       this.hasPeople && this.tableExists(PERSON_FTS_TABLE) && this.columnExists("person", "top_votes");
@@ -282,6 +340,7 @@ export class SearchEngine {
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
+    this.hasEpisodes = this.tableExists("episode");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
     );
@@ -1046,6 +1105,22 @@ export class SearchEngine {
       byName: this.hasPeople ? Object.fromEntries(nconstsByNameForTitle(this.db, tconst)) : {},
     };
   }
+
+  /**
+   * A series' episodes, in running order, from local SQLite and nothing else.
+   *
+   * `[]` on an index built before the episode stage, and `[]` for a series below the build's
+   * vote floor. The caller cannot tell those apart and should not try to: both mean "this
+   * index has no episodes for you", and there is nothing a reader could do about either.
+   *
+   * This is the one place where returning `[]` for a missing capability is right rather than
+   * misleading -- unlike `searchPeople`, which returns `null` because an empty people search
+   * would read as "nobody by that name". An empty episode list draws no pane at all, so the
+   * two answers render identically.
+   */
+  episodesOf(parent: string, opts: EpisodeQuery = {}): EpisodeRow[] {
+    return this.hasEpisodes ? queryEpisodes(this.db, parent, opts) : [];
+  }
 }
 
 /** What a browse query filters on. `minVotes` and paging are deliberately not in here. */
@@ -1322,6 +1397,106 @@ export function browseMembers(db: Database, opts: BrowseOptions): string[] {
       )
       .all(...([...sql.args, opts.limit ?? 60, opts.offset ?? 0] as never[])) as { tconst: string }[]
   ).map((r) => r.tconst);
+}
+
+/** One episode of one series, as the index holds it. */
+export interface EpisodeRow {
+  /** The EPISODE's own IMDb id, not the series'. */
+  tconst: string;
+  /** The series tconst this episode belongs to. */
+  parent: string;
+  season: number;
+  number: number;
+  /** Null when title.basics had no row for this episode -- the dumps can disagree. */
+  title: string | null;
+  /**
+   * The episode's own IMDb rating, or **null when nobody has rated it yet**.
+   *
+   * NEVER 0 for an unrated episode, and a caller must not coerce it to one. 0.0 is a
+   * well-formed score meaning "rated terribly", and that is a different answer from "we do
+   * not know" -- which is the majority answer here: over half the episodes this index holds
+   * carry no ratings row at all (the census is on `index.episodeSeriesMinVotes`).
+   */
+  rating: number | null;
+  votes: number;
+  /** The year the episode aired, from title.basics. */
+  year: number | null;
+}
+
+export interface EpisodeQuery {
+  /** One season only. Omitted means the whole run, specials included. */
+  season?: number;
+  /** Excludes UNRATED episodes as well as low-rated ones -- see `queryEpisodes`. */
+  minRating?: number;
+  minVotes?: number;
+  /** Defaults to `EPISODE_PAGE`. */
+  limit?: number;
+}
+
+/**
+ * How many episodes one call returns when the caller does not say.
+ *
+ * 200 covers the complete run of nearly every scripted series -- the long soaps are the
+ * exception and they are not what anybody asks this question about. It is a page rather
+ * than a cap: a caller that wants more says so.
+ */
+export const EPISODE_PAGE = 200;
+
+/**
+ * Episodes of one series, in running order.
+ *
+ * Takes the database rather than reaching for one, the same shape as `browseIndex`, so the
+ * filter semantics can be exercised against a handful of rows in a temp file instead of
+ * against a real index.
+ *
+ * **`minRating` excludes an UNRATED episode and that is deliberate, not a side effect of
+ * SQL.** `rating >= 8.0` is NULL for a null rating, and NULL is not true, so an episode
+ * nobody has scored falls out of "every episode over 8.0" -- which is the only honest
+ * answer, because we do not know that it is over 8.0. Spelling `or rating is null` in here
+ * would answer a question nobody asked. The unrated episodes are still returned by a query
+ * that does not pin a rating, carrying `rating: null`, so a pane can say "no score yet"
+ * rather than pretending they do not exist.
+ *
+ * Ordered by season then episode number, which `ix_ep_parent` covers -- so this is a seek
+ * and never a sort, whatever the filters are.
+ */
+/**
+ * > [!IMPORTANT] SEASON 0 SORTS LAST, AND THE LIMIT IS WHY IT MATTERS
+ * > Season 0 is the specials, every series has one, and it can be enormous -- Rick and
+ * > Morty's holds 187 entries, more than all its real seasons together. Ordered naively by
+ * > season number it comes FIRST, so a caller taking the first 200 rows gets 187
+ * > behind-the-scenes clips and 13 episodes, and an agent asked for the best episodes
+ * > answers from bloopers.
+ * >
+ * > `order by season = 0` is the whole fix: SQLite sorts the boolean 0 before 1, so every
+ * > real season leads and the specials trail. This is the same rule `orderSeasons()` in
+ * > `web/src/lib/facet-panes.ts` already applies to the season selector -- the ordering of
+ * > seasons has one answer in this product and this is it, in SQL.
+ */
+export function queryEpisodes(db: Database, parent: string, opts: EpisodeQuery = {}): EpisodeRow[] {
+  const where = ["parent = ?"];
+  const args: unknown[] = [parent];
+  if (opts.season !== undefined) {
+    where.push("season = ?");
+    args.push(opts.season);
+  }
+  if (opts.minRating !== undefined) {
+    where.push("rating >= ?");
+    args.push(opts.minRating);
+  }
+  // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
+  // spelling it out would only stop SQLite covering the seek. Same reason `browseSql`
+  // omits its own zero floor.
+  if (opts.minVotes !== undefined && opts.minVotes > 0) {
+    where.push("votes >= ?");
+    args.push(opts.minVotes);
+  }
+  return db
+    .query(
+      `select tconst, parent, season, number, title, rating, votes, year from episode
+       where ${where.join(" and ")} order by season = 0, season, number limit ?`,
+    )
+    .all(...([...args, Math.max(1, opts.limit ?? EPISODE_PAGE)] as never[])) as EpisodeRow[];
 }
 
 /**
