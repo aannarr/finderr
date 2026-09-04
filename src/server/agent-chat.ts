@@ -25,7 +25,8 @@
 
 import type { Database } from "bun:sqlite";
 import { MemoryResumeStore } from "../lib/agent/connections";
-import { type RunResult, run } from "../lib/agent/runner";
+import { historyFor, isRememberable, toMessages } from "../lib/agent/conversation";
+import { type RunEvent, type RunResult, run } from "../lib/agent/runner";
 import type { AgentContext } from "../lib/agent/schemas";
 import { makeContext } from "../lib/agent/schemas";
 import { aiGate, chargeRefusal, chargeRun, localDay } from "../lib/ai-spend";
@@ -122,7 +123,7 @@ export interface ChatResponse {
  */
 const MAX_CARDS = 24;
 
-function surfaced(result: RunResult, engine: SearchEngine) {
+function surfaced(result: RunResult, engine: SearchEngine, store: Store) {
   const titles: ChatResponse["titles"] = [];
   const episodes: ChatResponse["episodes"] = [];
   const seenT = new Set<string>();
@@ -139,7 +140,20 @@ function surfaced(result: RunResult, engine: SearchEngine) {
             title: row.title,
             year: row.year,
             kind: row.kind,
-            poster: null,
+            /*
+              THE SAME RULE `decorate()` APPLIES, and it is not "always a path".
+
+              `/img/t/<tconst>` is our own proxy, so the browser never sees an upstream URL.
+              But a title whose artwork has been RESOLVED TO NOTHING (`art.url === null`)
+              gets null rather than a path, because pointing an <img> at a proxy we know will
+              404 makes the card flash a broken image before falling back to initials.
+              `undefined` means we have not looked yet, which is not the same as knowing
+              there is none -- so it still gets the path and the proxy resolves it on demand.
+            */
+            poster: (() => {
+              const art = store.getArtwork(row.tconst);
+              return art !== undefined && art.url === null ? null : `/img/t/${row.tconst}`;
+            })(),
           });
         }
       }
@@ -193,6 +207,161 @@ export function makeChatProbe(deps: Pick<ChatDeps, "cfg">) {
   };
 }
 
+/**
+ * One SSE frame. Blank line terminates, which is the framing the client splits on.
+ *
+ * `JSON.stringify` on the data is not decoration: a newline inside a payload would otherwise
+ * end the frame early and split one event into two, and model text is full of newlines.
+ */
+function frame(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * The streaming half of the chat route.
+ *
+ * Shares every rule with the JSON path and re-implements none of them -- same gate, same
+ * ledger, same memory, same `surfaced`. What differs is only WHEN the caller is told things.
+ *
+ * > [!CAUTION] THE RUN IS NOT ABANDONED WHEN THE CLIENT HANGS UP
+ * > A closed browser tab cancels the response stream, not the work: the model call is
+ * > already in flight, the tools may already have started a download, and the ledger row is
+ * > owed either way. So every write goes through `push`, which swallows a closed-controller
+ * > error, and the charge happens after the loop regardless. A cap that a user could dodge
+ * > by closing the tab would not be a cap.
+ */
+function streamResponse(
+  deps: ChatDeps,
+  args: {
+    userId: string;
+    role: "admin" | "user";
+    conversationId: string;
+    message: string;
+    model: string;
+    key: string;
+  },
+): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let open = true;
+      const push = (chunk: string): void => {
+        if (!open) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          // The reader is gone. Stop writing; keep working.
+          open = false;
+        }
+      };
+
+      const actions = makeAgentActions({
+        store: deps.store,
+        worker: deps.worker,
+        live: deps.live,
+        principal: { user: { id: args.userId, role: args.role } } as never,
+        has: deps.has,
+        quotaPerDay: deps.cfg.requests.quotaPerDay,
+      });
+      const ctx: AgentContext = { ...makeContext(deps.indexDb(), deps.live.current), actions };
+
+      let result: RunResult | null = null;
+      try {
+        result = await run({
+          ctx,
+          model: args.model,
+          apiKey: args.key,
+          question: args.message,
+          history: toMessages(historyFor(deps.store, args.userId, args.conversationId), args.message).slice(
+            0,
+            -1,
+          ),
+          store: new MemoryResumeStore(),
+          onEvent: (e: RunEvent) => push(frame(e.type === "tool" ? "tool" : e.type, e)),
+        });
+      } catch (err) {
+        // The message goes to the LOG and never to the browser -- an upstream URL can carry a
+        // credential. Same rule `work.problems` follows for a failing plugin.
+        deps.log(`agent chat stream: ${err instanceof Error ? err.message : String(err)}`);
+        chargeRun(
+          deps.store,
+          { userId: args.userId, convId: args.conversationId },
+          {
+            model: args.model,
+            promptTokens: 0,
+            completionTokens: 0,
+            cachedTokens: 0,
+            costUsd: 0,
+            ms: 0,
+            failure: "error",
+          },
+        );
+        push(frame("error", { error: "agent_failed", message: "The assistant could not answer." }));
+        try {
+          controller.close();
+        } catch {
+          // Already closed by a reader that left.
+        }
+        return;
+      }
+
+      chargeRun(
+        deps.store,
+        { userId: args.userId, convId: args.conversationId },
+        {
+          model: args.model,
+          promptTokens: result.promptTokens,
+          completionTokens: result.completionTokens,
+          cachedTokens: result.cachedTokens,
+          costUsd: result.costUsd,
+          ms: result.ms,
+          ...(result.failure ? { failure: result.failure } : {}),
+        },
+      );
+      if (isRememberable(args.message, result.answer)) {
+        deps.store.appendConversationTurn(args.userId, args.conversationId, {
+          question: args.message,
+          answer: result.answer,
+          at: new Date().toISOString(),
+        });
+      }
+
+      push(
+        frame("done", {
+          conversationId: args.conversationId,
+          answer: result.answer,
+          toolCalls: result.toolCalls.map((c) => ({ name: c.name, args: c.args, ms: c.ms })),
+          requested: actions.performed().map((r) => ({
+            tconst: r.tconst,
+            title: r.title,
+            kind: r.grain,
+            status: r.status,
+            ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
+          })),
+          ...surfaced(result, deps.live.current, deps.store),
+          usage: { costUsd: result.costUsd, ms: result.ms },
+        }),
+      );
+      try {
+        controller.close();
+      } catch {
+        // Reader already gone.
+      }
+    },
+  });
+
+  return new Response(body, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      // No buffering anywhere in front of us, or the whole point is lost: a proxy that
+      // accumulates the stream delivers one blob at the end, which is what we are fixing.
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
 export function makeChatHandler(deps: ChatDeps) {
   return async (req: Request, principal: Principal | null): Promise<Response> => {
     const key = deps.cfg.ai.openrouterApiKey;
@@ -241,6 +410,25 @@ export function makeChatHandler(deps: ChatDeps) {
     }
 
     /*
+      STREAM WHEN ASKED, JSON OTHERWISE -- one route, two renderings of one answer.
+
+      Negotiated on `Accept` rather than split into `/chat` and `/chat/stream`, because they
+      are the same operation with the same gate, the same ledger and the same memory; two
+      routes would be two owners of all three and the pair would drift. It also keeps the
+      non-streaming path alive as a real fallback rather than as dead code.
+    */
+    if (req.headers.get("accept")?.includes("text/event-stream")) {
+      return streamResponse(deps, {
+        userId: user.id,
+        role: user.role,
+        conversationId,
+        message,
+        model,
+        key,
+      });
+    }
+
+    /*
       The engine is read at the MOMENT OF USE and never held across the run.
 
       `live.current` is the one owner of the open index, and a handler that destructures it
@@ -265,6 +453,9 @@ export function makeChatHandler(deps: ChatDeps) {
         model,
         apiKey: key,
         question: message,
+        // THE CONVERSATION CONTINUES -- aannarr's ruling of 2026-09-05, which the build plan
+        // had left open. `toMessages` owns the replay budget; see ../lib/agent/conversation.ts.
+        history: toMessages(historyFor(deps.store, user.id, conversationId), message).slice(0, -1),
         store: new MemoryResumeStore(),
       });
     } catch (err) {
@@ -298,6 +489,22 @@ export function makeChatHandler(deps: ChatDeps) {
       },
     );
 
+    /*
+      Remembered AFTER the ledger, and only when there is something to remember.
+
+      Order matters: the charge is owed whatever happened, the memory is only owed when a
+      turn actually completed. A run that died before answering writes its cost and leaves no
+      turn behind -- replaying a question with an empty reply would teach the model that
+      ignoring people is a thing it does.
+    */
+    if (isRememberable(message, result.answer)) {
+      deps.store.appendConversationTurn(user.id, conversationId, {
+        question: message,
+        answer: result.answer,
+        at: new Date().toISOString(),
+      });
+    }
+
     const payload: ChatResponse = {
       conversationId,
       answer: result.answer,
@@ -310,7 +517,7 @@ export function makeChatHandler(deps: ChatDeps) {
         status: r.status,
         ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
       })),
-      ...surfaced(result, deps.live.current),
+      ...surfaced(result, deps.live.current, deps.store),
       usage: { costUsd: result.costUsd, ms: result.ms },
     };
     return json(payload);
