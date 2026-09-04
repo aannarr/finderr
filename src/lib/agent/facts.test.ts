@@ -138,6 +138,33 @@ describe("ids and the facts a later turn needs", () => {
   });
 });
 
+/**
+ * Regression, 2026-09-04: a model sent a bare string where the schema declares an array and
+ * `factsFrom` threw `args.nconst.join is not a function`, taking down a 30-run benchmark
+ * midway. The TOOL call itself had already succeeded -- only the distillation crashed, which
+ * is the worst place to be brittle, because the answer was already bought and paid for.
+ */
+describe("model arguments are never trusted for their shape", () => {
+  const rows = [
+    { tconst: "tt1", title: "A", year: 2020, kind: "movie", votes: 5, role: "actor", seen_with: ["nm1"] },
+  ];
+
+  test("a bare string where list_credits declares an array does not throw", () => {
+    expect(() => factsFrom("list_credits", { nconst: "nm0634240" }, rows)).not.toThrow();
+    expect(factsFrom("list_credits", { nconst: "nm0634240" }, rows).join("\n")).toContain("nm0634240");
+  });
+
+  test("the same for list_cast", () => {
+    const cast = [{ nconst: "nm1", name: "X", role: "actor", billing: 1, seen_in: ["tt1"] }];
+    expect(() => factsFrom("list_cast", { tconst: "tt0111161" }, cast)).not.toThrow();
+    expect(factsFrom("list_cast", { tconst: "tt0111161" }, cast).join("\n")).toContain("tt0111161");
+  });
+
+  test("a missing argument degrades to a placeholder rather than throwing", () => {
+    expect(() => factsFrom("list_credits", {}, rows)).not.toThrow();
+  });
+});
+
 describe("the ledger", () => {
   test("lists the calls already made, which is what stops a model re-resolving", () => {
     const msg = ledgerMessage(["tt1 = a"], ['find_title(name="Furious")']);

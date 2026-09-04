@@ -43,6 +43,25 @@ function personLine(p: PersonRef): string {
   return `${p.nconst} = "${p.name}" (${born}${died})`;
 }
 
+/**
+ * Render whatever the model actually sent where an array of ids was specified.
+ *
+ * > [!CAUTION] NEVER trust the SHAPE of a model's arguments, only the schema's intent
+ * > This crashed a 30-run benchmark part way through: `list_credits` declares
+ * > `nconst: string[]`, a model sent a bare `"nm0634240"`, and `args.nconst.join` was not a
+ * > function. The dispatcher already coerced scalar-or-array on its guard path, so the CALL
+ * > succeeded and only the transcript distillation blew up -- which is the worst place for
+ * > it, because it takes down a run that had already paid for its answer.
+ * >
+ * > A JSON-schema `type: "array"` is a request, not a constraint. Anything reading these
+ * > argument bags defensively coerces; nothing casts and hopes.
+ */
+function idList(v: unknown): string {
+  if (Array.isArray(v)) return v.join(", ");
+  if (typeof v === "string") return v;
+  return "?";
+}
+
 function pathLine(p: ConnectionPath): string {
   return `  ${p.path.map((n) => `${n.name} [${n.id}]`).join(" -> ")}  (strength ${p.strength})`;
 }
@@ -93,7 +112,7 @@ export function factsFrom(tool: string, args: Record<string, unknown>, result: u
 
     case "list_cast": {
       const rows = result as CastRow[];
-      const ids = (args.tconst as string[] | undefined)?.join(", ") ?? "?";
+      const ids = idList(args.tconst);
       const mode = args.mode === "intersection" ? " (people in ALL of them)" : "";
       if (rows.length === 0) return [`list_cast([${ids}])${mode} -> nobody.`];
       return [
@@ -106,7 +125,7 @@ export function factsFrom(tool: string, args: Record<string, unknown>, result: u
 
     case "list_credits": {
       const rows = result as CreditRow[];
-      const ids = (args.nconst as string[] | undefined)?.join(", ") ?? "?";
+      const ids = idList(args.nconst);
       const mode = args.mode === "intersection" ? " (titles ALL of them are in)" : "";
       if (rows.length === 0) return [`list_credits([${ids}])${mode} -> nothing.`];
       return [
