@@ -33,8 +33,8 @@ import { type Mention, resolveMentions } from "../lib/agent/mentions";
 import { type RunEvent, type RunResult, run } from "../lib/agent/runner";
 import type { AgentContext } from "../lib/agent/schemas";
 import { makeContext } from "../lib/agent/schemas";
-import { aiGate, chargeRefusal, chargeRun, localDay } from "../lib/ai-spend";
-import type { Principal } from "../lib/auth";
+import { aiGate, assistantOffered, chargeRefusal, chargeRun, localDay } from "../lib/ai-spend";
+import type { Principal, User } from "../lib/auth";
 import type { Config } from "../lib/config";
 import type { SearchEngine } from "../lib/search";
 import type { Store } from "../lib/store";
@@ -111,19 +111,6 @@ export interface ChatResponse {
   usage: { costUsd: number; ms: number };
 }
 
-/**
- * "Does this deployment have an assistant, and may I use it?"
- *
- * An EXPLICIT endpoint rather than inferring availability from a 405 on the POST route. The
- * client needs to know whether to draw a launcher at all, and inferring that from
- * method-not-allowed makes a UI decision depend on how the framework happens to answer an
- * unmatched verb -- which is not a contract anybody wrote down, and which measured as a 404
- * here rather than the 405 the client expected. A launcher that never appears is the exact
- * failure that would have caused, and nothing would have errored.
- *
- * 404 when there is no key, so an unconfigured instance says the feature does not exist in
- * the same voice the POST route does. 403 while the beta excludes this user.
- */
 /**
  * The titles and episodes a run actually touched, for the panel to draw.
  *
@@ -203,16 +190,37 @@ function surfaced(result: RunResult, engine: SearchEngine, store: Store) {
   return { titles, episodes };
 }
 
+/**
+ * "Does this deployment have an assistant, and may I use it?"
+ *
+ * An EXPLICIT endpoint rather than inferring availability from a 405 on the POST route. The
+ * client needs to know whether to draw a launcher at all, and inferring that from
+ * method-not-allowed makes a UI decision depend on how the framework happens to answer an
+ * unmatched verb -- which is not a contract anybody wrote down, and which measured as a 404
+ * here rather than the 405 the client expected. A launcher that never appears is the exact
+ * failure that would have caused, and nothing would have errored.
+ *
+ * 404 for every reason it is unavailable -- no key, not signed in, or switched off for this
+ * account -- so an instance without it says the feature does not exist in the same voice the
+ * POST route does, and a surface you may not use does not announce itself.
+ */
 export function makeChatProbe(deps: Pick<ChatDeps, "cfg">) {
   return (_req: Request, principal: Principal | null): Response => {
-    if (!deps.cfg.ai.openrouterApiKey || !deps.cfg.ai.models[0]) {
-      return new Response("Not Found", { status: 404 });
-    }
-    // SIGNED IN IS THE WHOLE TEST. It was `role !== "admin"` until 2026-09-05; the audience
-    // is now every account, and the deployment key above is the only remaining condition.
-    // `aiGate` is the single owner of that rule -- do not re-add a role check here.
-    if (!principal?.user) return new Response("Not Found", { status: 404 });
-    return json({ available: true, model: deps.cfg.ai.models[0] });
+    const model = deps.cfg.ai.models[0];
+    // SIGNED IN, then the two WALLS -- a deployment with no key, and an account an admin
+    // switched off. Both are `assistantOffered`, so this and `aiGate` cannot disagree about
+    // whether a launcher should exist. It was `role !== "admin"` until 2026-09-05; do not
+    // re-add a role check, that is not what the per-account switch replaced.
+    if (!model || !principal?.user) return new Response("Not Found", { status: 404 });
+    const offered = assistantOffered({
+      configured: Boolean(deps.cfg.ai.openrouterApiKey),
+      allowedForAccount: principal.user.assistantAllowed,
+    });
+    // The DAILY BUDGET is deliberately not asked here: it is a wait rather than a wall, and
+    // hiding the launcher for the rest of the day would turn "come back tomorrow" into "this
+    // feature vanished". The 402 explains itself when a message is actually sent.
+    if (!offered) return new Response("Not Found", { status: 404 });
+    return json({ available: true, model });
   };
 }
 
@@ -242,14 +250,22 @@ function frame(event: string, data: unknown): string {
 function streamResponse(
   deps: ChatDeps,
   args: {
-    userId: string;
-    role: "admin" | "user";
+    /**
+     * The REAL principal, and not a `{ user: { id, role } }` stand-in.
+     *
+     * `makeAgentActions` reads the whole user off it -- their quota override among other
+     * things -- so a fabricated one would silently give the streaming path a different
+     * answer from the JSON path for the same person. The two must not be able to disagree,
+     * and passing the actual object is what makes that structural rather than remembered.
+     */
+    principal: Principal & { user: User };
     conversationId: string;
     message: string;
     model: string;
     key: string;
   },
 ): Response {
+  const { user } = args.principal;
   const encoder = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -268,9 +284,9 @@ function streamResponse(
         store: deps.store,
         worker: deps.worker,
         live: deps.live,
-        principal: { user: { id: args.userId, role: args.role } } as never,
+        principal: args.principal,
         has: deps.has,
-        quotaPerDay: deps.cfg.requests.quotaPerDay,
+        siteQuotaPerDay: deps.cfg.requests.quotaPerDay,
       });
       const ctx: AgentContext = {
         ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),
@@ -284,7 +300,7 @@ function streamResponse(
           model: args.model,
           apiKey: args.key,
           question: args.message,
-          history: toMessages(historyFor(deps.store, args.userId, args.conversationId), args.message).slice(
+          history: toMessages(historyFor(deps.store, user.id, args.conversationId), args.message).slice(
             0,
             -1,
           ),
@@ -297,7 +313,7 @@ function streamResponse(
         deps.log(`agent chat stream: ${err instanceof Error ? err.message : String(err)}`);
         chargeRun(
           deps.store,
-          { userId: args.userId, convId: args.conversationId },
+          { userId: user.id, convId: args.conversationId },
           {
             model: args.model,
             promptTokens: 0,
@@ -319,7 +335,7 @@ function streamResponse(
 
       chargeRun(
         deps.store,
-        { userId: args.userId, convId: args.conversationId },
+        { userId: user.id, convId: args.conversationId },
         {
           model: args.model,
           promptTokens: result.promptTokens,
@@ -331,7 +347,7 @@ function streamResponse(
         },
       );
       if (isRememberable(args.message, result.answer)) {
-        deps.store.appendConversationTurn(args.userId, args.conversationId, {
+        deps.store.appendConversationTurn(user.id, args.conversationId, {
           question: args.message,
           answer: result.answer,
           at: new Date().toISOString(),
@@ -384,6 +400,12 @@ export function makeChatHandler(deps: ChatDeps) {
 
     const user = principal?.user;
     if (!user) return new Response("Not Found", { status: 404 });
+    // The account switch is a WALL, and it answers in the same voice the missing key does --
+    // the assistant does not exist for this reader, and the probe already drew no launcher.
+    // Same `assistantOffered` the probe asks, so the two cannot disagree. A 403 here would
+    // announce a surface they may not use; see the header.
+    if (!assistantOffered({ configured: true, allowedForAccount: user.assistantAllowed }))
+      return new Response("Not Found", { status: 404 });
 
     let body: { message?: unknown; conversationId?: unknown };
     try {
@@ -432,8 +454,9 @@ export function makeChatHandler(deps: ChatDeps) {
     */
     if (req.headers.get("accept")?.includes("text/event-stream")) {
       return streamResponse(deps, {
-        userId: user.id,
-        role: user.role,
+        // `user` is `principal.user`, narrowed non-null above -- restated so the stream path
+        // gets the real principal and not a stand-in built from two of its fields.
+        principal: { ...principal, user },
         conversationId,
         message,
         model,
@@ -455,7 +478,7 @@ export function makeChatHandler(deps: ChatDeps) {
       live: deps.live,
       principal,
       has: deps.has,
-      quotaPerDay: deps.cfg.requests.quotaPerDay,
+      siteQuotaPerDay: deps.cfg.requests.quotaPerDay,
     });
     const ctx: AgentContext = {
       ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),

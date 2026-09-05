@@ -24,13 +24,17 @@ import {
   type Session,
   type User,
 } from "./auth";
+import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 
 /**
- * Applied by `Store`, appended to its own SCHEMA.
+ * Applied by `applyAuthSchema`, which `Store`'s constructor calls.
  *
  * `app_user` rather than `user`: `user` is not reserved in SQLite today, but it is in
  * enough dialects that a future export/import tool would have to quote it, and the cost
  * of the prefix is three characters.
+ *
+ * A column added after the first release does NOT belong here -- it goes in
+ * `AUTH_ADDED_COLUMNS` below, which is the only spelling of it. See that list for why.
  *
  * NOTE: no backticks in this string -- it is a template literal, and one would end it.
  */
@@ -180,6 +184,59 @@ create table if not exists agent_key (
 );
 `;
 
+/**
+ * The PER-USER SETTINGS, added after the first release -- so they live here rather than in
+ * the `create table` above, which a deployed database has long since run.
+ *
+ * Both are what an admin decides ABOUT somebody on `/admin/users/:id`, and both are written
+ * so that an untouched row keeps behaving exactly as it did before the column existed.
+ */
+export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
+  /*
+    THIS PERSON'S OWN DAILY TITLE LIMIT, or NULL to follow the deployment's.
+
+    Nullable, and null is the default and the ordinary case: it means "whatever the site
+    says", which is what every account had before this column. `quotaLimitFor` in
+    `./request-quota.ts` is the one owner of that fallback -- a reader that spelled
+    `override ?? cfg.requests.quotaPerDay` for itself would be a second one, and the site
+    default is about to stop coming from the env (see the site-defaults card).
+
+    Zero here is NOT null: it is an explicit "unlimited for this person" that survives the
+    operator later capping everybody else.
+  */
+  {
+    table: "app_user",
+    column: "quota_per_day",
+    ddl: "alter table app_user add column quota_per_day integer",
+  },
+  /*
+    MAY THIS PERSON USE THE ASSISTANT? Integer, because SQLite has no boolean.
+
+    `not null default 1`, which is what makes the migration silent: SQLite writes the default
+    into every existing row, so everybody who could use the assistant yesterday still can.
+    Defaulting it OFF would have been a feature withdrawn by an upgrade nobody asked for.
+
+    It is the per-account half of the consent `aiGate` documents owing the household: a
+    question typed here leaves the house, and this is the switch that decides whose does.
+  */
+  {
+    table: "app_user",
+    column: "assistant_allowed",
+    ddl: "alter table app_user add column assistant_allowed integer not null default 1",
+  },
+];
+
+/**
+ * Create the auth tables and bring an existing database up to this build's shape.
+ *
+ * The one way in, used by `Store` and by every test harness, so the ALTERs above are
+ * exercised by the suite rather than running for the first time against the live file.
+ */
+export function applyAuthSchema(db: Database): void {
+  db.run(AUTH_SCHEMA);
+  addMissingColumns(db, AUTH_ADDED_COLUMNS);
+}
+
 interface UserRow {
   id: string;
   display_name: string;
@@ -189,6 +246,8 @@ interface UserRow {
   created_at: string;
   last_seen_at: string | null;
   disabled_at: string | null;
+  quota_per_day: number | null;
+  assistant_allowed: number;
 }
 
 interface CredentialRow {
@@ -273,6 +332,8 @@ function toUser(r: UserRow): User {
     createdAt: r.created_at,
     lastSeenAt: r.last_seen_at,
     disabledAt: r.disabled_at,
+    quotaPerDay: r.quota_per_day,
+    assistantAllowed: r.assistant_allowed !== 0,
   };
 }
 
@@ -371,6 +432,11 @@ export class AuthStore {
       createdAt,
       lastSeenAt: null,
       disabledAt: null,
+      // The column defaults, restated: a new account follows the site's quota and may use
+      // the assistant. Nothing here takes them as arguments -- both are decisions an admin
+      // makes about somebody who already exists.
+      quotaPerDay: null,
+      assistantAllowed: true,
     };
   }
 
@@ -401,9 +467,23 @@ export class AuthStore {
     return r.n;
   }
 
-  updateUser(id: string, patch: { displayName?: string; role?: Role; disabled?: boolean }): User | null {
+  /**
+   * Change what an admin may change about somebody. Every field is optional and an absent
+   * one is untouched, which is what makes `null` meaningful: `quotaPerDay: null` CLEARS the
+   * override back to the site default, where leaving it out changes nothing.
+   */
+  updateUser(
+    id: string,
+    patch: {
+      displayName?: string;
+      role?: Role;
+      disabled?: boolean;
+      quotaPerDay?: number | null;
+      assistantAllowed?: boolean;
+    },
+  ): User | null {
     const sets: string[] = [];
-    const args: (string | null)[] = [];
+    const args: (string | number | null)[] = [];
     if (patch.displayName !== undefined) {
       sets.push("display_name = ?");
       args.push(patch.displayName);
@@ -415,6 +495,14 @@ export class AuthStore {
     if (patch.disabled !== undefined) {
       sets.push("disabled_at = ?");
       args.push(patch.disabled ? isoNow() : null);
+    }
+    if (patch.quotaPerDay !== undefined) {
+      sets.push("quota_per_day = ?");
+      args.push(patch.quotaPerDay);
+    }
+    if (patch.assistantAllowed !== undefined) {
+      sets.push("assistant_allowed = ?");
+      args.push(patch.assistantAllowed ? 1 : 0);
     }
     if (sets.length > 0) {
       this.db.query(`update app_user set ${sets.join(", ")} where id = ?`).run(...args, id);
@@ -700,8 +788,19 @@ export class AuthStore {
     this.db.query("delete from session where id_hash = ?").run(hashToken(token));
   }
 
-  deleteSessionByHash(idHash: string): boolean {
-    return this.db.query("delete from session where id_hash = ?").run(idHash).changes > 0;
+  /**
+   * End ONE open session, named by its hash and scoped to whose it is.
+   *
+   * `user_id` is in the WHERE for the same reason `deleteCredential` has it there: a session
+   * id is a hash rather than a secret, it is handed to every reader of `/api/auth/me` and
+   * `/api/admin/users/:id`, and holding one must never be authority over it. `false` means
+   * "not theirs, or no such thing" -- one answer for both, because telling them apart would
+   * confirm that somebody else's session exists.
+   */
+  deleteSessionByHash(idHash: string, userId: string): boolean {
+    return (
+      this.db.query("delete from session where id_hash = ? and user_id = ?").run(idHash, userId).changes > 0
+    );
   }
 
   deleteSessionsFor(userId: string): number {

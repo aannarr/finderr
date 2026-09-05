@@ -47,6 +47,23 @@ export interface User {
   lastSeenAt: string | null;
   /** Set means "this account cannot sign in". The row survives so attribution does. */
   disabledAt: string | null;
+  /**
+   * This person's own daily title limit, or null to follow the deployment's.
+   *
+   * Null is the ordinary case and means "whatever the site says". Resolve it through
+   * `quotaLimitFor` in `./request-quota.ts` and never with a `??` of your own -- that
+   * function is the one owner of the fallback, and the site value it falls back to is
+   * expected to stop being an env var.
+   */
+  quotaPerDay: number | null;
+  /**
+   * May this person use the assistant? True unless an admin turned it off.
+   *
+   * The per-account half of the three gates in `./ai-spend.ts` -- the deployment key, this,
+   * and the daily budget. `assistantOffered` composes the first two; nothing should read
+   * this field beside a `configured` check of its own.
+   */
+  assistantAllowed: boolean;
 }
 
 export interface Credential {
@@ -315,6 +332,8 @@ export function publicUser(u: User): {
   createdAt: string;
   lastSeenAt: string | null;
   disabled: boolean;
+  quotaPerDay: number | null;
+  assistantAllowed: boolean;
 } {
   return {
     id: u.id,
@@ -336,6 +355,16 @@ export function publicUser(u: User): {
     createdAt: u.createdAt,
     lastSeenAt: u.lastSeenAt,
     disabled: u.disabledAt !== null,
+    /*
+      The two per-user SETTINGS, and they travel to their owner as well as to an admin.
+
+      Neither is a secret and both are facts somebody is entitled to about their own account:
+      "the assistant is off for you" is the honest version of a launcher that never appears,
+      and a private allowance is what makes "3 of 5 today" mean anything. The admin page is
+      where they are CHANGED; this is only where they are read.
+    */
+    quotaPerDay: u.quotaPerDay,
+    assistantAllowed: u.assistantAllowed,
   };
 }
 

@@ -25,7 +25,7 @@
 import { type AgentActions, ConversationBudget, type RequestOutcome } from "../lib/agent/actions";
 import type { Principal } from "../lib/auth";
 import { entityKindFor } from "../lib/facets";
-import { quotaVerdict, utcDayStart } from "../lib/request-quota";
+import { quotaLimitFor, quotaVerdict, utcDayStart } from "../lib/request-quota";
 import type { Store } from "../lib/store";
 import type { LiveIndex } from "./live-index";
 import type { RequestWorker } from "./request-worker";
@@ -38,7 +38,11 @@ export interface AgentActionDeps {
   principal: Principal | null;
   /** Which arrs exist. A request for a service that is not configured is refused, not queued. */
   has: { radarr: boolean; sonarr: boolean };
-  quotaPerDay: number;
+  /**
+   * The DEPLOYMENT's daily title limit -- what applies to somebody with no override of their
+   * own. `quotaLimitFor` resolves the two; this is never the answer on its own.
+   */
+  siteQuotaPerDay: number;
 }
 
 /** Same question the facet vocabulary answers, so "is this episodic?" keeps one owner. */
@@ -59,12 +63,14 @@ export function makeAgentActions(deps: AgentActionDeps): AgentActions {
    * get a different answer by asking through the assistant than by pressing the button.
    */
   function quotaRefusal(): string | null {
-    const me = deps.principal?.user?.id;
+    const me = deps.principal?.user;
     if (!me) return null;
     const v = quotaVerdict({
       role: deps.principal?.role ?? "user",
-      limit: deps.quotaPerDay,
-      usedToday: () => deps.store.countRequestsSince(me, utcDayStart(new Date())),
+      // Their own allowance where they have one, exactly as the route resolves it -- an
+      // assistant that ignored a per-user override would be a second answer to one question.
+      limit: quotaLimitFor(me.quotaPerDay, deps.siteQuotaPerDay),
+      usedToday: () => deps.store.countRequestsSince(me.id, utcDayStart(new Date())),
       now: new Date(),
     });
     return v.allowed ? null : v.message;

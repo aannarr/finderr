@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { AUTH_SCHEMA, AuthStore } from "./auth-store";
+import { AuthStore, applyAuthSchema } from "./auth-store";
 import {
   applySeerrImport,
   displayNameFor,
@@ -244,7 +244,7 @@ describe("applySeerrImport against a real AuthStore", () => {
   function freshStore(): AuthStore {
     const db = new Database(":memory:");
     db.run("pragma foreign_keys = on");
-    db.run(AUTH_SCHEMA);
+    applyAuthSchema(db);
     return new AuthStore(db);
   }
 

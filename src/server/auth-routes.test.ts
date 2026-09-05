@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { hashToken, isoIn, SESSION_COOKIE } from "../lib/auth";
-import { AUTH_SCHEMA, AuthStore } from "../lib/auth-store";
+import { AuthStore, applyAuthSchema } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
 import type { FetchLike } from "../lib/plex-auth";
@@ -91,7 +91,7 @@ interface Harness {
 function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
-  db.run(AUTH_SCHEMA);
+  applyAuthSchema(db);
   const auth = new AuthStore(db);
   const logs: string[] = [];
   const calls: string[] = [];
@@ -388,6 +388,146 @@ describe("resetting an account is the passkey answer to a forced password reset"
   });
 });
 
+/**
+ * THE PER-USER SETTINGS, and the three states of the quota field.
+ *
+ * `undefined`, `null` and a number mean three different things on this PATCH and every other
+ * field on it only has two. That is the whole reason `quotaOverride` exists, and reading a
+ * malformed value as "absent" would leave an admin looking at a form they believe they just
+ * cleared -- so a bad value is a 400 rather than a shrug.
+ */
+describe("the per-user settings an admin decides", () => {
+  const patch = (id: string, body: unknown) =>
+    h.call(`/api/admin/users/${id}`, { method: "PATCH", bearer: API_KEY, body: JSON.stringify(body) });
+
+  test("a quota override is set, then cleared back to the site default with null", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+
+    expect((await patch(u.id, { quotaPerDay: 3 })).status).toBe(200);
+    expect(h.auth.getUser(u.id)?.quotaPerDay).toBe(3);
+
+    expect((await patch(u.id, { quotaPerDay: null })).status).toBe(200);
+    expect(h.auth.getUser(u.id)?.quotaPerDay).toBeNull();
+  });
+
+  test("zero is a value, not an empty field -- it means unlimited for this person", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    await patch(u.id, { quotaPerDay: 0 });
+    expect(h.auth.getUser(u.id)?.quotaPerDay).toBe(0);
+  });
+
+  test("a patch that does not mention the quota leaves it alone", async () => {
+    // The distinction the whole helper exists for: absent is not the same as null.
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    await patch(u.id, { quotaPerDay: 4 });
+    await patch(u.id, { displayName: "Ada Lovelace" });
+    expect(h.auth.getUser(u.id)?.quotaPerDay).toBe(4);
+  });
+
+  test("a nonsense quota is a 400 and changes nothing", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    await patch(u.id, { quotaPerDay: 2 });
+    for (const bad of [-1, 2.5, "3", true]) {
+      expect((await patch(u.id, { quotaPerDay: bad })).status).toBe(400);
+    }
+    expect(h.auth.getUser(u.id)?.quotaPerDay).toBe(2);
+  });
+
+  test("the assistant can be turned off for one account and back on", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    expect(h.auth.getUser(u.id)?.assistantAllowed).toBe(true);
+
+    await patch(u.id, { assistantAllowed: false });
+    expect(h.auth.getUser(u.id)?.assistantAllowed).toBe(false);
+
+    await patch(u.id, { assistantAllowed: true });
+    expect(h.auth.getUser(u.id)?.assistantAllowed).toBe(true);
+  });
+
+  test("both settings reach the page that draws them", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    await patch(u.id, { quotaPerDay: 7, assistantAllowed: false });
+    const body = (await (await h.call(`/api/admin/users/${u.id}`, { bearer: API_KEY })).json()) as {
+      user: { quotaPerDay: number | null; assistantAllowed: boolean };
+    };
+    expect(body.user).toMatchObject({ quotaPerDay: 7, assistantAllowed: false });
+  });
+});
+
+/**
+ * REVOKING ONE DEVICE rather than every way in.
+ *
+ * `/reset` is the blunt instrument and it is for a lost ACCOUNT. These two are for a lost
+ * LAPTOP: end that browser's session, or kill that authenticator for good. Both are scoped by
+ * the target user in the store's WHERE, so an id belonging to somebody else is a 404 rather
+ * than somebody else's row disappearing.
+ */
+describe("revoking one passkey or one session", () => {
+  test("a named credential goes, and the rest stay", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0 });
+    h.auth.addCredential({ id: "c2", userId: u.id, publicKey: "pk2", counter: 0 });
+
+    const res = await h.call(`/api/admin/users/${u.id}/credentials/c1`, {
+      method: "DELETE",
+      bearer: API_KEY,
+    });
+    expect(res.status).toBe(200);
+    expect(h.auth.credentialsFor(u.id).map((c) => c.id)).toEqual(["c2"]);
+  });
+
+  test("a named session goes, and that browser is signed out", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    const token = h.auth.createSession({ userId: u.id, expiresAt: isoIn(60_000) });
+    const [session] = h.auth.sessionsFor(u.id);
+
+    const res = await h.call(`/api/admin/users/${u.id}/sessions/${session?.idHash}`, {
+      method: "DELETE",
+      bearer: API_KEY,
+    });
+    expect(res.status).toBe(200);
+    expect(h.auth.readSession(token)).toBeNull();
+  });
+
+  test("an id belonging to somebody else is a 404 and their row survives", async () => {
+    // The id is a HASH, handed to every reader of the page. Knowing one is not authority
+    // over it, and the path saying otherwise must not be believed.
+    const a = h.auth.createUser({ displayName: "A", role: "user" });
+    const b = h.auth.createUser({ displayName: "B", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: b.id, publicKey: "pk", counter: 0 });
+    h.auth.createSession({ userId: b.id, expiresAt: isoIn(60_000) });
+    const [theirs] = h.auth.sessionsFor(b.id);
+
+    expect(
+      (await h.call(`/api/admin/users/${a.id}/credentials/c1`, { method: "DELETE", bearer: API_KEY })).status,
+    ).toBe(404);
+    expect(
+      (
+        await h.call(`/api/admin/users/${a.id}/sessions/${theirs?.idHash}`, {
+          method: "DELETE",
+          bearer: API_KEY,
+        })
+      ).status,
+    ).toBe(404);
+    expect(h.auth.credentialsFor(b.id)).toHaveLength(1);
+    expect(h.auth.sessionsFor(b.id)).toHaveLength(1);
+  });
+
+  test("a non-admin gets 404 from both, like the rest of the admin surface", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0 });
+    const cookie = signIn("user");
+
+    expect(
+      (await h.call(`/api/admin/users/${u.id}/credentials/c1`, { method: "DELETE", cookie })).status,
+    ).toBe(404);
+    expect(
+      (await h.call(`/api/admin/users/${u.id}/sessions/whatever`, { method: "DELETE", cookie })).status,
+    ).toBe(404);
+    expect(h.auth.credentialsFor(u.id)).toHaveLength(1);
+  });
+});
+
 describe("the last admin cannot lock everybody out", () => {
   test("demoting the only admin is refused", async () => {
     const a = h.auth.createUser({ displayName: "A", role: "admin" });
@@ -469,7 +609,13 @@ describe("one person, whole", () => {
       credentials: { id: string; label: string | null }[];
       sessions: { id: string; userAgent: string | null; current: boolean }[];
       requests: { tconst: string; requested_by?: string }[];
-      quota: { limitPerDay: number; usedToday: number; resetsAt: string; applies: boolean };
+      quota: {
+        limitPerDay: number;
+        siteLimitPerDay: number;
+        usedToday: number;
+        resetsAt: string;
+        applies: boolean;
+      };
       agentKey: { readOnly: boolean } | null;
     };
 
@@ -541,10 +687,51 @@ describe("one person, whole", () => {
       const body = await detailOf(u.id);
       expect(body.quota).toEqual({
         limitPerDay: 0,
+        siteLimitPerDay: 0,
         usedToday: 1,
         resetsAt: utcDayReset(),
         applies: false,
       });
+    });
+
+    /**
+     * The override wins, and it is reported as a DIFFERENT field from the site's.
+     *
+     * Both travel because the editor has to offer "follow the site default (N)" as a real
+     * choice, and a page that only saw the effective number could not tell "5 because we said
+     * so" from "5 because the site says so" -- so it could not draw the difference, and
+     * clearing the override would look like a no-op.
+     */
+    test("a per-user override replaces the site's, and both are visible", async () => {
+      const limited = harness({ cfg: { ...config(), requests: { quotaPerDay: 5 } } });
+      const u = limited.auth.createUser({ displayName: "Ada", role: "user" });
+      limited.auth.updateUser(u.id, { quotaPerDay: 2 });
+
+      const body = (await (await limited.call(`/api/admin/users/${u.id}`, { bearer: API_KEY })).json()) as {
+        quota: { limitPerDay: number; siteLimitPerDay: number; applies: boolean };
+        user: { quotaPerDay: number | null };
+      };
+      expect(body.quota.limitPerDay).toBe(2);
+      expect(body.quota.siteLimitPerDay).toBe(5);
+      expect(body.quota.applies).toBe(true);
+      expect(body.user.quotaPerDay).toBe(2);
+    });
+
+    /**
+     * ZERO IS AN ANSWER, NOT AN EMPTY FIELD. It means "no limit for this person", and it has
+     * to survive the site later capping everybody else -- which is exactly what `??` buys
+     * over `||` in `quotaLimitFor`, and what this pins.
+     */
+    test("an override of zero exempts one person from a site-wide limit", async () => {
+      const limited = harness({ cfg: { ...config(), requests: { quotaPerDay: 5 } } });
+      const u = limited.auth.createUser({ displayName: "Ada", role: "user" });
+      limited.auth.updateUser(u.id, { quotaPerDay: 0 });
+
+      const body = (await (await limited.call(`/api/admin/users/${u.id}`, { bearer: API_KEY })).json()) as {
+        quota: { limitPerDay: number; applies: boolean };
+      };
+      expect(body.quota.limitPerDay).toBe(0);
+      expect(body.quota.applies).toBe(false);
     });
 
     test("applies to a member once a limit is set, and never to an admin", async () => {

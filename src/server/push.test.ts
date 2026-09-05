@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { AUTH_SCHEMA, AuthStore } from "../lib/auth-store";
+import { AuthStore, applyAuthSchema } from "../lib/auth-store";
 import type { MediaRequest, Store } from "../lib/store";
 import { PushNotifier } from "./push";
 
@@ -26,7 +26,7 @@ function fakeStore(): Store {
 function openAuth(): AuthStore {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
-  db.run(AUTH_SCHEMA);
+  applyAuthSchema(db);
   return new AuthStore(db);
 }
 

@@ -38,7 +38,7 @@ import { ProwlarrClient } from "../lib/prowlarr";
 import { RateLimiter } from "../lib/rate-limit";
 import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
-import { quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
+import { quotaLimitFor, quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, languageFilter, type TitleRow } from "../lib/search";
 import {
@@ -810,12 +810,13 @@ function sizeOf(req: Request): string {
  * null would pool every keyless request into one bucket.
  */
 function quotaRefusal(asker: Principal | null): Response | null {
-  const userId = asker?.user?.id;
-  if (!userId) return null;
+  const user = asker?.user;
+  if (!user) return null;
+  const userId = user.id;
 
   const verdict = quotaVerdict({
     role: asker.role,
-    limit: cfg.requests.quotaPerDay,
+    limit: quotaLimitFor(user.quotaPerDay, cfg.requests.quotaPerDay),
     usedToday: () => store.countRequestsSince(userId, utcDayStart()),
   });
   if (verdict.allowed) return null;
@@ -840,8 +841,10 @@ const agentManifest = agentManifestRoute({
   keyFor: (userId) => authStore.agentKeyFor(userId),
   limiter: (bucket) => auth.agentLimiter(bucket),
   origin: (req) => publicOrigin(req.url, cfg.auth.origins),
+  // Their own allowance where they have one -- a manifest that quoted the site's would
+  // promise an agent a budget its owner does not have.
   quota: (userId) => ({
-    limitPerDay: cfg.requests.quotaPerDay,
+    limitPerDay: quotaLimitFor(authStore.getUser(userId)?.quotaPerDay ?? null, cfg.requests.quotaPerDay),
     usedToday: store.countRequestsSince(userId, utcDayStart()),
     resetsAt: utcDayReset(),
   }),

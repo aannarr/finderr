@@ -49,7 +49,13 @@ import {
   pollPin,
 } from "../lib/plex-auth";
 import { clientKey, RateLimiter } from "../lib/rate-limit";
-import { quotaApplies, utcDayReset, utcDayStart, utcDayStartDaysAgo } from "../lib/request-quota";
+import {
+  quotaApplies,
+  quotaLimitFor,
+  utcDayReset,
+  utcDayStart,
+  utcDayStartDaysAgo,
+} from "../lib/request-quota";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { AGENT_KEY_PATH, type AgentBucket, bootstrapSnippet } from "./agent-api";
@@ -99,6 +105,29 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+}
+
+/**
+ * A per-user quota override off the wire: `undefined` leaves it alone, `null` clears it back
+ * to the site default, a whole number 0 or greater sets it. Anything else is a 400.
+ *
+ * THREE STATES, and telling them apart is the whole job. Every other field in this PATCH can
+ * treat a wrong type as "not sent", because sending `role: 7` and sending nothing both mean
+ * the role does not change. Here they mean opposite things -- silently reading a malformed
+ * value as "absent" would leave an admin looking at a form they believe they just cleared.
+ *
+ * Zero is a LEGITIMATE value, not an empty one: it is "no limit for this person", which the
+ * quota rule reads the same way it reads a site-wide zero. A negative or fractional limit is
+ * refused rather than clamped -- both are a client bug, and a limit of 2.5 titles is not a
+ * decision anybody meant to make.
+ */
+function quotaOverride(raw: unknown): number | null | undefined | Response {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+    return json({ error: "quotaPerDay must be a whole number of 0 or more, or null" }, { status: 400 });
+  }
+  return raw;
 }
 
 /**
@@ -965,11 +994,11 @@ export class AuthService {
           const p = this.principal(req);
           if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
           const id = (req as Bun.BunRequest<"/api/auth/sessions/:id">).params.id;
-          // Scoped to the caller's own sessions: the id is a hash, so knowing one is not
-          // authority to end it.
-          const mine = this.deps.auth.sessionsFor(p.user.id).some((s) => s.idHash === id);
-          if (!mine) return json({ error: "not found" }, { status: 404 });
-          return json({ ok: this.deps.auth.deleteSessionByHash(id) });
+          // Scoped to the caller's own sessions in the WHERE, because the id is a hash and
+          // knowing one is not authority to end it. One statement rather than a read then a
+          // delete: the pair could disagree, and only one of them was the authority.
+          const ok = this.deps.auth.deleteSessionByHash(id, p.user.id);
+          return json({ ok }, { status: ok ? 200 : 404 });
         },
       },
 
@@ -1067,7 +1096,10 @@ export class AuthService {
             const id = (req as Bun.BunRequest<"/api/admin/users/:id">).params.id;
             const target = this.deps.auth.getUser(id);
             if (!target) return json({ error: "not found" }, { status: 404 });
-            const limitPerDay = this.deps.cfg.requests.quotaPerDay;
+            // What actually binds THEM: their override where they have one, else the site's.
+            // `user.quotaPerDay` travels separately on `publicUser`, so the page can tell
+            // "5 because we said so" from "5 because the site says so" without inferring it.
+            const limitPerDay = quotaLimitFor(target.quotaPerDay, this.deps.cfg.requests.quotaPerDay);
             return json({
               user: publicUser(target),
               ...this.accessFor(target.id, p.session?.idHash ?? null),
@@ -1093,6 +1125,12 @@ export class AuthService {
                   owner of the rule that decides whether a request is refused.
                 */
                 applies: quotaApplies(target.role, limitPerDay),
+                /*
+                  What the SITE would give them, so the editor can offer "follow the site
+                  default (N)" as a real choice rather than as a blank field. The override
+                  itself is `user.quotaPerDay` -- null there means this value applies.
+                */
+                siteLimitPerDay: this.deps.cfg.requests.quotaPerDay,
               },
               /*
                 PRESENT OR ABSENT, never the key. Only the sha256 is stored, so there is no
@@ -1102,6 +1140,15 @@ export class AuthService {
               agentKey: agentKeySummary(this.deps.auth.agentKeyFor(target.id)),
             });
           }),
+        /**
+         * Change what an admin decides about somebody: their role, whether they are shut
+         * out, and the two per-user settings.
+         *
+         * An ABSENT field is untouched, which is what makes `quotaPerDay: null` meaningful --
+         * it clears the override back to the site's, where omitting the key changes nothing.
+         * `undefined` and `null` are therefore genuinely different here, and `quotaOverride`
+         * below is what keeps them apart on the way in.
+         */
         PATCH: async (req) =>
           this.asAdmin(req, async () => {
             const id = (req as Bun.BunRequest<"/api/admin/users/:id">).params.id;
@@ -1110,6 +1157,9 @@ export class AuthService {
             if (!target) return json({ error: "not found" }, { status: 404 });
             const wantsRole = isRole(b.role) ? b.role : undefined;
             const wantsDisabled = typeof b.disabled === "boolean" ? b.disabled : undefined;
+            const wantsQuota = quotaOverride(b.quotaPerDay);
+            if (wantsQuota instanceof Response) return wantsQuota;
+            const wantsAssistant = typeof b.assistantAllowed === "boolean" ? b.assistantAllowed : undefined;
             // Never let the last admin demote or disable themselves out of existence: the
             // recovery from that is editing SQLite by hand on the host.
             const losingAdmin = target.role === "admin" && (wantsRole === "user" || wantsDisabled === true);
@@ -1119,6 +1169,8 @@ export class AuthService {
               displayName: str(b.displayName) ?? undefined,
               role: wantsRole,
               disabled: wantsDisabled,
+              quotaPerDay: wantsQuota,
+              assistantAllowed: wantsAssistant,
             });
             // A disabled account keeps no live sessions. Without this the ban takes effect
             // whenever their cookie happens to expire, which is up to 30 days later.
@@ -1136,6 +1188,49 @@ export class AuthService {
             // Their requests survive with a dangling `requested_by`. Deliberate: an admin
             // deleting a user is often doing it BECAUSE of what they requested.
             return json({ ok: true });
+          }),
+      },
+
+      /**
+       * Revoke ONE of somebody's passkeys, or ONE of their open sessions.
+       *
+       * Two routes rather than one, because they are two different things a device can hold:
+       * ending a session signs a browser out, revoking a credential means that authenticator
+       * can never sign in again. The blunt "revoke everything" is `/reset`, and it exists
+       * for a different situation -- a lost account rather than a lost laptop.
+       *
+       * Both are scoped by the TARGET USER in the store's WHERE and not merely by the path,
+       * so an id belonging to somebody else answers 404 rather than deleting their row. Same
+       * rule the self-service routes follow, through the same two store methods.
+       */
+      "/api/admin/users/:id/credentials/:credentialId": {
+        DELETE: (req) =>
+          this.asAdmin(req, () => {
+            const { id, credentialId } = (
+              req as Bun.BunRequest<"/api/admin/users/:id/credentials/:credentialId">
+            ).params;
+            /*
+              NO "that is their only way in" GUARD, and its absence is the point.
+
+              The self-service route refuses to remove your last passkey because locking
+              yourself out is an accident only an admin can undo. An admin revoking somebody
+              else's last credential is not an accident -- it is what you do to a stolen
+              laptop -- and the way back in is the invite that `/reset` mints.
+            */
+            const ok = this.deps.auth.deleteCredential(decodeURIComponent(credentialId), id);
+            if (ok) this.deps.log(`admin revoked a credential of user ${id}`);
+            return json({ ok }, { status: ok ? 200 : 404 });
+          }),
+      },
+
+      "/api/admin/users/:id/sessions/:sessionId": {
+        DELETE: (req) =>
+          this.asAdmin(req, () => {
+            const { id, sessionId } = (req as Bun.BunRequest<"/api/admin/users/:id/sessions/:sessionId">)
+              .params;
+            const ok = this.deps.auth.deleteSessionByHash(decodeURIComponent(sessionId), id);
+            if (ok) this.deps.log(`admin ended a session of user ${id}`);
+            return json({ ok }, { status: ok ? 200 : 404 });
           }),
       },
 

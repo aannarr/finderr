@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { hashToken, isoIn } from "./auth";
-import { AUTH_SCHEMA, AuthStore } from "./auth-store";
+import { AUTH_SCHEMA, AuthStore, applyAuthSchema } from "./auth-store";
 
 /**
  * An in-memory database with the same pragma the real `Store` sets.
@@ -13,7 +13,7 @@ import { AUTH_SCHEMA, AuthStore } from "./auth-store";
 function open(): AuthStore {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
-  db.run(AUTH_SCHEMA);
+  applyAuthSchema(db);
   return new AuthStore(db);
 }
 
@@ -52,6 +52,67 @@ describe("users", () => {
     auth.deleteUser(u.id);
     expect(auth.credentialsFor(u.id)).toHaveLength(0);
     expect(auth.sessionCount()).toBe(0);
+  });
+});
+
+/**
+ * THE SETTINGS AN ADMIN DECIDES, and the migration that has to reach a live database.
+ *
+ * `create table if not exists` is a no-op on a deployed file, so both columns exist only as
+ * ALTERs in `AUTH_ADDED_COLUMNS`. Every test in this file goes through `applyAuthSchema`, so
+ * the statement the NAS will run is the statement the suite runs -- which is the whole point
+ * of there being one spelling of each column rather than two.
+ */
+describe("per-user settings", () => {
+  test("a new account follows the site quota and may use the assistant", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    expect(u.quotaPerDay).toBeNull();
+    expect(u.assistantAllowed).toBe(true);
+    // What `createUser` RETURNS and what the row READS BACK as must agree -- the return
+    // value is assembled in TypeScript and the row comes from the column defaults.
+    expect(auth.getUser(u.id)).toEqual(u);
+  });
+
+  test("both are settable, and an absent field is untouched", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+
+    auth.updateUser(u.id, { quotaPerDay: 3 });
+    auth.updateUser(u.id, { assistantAllowed: false });
+    expect(auth.getUser(u.id)).toMatchObject({ quotaPerDay: 3, assistantAllowed: false });
+
+    // A patch about the name says nothing about either, so neither moves.
+    auth.updateUser(u.id, { displayName: "Ada Lovelace" });
+    expect(auth.getUser(u.id)).toMatchObject({ quotaPerDay: 3, assistantAllowed: false });
+  });
+
+  test("null clears the quota override -- it is not the same as leaving it out", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.updateUser(u.id, { quotaPerDay: 3 });
+    auth.updateUser(u.id, { quotaPerDay: null });
+    expect(auth.getUser(u.id)?.quotaPerDay).toBeNull();
+  });
+
+  test("a database that predates the columns gains them, with everybody still allowed", () => {
+    /*
+      THE MIGRATION, run against the shape a deployed instance actually has. Only the
+      `create table` half is applied first, so this is a database from before these columns
+      existed; `applyAuthSchema` then has to add them WITHOUT disturbing the row.
+
+      `assistant_allowed` carries `not null default 1` precisely so SQLite fills it in for
+      every existing row: a feature that had been available yesterday must not disappear
+      because of an upgrade nobody asked for.
+    */
+    const db = new Database(":memory:");
+    db.run("pragma foreign_keys = on");
+    db.run(AUTH_SCHEMA);
+    db.query(
+      "insert into app_user (id, display_name, role, created_at) values ('old', 'Ada', 'user', '2026-01-01T00:00:00.000Z')",
+    ).run();
+
+    applyAuthSchema(db);
+
+    const migrated = new AuthStore(db).getUser("old");
+    expect(migrated).toMatchObject({ displayName: "Ada", quotaPerDay: null, assistantAllowed: true });
   });
 });
 
@@ -387,7 +448,7 @@ describe("the hot path stays cheap without ever trusting the sweep", () => {
     // Own database handle: the row count is the observable, and AuthStore's is private.
     const db = new Database(":memory:");
     db.run("pragma foreign_keys = on");
-    db.run(AUTH_SCHEMA);
+    applyAuthSchema(db);
     const store = new AuthStore(db);
     store.putChallenge({ challenge: "old", kind: "login", expiresAt: isoIn(-1000) });
     store.putChallenge({ challenge: "new", kind: "login", expiresAt: isoIn(60_000) });

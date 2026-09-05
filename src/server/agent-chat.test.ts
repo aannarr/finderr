@@ -2,15 +2,17 @@
  * WHO THE ASSISTANT EXISTS FOR, asked at the probe.
  *
  * The probe is what decides whether a launcher is drawn at all, so it is the one place a
- * change of audience is visible without spending a model call. Two rules meet here and only
- * one of them is about the reader: the DEPLOYMENT gate (no key, no feature, for everybody)
- * and the AUDIENCE (every signed-in account, since 2026-09-05).
+ * change of audience is visible without spending a model call. THREE rules meet here and only
+ * two are about the reader: the DEPLOYMENT gate (no key, no feature, for everybody), the
+ * AUDIENCE (every signed-in account, since 2026-09-05) and the per-account switch an admin
+ * flips on `/admin/users/:id`.
  *
  * It was `role !== "admin"` until that date -- an admin-only beta, deliberately with no
  * switch to widen it. aannarr: *"make assistant available to all users if key etc are set."*
  * These tests exist because the widening is a DELETION, and a deletion leaves nothing behind
  * for a reader to notice: without them, re-adding a role check would look like tightening a
- * gap rather than reverting a decision.
+ * gap rather than reverting a decision. The per-account switch is what a role check would be
+ * a bad imitation of, so it is pinned here beside it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -27,11 +29,30 @@ const deps = (over: { key?: string; models?: string[] } = {}) =>
     },
   }) as unknown as Parameters<typeof makeChatProbe>[0];
 
-const principal = (role: Role): Principal => ({
-  kind: "session",
-  user: { id: "u1", role } as User,
-  role,
-});
+/**
+ * A real `User`, not a two-field stand-in cast to one.
+ *
+ * The cast that stood here hid `assistantAllowed` from the compiler, so the field the probe
+ * now reads arrived as `undefined` -- which is falsy, so every test would have measured "no
+ * launcher" and called it the audience rule. A stand-in is only safe while nothing new is
+ * ever read off it.
+ */
+const principal = (role: Role, over: Partial<User> = {}): Principal => {
+  const user: User = {
+    id: "u1",
+    displayName: "Ada",
+    role,
+    plexId: null,
+    plexUsername: null,
+    createdAt: "2026-09-05T00:00:00.000Z",
+    lastSeenAt: null,
+    disabledAt: null,
+    quotaPerDay: null,
+    assistantAllowed: true,
+    ...over,
+  };
+  return { kind: "session", user, role };
+};
 
 const GET = new Request("http://x/api/agent/chat");
 
@@ -69,5 +90,20 @@ describe("the assistant probe", () => {
     // THE ONE GATE THAT SURVIVED. "If key etc are set" is the whole condition now.
     expect(makeChatProbe(deps({ key: "" }))(GET, principal("admin")).status).toBe(404);
     expect(makeChatProbe(deps({ models: [] }))(GET, principal("user")).status).toBe(404);
+  });
+
+  /**
+   * The per-account switch, which is what an admin actually reaches for.
+   *
+   * 404 and not 403: the client treats a 403 as terminal for this reader too, but 404 is what
+   * every other unavailable-here surface answers, and the two must not drift apart -- see the
+   * route's header. What is pinned is that the switch is read at all, and that a ROLE cannot
+   * stand in for it: an admin with it off gets nothing either.
+   */
+  test("an account an admin switched off has no assistant, whatever its role", () => {
+    for (const role of ["user", "admin"] as const) {
+      const off = principal(role, { assistantAllowed: false });
+      expect(makeChatProbe(deps())(GET, off).status).toBe(404);
+    }
   });
 });

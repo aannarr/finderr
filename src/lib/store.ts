@@ -9,7 +9,7 @@ import { Database } from "bun:sqlite";
 import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
 import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
-import { AUTH_SCHEMA } from "./auth-store";
+import { applyAuthSchema } from "./auth-store";
 import type { Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
@@ -23,6 +23,7 @@ import {
   type SearchRow,
 } from "./search-log";
 import { encodeSeasons } from "./seasons";
+import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 import type { TermPair } from "./terms";
 
 /**
@@ -723,25 +724,11 @@ create index if not exists ix_ai_message_conv on ai_message(user_id, conv_id, id
 `;
 
 /**
- * Columns added after the first release, applied to databases that already exist.
- *
- * `create table if not exists` is a no-op on a live DB, so a new column needs an
- * explicit ALTER or every deployed instance silently keeps the old shape.
+ * Columns added to THIS file's tables after the first release. The auth tables keep their
+ * own list beside their own schema (`AUTH_ADDED_COLUMNS`), and both are applied by
+ * `addMissingColumns`.
  */
-const ADDED_COLUMNS: {
-  table: string;
-  column: string;
-  ddl: string;
-  /**
-   * One statement run ONCE, immediately after the column is added, and never again.
-   *
-   * For a column whose correct value on an existing row is not its default. Without this a
-   * migration can only say "unknown" about history, and the reader pays for it -- see
-   * `request.available_seen_at`, where the default would announce every request the
-   * instance has ever completed as unread news.
-   */
-  backfill?: string;
-}[] = [
+const ADDED_COLUMNS: AddedColumn[] = [
   { table: "artwork", column: "studio", ddl: "alter table artwork add column studio text" },
   // The episode's own name ("And the Toy Phone"), and whether we HOLD that episode.
   // Both ride free on Sonarr's calendar entry. A row written before these existed reads
@@ -884,22 +871,10 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     */
     this.db.run("pragma foreign_keys = on");
     this.db.run(SCHEMA);
-    // Identity, declared next to the identity rules. One connection, one migration path.
-    this.db.run(AUTH_SCHEMA);
-    this.migrate();
-  }
-
-  /** Idempotent: adds any column this build expects that the file does not have. */
-  private migrate(): void {
-    for (const { table, column, ddl, backfill } of ADDED_COLUMNS) {
-      const cols = this.db.query(`pragma table_info(${table})`).all() as { name: string }[];
-      if (cols.some((c) => c.name === column)) continue;
-      this.db.run(ddl);
-      // Inside the same branch, so it runs exactly once -- on the boot that adds the
-      // column and never on any boot after it. A backfill outside this guard would be a
-      // statement re-run against live data every restart.
-      if (backfill) this.db.run(backfill);
-    }
+    // Identity, declared next to the identity rules -- and migrated by the same call the
+    // tests use, so the ALTERs are not a path that first runs against the live file.
+    applyAuthSchema(this.db);
+    addMissingColumns(this.db, ADDED_COLUMNS);
   }
 
   close(): void {

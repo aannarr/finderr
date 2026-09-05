@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { isoIn } from "./auth";
-import { AUTH_SCHEMA, AuthStore } from "./auth-store";
+import { AuthStore, applyAuthSchema } from "./auth-store";
 import { FIRST_RUN_CLOSED_KEY, FirstRun } from "./first-run";
 import type { KeyValueStore } from "./store";
 
@@ -20,7 +20,7 @@ let firstRun: FirstRun;
 beforeEach(() => {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
-  db.run(AUTH_SCHEMA);
+  applyAuthSchema(db);
   auth = new AuthStore(db);
   kv = memoryKv();
   firstRun = new FirstRun({ auth, kv, log: () => {} });

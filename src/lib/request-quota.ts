@@ -96,6 +96,23 @@ export function quotaApplies(role: Role, limit: number): boolean {
   return limit > 0 && role !== "admin";
 }
 
+/**
+ * The daily title limit that binds THIS person: their own override, else the site's.
+ *
+ * One owner for the fallback, and it exists because there are four readers -- the request
+ * route, the assistant's request tool, the admin user page and the agent manifest -- and a
+ * `??` spelled in each of them is four places to edit when the site value moves. It is about
+ * to move: `site-defaults-and-an-operator-dashboard-on-admin` re-points `siteDefault` at a
+ * stored setting, and the whole of that change should be at this function's callers.
+ *
+ * NULL AND ZERO ARE DIFFERENT ANSWERS. Null is "I have no opinion, use the site's"; zero is
+ * an explicit "unlimited for this person" that survives the operator later capping everybody
+ * else. `??` rather than `||` is what keeps those apart.
+ */
+export function quotaLimitFor(override: number | null, siteDefault: number): number {
+  return override ?? siteDefault;
+}
+
 export function quotaVerdict(input: {
   role: Role;
   /** Titles per UTC day. Zero or less is UNLIMITED. */

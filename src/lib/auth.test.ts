@@ -24,6 +24,8 @@ const user: User = {
   createdAt: "2026-08-31T00:00:00.000Z",
   lastSeenAt: null,
   disabledAt: null,
+  quotaPerDay: null,
+  assistantAllowed: true,
 };
 
 describe("secrets", () => {
@@ -202,6 +204,8 @@ describe("who may see what", () => {
       createdAt: "2026-08-31T00:00:00.000Z",
       lastSeenAt: null,
       disabled: false,
+      quotaPerDay: null,
+      assistantAllowed: true,
     });
     expect(Object.hasOwn(p, "plexId")).toBe(false);
   });

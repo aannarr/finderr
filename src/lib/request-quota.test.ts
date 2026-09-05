@@ -11,7 +11,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { quotaApplies, quotaVerdict, utcDayReset, utcDayStart, utcDayStartDaysAgo } from "./request-quota";
+import {
+  quotaApplies,
+  quotaLimitFor,
+  quotaVerdict,
+  utcDayReset,
+  utcDayStart,
+  utcDayStartDaysAgo,
+} from "./request-quota";
 
 /** A thunk that records whether it was called, so "never counted" is an assertion. */
 function counter(value: number): (() => number) & { calls: number } {
@@ -116,6 +123,35 @@ describe("quotaApplies", () => {
         });
       }
     }
+  });
+});
+
+/**
+ * The fallback from a person's own allowance to the site's, which has four readers.
+ *
+ * The cases worth pinning are the two where `??` and `||` disagree, because that is the only
+ * mistake this function can make and both spellings look right: an override of ZERO is an
+ * explicit "unlimited for this person" and must beat a site limit, and NULL is the absence of
+ * an opinion and must not.
+ */
+describe("quotaLimitFor", () => {
+  test("no override follows the site", () => {
+    expect(quotaLimitFor(null, 5)).toBe(5);
+    expect(quotaLimitFor(null, 0)).toBe(0);
+  });
+
+  test("an override wins, including a zero that means unlimited", () => {
+    expect(quotaLimitFor(2, 5)).toBe(2);
+    expect(quotaLimitFor(0, 5)).toBe(0);
+    // ...and it works in the other direction too: a personal cap on an uncapped site.
+    expect(quotaLimitFor(3, 0)).toBe(3);
+  });
+
+  test("the rule then reads the resolved number, whichever it came from", () => {
+    // The composition is what actually refuses a request, so it is asserted rather than
+    // assumed: an override of 0 exempts a member from a site-wide limit of 5.
+    expect(quotaApplies("user", quotaLimitFor(0, 5))).toBe(false);
+    expect(quotaApplies("user", quotaLimitFor(null, 5))).toBe(true);
   });
 });
 

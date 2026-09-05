@@ -238,10 +238,29 @@ export interface AiGateInput {
 }
 
 /**
+ * Does the assistant EXIST for this reader at all? The two permanent conditions, together.
+ *
+ * Split out of `aiGate` because it has a second reader that must not ask the money question:
+ * the availability probe, which decides whether a launcher is drawn. A budget is a WAIT --
+ * the launcher stays and the refusal explains itself -- while these two are WALLS, and a
+ * probe that could not tell them apart would either hide a working assistant for the rest of
+ * the day or draw one for an account that has none.
+ */
+export function assistantOffered(input: { configured: boolean; allowedForAccount: boolean }): boolean {
+  return input.configured && input.allowedForAccount;
+}
+
+/**
  * Whether this person may make one more model call today.
  *
  * The order is deliberate and it is cheapest-first as well as most-fundamental-first: an
  * unconfigured deployment and an admin are both answered without touching the database.
+ *
+ * IT DOES NOT ASK WHETHER THE ACCOUNT IS SWITCHED ON, and that is not an omission: an
+ * account with the assistant off never reaches a route that spends money, because
+ * `assistantOffered` above turns both the probe and the chat handler away first. Repeating
+ * the check here would add a branch production cannot execute -- the rot this file already
+ * split `dailyCapVerdict` out to avoid.
  */
 export function aiGate(input: AiGateInput): AiGateVerdict {
   if (!input.configured) {
@@ -253,27 +272,23 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
   }
 
   /*
-    THE AUDIENCE IS EVERY SIGNED-IN ACCOUNT, and the only condition is the deployment key.
+    THE AUDIENCE IS EVERY SIGNED-IN ACCOUNT THE ADMIN LEFT SWITCHED ON.
 
     aannarr, 2026-09-05: *"make assistant available to all users if key etc are set."* This
-    was an ADMIN-ONLY beta until that instruction, and the paragraph that stood here argued
-    at length that it must stay one until a per-account opt-in existed. That argument is
-    recorded below rather than deleted, because the concern it names did not go away -- it
-    was overruled, which is a different thing, and a reader who cannot tell the two apart
-    will "restore" the gate as a bugfix.
+    was an ADMIN-ONLY beta until that instruction, and the ROLE check that enforced it is
+    gone. Do not re-add one: the per-account switch in `assistantOffered` is the piece that
+    was missing, and a role check is not a narrower version of it.
 
-    > [!IMPORTANT] WHAT WAS TRADED, so nobody re-derives it or quietly reverts it
+    > [!IMPORTANT] WHAT WAS TRADED, and what `assistantOffered` settles
     > A question typed into finderr is sent to a third party, so what somebody searches for
     > leaves the house. While the audience was administrators there was nobody to ask who had
-    > not already consented by turning the feature on. That is no longer true: an invited
-    > household member now has a box that ships their words to OpenRouter, and nothing asks
-    > them first. The composer's standing note ("It can start real downloads. Kept on this
-    > device only.") describes the LOCAL transcript and says nothing about the upstream call.
+    > not already consented by turning the feature on; widening it gave an invited household
+    > member a box that ships their words to OpenRouter with nothing asking them first.
     >
-    > The per-account opt-in is therefore still worth building and is still the right shape:
-    > each account decides, and an admin enabling the feature globally does not decide for
-    > anybody else. It is now a FOLLOW-UP rather than a precondition. Do not re-add a role
-    > check in its place -- that is not the missing piece, and it was removed deliberately.
+    > The answer was always per-account rather than per-role, and it now exists: an admin
+    > decides on `/admin/users/:id`, one person at a time. What is still owed is the person's
+    > OWN say -- this is a switch an admin flips, not consent the account gave -- so a
+    > self-service opt-out on the account page is the next honest step.
 
     What remains true is the deployment gate above: no key means the feature does not exist,
     for everybody, which is the `tmdb` shape and is unchanged.

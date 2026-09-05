@@ -11,7 +11,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { hashToken, isoIn, SESSION_COOKIE } from "../lib/auth";
-import { AUTH_SCHEMA, AuthStore } from "../lib/auth-store";
+import { AuthStore, applyAuthSchema } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
 import type { Store } from "../lib/store";
@@ -72,7 +72,7 @@ interface Harness {
 function harness(cfg: Config = config()): Harness {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
-  db.run(AUTH_SCHEMA);
+  applyAuthSchema(db);
   const auth = new AuthStore(db);
   const logs: string[] = [];
 
