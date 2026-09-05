@@ -190,7 +190,7 @@ the index would stay resident for the prefault to be worth its own read. finderr
 **skips the prefault**, which saves a pointless 1.9 GB read rather than making anything faster.
 
 Concretely, on the spinning array: working through the whole app once costs about **7.6 s** here
-against **0.5 s** at 2 GB, and then it is warm and the difference is gone. On an SSD the gap is
+against **0.5 s** at 1.5 GB, and then it is warm and the difference is gone. On an SSD the gap is
 tens of milliseconds and you will not see it.
 
 If you would rather spend the I/O and keep the prefault anyway:
