@@ -96,10 +96,13 @@ describe("resolveTuning", () => {
     expect(resolveTuning({ budget: budget(100_000), indexBytes: 0 }).cacheKib).toBe(256 * 1024); // ceil
   });
 
-  test("mmap is sized to the index but never claims more than the budget", () => {
-    // Stating 2 GB inside a 1.5 GB container is a claim that cannot be honoured, and that stale
-    // constant is what made the old default read as deliberate.
-    expect(resolveTuning({ budget: budget(1500), indexBytes: 1892 * MB }).mmapBytes).toBe(1500 * 1024 * 1024);
+  test("mmap covers the WHOLE index and is never capped at the budget", () => {
+    // A map is address space; the cgroup charges a page when it is faulted, not when it is
+    // mapped. Capping at the budget would make SQLite pread everything past the cap -- partially
+    // disabling mmap on precisely the smallest machines, where turning it off measured 2.6x
+    // slower cold on a spinning array.
+    expect(resolveTuning({ budget: budget(1500), indexBytes: 1892 * MB }).mmapBytes).toBe(1892 * 1024 * 1024);
+    expect(resolveTuning({ budget: budget(512), indexBytes: 1892 * MB }).mmapBytes).toBe(1892 * 1024 * 1024);
     expect(resolveTuning({ budget: budget(8192), indexBytes: 1892 * MB }).mmapBytes).toBe(1892 * 1024 * 1024);
   });
 

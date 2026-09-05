@@ -140,6 +140,14 @@ is 33% slower warm on NVMe. The read amplification that mmap causes is not waste
 and a striped array of spinning disks is enormously better at bulk sequential reads than at small
 random ones. There is no measured configuration in which disabling it won.
 
+**finderr maps the whole index regardless of the memory limit, and that is correct rather than
+reckless.** `mmap_size` is address space, not memory: the kernel charges a page when something
+faults it in, not when it is mapped, and it charges the same either way. Mapping 1.9 GB inside a
+512 MB container just means at most 512 MB of it is resident at a time -- which was true anyway.
+Setting `mmap_size` *below* the file size is the harmful option, because SQLite then reads
+everything past the limit the slow way. If you are tempted to shrink it to "fit", don't: shrink
+`FINDERR_SQLITE_CACHE_MB` instead, which is real memory.
+
 ---
 
 ## Running at a given budget

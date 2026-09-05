@@ -265,20 +265,35 @@ export function resolveTuning(opts: {
   notes.push(`memory budget ${budget.mb} MB (${budget.source}); index ${indexMb} MB`);
 
   /*
-    MMAP: sized to the index, capped at the budget, never a constant.
+    MMAP: sized to the WHOLE INDEX, and deliberately NOT capped at the memory budget.
 
-    A map larger than the file is only address space and costs nothing -- but stating 2 GB inside
-    a 1.5 GB container is a claim that cannot be honoured, and it is what made the old default
-    read as deliberate when it was merely stale. Sizing it to the file says what is meant, and
-    capping at the budget means the number is never a lie.
+    > [!CAUTION] Capping the map at the budget is a bug, and it is an easy one to talk yourself into
+    > This was written as `min(indexMb, budget.mb)` on the reasoning that "stating 2 GB inside a
+    > 1.5 GB container is a claim that cannot be honoured". That reasoning confuses two different
+    > things. `mmap_size` is ADDRESS SPACE, not memory: the kernel charges a page to the cgroup
+    > when it is faulted in, not when it is mapped, and it charges it identically whether it
+    > arrived through a mapping or through a `read()`. A 1,868 MB map inside a 512 MB container
+    > is not a lie -- it simply means at most 512 MB of it is resident at a time, which was going
+    > to be true anyway.
+    >
+    > What the cap DOES do is real and bad: SQLite reads only the first `mmap_size` bytes through
+    > the mapping and falls back to `pread` for everything past it. So a budget-capped map
+    > partially disables mmap on exactly the machines that can least afford it -- and turning
+    > mmap off entirely measured **2.6x SLOWER cold on a spinning array** and 33% slower warm on
+    > NVMe. The cap would have bought nothing and paid a fraction of that penalty.
+    >
+    > It also gets the memory question backwards: SQLite does NOT copy a mapped page into its own
+    > pager cache, so mapping more of the file uses LESS memory, not more.
+
+    The floor of 64 MB is for a fixture or a first install, where the file is a few KB and a map
+    sized to it would be pointless. There is no ceiling.
   */
-  let mmapMb = opts.mmapMbOverride ?? Math.min(Math.max(indexMb, 64), budget.mb);
-  if (opts.mmapMbOverride != null) {
-    notes.push(`mmap ${mmapMb} MB (FINDERR_SQLITE_MMAP_MB)`);
-  } else {
-    notes.push(`mmap ${mmapMb} MB (index size, capped at the budget)`);
-  }
-  if (mmapMb < 0) mmapMb = 0;
+  const mmapMb = Math.max(opts.mmapMbOverride ?? indexMb, opts.mmapMbOverride != null ? 0 : 64);
+  notes.push(
+    opts.mmapMbOverride != null
+      ? `mmap ${mmapMb} MB (FINDERR_SQLITE_MMAP_MB)`
+      : `mmap ${mmapMb} MB (the whole index; a map is address space, not resident memory)`,
+  );
 
   /*
     CACHE: small, because it duplicates what mmap already maps.
