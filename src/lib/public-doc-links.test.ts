@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readTrackedMarkdown } from "./tracked-markdown";
 
 /**
  * Tracked markdown may not LINK into a gitignored directory.
@@ -34,18 +35,6 @@ function privateLinkHits(text: string): { line: number; text: string }[] {
     .filter(({ text: line }) => LINK_FORMS.some((form) => form.test(line)));
 }
 
-/** Repo root: this file is at src/lib/, so two levels up. */
-const repoRoot = new URL("../../", import.meta.url).pathname;
-
-/** Tracked markdown only -- a gitignored doc may link wherever it likes. */
-function trackedMarkdownFiles(): string[] {
-  const ls = Bun.spawnSync(["git", "ls-files", "-z", "*.md"], { cwd: repoRoot });
-  // A silent empty result is the failure mode this test exists to prevent, so a git that
-  // did not answer is a red test rather than a green sweep over nothing.
-  if (!ls.success) throw new Error(`git ls-files failed: ${ls.stderr.toString()}`);
-  return ls.stdout.toString().split("\0").filter(Boolean);
-}
-
 describe("no tracked markdown links into a gitignored directory", () => {
   test("the detector fires on the shapes it is meant to catch", () => {
     // Proves the regexes are alive. A sweep that matches nothing because the pattern is
@@ -57,12 +46,11 @@ describe("no tracked markdown links into a gitignored directory", () => {
   });
 
   test("every tracked .md file is clean", async () => {
-    const files = trackedMarkdownFiles();
-    expect(files.length).toBeGreaterThan(0);
+    const docs = await readTrackedMarkdown();
+    expect(docs.length).toBeGreaterThan(0);
 
     const offenders: string[] = [];
-    for (const file of files) {
-      const text = await Bun.file(repoRoot + file).text();
+    for (const { file, text } of docs) {
       for (const hit of privateLinkHits(text)) offenders.push(`${file}:${hit.line}: ${hit.text.trim()}`);
     }
     expect(offenders).toEqual([]);
