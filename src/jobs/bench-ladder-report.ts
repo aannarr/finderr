@@ -29,9 +29,22 @@ interface Cell {
   results: { firstTouchMs: number; firstTouchIo: number | null; p50: number; p99: number }[];
 }
 
+/**
+ * Read one cell, or `null` for anything that is not one.
+ *
+ * The results directory holds BOTH formats -- `bench-index.ts` writes per-scenario cold/warm
+ * runs there too, and a glob like `nas-*.json` picks up both. A `bench-index` file has no
+ * `residency` key, so that is the discriminator; without this check the report dies on the
+ * first one with a `TypeError` naming a property rather than a file.
+ */
 function load(path: string): Cell | null {
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as Cell;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Cell>;
+    if (!parsed.residency || !Array.isArray(parsed.results)) {
+      console.error(`# skipping ${path}: not a bench-memory cell (no residency block)`);
+      return null;
+    }
+    return parsed as Cell;
   } catch (err) {
     console.error(`# skipping ${path}: ${(err as Error).message}`);
     return null;
