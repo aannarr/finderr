@@ -21,6 +21,8 @@ const user = (over: Partial<AdminUser> = {}): AdminUser => ({
   createdAt: "2026-08-01T00:00:00.000Z",
   lastSeenAt: "2026-09-04T00:00:00.000Z",
   disabled: false,
+  quotaPerDay: null,
+  assistantAllowed: true,
   credentials: 1,
   sessions: 1,
   requestsThisWeek: 3,

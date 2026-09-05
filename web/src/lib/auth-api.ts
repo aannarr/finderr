@@ -27,6 +27,16 @@ export interface PublicUser {
   createdAt: string;
   lastSeenAt: string | null;
   disabled: boolean;
+  /**
+   * This person's own daily title limit, or null to follow the site's.
+   *
+   * The EFFECTIVE limit is `QuotaState.limitPerDay`; this is the override that produced it,
+   * and the two are separate fields because only their difference tells "5 because we said
+   * so" from "5 because the site says so". Null is the ordinary case.
+   */
+  quotaPerDay: number | null;
+  /** May they use the assistant? An admin's decision, per person, on `/admin/users/:id`. */
+  assistantAllowed: boolean;
 }
 
 export interface AuthState {
@@ -82,6 +92,21 @@ async function get<T>(path: string): Promise<T> {
   const parsed = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(parsed.error ?? `request failed (${res.status})`);
   return parsed as T;
+}
+
+/**
+ * A DELETE that raises the server's own refusal, so a caller can render it.
+ *
+ * `fallback` is what a reader is told when the server sent no message at all -- a proxy
+ * error page, or a network the request never left. It is per-caller because "that account
+ * could not be removed" and "that key could not be revoked" are different sentences, and a
+ * generic one would be the least useful thing on screen at the moment it matters.
+ */
+async function del(path: string, fallback = "that did not work"): Promise<void> {
+  const res = await fetch(path, { method: "DELETE" });
+  if (res.ok) return;
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  throw new Error(body.error ?? fallback);
 }
 
 export function getAuthState(): Promise<AuthState> {
@@ -276,11 +301,7 @@ export function createAgentKey(opts: {
 }
 
 export async function revokeAgentKey(): Promise<void> {
-  const res = await fetch(AGENT_KEY_PATH, { method: "DELETE" });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? "could not revoke that key");
-  }
+  await del(AGENT_KEY_PATH, "could not revoke that key");
 }
 
 // --- admin -----------------------------------------------------------------
@@ -322,12 +343,26 @@ export function createInvite(opts: {
 }
 
 export async function revokeInvite(id: string): Promise<void> {
-  await fetch(`/api/admin/invites/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await del(`/api/admin/invites/${encodeURIComponent(id)}`, "that invite could not be revoked");
 }
 
+/**
+ * Change what an admin decides about somebody. Every field is optional; an ABSENT one is
+ * left alone, which is what makes `quotaPerDay: null` mean "clear the override".
+ *
+ * `null` and omitting the key are therefore different requests, and `undefined` cannot
+ * express the first -- `JSON.stringify` drops it. Callers that want to clear the override
+ * must pass an explicit `null`.
+ */
 export async function patchUser(
   id: string,
-  patch: { role?: Role; disabled?: boolean; displayName?: string },
+  patch: {
+    role?: Role;
+    disabled?: boolean;
+    displayName?: string;
+    quotaPerDay?: number | null;
+    assistantAllowed?: boolean;
+  },
 ): Promise<void> {
   const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -341,11 +376,22 @@ export async function patchUser(
 }
 
 export async function deleteUser(id: string): Promise<void> {
-  const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? "that account could not be removed");
-  }
+  await del(`/api/admin/users/${encodeURIComponent(id)}`, "that account could not be removed");
+}
+
+/**
+ * Revoke ONE of somebody's passkeys, or ONE of their open sessions.
+ *
+ * The narrow instrument, for a lost LAPTOP: `resetUser` below is for a lost account. Both
+ * are scoped by the target user on the server, so an id belonging to somebody else answers
+ * 404 rather than deleting their row.
+ */
+export async function revokeUserCredential(userId: string, credentialId: string): Promise<void> {
+  await del(`/api/admin/users/${encodeURIComponent(userId)}/credentials/${encodeURIComponent(credentialId)}`);
+}
+
+export async function revokeUserSession(userId: string, sessionId: string): Promise<void> {
+  await del(`/api/admin/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 /**
@@ -391,8 +437,16 @@ export function adminRequests(): Promise<{ requests: AttributedRequest[] }> {
 
 /** Where one person stands against the daily request limit. See `src/lib/request-quota.ts`. */
 export interface QuotaState {
-  /** Titles per UTC day, as configured for the whole site. Zero or less is unlimited. */
+  /**
+   * Titles per UTC day that actually bind THIS person: their own override where they have
+   * one, else the site's. Zero or less is unlimited. Resolved by `quotaLimitFor`.
+   */
   limitPerDay: number;
+  /**
+   * What the site would give them, so an editor can offer "follow the site default (N)" as
+   * a real choice. Equal to `limitPerDay` exactly when `user.quotaPerDay` is null.
+   */
+  siteLimitPerDay: number;
   usedToday: number;
   /** ISO instant of the next UTC midnight. */
   resetsAt: string;
