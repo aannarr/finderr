@@ -49,7 +49,9 @@ process can see the page cache and `docker stats` actively hides it**: `docker s
 `inactive_file`, which is exactly the cached index, so a container holding 900 MB of index reports
 about 75 MB and looks idle.
 
-Reproduce a cell with:
+Reproduce a cell against your own hardware and your own index. The runtime image ships the job, so
+this needs nothing built -- point `--source` at a **copy** of your index, never at the live one
+(the harness refuses a path inside a `data/` directory, and clones before it opens anything):
 
 ```bash
 docker run --rm -m 1024m --memory-swap 1024m -v /your/bench:/bench \
@@ -57,6 +59,10 @@ docker run --rm -m 1024m --memory-swap 1024m -v /your/bench:/bench \
   /app/src/jobs/bench-memory.ts --source /bench/titles.db --scratch /bench/mem/x \
   --label x --prefault --json /bench/results/x.json
 ```
+
+Drop `--prefault` for the other half of the pair, and read the two together --
+`bun /app/src/jobs/bench-ladder-report.ts /bench/results/*.json` prints the table. Available from
+the release that carries this page; an older image has no `bench-memory.ts`.
 
 ---
 
