@@ -101,6 +101,22 @@ interface Args {
   prefault: boolean;
   /** Free-text stamp carried into the JSON, so `bench-compare` can label a cell. */
   label: string | null;
+  /**
+   * Where the clones go. Defaults to `.claude/temp/bench` under the cwd.
+   *
+   * > [!IMPORTANT] This exists because a reflink cannot cross a bind mount, and the fallback is SILENT
+   * > Measured on the NAS 2026-09-05. `cloneIndex` tries `cp -c`, then `cp --reflink=always`, then
+   * > a real copy -- and `--reflink=always` fails with EXDEV between two separate Docker bind
+   * > mounts of the SAME btrfs filesystem, because the kernel sees two mounts. So a container
+   * > run fell through to copying 1.87 GB per cold sample at array speed: 5.7 s each, 105 GB of
+   * > writes across a full suite, and nothing in the output saying the fast path had been lost.
+   * >
+   * > Pointing this INSIDE the same mount as the source restores the reflink. It is also the
+   * > only way to guarantee the clone is on the storage under test rather than on the
+   * > container's own writable layer -- which on a NAS is a different disk entirely, and would
+   * > have measured the wrong device while looking completely correct.
+   */
+  scratch: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -118,6 +134,7 @@ function parseArgs(argv: string[]): Args {
     coldRuns: 1,
     prefault: false,
     label: null,
+    scratch: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -134,6 +151,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--cold-runs") out.coldRuns = Number(argv[++i]);
     else if (a === "--prefault") out.prefault = true;
     else if (a === "--label") out.label = argv[++i] ?? null;
+    else if (a === "--scratch") out.scratch = argv[++i] ?? null;
   }
   if (!Number.isFinite(out.runs) || out.runs < 1) throw new Error("--runs must be a positive number");
   if (!Number.isFinite(out.coldRuns) || out.coldRuns < 1) throw new Error("--cold-runs must be positive");
@@ -269,18 +287,38 @@ export function assertNotLiveIndex(path: string): void {
  * `--reflink=always` rather than `auto` on purpose: `auto` falls back to a full copy INSIDE
  * `cp` and reports success, so the slow path would be taken with nothing to show it had been.
  */
-async function cloneIndex(src: string, dest: string): Promise<void> {
+async function cloneIndex(src: string, dest: string): Promise<"reflink" | "copy"> {
   mkdirSync(dirname(dest), { recursive: true });
   rmSync(dest, { force: true });
   for (const argv of [
     ["cp", "-c", src, dest], // APFS
     ["cp", "--reflink=always", src, dest], // btrfs, XFS
   ]) {
-    if (Bun.spawnSync(argv).exitCode === 0) return;
+    if (Bun.spawnSync(argv).exitCode === 0) return "reflink";
     // A half-written destination from a failed attempt must not be measured.
     rmSync(dest, { force: true });
   }
   await Bun.write(dest, Bun.file(src));
+  return "copy";
+}
+
+/**
+ * Say ONCE which clone path was taken, because losing the reflink is invisible otherwise.
+ *
+ * A full copy still produces a correct cold measurement -- it is if anything more definitely
+ * cold. What it costs is time and 1.87 GB of writes per sample, and on the array that turned a
+ * suite into an hour of copying with nothing in the output to explain where it went. The one
+ * line this prints is the difference between noticing and not.
+ */
+let cloneMethodReported = false;
+function reportCloneMethod(how: "reflink" | "copy", ms: number): void {
+  if (cloneMethodReported) return;
+  cloneMethodReported = true;
+  console.log(
+    how === "reflink"
+      ? `# clone: reflink (instant, no disk)`
+      : `# clone: FULL COPY, ${ms.toFixed(0)} ms each -- reflink unavailable (bind mount? not btrfs/APFS?)`,
+  );
 }
 
 /**
@@ -475,7 +513,7 @@ function openEngine(
 async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const cfg = loadConfig();
-  const scratch = join(process.cwd(), ".claude", "temp", "bench");
+  const scratch = args.scratch ?? join(process.cwd(), ".claude", "temp", "bench");
   // `--db` is a target and must not be live; `--source` is a clone origin and may be.
   if (args.db) assertNotLiveIndex(args.db);
   const source = args.db ?? args.source ?? findIndex(cfg.dataDir);
@@ -492,8 +530,10 @@ async function main(): Promise<void> {
   } else {
     process.stdout.write(`# cloning ${source} -> ${dbPath} ... `);
     const t0 = Bun.nanoseconds();
-    await cloneIndex(source, dbPath);
-    console.log(`${((Bun.nanoseconds() - t0) / 1e6).toFixed(0)} ms`);
+    const how = await cloneIndex(source, dbPath);
+    const ms = (Bun.nanoseconds() - t0) / 1e6;
+    console.log(`${ms.toFixed(0)} ms`);
+    reportCloneMethod(how, ms);
   }
   const target = args.db ?? dbPath;
   assertNotLiveIndex(target);
@@ -589,7 +629,16 @@ async function main(): Promise<void> {
     console.log(`\nwrote ${args.json}`);
   }
   engine.close();
-  if (!args.db && !args.keep) rmSync(scratch, { recursive: true, force: true });
+  if (!args.db && !args.keep) {
+    // With `--scratch` the directory is usually a MOUNT POINT, which cannot be unlinked --
+    // removing it threw EACCES at the very end of an otherwise complete NAS run and made a
+    // successful measurement exit non-zero. Clear the contents and leave the directory.
+    if (args.scratch) {
+      for (const f of new Bun.Glob("*.db").scanSync(scratch)) rmSync(join(scratch, f), { force: true });
+    } else {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
 }
 
 async function measure(
@@ -636,7 +685,8 @@ async function measure(
   if (!args.db) {
     for (let i = 0; i < args.coldRuns; i++) {
       const coldPath = join(scratch, `cold-${s.id.replace(/[^a-z0-9]/gi, "-")}-${i}.db`);
-      await cloneIndex(target, coldPath);
+      const tc = Bun.nanoseconds();
+      reportCloneMethod(await cloneIndex(target, coldPath), (Bun.nanoseconds() - tc) / 1e6);
       // The PREFAULTED cell: the file pulled into the page cache sequentially first, which is
       // the state a production container is in seconds after boot. Neither cold nor warm
       // describes it, and it is the state most reads actually happen in.
