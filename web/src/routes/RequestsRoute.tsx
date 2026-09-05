@@ -12,9 +12,17 @@
 
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { isWithdrawable } from "../../../src/lib/request-withdrawal";
 import { RequestVerdictPanel } from "../components/RequestProgress";
-import { getRequests, type MediaRequest, markRequestsSeen } from "../lib/api";
+import {
+  getRequests,
+  type MediaRequest,
+  markRequestsSeen,
+  patchTitleState,
+  withdrawRequest,
+} from "../lib/api";
 import { seasonLine } from "../lib/request-log";
+import { LINK_BUTTON } from "../lib/ui";
 
 /**
  * Newly-arrived first, then everything else by most recent activity.
@@ -25,6 +33,79 @@ import { seasonLine } from "../lib/request-log";
  */
 function newsFirst(requests: readonly MediaRequest[]): MediaRequest[] {
   return [...requests.filter((r) => r.isNew), ...requests.filter((r) => !r.isNew)];
+}
+
+/**
+ * Undo one ask, behind a confirmation.
+ *
+ * > [!IMPORTANT] The confirmation is INLINE, and it is not `window.confirm`
+ * > A native dialog cannot be styled, cannot be dismissed by keyboard the way the rest of
+ * > this app can, is suppressible by the browser, and is invisible to a test -- jsdom does
+ * > not implement it. Swapping the button for its own "Withdraw? Yes / Cancel" pair costs
+ * > one piece of state and makes the guard a thing that can be asserted.
+ *
+ * A request that has ARRIVED offers no control at all, and WHICH statuses those are is
+ * `isWithdrawable` -- the same function the server refuses with, so a button can never
+ * promise something the endpoint declines. Removing the media itself is a library operation
+ * and belongs in the arr.
+ *
+ * The failure is shown ON THE ROW rather than raised as a toast, because it is a fact about
+ * this one request -- "Radarr is having trouble" -- and the reader is looking straight at it.
+ *
+ * Exported for its test: what has to be pinned is that the destructive verb is not reachable
+ * in one click, and that is a property of THIS component rather than of the page around it.
+ */
+export function WithdrawControl({
+  request,
+  onWithdrawn,
+}: {
+  request: MediaRequest;
+  onWithdrawn: () => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!isWithdrawable(request.status)) return null;
+
+  const withdraw = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await withdrawRequest(request.tconst);
+      // Every cached view of this title still carries the request badge, so it is cleared
+      // through the shared caches rather than by reloading each of them -- the same call
+      // `RootLayout` makes when a request fails to go out.
+      patchTitleState(request.tconst, { requestStatus: null });
+      onWithdrawn();
+    } catch (e) {
+      setError((e as Error).message);
+      setAsking(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex items-baseline gap-3">
+      {asking ? (
+        <>
+          <span className="text-xs text-muted">Withdraw this request?</span>
+          <button type="button" onClick={withdraw} disabled={busy} className={LINK_BUTTON}>
+            {busy ? "Withdrawing…" : "Yes, withdraw"}
+          </button>
+          <button type="button" onClick={() => setAsking(false)} disabled={busy} className={LINK_BUTTON}>
+            Keep it
+          </button>
+        </>
+      ) : (
+        <button type="button" onClick={() => setAsking(true)} className={LINK_BUTTON}>
+          Withdraw
+        </button>
+      )}
+      {error && <span className="text-xs text-danger">{error}</span>}
+    </div>
+  );
 }
 
 export function RequestsRoute() {
@@ -106,6 +187,13 @@ export function RequestsRoute() {
                   error={request.error}
                 />
               </div>
+              {/*
+                Reloading the whole list rather than splicing the row out locally: the poll
+                that feeds this page is the server's, and a withdraw also frees a quota row
+                and can change what the arr is doing. One read gives the true state of all of
+                it, and this page fetches once per visit anyway.
+              */}
+              <WithdrawControl request={request} onWithdrawn={load} />
             </li>
           );
         })}

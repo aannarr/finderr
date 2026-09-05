@@ -147,6 +147,20 @@ export interface ArrHistoryRecord {
   quality?: { quality?: { name?: string } };
 }
 
+/**
+ * The one arr capability withdrawing a request needs: stop searching for a library item.
+ *
+ * Named as an interface rather than reached for as `RadarrClient | SonarrClient`, so the
+ * withdraw policy depends on the one method it calls and nothing else -- and so a test hands
+ * it an object literal that records what it was asked to do. Both clients satisfy it with
+ * the same signature, which is what lets the caller pick a client and then stop caring which
+ * one it picked.
+ */
+export interface ArrUnmonitor {
+  /** `arrId` is the arr's OWN row id -- `RadarrMovie.id` / `SonarrSeries.id`. */
+  unmonitor(arrId: number): Promise<unknown>;
+}
+
 export class ArrError extends Error {
   constructor(
     readonly service: string,
@@ -305,17 +319,44 @@ export class ArrClient extends ServarrHttp<ArrService> {
       sortDirection: "descending",
     });
   }
+
+  /**
+   * Switch monitoring off for one library item through the arr's bulk EDITOR, which is the
+   * only shape of this call that cannot delete anything.
+   *
+   * > [!CAUTION] The destructive form of `/{movie,series}/editor` is a DIFFERENT HTTP VERB
+   * > Read against Radarr's `MovieEditorController` and Sonarr's `SeriesEditorController`
+   * > (both `develop`, 2026-09-05): `[HttpPut] SaveAll` copies `monitored`, the profile, the
+   * > root folder and the tags onto the rows it loaded and saves them. `deleteFiles` is not
+   * > read by that handler at all -- it belongs to `[HttpDelete]`, a separate action. So a
+   * > `PUT` here has no expressible way to remove a movie, a series or a file, whatever else
+   * > ends up in the body. That property is why withdrawing goes through the editor rather
+   * > than through `PUT /movie/:id` with a whole mirrored record: the safe verb is enforced
+   * > by the endpoint instead of by us remembering not to send a field.
+   *
+   * The body sends ONE id because a withdraw is one request row. The endpoint's own shape is
+   * a list, and it stays a list here rather than being flattened into a scalar the arr would
+   * reject.
+   */
+  protected unmonitorVia(path: string, idsField: string, arrId: number): Promise<unknown> {
+    return this.put<unknown>(path, { [idsField]: [arrId], monitored: false });
+  }
 }
 
 // ---------------------------------------------------------------------------
 
-export class RadarrClient extends ArrClient {
+export class RadarrClient extends ArrClient implements ArrUnmonitor {
   constructor(svc: ArrService) {
     super("radarr", svc);
   }
 
   movies() {
     return this.get<RadarrMovie[]>("/movie");
+  }
+
+  /** Stop Radarr looking for one movie. The file, if there is one, is untouched. */
+  unmonitor(movieId: number) {
+    return this.unmonitorVia("/movie/editor", "movieIds", movieId);
   }
 
   /**
@@ -399,13 +440,25 @@ export function seasonSelection(
   };
 }
 
-export class SonarrClient extends ArrClient {
+export class SonarrClient extends ArrClient implements ArrUnmonitor {
   constructor(svc: ArrService) {
     super("sonarr", svc);
   }
 
   series() {
     return this.get<SonarrSeries[]>("/series");
+  }
+
+  /**
+   * Stop Sonarr looking for one series. Every file it already holds is untouched.
+   *
+   * The SERIES flag is enough and the per-season and per-episode flags are deliberately left
+   * alone: Sonarr's `MonitoredEpisodeSpecification` rejects any release whose series is
+   * unmonitored, so nothing is grabbed while this is off -- and leaving the inner flags as
+   * the reader set them is what makes re-requesting restore the selection they chose.
+   */
+  unmonitor(seriesId: number) {
+    return this.unmonitorVia("/series/editor", "seriesIds", seriesId);
   }
 
   /**

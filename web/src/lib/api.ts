@@ -1452,6 +1452,23 @@ export async function retryRequest(tconst: string): Promise<void> {
 }
 
 /**
+ * Undo an ask. The arr stops searching; nothing is removed from the library and no file is
+ * touched -- see `src/server/withdraw-request.ts`, which owns the rule.
+ *
+ * The server's own sentence is what surfaces on a refusal, exactly as `postRequestGrain`
+ * does: "it has already arrived" is a fact the reader can act on, and a status code is not.
+ */
+export async function withdrawRequest(tconst: string): Promise<void> {
+  const res = await fetch(`/api/requests/${tconst}`, { method: "DELETE" });
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `withdraw failed: ${res.status}`);
+  // A request row that fed "Recently requested" has gone, so the held front page is now
+  // describing a state that no longer exists -- the same reason `postRequest` marks it
+  // stale for the opposite change.
+  staleDiscover();
+}
+
+/**
  * Patch cached results in place when a title's state changes, instead of throwing
  * the whole search cache away. A request going out should not cost the user their
  * instant back-navigation.

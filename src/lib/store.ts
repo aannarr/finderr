@@ -1384,6 +1384,34 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     this.db.run(`update request set ${sets.join(", ")} where tconst = ?`, args as never[]);
   }
 
+  /**
+   * Forget one request entirely -- the ask and everything observed about it. A title with no
+   * row is already in the desired state, so this is a no-op rather than an error.
+   *
+   * > [!IMPORTANT] The DIAGNOSTIC goes in the same transaction, because it is keyed on the
+   * > same title and nothing else would ever collect it
+   * > `request_diagnostic` has no foreign key -- nothing in this schema outside the auth
+   * > tables does -- and every writer of it is the reconcile pass, which only ever walks
+   * > OPEN REQUEST ROWS. So a diagnostic left behind by a deleted request is written by
+   * > nobody, read by nobody and freed by nobody: it would sit there claiming a download
+   * > was 40% done until the same title was requested again and the row was overwritten.
+   *
+   * This is the ONE place a `request` row is destroyed. Everything else in this file writes
+   * or amends one, which is why the quota can be derived from the log -- see
+   * `countRequestsSince`, whose count this deletion is what frees.
+   */
+  deleteRequest(tconst: string): void {
+    this.db.run("begin");
+    try {
+      this.db.run("delete from request where tconst = ?", [tconst]);
+      this.db.run("delete from request_diagnostic where tconst = ?", [tconst]);
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+  }
+
   listRequests(status?: RequestStatus, limit = 100): MediaRequest[] {
     return status
       ? (this.db
@@ -1448,9 +1476,9 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    * How many titles this user has asked for since `sinceIso`. The daily quota reads this.
    *
    * > [!IMPORTANT] The quota is DERIVED from the request log, and has no counter of its own
-   * > `request` already records who asked (`requested_by`) and when (`created_at`), no row
-   * > here is ever deleted, and the table is uniquely keyed on `tconst`. So counting rows
-   * > answers "how many titles has this person asked for today" exactly -- and a
+   * > `request` already records who asked (`requested_by`) and when (`created_at`), and the
+   * > table is uniquely keyed on `tconst`. So counting rows answers "how many titles has
+   * > this person asked for today" exactly -- and a
    * > `request_quota` table or a daily-count column on `user` would be a second copy of a
    * > fact that already has an owner, free to drift from the log an admin actually reads,
    * > and needing a nightly sweep nothing else in this schema has.
@@ -1458,6 +1486,11 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    * > It also makes the quota rule true by construction rather than by arithmetic: a series
    * > requested with three seasons is ONE row, and re-requesting something already queued
    * > upserts rather than inserting, so neither spends a second unit.
+   * >
+   * > **Being derived is also what makes WITHDRAWING refund the day's allowance**, with no
+   * > code here to do it: `deleteRequest` removes the row and this count drops by one on the
+   * > next read. A stored counter would have needed a decrement, in a second place, that
+   * > somebody had to remember to write.
    *
    * `created_at` is the FIRST ask and the conflict arm of `createRequest` deliberately does
    * not move it, so re-requesting a title first asked yesterday costs nothing today. That is

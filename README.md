@@ -273,6 +273,13 @@ season selection, and -- for a series Sonarr already holds -- a single episode, 
 the case the other two refuse. An admin can also override the quality profile and root
 folder for one request without touching the defaults.
 
+Changing your mind is a button too. Anything on your requests page that has not arrived yet
+carries Withdraw: it drops finderr's record of the ask, gives you back the daily quota row it
+spent, and tells Radarr or Sonarr to stop monitoring the title so nothing keeps searching for
+it. It deletes no movie, no series and no file, ever. A request that has already arrived
+offers no Withdraw at all, because at that point the only thing left to undo is the media
+itself and that belongs in the arr.
+
 With a Plex token, a title you already own gets a Play button that deep-links into the
 Plex app or web player, instead of a line of text saying you have it.
 
@@ -1019,6 +1026,7 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `POST` | `/api/requests/season` `{tconst, season}` | every aired episode of that season we hold no file for, including any Sonarr is already searching for. The server picks them off the mirror; the client never sends a list |
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
+| `DELETE` | `/api/requests/:tconst` | withdraw. The requester or an admin; anybody else gets the same `404 unknown request` a title nobody asked for gets, so the route cannot be used to find out who asked. Drops the row, refunds the day's quota and unmonitors in the arr -- only when the arr row was one WE added. Never deletes a movie, a series or a file, and refuses a request that has already arrived |
 | `POST` | `/api/webhook/arr` | public, and the only public route that CHANGES state. Radarr's and Sonarr's Webhook payloads; basic auth, and closed until a password is set. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |
 | `GET` | `/api/push/key` | whether push is on, and the VAPID public key to subscribe with |
 | `POST` | `/api/push/subscribe` | the browser's own `PushSubscription.toJSON()`, verbatim |
@@ -1083,8 +1091,10 @@ Every line here is a real limitation. It is not a roadmap.
   webhook, and no way to announce an arrival to a room. The lifecycle hooks an addon would
   need for that are designed and not built; [ADDONS.md](ADDONS.md) lists them and says
   plainly that they do not exist yet.
-- No request cancel or delete from the UI. A request that reached the arr is undone in
-  the arr.
+- Withdrawing a request never removes the media, and a request that has already arrived
+  cannot be withdrawn at all. Withdraw stops the search and forgets the ask; deleting the
+  film, the series or the file is still done in the arr, where you can see what you are
+  deleting.
 - A series already in Sonarr cannot be extended by the season. Season picking works when a
   series is first requested; asking again for a show the library mirror already knows
   answers `409 already in your library`, and the worker only ever calls *add*. Adding a

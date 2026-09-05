@@ -107,6 +107,7 @@ import {
   frontPageTitles,
   type ShelfTier,
 } from "./shelves";
+import { withdrawRequest } from "./withdraw-request";
 
 const cfg = loadConfig();
 const p = paths(cfg);
@@ -2626,6 +2627,40 @@ const appRoutes = {
   [ARR_WEBHOOK_PATH]: {
     POST: (req: Request) => arrWebhooks.handle(req),
     PUT: (req: Request) => arrWebhooks.handle(req),
+  },
+
+  /**
+   * Withdraw a request: stop the arr searching for it, and forget we ever asked.
+   *
+   * **DELETE rather than `POST .../withdraw`, and the reason is the same one that made
+   * `retry` POST-only.** A state-changing GET rides a `SameSite=Lax` cookie on any
+   * cross-site navigation, and the two verbs a foreign page can reach without script are
+   * exactly GET and POST -- a form posts, a link navigates, neither can issue a DELETE. So
+   * the verb that names the operation is also the one a cross-site page cannot forge, and
+   * declaring only `DELETE` here means nothing else is answered on this path.
+   *
+   * The whole rule -- who may, which statuses, and the unmonitor -- is
+   * `./withdraw-request.ts`. This is the mount: a principal in, a status code out.
+   *
+   * > [!NOTE] `/api/requests/seen`, `/episode` and `/season` are NOT shadowed by this
+   * > Measured against this Bun: a static path beats a parameter one, so their POSTs still
+   * > reach them. A `DELETE /api/requests/seen` does land here with `tconst: "seen"`, which
+   * > is a title nobody has requested and therefore an ordinary 404.
+   */
+  "/api/requests/:tconst": {
+    DELETE: async (req: Bun.BunRequest<"/api/requests/:tconst">) => {
+      const asker = auth.principal(req);
+      const outcome = await withdrawRequest({ store, radarr, sonarr, log }, req.params.tconst, {
+        userId: asker?.user?.id ?? null,
+        role: asker?.role ?? null,
+      });
+      if (!outcome.ok) return bad(outcome.error, outcome.status);
+      // The row is gone and "Recently requested" is built from those rows, so the held page
+      // is rebuilt now rather than up to 60 seconds from now -- the same reason, and the
+      // same call, as the POST above.
+      primeShelves("arr");
+      return json({ withdrawn: req.params.tconst, unmonitored: outcome.unmonitored });
+    },
   },
 
   "/api/requests/:tconst/retry": {
