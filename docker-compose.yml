@@ -84,6 +84,14 @@ services:
       # defaults to US, so pointing this at it would trim everybody to US availability.
       FINDERR_TMDB_WATCH_PROVIDER_REGIONS: ${TMDB_WATCH_PROVIDER_REGIONS:-}
 
+      # --- Language preference. OPTIONAL. EMPTY MEANS EVERY LANGUAGE, which is what
+      # every version before this did. ISO 639-1 codes, lower case.
+      #
+      # Filters BROWSE and the lists built on it; ranking and search are untouched. A
+      # page it empties says so and offers to lift it, and a title of unknown language is
+      # always admitted. NOT the same setting as FINDERR_REGIONS.
+      FINDERR_LANGUAGES: ${LANGUAGES:-}
+
       # --- Plex. OPTIONAL, same `:-` rule as TMDB: without it every title's `plex`
       # field is null and the page loses its Play button, nothing else.
       #
