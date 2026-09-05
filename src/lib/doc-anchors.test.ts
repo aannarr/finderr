@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anchorLinks, headingSlugs, slugifyHeading, unresolvedAnchors } from "./doc-anchors";
+import { anchorLinks, documentLinks, headingSlugs, slugifyHeading, unresolvedAnchors } from "./doc-anchors";
 import { readTrackedMarkdown } from "./tracked-markdown";
 
 /**
@@ -58,6 +58,35 @@ describe("headingSlugs", () => {
   test("a heading whose title merely contains an earlier one is not a duplicate", () => {
     const md = "## Why\n## Why this is not a bypass\n";
     expect(headingSlugs(md)).toEqual(["why", "why-this-is-not-a-bypass"]);
+  });
+});
+
+describe("documentLinks", () => {
+  test("splits a target into the path and the fragment, either of which may be absent", () => {
+    expect(documentLinks("[a](TUNING.md#speed)").map(({ path, anchor }) => [path, anchor])).toEqual([
+      ["TUNING.md", "#speed"],
+    ]);
+    expect(documentLinks("[a](guides/x.md)").map(({ path, anchor }) => [path, anchor])).toEqual([
+      ["guides/x.md", ""],
+    ]);
+    expect(documentLinks("[a](#speed)").map(({ path, anchor }) => [path, anchor])).toEqual([["", "#speed"]]);
+  });
+
+  test("keeps a path's case and lowercases a fragment, the way GitHub compares them", () => {
+    expect(documentLinks("[a](ADDONS.md#Why)").map(({ path, anchor }) => [path, anchor])).toEqual([
+      ["ADDONS.md", "#why"],
+    ]);
+  });
+
+  test("finds a link carrying a title, which would otherwise be silently skipped", () => {
+    expect(documentLinks(`[a](TUNING.md "the ladder")`).map((l) => l.path)).toEqual(["TUNING.md"]);
+    expect(documentLinks(`[a]: TUNING.md "the ladder"`).map((l) => l.path)).toEqual(["TUNING.md"]);
+  });
+
+  test("finds an image, which is a link to a file a reader can 404 on", () => {
+    expect(documentLinks("![a poster](web/public/poster.png)").map((l) => l.path)).toEqual([
+      "web/public/poster.png",
+    ]);
   });
 });
 
