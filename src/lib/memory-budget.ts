@@ -24,9 +24,9 @@
  *   turning it off won.
  * - **`cache`**: SMALL. 32 MB measured equal-or-better than 256 MB on both machines, and 256 MB is
  *   17% of a 1.5 GB budget spent duplicating pages the mmap already maps.
- * - **`prefault`**: worth **205x** cold when the budget can hold the file, and actively wasteful
- *   when it cannot -- reading 1.9 GB into a 512 MB cgroup evicts as it goes and ends with an
- *   arbitrary last-512-MB resident. So it is a decision, not a constant.
+ * - **`prefault`**: worth up to **32x** on a container's first queries, and it keeps paying LONG
+ *   past the point where the index stops fitting -- see `PREFAULT_MIN_RETENTION` below, which is
+ *   the one number in this file that a ladder had to be run to find.
  */
 
 import { readFileSync } from "node:fs";
@@ -204,19 +204,42 @@ export interface StorageTuning {
 }
 
 /**
- * How much of the budget the index may occupy before a full prefault stops being a good idea.
+ * How much of the index must survive the prefault for the prefault to be worth doing.
  *
- * The process needs headroom for the JS heap, the app database, the poster cache and the
- * request path -- measured at ~75 MB RSS on the live deployment, but a spike during a facet warm
- * is larger. Prefaulting right up to the ceiling means the last pages read evict the first ones,
- * so the read completes, reports success, and leaves an arbitrary subset resident.
+ * > [!CAUTION] THIS REPLACES A RULE THAT WAS WRONG IN THE DIRECTION NOBODY CHECKED
+ * > It was `indexMb <= budgetMb * 0.75` -- "only prefault if the index fits with headroom" --
+ * > which demanded a budget **1.33x the index**. It was a guess, it was never measured, and the
+ * > ladder refuted it at exactly the case it was written for: at a 1500 MB budget against an
+ * > 1,868 MB index (**125% of the budget**, so plainly not fitting) the prefault was still worth
+ * > **16x** on a container's first queries. The old rule would have switched it off there.
+ * >
+ * > The mistake was treating "fits" as the question. A prefault of a file larger than the budget
+ * > does not fail -- it fills the budget to the brim and the queries land on whatever survived.
+ * > Partial residency is worth almost as much as full residency, right up until it abruptly is
+ * > not.
  *
- * 0.75 is a judgement, not a measurement, and it is deliberately conservative: the cost of
- * prefaulting when it does not fit is wasted I/O and a misleading log line, while the cost of
- * NOT prefaulting when it would have fitted is bounded and visible. `FINDERR_INDEX_PREFAULT`
- * overrides it in either direction.
+ * ## The measurement
+ *
+ * One clone, one prefault, then all 29 render-path queries once in order -- the shape a
+ * container's first seconds actually have. Nine-disk RAID5 array, 1,868 MB index, and the same
+ * crossover reproduced on NVMe at the same ratios:
+ *
+ * | budget | index/budget | resident after the prefault | first-touch, prefault on | prefault off |
+ * |---|---|---|---|---|
+ * | 3072 MB | 61% | 99% | 224 ms | 7,195 ms |
+ * | 1500 MB | 125% | **79%** | **480 ms** | 7,858 ms |
+ * | 1024 MB | 182% | **54%** | 7,865 ms | 7,573 ms |
+ *
+ * So the threshold is on RETENTION, not on fit, and it sits between 54% and 79%. **0.7 is chosen
+ * inside that band and deliberately toward the low end**, because the two errors are wildly
+ * asymmetric: prefaulting when it will not pay wastes one background sequential read that no
+ * user waits on, while NOT prefaulting when it would have paid costs 16x on every first query a
+ * real person makes. Err toward reading.
+ *
+ * Retention is approximated as `budget / index` -- what fraction of the file the budget can hold
+ * at all. That is what the cgroup measured at every rung, to within the process's own ~25 MB.
  */
-const PREFAULT_BUDGET_FRACTION = 0.75;
+const PREFAULT_MIN_RETENTION = 0.7;
 
 /** Clamp bounds for the pager cache. Below 8 MB SQLite thrashes; above 256 MB nothing improved. */
 const CACHE_MIN_MB = 8;
@@ -273,31 +296,38 @@ export function resolveTuning(opts: {
   );
 
   /*
-    PREFAULT: only when the file can actually stay resident.
+    PREFAULT: whenever enough of the file will still be there afterwards.
 
-    This is the setting the whole file exists for. Reading 1.9 GB into a container that can hold
-    1.1 GB of it does not warm the cache, it churns it -- and the warm loop's own log line would
-    still say "1892 MB into the page cache", which is how the live deployment looked healthy
-    while serving half its index off the array.
+    NOT "whenever it fits". See `PREFAULT_MIN_RETENTION` -- an index at 125% of the budget still
+    retains 79% of itself and the prefault is still worth 16x there. The question is how much
+    survives, and the answer stops being useful well below 100%.
   */
-  const fits = indexMb === 0 || indexMb <= budget.mb * PREFAULT_BUDGET_FRACTION;
-  const prefault = opts.prefaultOverride ?? fits;
+  const retention = indexMb === 0 ? 1 : Math.min(1, budget.mb / indexMb);
+  const worthIt = retention >= PREFAULT_MIN_RETENTION;
+  const prefault = opts.prefaultOverride ?? worthIt;
+  const pct = (n: number): string => `${Math.round(n * 100)}%`;
   if (opts.prefaultOverride != null) {
     notes.push(`prefault ${prefault} (FINDERR_INDEX_PREFAULT)`);
-    if (prefault && !fits) {
+    if (prefault && !worthIt) {
       notes.push(
-        `  WARNING: prefault forced ON but the index (${indexMb} MB) exceeds ` +
-          `${Math.round(PREFAULT_BUDGET_FRACTION * 100)}% of the ${budget.mb} MB budget -- ` +
-          "it will read the whole file and evict most of it. Expect wasted I/O, not a warm cache.",
+        `  NOTE: prefault forced ON with a ${budget.mb} MB budget against a ${indexMb} MB index, ` +
+          `so about ${pct(retention)} of it can stay resident -- below the ${pct(PREFAULT_MIN_RETENTION)} ` +
+          "where reading it stopped paying for itself. It costs one full sequential read per boot " +
+          "and per index swap, and measured no faster than not doing it. Harmless, just not free.",
       );
     }
-  } else if (fits) {
-    notes.push(`prefault on (index fits the budget) -- worth ~205x on first reads from a slow disk`);
+  } else if (worthIt) {
+    notes.push(
+      `prefault on: ~${pct(retention)} of the index can stay resident -- worth up to 32x on the ` +
+        "first queries after a boot or an index swap",
+    );
   } else {
     notes.push(
-      `prefault OFF: the index (${indexMb} MB) does not fit ` +
-        `${Math.round(PREFAULT_BUDGET_FRACTION * 100)}% of the ${budget.mb} MB budget. ` +
-        "Reads will fault pages in on demand. Raise the container memory limit to restore it.",
+      `prefault OFF: a ${budget.mb} MB budget holds only ~${pct(retention)} of a ${indexMb} MB index, ` +
+        `below the ${pct(PREFAULT_MIN_RETENTION)} where reading it whole stops paying for itself. ` +
+        "Pages fault in on demand instead; the steady state is unaffected and the first minute " +
+        "after a restart is slower. Raise the memory limit to restore it, or force it with " +
+        "FINDERR_INDEX_PREFAULT=true to spend the I/O anyway.",
     );
   }
 

@@ -66,8 +66,8 @@ the careful settings.
 | `journal_mode` | off during the build, none needed after | `wal` |
 | `synchronous` | `off` during the build | `normal` |
 | `temp_store` | `memory` for reads, `file` for the build | default |
-| `cache_size` | 256 MB | default |
-| `mmap_size` | 2 GB, larger than the file itself | default |
+| `cache_size` | derived from the memory budget | default |
+| `mmap_size` | derived: the index's size, capped at the budget | default |
 | `query_only` | on | off, obviously |
 | Foreign keys | nothing declares one | on |
 | If you lose it | rebuild it from IMDb overnight | that was the only copy |
@@ -75,6 +75,17 @@ the careful settings.
 The mistake worth avoiding is treating them as one kind of thing. A read-only file that is
 replaced wholesale every night wants pragmas that would be irresponsible on the file holding
 somebody's account.
+
+Those two derived rows used to be constants -- 256 MB and 2 GB -- and they were sized against
+what the machine had rather than against what the container was allowed. Nothing in SQLite or
+Bun reads a cgroup limit, so an instance capped below the size of its own index was quietly
+told to map more memory than it had. finderr reads the limit itself now and sizes both to it.
+
+### How little memory can it have?
+
+Less than you would guess. The queries touch about 500 MB of a 1.9 GB index, so **1 GB is
+comfortable and 512 MB works**, and neither the disk nor the core count is what decides it.
+[TUNING.md](TUNING.md) has the ladder that measured it and the settings for each budget.
 
 ### Disk and build time are cheap. Latency is not.
 

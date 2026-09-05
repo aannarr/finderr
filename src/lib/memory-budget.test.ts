@@ -45,27 +45,36 @@ describe("resolveTuning", () => {
     expect(t.notes.join(" ")).toContain("prefault on");
   });
 
-  test("REFUSES to prefault an index larger than the budget, and says why", () => {
-    // The live-deployment shape: a 1.5 GB cap against an ~1.9 GB index. Reading the whole file
-    // there does not warm the cache, it churns it -- and the warm loop would still report
-    // success, which is how the deployment looked healthy while serving half its index off disk.
-    const t = resolveTuning({ budget: budget(1500), indexBytes: 1892 * MB });
-    expect(t.prefault).toBe(false);
-    expect(t.notes.join(" ")).toContain("prefault OFF");
-    expect(t.notes.join(" ")).toContain("1892 MB");
-  });
-
-  test("the boundary is a fraction of the budget, not the whole of it", () => {
-    // Headroom matters: prefaulting right up to the ceiling means the last pages read evict the
-    // first, so the read completes, reports success, and leaves an arbitrary subset resident.
-    expect(resolveTuning({ budget: budget(1000), indexBytes: 800 * MB }).prefault).toBe(false);
-    expect(resolveTuning({ budget: budget(1000), indexBytes: 700 * MB }).prefault).toBe(true);
-  });
-
-  test("a forced prefault is honoured but WARNS when it cannot fit", () => {
-    const t = resolveTuning({ budget: budget(512), indexBytes: 1892 * MB, prefaultOverride: true });
+  test("STILL prefaults an index larger than the budget -- measured worth 16x there", () => {
+    // The live-deployment shape: a 1500 MB cap against an ~1868 MB index, so the index is 125%
+    // of the budget and plainly does not fit. Measured on a spinning array, the prefault is
+    // still worth 16x on a container's first queries (480 ms against 7,858 ms) because 79% of
+    // the file stays resident. The rule that shipped here first turned it OFF in exactly this
+    // case, on the reasoning that it did not fit -- which was never the question.
+    const t = resolveTuning({ budget: budget(1500), indexBytes: 1868 * MB });
     expect(t.prefault).toBe(true);
-    expect(t.notes.join(" ")).toContain("WARNING");
+    expect(t.notes.join(" ")).toContain("prefault on");
+  });
+
+  test("gives up once too little of the index would survive to be worth the read", () => {
+    // Measured crossover: 79% retention still pays, 54% does not. The threshold sits between.
+    expect(resolveTuning({ budget: budget(1024), indexBytes: 1868 * MB }).prefault).toBe(false);
+    expect(resolveTuning({ budget: budget(1400), indexBytes: 1868 * MB }).prefault).toBe(true);
+  });
+
+  test("the boundary is on RETENTION, so a smaller index prefaults at a smaller budget", () => {
+    // The same budget answers differently depending on the file, which is the whole point of
+    // deriving it: 500 MB holds a 600 MB index well enough and a 1.9 GB one not at all.
+    expect(resolveTuning({ budget: budget(500), indexBytes: 600 * MB }).prefault).toBe(true);
+    expect(resolveTuning({ budget: budget(500), indexBytes: 1868 * MB }).prefault).toBe(false);
+  });
+
+  test("a forced prefault is honoured, and says it costs a read rather than that it is wrong", () => {
+    // It is not harmful -- it measured no slower than skipping it, just no faster. The note has
+    // to say that honestly, because "WARNING" invites somebody to go fix a non-problem.
+    const t = resolveTuning({ budget: budget(512), indexBytes: 1868 * MB, prefaultOverride: true });
+    expect(t.prefault).toBe(true);
+    expect(t.notes.join(" ")).toContain("sequential read");
   });
 
   test("prefault can be forced off on a machine where it would have fitted", () => {
