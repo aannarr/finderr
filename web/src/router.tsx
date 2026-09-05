@@ -11,7 +11,7 @@
  * search path stays on its synchronous client cache instead of a loader.
  */
 
-import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from "@tanstack/react-router";
 import {
   markWipeShown,
   noteOrdinaryNavigation,
@@ -222,6 +222,21 @@ const ceremonyRoute = createRoute({
   component: CeremonyRoute,
 });
 
+/**
+ * `/sources` -- who every fact on screen belongs to.
+ *
+ * THE ONE LAZY ROUTE, and the only one that should be. Every other view here is somewhere a
+ * reader goes on the way to a film, so a chunk boundary in front of it buys a spinner and
+ * saves nothing. This one is a credits page carrying its whole document inline (`?raw`), read
+ * once by anybody and never on the path to anything -- exactly the shape a separate chunk is
+ * for. It takes no params: there is no state to share, only a document.
+ */
+const sourcesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sources",
+  component: lazyRouteComponent(() => import("./routes/SourcesRoute"), "SourcesRoute"),
+});
+
 const routeTree = rootRoute.addChildren([
   searchRoute,
   browseRoute,
@@ -236,6 +251,7 @@ const routeTree = rootRoute.addChildren([
   logRoute,
   accountRoute,
   adminRoute,
+  sourcesRoute,
 ]);
 
 export const router = createRouter({
