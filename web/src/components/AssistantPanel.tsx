@@ -182,7 +182,7 @@ export function AssistantPanel({
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
         <h2 className="text-sm font-semibold tracking-tight">Assistant</h2>
-        {/* The one honest label for an admin-only preview that can spend money. */}
+        {/* The one honest label for a preview that can spend money. */}
         <InertChip label="beta" />
         <span className="ml-auto flex items-center gap-1">
           <Button
@@ -415,8 +415,8 @@ function Bubble({ message: m }: { message: StoredMessage }) {
         <AgentToolCalls calls={m.toolCalls} summary={toolCallSummary(m.toolCalls)} />
       )}
 
-      {/* What the turn cost, in the smallest type on the screen. It is here because an
-          admin-only beta with a daily budget is one somebody is watching the spend of. */}
+      {/* What the turn cost, in the smallest type on the screen. It is here because the
+          person spending against the daily budget is the one who should see it go. */}
       {m.usage && (
         <p className="text-[0.7rem] tabular-nums text-muted/70">
           {formatCost(m.usage.costUsd)} · {formatDuration(m.usage.ms)}

@@ -230,9 +230,8 @@ export interface AiGateInput {
    * Reads the day's spend from the ledger.
    *
    * A thunk rather than a number, because it is a database query and the cases that skip it
-   * -- no key, not an admin during the beta, an admin, no configured limit -- are the
-   * ordinary ones. Injecting it is also what lets every branch below be tested without a
-   * Store.
+   * -- no key, an admin, no configured limit -- are the ordinary ones. Injecting it is also
+   * what lets every branch below be tested without a Store.
    */
   spentToday: () => number;
   now?: Date;
@@ -242,8 +241,7 @@ export interface AiGateInput {
  * Whether this person may make one more model call today.
  *
  * The order is deliberate and it is cheapest-first as well as most-fundamental-first: an
- * unconfigured deployment and a non-admin during the beta are both answered without
- * touching the database.
+ * unconfigured deployment and an admin are both answered without touching the database.
  */
 export function aiGate(input: AiGateInput): AiGateVerdict {
   if (!input.configured) {
@@ -307,11 +305,12 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
 /**
  * The money half of the gate, on its own.
  *
- * Split out because during the admin-only beta `aiGate` can never reach it: the only people
- * who pass the role check are the people exempt from the cap. A rule that production cannot
- * execute is a rule that rots, so it is a function with its own tests rather than a branch
- * nothing runs -- and when the audience widens, widening is deleting one early return above
- * rather than writing this.
+ * It was split out while `aiGate` could not reach it -- during the admin-only beta the only
+ * people who passed the role check were the people exempt from the cap, and a rule that
+ * production cannot execute is a rule that rots. That paid off exactly as intended on
+ * 2026-09-05: widening the audience was deleting one early return above, and this function
+ * and its tests were already right. It stays a function of its own because the money rule
+ * has one owner and its own suite, which is what an ordinary account's bill now rests on.
  *
  * The check is `spent > limit`: landing exactly on the cap has not exceeded it.
  */

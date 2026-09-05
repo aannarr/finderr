@@ -8,7 +8,7 @@
  * > [!IMPORTANT] THE GATE IS ASKED BEFORE THE MODEL, THE LEDGER IS WRITTEN AFTER -- ALWAYS
  * > `aiGate` (`../lib/ai-spend.ts`) owns who may spend; `chargeRun` owns recording what was
  * > spent. Both are called here and neither rule is re-implemented, which is what stops the
- * > admin-only beta and the daily cap acquiring a second owner in the route table.
+ * > audience rule and the daily cap acquiring a second owner in the route table.
  * >
  * > EVERY outcome writes a ledger row, including a run that errored or hit its turn cap. A
  * > run that died on turn six still spent five turns of tokens, and a cap that only counts

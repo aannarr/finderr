@@ -649,10 +649,15 @@ export interface Config {
     /*
       THERE IS NO adminOnly KEY HERE, AND ITS ABSENCE IS THE POINT.
 
-      This is an admin-only beta and `aiGate` enforces that with no switch to widen it. A
-      config flag would put the whole household one env var away from a surface whose consent
-      mechanism -- the per-account opt-in -- is not built. The flag arrives WITH that opt-in
-      or not at all; see the comment on the `role` check in `./ai-spend.ts`.
+      The audience is every signed-in account wherever `openrouterApiKey` is set, and it is
+      not an env-var decision: `aiGate` in `./ai-spend.ts` is the single owner of that rule,
+      and the comment above its `role` check records both the instruction that widened it and
+      what was traded. A flag here would be a second owner, and the one that arrives on a
+      deploy where nobody read either file.
+
+      What the household is still owed is the per-account opt-in -- each person consenting to
+      their questions leaving the house -- and that is a UI and a column rather than a key in
+      this record.
     */
   };
 

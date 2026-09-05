@@ -49,7 +49,10 @@ describe("refusals", () => {
     expect(await refusalFrom(404, undefined)).toEqual({ kind: "absent" });
   });
 
-  test("403 is the admin-only beta, and keeps the server's own sentence", async () => {
+  // No server in this tree emits a 403 any more -- it meant "the beta is admin-only" until
+  // 2026-09-05. The kind survives for an older deploy or a proxy in front of us, so what this
+  // pins is that such a refusal still reaches the reader in the refuser's own words.
+  test("403 is forbidden, and keeps the refuser's own sentence", async () => {
     expect(await refusalFrom(403, { error: "beta_admin_only", message: "Admins only for now." })).toEqual({
       kind: "forbidden",
       message: "Admins only for now.",
