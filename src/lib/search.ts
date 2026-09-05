@@ -146,6 +146,54 @@ export function decadeOf(year: number): number {
  */
 const FUZZY_WINDOW = 300;
 
+/**
+ * What matching every word of the query is worth.
+ *
+ * Named because two branches of `rank()` read it: the coverage branch, and an exact match
+ * that has no votes to be judged on. An exact title match is a strictly stronger statement
+ * than "contains every query word", so the second must never be worth more than the first
+ * -- and it was, by nine points, which is half of what buried `tt7526136`.
+ */
+const FULL_COVERAGE_MATCH = 12;
+
+/**
+ * What an EXACT title match with NO VOTES AT ALL is credited with having.
+ *
+ * The same 1,000 the browse floor and the cast floor use, and the same meaning: the line
+ * above which a title is taken to have an audience at all.
+ *
+ * > [!IMPORTANT] ZERO VOTES IS THE ABSENCE OF A MEASUREMENT, NOT A LOW ONE
+ * > That boundary is the whole rule, and it is the same distinction `applyRank` draws when
+ * > it gives an unrated title NULL rather than the prior mean. A title that has not come
+ * > out yet has no votes BY CONSTRUCTION and nothing about it has been judged; a title with
+ * > 439 votes has been seen by 439 people, and that is a real if small signal that must not
+ * > be overwritten.
+ * >
+ * > **Extending this to any positive vote count breaks the `interstelar` canary case, and
+ * > it was measured rather than reasoned about.** Crediting the 439-vote "Interstelar"
+ * > (2014) takes it from 44.96 to 49.06 against the 2.6M-vote "Interstellar" at 48.67 --
+ * > a 0.39-point flip, and the suite goes 41/42. `exactPlausibility` exists precisely
+ * > because an obscure exact match is usually a typo of something famous; that argument is
+ * > sound at 439 votes and vacuous at none.
+ *
+ * It buys such a title ~11 points of the popularity term's 24.8-point span -- enough to
+ * clear a popular PARTIAL match, not enough to disturb the ordering AMONG exact matches,
+ * where votes still decide. Both halves are pinned in `search-exact.test.ts`.
+ */
+const UNVOTED_EXACT_MATCH_VOTES = 1_000;
+
+/**
+ * How plausible it is that a reader typing this exact title meant this exact title.
+ *
+ * An exact match on an obscure title is genuinely suspicious -- far more often a typo of
+ * something famous than a deliberate search for a 439-vote film, which is the "interstelar"
+ * case the canary pins. So the bonus is bought with votes, saturating at 50,000 where
+ * further evidence stops being informative.
+ */
+function exactPlausibility(votes: number): number {
+  return Math.min(1, Math.log(votes + 10) / Math.log(50_000));
+}
+
 export class SearchEngine {
   private db: Database;
 
@@ -636,19 +684,40 @@ export class SearchEngine {
       //
       // The year gate: an explicit year must be able to beat an exact title match,
       // or "The Matrix 2021" returns The Matrix (1999).
+      const exact = variants.includes(nq) && !(p.year && ys < 0);
+
+      /*
+        AN EXACT MATCH WITH NO VOTES IS JUDGED AS UNMEASURED, NOT AS UNPOPULAR.
+
+        One rule, one boundary, and it reaches BOTH the bonus here and the popularity term
+        below -- which is why it is computed once. Splitting it into two independently
+        tuned adjustments is how the first attempt at this fix broke `interstelar`.
+
+        The bug it exists for: `heart of the beast` put the film actually called that at
+        position 112. Zero votes drove the vote-scaled bonus to 2.98 -- below the flat 12
+        a title merely CONTAINING every query word gets -- and then cost another 11 points
+        of the popularity term on top. See `UNVOTED_EXACT_MATCH_VOTES`.
+      */
+      const unvotedExact = exact && r.votes === 0;
+      const popularityVotes = unvotedExact ? UNVOTED_EXACT_MATCH_VOTES : r.votes;
+
       let match: number;
       if (variants.includes(nq)) {
         // An exact match on an obscure title is SUSPICIOUS -- far more often a typo of
         // something famous than a deliberate search for a 439-vote film. Scale the
         // bonus by how plausible it is that anyone meant this title.
-        match = p.year && ys < 0 ? 0 : 14 * Math.min(1, Math.log(r.votes + 10) / Math.log(50_000));
+        //
+        // With no votes there is nothing to scale BY, so it is worth what full coverage
+        // is worth -- never less, since the whole title being the query strictly implies
+        // every query word appearing.
+        match = exact ? (unvotedExact ? FULL_COVERAGE_MATCH : 14 * exactPlausibility(r.votes)) : 0;
       } else if (variants.some((v) => v.startsWith(nq))) {
         match = 9;
       } else if (cov >= 0.999) {
         // Matching EVERY query word is qualitatively different from matching half of
         // them, and deserves more than a linear share. This is what lets "Nile City"
         // find NileCity 105.6 over the far more popular Sin City.
-        match = 12;
+        match = FULL_COVERAGE_MATCH;
       } else {
         match = 10 * cov;
       }
@@ -659,7 +728,11 @@ export class SearchEngine {
         // Popularity, saturating. The difference between 300k and 2.6M votes is not
         // informative -- both are famous -- but 439 vs 300k is decisive. Without the
         // cap, blockbusters bulldoze every correct-but-smaller match.
-        2.4 * Math.log(Math.min(r.votes, 300_000) + 10) +
+        //
+        // `popularityVotes`, not `r.votes`: this term's 24.8-point span would otherwise
+        // bury an unvoted exact match under any partial match with an audience, however
+        // the branch above is tuned. The two differ only where the rule above says so.
+        2.4 * Math.log(Math.min(popularityVotes, 300_000) + 10) +
         ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);
