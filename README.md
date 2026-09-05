@@ -910,6 +910,35 @@ Correctness and route are two separate scores. A model that gets there by a rout
 imagine is correct and inefficient, which is a real state worth reporting. It used to be
 scored as a failure, which was the benchmark lying about the thing it exists to measure.
 
+### Which model, and why that one
+
+The default is **`meta/muse-spark-1.3-contributor`**, and it is the recommendation rather than
+merely what shipped. Six advanced cases, 2026-09-05:
+
+| Model | Correct | Ideal route | Median | Per question | Per dollar |
+|---|---|---|---|---|---|
+| `meta/muse-spark-1.3-contributor` | **6/6** | 5/6 | 9.4s | **$0.0004** | ~2,400 |
+| `meta/muse-spark-1.3` | **6/6** | **6/6** | **8.2s** | $0.0111 | ~90 |
+| `z-ai/glm-5.3-flash` | 5/6 | 5/6 | 18.9s | $0.00085 | ~1,180 |
+
+It beat the model it replaced on accuracy, on latency and on price at the same time, which is
+rare enough to be worth stating: there was no trade-off to weigh. Full price buys the ROUTE and
+not the answer. The one case that separated the tiers was the Furious question, where the cheap
+tier reached the right answer through three cast and credit calls instead of asking for the
+join once.
+
+`-contributor` is a data-sharing tier and that is the whole of the discount: roughly 21x
+cheaper because the provider may train on what it receives. Here that is a user's question and
+index rows already published on the site; no credential is in reach, because the tools run in
+this process and the model only ever sees their results. If that is the wrong trade for your
+install, `FINDERR_AI_MODELS=meta/muse-spark-1.3` opts out at full price.
+
+One caveat about the older number, since it is easy to misread. `glm-5.3-flash` scored 5/6 here
+because it skipped the tools entirely on one case and answered from its weights. Re-run three
+times in isolation it passed every time. **That is a roughly one-in-four flake and not an
+inability** -- worth knowing if you are choosing between them, and worth not repeating as
+though the model cannot do it.
+
 ### The money, and who is allowed to spend it
 
 `ai_call` is one row per call: model, tokens, cost, outcome. The daily cap reads that table
@@ -917,14 +946,16 @@ rather than a running counter, because a counter is a second owner of a fact the
 holds and it drifts on any failure between the call and the increment. Every outcome writes a
 row, failures included, because a run that died on turn six still spent five turns of tokens.
 
-One conversation is bounded by its turn and tool-call limits, so on the default model the
-worst overshoot past the cap is about $0.003 against a $1 default. That is the only reason the
-check can be a plain "have you spent more than the limit" with no reservation machinery, and
-it is why the model list and the cap are one decision instead of two. Put a frontier model in
-that list and the same check leaks most of the budget.
+One conversation is bounded by its turn and tool-call limits, so the worst overshoot past the
+cap is about $0.003 against a $1 default -- measured on `glm-5.3-flash`, and the model that
+replaced it costs half as much per question, so the headroom got wider rather than narrower.
+That is the only reason the check can be a plain "have you spent more than the limit" with no
+reservation machinery, and it is why the model list and the cap are one decision instead of
+two. Put a frontier model in that list and the same check leaks most of the budget.
 
-It is an admin-only beta and there is deliberately no setting that widens it. A question
-typed in here goes to a third party, so what somebody searches for leaves the house. The
+It is an admin-only beta and there is deliberately no setting that widens it. A question typed
+in here goes to a third party, so what somebody searches for leaves the house -- and on the
+default model that third party may train on it, which is the discount being paid for. The
 honest handling is to say that at an opt-in and let each account decide, and that opt-in is
 not built. While the only people who can reach the feature are the admins who turned it on,
 there is nobody left to ask who has not already answered, which is what makes shipping without
