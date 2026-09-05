@@ -1897,7 +1897,7 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
   }
 
   /**
-   * TMDB id -> our tconst, for the ids given, out of `externalIds` rows we already hold.
+   * TMDB id -> every one of our tconsts carrying it, out of `externalIds` rows we hold.
    *
    * The FREE half of a crosswalk that would otherwise be a fan-out. Recommendations name
    * films by TMDB id and we index by IMDb; asking upstream for each one costs eleven calls
@@ -1905,14 +1905,26 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    * opened already stored its own `externalIds`, so the answer is frequently sitting in
    * this table, and coverage grows with use rather than with traffic.
    *
+   * CANDIDATES, PLURAL, AND THAT IS THE WHOLE POINT OF THE NAME. TMDB's movie ids and TV
+   * ids are two independent sequences that both start at 1 and collide freely, and both are
+   * written into the one `tmdb` key -- `radarr.ts` puts a movie id there, `skyhook.ts` a TV
+   * id. So a bare number can name two of our titles at once, and this table has no column
+   * saying which space either row is in. Returning ONE of them was a silent mis-link: a
+   * film's "more like this" drew Game of Thrones because TV 1399 was the row the unordered
+   * scan happened to visit last.
+   *
+   * The kind that separates them lives in the INDEX, which is a different database, so it
+   * cannot be joined here. The caller holds both and picks: see `relatedTconsts` in
+   * `src/server/related-crosswalk.ts`.
+   *
    * An id we have never seen simply is not in the result -- the caller drops it, which is
    * the same rule that already governs a collection member we do not index.
    *
    * `entity_id` is the tconst, so the mapping needs no join: the row's own key IS the
    * answer, and the payload only has to confirm which TMDB id it belongs to.
    */
-  tconstsByTmdbId(tmdbIds: readonly number[]): Map<number, string> {
-    const out = new Map<number, string>();
+  tconstCandidatesByTmdbId(tmdbIds: readonly number[]): Map<number, string[]> {
+    const out = new Map<number, string[]>();
     if (tmdbIds.length === 0) return out;
 
     const wanted = new Set(tmdbIds);
@@ -1925,7 +1937,11 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     for (const row of rows) {
       try {
         const ids = JSON.parse(row.data) as { tmdb?: number | null };
-        if (typeof ids.tmdb === "number" && wanted.has(ids.tmdb)) out.set(ids.tmdb, row.entity_id);
+        if (typeof ids.tmdb !== "number" || !wanted.has(ids.tmdb)) continue;
+        const seen = out.get(ids.tmdb);
+        // One title can hold rows from several plugins, all naming the same id.
+        if (!seen) out.set(ids.tmdb, [row.entity_id]);
+        else if (!seen.includes(row.entity_id)) seen.push(row.entity_id);
       } catch {
         // A malformed contribution is one missing crosswalk, never a failed page.
       }
