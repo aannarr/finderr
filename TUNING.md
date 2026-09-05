@@ -150,9 +150,19 @@ random ones. There is no measured configuration in which disabling it won.
 reckless.** `mmap_size` is address space, not memory: the kernel charges a page when something
 faults it in, not when it is mapped, and it charges the same either way. Mapping 1.9 GB inside a
 512 MB container just means at most 512 MB of it is resident at a time -- which was true anyway.
-Setting `mmap_size` *below* the file size is the harmful option, because SQLite then reads
-everything past the limit the slow way. If you are tempted to shrink it to "fit", don't: shrink
-`FINDERR_SQLITE_CACHE_MB` instead, which is real memory.
+
+Shrinking it to "fit" the memory limit is the harmful option, and it is harmful by a lot. Measured
+at a 1 GB budget on the spinning array, moving nothing but this setting:
+
+| `mmap_size` | first pass over the app | read from disk |
+|---|---|---|
+| 1 GB (matched to the memory limit) | **29,458 ms** | 555 MB |
+| 1.9 GB (the whole index) | **12,198 ms** | 746 MB |
+
+The matched-to-the-limit version reads **26% less and is 2.4x slower**, because past the limit
+SQLite fetches the minimum at random instead of letting the mapping pull bulk windows off a disk
+that is far better at bulk than at random. If you want to give finderr less memory, shrink
+`FINDERR_SQLITE_CACHE_MB` -- that one is real memory. Leave the map alone.
 
 ---
 
