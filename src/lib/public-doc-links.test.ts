@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readTrackedMarkdown } from "./tracked-markdown";
+import { PRIVATE_DIR_PATTERN, readTrackedMarkdown } from "./tracked-markdown";
 
 /**
  * Tracked markdown may not LINK into a gitignored directory.
@@ -14,17 +14,20 @@ import { readTrackedMarkdown } from "./tracked-markdown";
  * reader with the repo checked out can open, and there is nothing to click and 404 on.
  * Only the clickable forms are checked -- inline links, reference definitions, and raw
  * HTML attributes.
+ *
+ * THIS FILE OWNS THE PRIVATE-DIRECTORY LINK, and `doc-links.ts` skips it for that reason:
+ * such a link is also a path that is not tracked, and two red tests naming one defect train
+ * a reader to skim both. The directory names themselves live in `tracked-markdown.ts`, so
+ * that "which directories are private" has one answer.
  */
-
-const PRIVATE_DIR = String.raw`\.(?:rclaude|claude)\/`;
 
 const LINK_FORMS = [
   // [text](.claude/x.md) and [text](<.claude/x.md>), with an optional ./ or ../ prefix
-  new RegExp(String.raw`\]\(\s*<?[.\/]*${PRIVATE_DIR}`),
+  new RegExp(String.raw`\]\(\s*<?[.\/]*${PRIVATE_DIR_PATTERN}`),
   // [label]: .claude/x.md
-  new RegExp(String.raw`^\s*\[[^\]]+\]:\s*<?[.\/]*${PRIVATE_DIR}`),
+  new RegExp(String.raw`^\s*\[[^\]]+\]:\s*<?[.\/]*${PRIVATE_DIR_PATTERN}`),
   // <a href=".claude/x.md">, <img src="...">
-  new RegExp(String.raw`(?:href|src)=["']?[.\/]*${PRIVATE_DIR}`),
+  new RegExp(String.raw`(?:href|src)=["']?[.\/]*${PRIVATE_DIR_PATTERN}`),
 ];
 
 /** Every line of `text` that links into a gitignored directory, numbered from 1. */

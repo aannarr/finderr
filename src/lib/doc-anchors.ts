@@ -1,11 +1,18 @@
 /**
- * Intra-document anchor links, and whether they land on a heading that exists.
+ * WHERE A MARKDOWN LINK POINTS -- the one extractor every doc hygiene check reads links
+ * through -- plus whether an intra-document anchor lands on a heading that exists.
  *
  * `README.md` is the public face of a public repo, read by a stranger with no other source,
  * and the other gates are structurally blind to it: a link to a heading somebody renamed two
  * commits ago typechecks, lints and passes the whole suite. This module is the floor under
  * that -- it catches the RENAMED HEADING, the failure that arrives on its own as a file is
  * edited.
+ *
+ * Extraction lives here and only here. Every one of these checks has to be right about a
+ * `#` or a `](` inside a fenced block, and `proseLines` is the single answer to "where does
+ * a fence start and end" -- a second copy of that walker would get a fix this one did not.
+ * `src/lib/doc-links.ts` resolves the FILE half of a link against the tree and reuses
+ * `documentLinks` and `headingSlugs` to do it.
  *
  * It does NOT catch a link that resolves and still promises something its target does not
  * say (`See [Why](#why) for who may make one`, where `## Why` is about Seerr being slow).
@@ -16,8 +23,13 @@
  * these documents are actually read.
  */
 
-/** One anchor link, with the source line it was found on (1-based) and that line's text. */
-export type DocAnchor = { line: number; anchor: string; text: string };
+/**
+ * One link, split into the halves that are checked separately: the `path` a reader would
+ * navigate to (empty for a bare fragment, and left case-sensitive because targets are), and
+ * the `anchor` within it (empty when there is none, `#lowercased` when there is). `line` is
+ * 1-based and `text` is the source line, so a failure can name where to look.
+ */
+export type DocLink = { line: number; path: string; anchor: string; text: string };
 
 /** One line of a document, 1-based, as `proseLines` hands it on. */
 type SourceLine = { line: number; text: string };
@@ -89,33 +101,60 @@ export function headingSlugs(markdown: string): string[] {
   return slugs;
 }
 
-// `](#frag)` and `](<#frag>)`, plus the reference definition form `[label]: #frag`.
-const ANCHOR_LINK = /\]\(\s*<?(#[^)>\s]+)>?\s*\)/g;
-const ANCHOR_DEFINITION = /^\s*\[[^\]]+\]:\s*<?(#\S+?)>?\s*$/;
+// `](target)` and `](<target>)`, either with an optional `"title"`, plus the reference
+// definition form `[label]: target`. One pair for every link, whatever it points at:
+// a second pattern for the file-carrying forms would be a second answer to the same question.
+const INLINE_LINK = /\]\(\s*<?([^)>\s]+)>?(?:\s+"[^"]*")?\s*\)/g;
+const LINK_DEFINITION = /^\s*\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+"[^"]*")?\s*$/;
 
-/** Every intra-document anchor link, decoded, in document order. */
-export function anchorLinks(markdown: string): DocAnchor[] {
-  const links: DocAnchor[] = [];
+/** Every link in `markdown`, outside fenced blocks, decoded, in document order. */
+export function documentLinks(markdown: string): DocLink[] {
+  const links: DocLink[] = [];
   for (const { line, text } of proseLines(markdown)) {
-    for (const [, anchor] of text.matchAll(ANCHOR_LINK))
-      links.push({ line, anchor: decodeAnchor(anchor), text });
-    const defined = text.match(ANCHOR_DEFINITION)?.[1];
-    if (defined) links.push({ line, anchor: decodeAnchor(defined), text });
+    for (const [, target] of text.matchAll(INLINE_LINK)) links.push({ line, ...splitTarget(target), text });
+    const defined = text.match(LINK_DEFINITION)?.[1];
+    if (defined) links.push({ line, ...splitTarget(defined), text });
   }
   return links;
 }
 
-/** `#caf%C3%A9` and `#café` are the same target; compare them decoded. */
-function decodeAnchor(anchor: string): string {
+/**
+ * `path#anchor` into its halves. Percent escapes are decoded on both -- `#caf%C3%A9` and
+ * `#café` are the same target -- but only the anchor is lowercased: GitHub's fragments are
+ * case-insensitive and its paths are not.
+ */
+function splitTarget(target: string): { path: string; anchor: string } {
+  const hash = target.indexOf("#");
+  if (hash < 0) return { path: decodePercent(target), anchor: "" };
+  return {
+    path: decodePercent(target.slice(0, hash)),
+    anchor: decodePercent(target.slice(hash)).toLowerCase(),
+  };
+}
+
+function decodePercent(target: string): string {
   try {
-    return decodeURIComponent(anchor).toLowerCase();
+    return decodeURIComponent(target);
   } catch {
-    return anchor.toLowerCase();
+    return target;
   }
 }
 
+/** Every intra-document anchor link: a bare `#fragment`, pointing at this file's own headings. */
+export function anchorLinks(markdown: string): DocLink[] {
+  return documentLinks(markdown).filter(({ path, anchor }) => path === "" && anchor !== "");
+}
+
+/**
+ * Every fragment a link may legally target in `markdown`, in the `#slug` form a `DocLink`
+ * carries -- so a caller compares targets rather than re-deriving the `#`.
+ */
+export function headingTargets(markdown: string): Set<string> {
+  return new Set(headingSlugs(markdown).map((slug) => `#${slug}`));
+}
+
 /** The anchor links in `markdown` that no heading in it answers. */
-export function unresolvedAnchors(markdown: string): DocAnchor[] {
-  const targets = new Set(headingSlugs(markdown).map((slug) => `#${slug}`));
+export function unresolvedAnchors(markdown: string): DocLink[] {
+  const targets = headingTargets(markdown);
   return anchorLinks(markdown).filter(({ anchor }) => !targets.has(anchor));
 }
