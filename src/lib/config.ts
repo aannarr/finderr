@@ -573,12 +573,29 @@ export interface Config {
      * > [!IMPORTANT] This list and `dailyLimitUsd` are ONE decision, not two
      * > The cap is the naive `if (spent > limit) refuse`, with no reservation machinery, and
      * > that is only correct because the worst overshoot is one conversation. Measured
-     * > 2026-09-04: one conversation costs ~$0.003 on the default model, which is 0.3% of a
-     * > $1 cap. On `anthropic/claude-fable-5.1` it is ~90%. Adding an expensive model here
+     * > 2026-09-04: one conversation costs ~$0.003 on `z-ai/glm-5.3-flash`, which is 0.3% of
+     * > a $1 cap. On `anthropic/claude-fable-5.1` it is ~90%. Adding an expensive model here
      * > without re-checking that number quietly turns the cap into a suggestion.
      *
-     * The default is `z-ai/glm-5.3-flash`: 5/5 on the advanced tier, $0.0006 a question,
-     * and 84% of its prompt tokens served from provider-side cache.
+     * The default is `meta/muse-spark-1.3-contributor`, chosen by aannarr 2026-09-05. On the
+     * six-case advanced tier that day it graded **6/6 correct** at **$0.0004 a question**,
+     * median 9.4s, with 88% of its prompt tokens served from provider-side cache -- against
+     * `z-ai/glm-5.3-flash` at 5/6, $0.00085 and 18.9s. It is the rare swap that is better and
+     * cheaper at once, so the headroom the naive cap depends on got wider rather than
+     * narrower. (The ~$0.003 figure above is per CONVERSATION and was measured on glm; only
+     * the per-question cost has been re-measured, and it went down.)
+     *
+     * > [!IMPORTANT] `-contributor` IS A DATA-SHARING TIER, AND THAT IS THE WHOLE PRICE
+     * > It is ~21x cheaper than plain `meta/muse-spark-1.3` because Meta may train on the
+     * > prompts and completions sent through it. What travels is a user's question, this
+     * > server's tool surface, and index rows we already publish -- no credential, since the
+     * > arr and Plex keys never reach the agent. aannarr accepted that on 2026-09-05 for a
+     * > household movie-search assistant, in those terms. **An operator who does not want it
+     * > sets `FINDERR_AI_MODELS=meta/muse-spark-1.3`** and pays $0.0111 a question instead
+     * > (6/6 and 6/6 on route in the same run, median 8.2s) -- still ~1% of a $1 cap.
+     *
+     * Only `models[0]` is ever used (`src/server/agent-chat.ts`). The rest of the list is
+     * documentation for whoever benchmarks next, not a fallback chain -- nothing fails over.
      */
     models: string[];
     /**
@@ -848,7 +865,7 @@ const DEFAULTS: Config = {
   searchLog: { enabled: true, keepRows: 50_000 },
   // No key by default, so a checkout of this repo has no assistant and says nothing about
   // it. $1/day and admins-only are aannarr's calls of 2026-09-04; see the fields.
-  ai: { models: ["z-ai/glm-5.3-flash"], dailyLimitUsd: 1 },
+  ai: { models: ["meta/muse-spark-1.3-contributor"], dailyLimitUsd: 1 },
   // 0 = unlimited, which is what every version before the quota existed did. An operator
   // opts in; nobody wakes up to a limit they did not choose.
   requests: { quotaPerDay: 0 },
