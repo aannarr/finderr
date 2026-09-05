@@ -25,7 +25,7 @@ import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import { type EpisodeState, missingEpisodeIdsIn, seasonsWithMissing, todayUtc } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
-import { entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
+import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
@@ -98,6 +98,7 @@ import {
   PreviewResolver,
 } from "./preview-resolver";
 import { PushNotifier } from "./push";
+import { relatedTconsts } from "./related-crosswalk";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
@@ -1085,7 +1086,8 @@ function creditsIn(resolvedFacets: ResolvedFacets): PersonCredit[] {
  *
  * The second half of the `person_image` edge: the title route files a face under an
  * nconst, and this is the only thing that reads it. ONE batched local SQLite read for the
- * whole row -- the same shape and the same reason as `tconstsByTmdbId` in `relatedRows`.
+ * whole row -- the same shape and the same reason as `tconstCandidatesByTmdbId` in
+ * `relatedRows`.
  *
  * `null` is the ordinary case rather than a gap, and the tile draws initials for it exactly
  * as it always did: coverage grows with the titles people actually open, so a person whose
@@ -1111,19 +1113,22 @@ function withFaces(hits: PersonHit[] | null): (PersonHit & { image: string | nul
  *
  * A recommendation whose tconst never resolved, or which we simply do not index, yields
  * nothing. That is what keeps the row honest: every card in it is a real destination.
+ *
+ * The crosswalk from a recommendation's TMDB id to ours is done HERE, against `externalIds`
+ * rows we already hold, precisely so it costs no upstream call: asking the proxy per
+ * recommendation is eleven calls for one film view, which is the sweep the one-click-deep
+ * rule forbids. Coverage grows as titles are opened. `kind` is what tells it WHICH TMDB id
+ * space the recommendations are in -- see `./related-crosswalk`.
  */
-function relatedRows(resolvedFacets: ResolvedFacets): TitleRow[] {
+function relatedRows(resolvedFacets: ResolvedFacets, kind: EntityKind): TitleRow[] {
   const resolved = resolvedFacets.related;
   if (resolved?.status !== "ready" || !resolved.data) return [];
 
-  // Recommendations name films by TMDB id and we index by IMDb. The crosswalk is done
-  // HERE, against `externalIds` rows we already hold, precisely so it costs no upstream
-  // call: asking the proxy per recommendation is eleven calls for one film view, which is
-  // the sweep the one-click-deep rule forbids. Coverage grows as titles are opened.
-  const needed = resolved.data.flatMap((r) => (!r.tconst && r.tmdbId ? [r.tmdbId] : []));
-  const known = store.tconstsByTmdbId(needed);
-
-  return rowsFor(resolved.data.map((r) => ({ tconst: r.tconst ?? known.get(r.tmdbId ?? -1) ?? null })));
+  const tconsts = relatedTconsts(resolved.data, kind, {
+    candidatesFor: (ids) => store.tconstCandidatesByTmdbId(ids),
+    titleTypeOf: (tconst) => live.current.byTconst(tconst)?.kind ?? null,
+  });
+  return rowsFor(tconsts.map((tconst) => ({ tconst })));
 }
 
 /**
@@ -1764,7 +1769,7 @@ const appRoutes = {
           */
         collectionTitles: decorate(collectionRows(cached)),
         /** "More like this", as our rows. Same reasoning as `collectionTitles`. */
-        relatedTitles: decorate(relatedRows(cached)),
+        relatedTitles: decorate(relatedRows(cached, entity.kind)),
         /*
             Plugin-authored panes, RENDERED HERE rather than in the browser.
 
