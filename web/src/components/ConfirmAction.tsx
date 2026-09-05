@@ -61,13 +61,20 @@ export function ConfirmAction({
     setError(null);
     try {
       await onConfirm();
-      // Deliberately does NOT clear `asking` on success: the caller usually navigates away
-      // or reloads the thing this acted on, and clearing it would flash the resting verb
-      // back for one frame first.
     } catch (e) {
       setError((e as Error).message);
-      setAsking(false);
     } finally {
+      /*
+        BACK TO THE RESTING VERB EITHER WAY, and on SUCCESS it is not cosmetic.
+
+        Several of these controls flip their label once the work lands -- "Disable this
+        account" becomes "Enable this account". Left in the asking state, the button that
+        was under the cursor a moment ago now reads "Yes, enable": a primed confirmation for
+        the OPPOSITE action, one click from undoing what just happened, with nothing asking
+        first. That is the unconfirmed click these controls exist to remove, reintroduced by
+        the control itself. Measured in a browser, 2026-09-06.
+      */
+      setAsking(false);
       setBusy(false);
     }
   };
