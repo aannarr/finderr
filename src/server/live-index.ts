@@ -61,6 +61,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { runCanaryOn } from "../lib/canary";
 import type { Config } from "../lib/config";
+import { readMemoryUsage, type StorageTuning } from "../lib/memory-budget";
 import { SearchEngine } from "../lib/search";
 
 /**
@@ -216,21 +217,60 @@ export class LiveIndex {
     this.log = opts.log ?? (() => {});
     this.floor = opts.floor ?? 0.9;
     this.recover = opts.recover;
-    this.prefault = opts.prefault ?? true;
+    this.prefault = opts.prefault ?? null;
     if (opts.allowMissing && !existsSync(this.path)) {
       this.engine = null;
     } else {
       this.engine = new SearchEngine(this.path, this.cfg);
       this.engine.prepareFuzzy((m) => this.log(m));
+      // Say what was derived, ONCE, at the point it takes effect. The failure this replaces
+      // was silent by construction: a container told to map 2 GB inside a 1.5 GB cgroup
+      // logged nothing at all, and the only symptom was queries reading a disk nobody
+      // thought they were touching.
+      for (const note of this.engine.tuning.notes) this.log(`index tuning: ${note}`);
       this.warmPageCache();
     }
   }
 
-  /** Whether to pull the index into the OS page cache after opening it. */
-  private readonly prefault: boolean;
+  /**
+   * Force the prefault on or off, or `null` to follow the engine's own derivation.
+   *
+   * `null` rather than `true`, because the answer now comes from `resolveTuning` over the
+   * real memory budget and the real file size -- and the holder must not be a second opinion
+   * about it. A test passes `false` to keep a fixture index off the page-cache read.
+   */
+  private readonly prefault: boolean | null;
+
+  /** Whether to prefault right now: an explicit override, else the open engine's tuning. */
+  private shouldPrefault(): boolean {
+    return this.prefault ?? this.engine?.tuning.prefault ?? false;
+  }
 
   /** The prefault in flight, so a swap during one does not start a second. */
   private warming: Promise<void> | null = null;
+
+  /**
+   * What the last prefault DID, for `/api/health`.
+   *
+   * The prefault is worth up to 32x on first reads from a spinning array and, until this
+   * shipped, nothing outside a log line said whether it had run -- so a container serving
+   * every query off the disk looked identical to a healthy one. `null` means it has not
+   * completed (or was never going to), which is itself the thing worth alerting on.
+   */
+  private lastWarm: { readMb: number; ms: number; residentMb: number | null } | null = null;
+
+  /** The prefault's own report, and the settings it ran under. Both `null` before an engine. */
+  warmStatus(): {
+    prefault: boolean;
+    last: { readMb: number; ms: number; residentMb: number | null } | null;
+    tuning: StorageTuning | null;
+  } {
+    return {
+      prefault: this.shouldPrefault(),
+      last: this.lastWarm,
+      tuning: this.engine?.tuning ?? null,
+    };
+  }
 
   /**
    * Read the index file end to end, so the OS page cache holds it before a reader arrives.
@@ -260,7 +300,7 @@ export class LiveIndex {
    * of the file, which is noise next to the seeks it removes.
    */
   private warmPageCache(): void {
-    if (!this.prefault || this.warming) return;
+    if (!this.shouldPrefault() || this.warming) return;
     const path = this.path;
     const t0 = Date.now();
     this.warming = (async () => {
@@ -280,9 +320,22 @@ export class LiveIndex {
         this.warming = null;
       }
       const ms = Date.now() - t0;
+      /*
+        REPORT WHAT STAYED, NOT WHAT WAS READ, because under a memory cap they are different
+        numbers and the difference is invisible from inside the process.
+
+        This line used to say "1892 MB into the page cache" unconditionally. On the live
+        deployment -- a 1.5 GB cgroup serving an 1,892 MB index -- roughly a fifth of that had
+        already been reclaimed by the time the line was written, and the log was the only place
+        anybody would have looked. Reading the cgroup back turns a claim into a measurement.
+        Where there is no cgroup to read, it says only what it did.
+      */
+      const resident = readMemoryUsage().cacheMb;
+      this.lastWarm = { readMb: Math.round(bytes / 1e6), ms, residentMb: resident };
       this.log(
-        `index warm: ${(bytes / 1e6).toFixed(0)} MB into the page cache in ${(ms / 1000).toFixed(1)}s ` +
-          `(${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s)`,
+        `index warm: read ${(bytes / 1e6).toFixed(0)} MB in ${(ms / 1000).toFixed(1)}s ` +
+          `(${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s)` +
+          (resident === null ? "" : `; ${resident} MB resident in the page cache afterwards`),
       );
     })();
   }

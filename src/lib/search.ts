@@ -21,6 +21,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
 import type { Config } from "./config";
 import { type TitleIds, titleIds } from "./crosswalk";
 import type { PersonCredit } from "./facets";
@@ -29,6 +30,7 @@ import type { PersonCredit } from "./facets";
 // the point: the live fallback and the build must compute the same answer or the precompute
 // silently changes what the front page draws.
 import { BROWSE_VOTE_FLOOR, computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
+import { detectMemoryBudget, resolveTuning, type StorageTuning } from "./memory-budget";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
   type Collaborator,
@@ -425,6 +427,16 @@ export class SearchEngine {
     return this.db;
   }
 
+  /**
+   * The read-side settings this engine actually opened with, and why.
+   *
+   * Public because two other things need the SAME answer and must not re-derive it: the
+   * holder decides whether to prefault from `tuning.prefault`, and `/api/health` reports the
+   * whole thing. Two derivations of one budget would let the holder prefault a file the
+   * engine had sized its map against differently, and nothing would ever say so.
+   */
+  readonly tuning: StorageTuning;
+
   constructor(
     dbPath: string,
     private cfg: Config,
@@ -441,12 +453,13 @@ export class SearchEngine {
       opposite and none of this belongs there.
 
       - `temp_store = memory`: sorts and temp b-trees never touch disk.
-      - `cache_size = -262144`: 256 MB of page cache, up from 64. The index is now larger
-        than the whole file used to be and this is the single cheapest read win available.
-        Negative means kibibytes rather than pages, so it does not move when page_size does.
-      - `mmap_size`: read pages straight out of the page cache with no copy into user space.
-        2 GB, which is more than the file and therefore effectively "all of it". This is the
-        pragma that most rewards the bigger index -- a mapped page costs nothing to revisit.
+      - `cache_size` and `mmap_size` are DERIVED, and used to be the constants `-262144`
+        (256 MB) and `2147483648` (2 GB). Both were sized against the host's RAM by a human,
+        and the live deployment then ran them inside a 1.5 GB container -- a map larger than
+        the whole box, plus a pager cache worth 17% of it duplicating pages the map already
+        held. Nothing in SQLite or Bun reads a cgroup limit, so the numbers could not
+        self-correct and nothing reported the mismatch. `./memory-budget.ts` owns the
+        derivation and the evidence for each; `TUNING.md` owns the operator-facing version.
       - `query_only`: refuses a write on this connection at the SQLite level rather than
         trusting `readonly: true` alone. Belt and braces on the one invariant this whole
         block assumes, and it makes an accidental write a loud error rather than a surprise.
@@ -454,9 +467,18 @@ export class SearchEngine {
       NOT set here: `synchronous` and `journal_mode`, which are write-side settings and
       belong to the BUILD connection, not to a reader that will never write.
     */
+    this.tuning = resolveTuning({
+      budget: detectMemoryBudget(cfg.index.memoryBudgetMb),
+      // The file's own size, not `meta.rows` or a guess. An engine opened on a fixture is
+      // a few KB and derives settings to match, which is exactly right for a fixture.
+      indexBytes: statSync(dbPath).size,
+      mmapMbOverride: cfg.index.sqliteMmapMb,
+      cacheMbOverride: cfg.index.sqliteCacheMb,
+      prefaultOverride: cfg.index.prefault,
+    });
     this.db.run("pragma temp_store = memory");
-    this.db.run("pragma cache_size = -262144"); // 256 MB page cache
-    this.db.run("pragma mmap_size = 2147483648"); // 2 GB -- larger than the file
+    this.db.run(`pragma cache_size = -${this.tuning.cacheKib}`);
+    this.db.run(`pragma mmap_size = ${this.tuning.mmapBytes}`);
     this.db.run("pragma query_only = 1");
     this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
     this.hasPeopleSearch =

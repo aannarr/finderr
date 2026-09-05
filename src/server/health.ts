@@ -58,9 +58,79 @@ export interface HealthReload {
   canary?: { passed: number; total: number; ratio: number };
 }
 
+/**
+ * Whether the page-cache prefault ran, what it kept, and the settings it ran under.
+ *
+ * The three numbers answer three different questions and none substitutes for another:
+ * `readMb` is what the loop did, `residentMb` is what the kernel still had afterwards, and
+ * `tuning` is what was asked for. A deployment can fail at any one of them independently --
+ * not running, running and being reclaimed, or being told to map more memory than the
+ * container has.
+ */
+export interface HealthWarm {
+  /** The derived-or-forced decision. `false` here with a big index is worth knowing about. */
+  prefault: boolean;
+  /** `null` means it has not completed in this process. */
+  last: { readMb: number; ms: number; residentMb: number | null } | null;
+  tuning: {
+    budgetMb: number;
+    budgetSource: string;
+    mmapMb: number;
+    cacheMb: number;
+    prefault: boolean;
+  } | null;
+}
+
+/**
+ * The holder's warm report, narrowed to what may leave the process.
+ *
+ * `StorageTuning.notes` deliberately does NOT travel: it is prose written for an operator
+ * reading a boot log, and this endpoint is reachable from the internet. Numbers cross;
+ * sentences stay in the log, the same rule `work.problems` follows for provider errors.
+ */
+export function warmHealth(s: {
+  prefault: boolean;
+  last: { readMb: number; ms: number; residentMb: number | null } | null;
+  tuning: {
+    budgetMb: number;
+    budgetSource: string;
+    mmapBytes: number;
+    cacheKib: number;
+    prefault: boolean;
+  } | null;
+}): HealthWarm {
+  return {
+    prefault: s.prefault,
+    last: s.last,
+    tuning: s.tuning
+      ? {
+          budgetMb: s.tuning.budgetMb,
+          budgetSource: s.tuning.budgetSource,
+          mmapMb: Math.round(s.tuning.mmapBytes / 1024 / 1024),
+          cacheMb: Math.round(s.tuning.cacheKib / 1024),
+          prefault: s.tuning.prefault,
+        }
+      : null,
+  };
+}
+
 export interface HealthDeps {
-  /** `reload` is a plain value read off the holder -- no work, same as every other field. */
-  index: { rows: number; builtAt: string | null; reload: HealthReload | null };
+  /**
+   * `reload` and `warm` are plain values read off the holder -- no work, like every other field.
+   *
+   * **`warm` is the field this endpoint was missing, and the gap was expensive.** The prefault
+   * is worth up to 32x on first reads from a spinning array, it defaults on, and until now the
+   * only evidence it had run was one log line -- so a container reading every query off the
+   * disk was indistinguishable from a healthy one. Read `warm.last` being `null` minutes after
+   * a restart as "it did not run", and `warm.last.residentMb` far below `readMb` as "it ran and
+   * the memory cap took most of it back", which is a different problem with a different fix.
+   */
+  index: {
+    rows: number;
+    builtAt: string | null;
+    reload: HealthReload | null;
+    warm: HealthWarm | null;
+  };
   /**
    * `episodes` is the per-episode Sonarr mirror, and zero beside a non-zero `sonarr` is
    * the field worth reading: it means the series walk ran and every episode fetch failed,

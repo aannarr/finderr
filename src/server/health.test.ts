@@ -14,7 +14,25 @@ import { type HealthDeps, healthPayload } from "./health";
 
 function deps(onCoverage: () => void): HealthDeps {
   return {
-    index: { rows: 1_275_341, builtAt: "2026-08-30T06:26:27.095Z", reload: null },
+    index: {
+      rows: 1_275_341,
+      builtAt: "2026-08-30T06:26:27.095Z",
+      reload: null,
+      // The healthy shape: the prefault ran and the budget held nearly all of it. A
+      // `residentMb` far below `readMb` here is the deployment that looks fine and is
+      // serving half its index off the disk.
+      warm: {
+        prefault: true,
+        last: { readMb: 1868, ms: 10_520, residentMb: 1851 },
+        tuning: {
+          budgetMb: 3072,
+          budgetSource: "cgroup-v1",
+          mmapMb: 1868,
+          cacheMb: 154,
+          prefault: true,
+        },
+      },
+    },
     library: { radarr: 1371, sonarr: 596, episodes: 24_812 },
     plex: { items: 1730, machineId: "0123456789abcdef0123456789abcdef01234567" },
     upcoming: { radarr: 42, sonarr: 27, tmdbMovie: 19, tmdbSeries: 16 },
@@ -176,6 +194,17 @@ describe("healthPayload", () => {
         rows: 1_275_341,
         builtAt: "2026-08-30T06:26:27.095Z",
         reload: null,
+        warm: {
+          prefault: true,
+          last: { readMb: 1868, ms: 10_520, residentMb: 1851 },
+          tuning: {
+            budgetMb: 3072,
+            budgetSource: "cgroup-v1",
+            mmapMb: 1868,
+            cacheMb: 154,
+            prefault: true,
+          },
+        },
       });
       expect(out.library).toEqual({ radarr: 1371, sonarr: 596, episodes: 24_812 });
       // Counts, not probes -- these are always safe to serve on a 30s poll.

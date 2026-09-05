@@ -82,7 +82,7 @@ import {
 import { episodeScoresFor } from "./episode-scores";
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 import { FrontPage } from "./front-page";
-import { healthPayload } from "./health";
+import { healthPayload, warmHealth } from "./health";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
@@ -1325,6 +1325,7 @@ const appRoutes = {
             rows: Number(meta.rows ?? 0),
             builtAt: meta.built_at ?? null,
             reload: live.lastReload,
+            warm: warmHealth(live.warmStatus()),
           },
           library: store.libraryCount(),
           plex: { items: store.plexCount(), machineId: store.plexMachineIdentifier() },

@@ -216,6 +216,46 @@ export interface Config {
      * it earns a `FINDERR_` name.
      */
     staleRebuildDelayMs: number;
+
+    /*
+      THE FOUR READ-SIDE OVERRIDES. All `null` by default, and that is the design.
+
+      Every one of these is DERIVED at boot by `./memory-budget.ts` from the container's real
+      memory ceiling and the index's real size -- so the shipped configuration is "measure it",
+      not a constant somebody has to keep true. They exist for the case the derivation cannot
+      see: a host that caps memory outside a cgroup, an operator who knows the box is shared,
+      or somebody reproducing a benchmark cell.
+
+      Setting one is a claim that you know better than the measurement, so each is echoed in
+      the boot log beside the value it replaced, and an incoherent one is refused loudly rather
+      than silently clamped. `null` means "derive it" everywhere; there is no sentinel number.
+    */
+
+    /**
+     * Pretend the memory ceiling is this many MB, instead of reading the cgroup.
+     *
+     * `FINDERR_MEMORY_BUDGET_MB`. The one case this is genuinely for: a deployment whose real
+     * ceiling is not a cgroup limit -- a VM sized for several services, a box where something
+     * else is expected to want most of the RAM. Left unset the budget comes from
+     * `/sys/fs/cgroup`, and falls back to host RAM only when there is no limit to read.
+     */
+    memoryBudgetMb: number | null;
+    /** `pragma mmap_size`, in MB. `FINDERR_SQLITE_MMAP_MB`. 0 disables mmap, which measured
+     * 2.6x SLOWER cold on a spinning array and 33% slower warm on NVMe -- so it is available
+     * and it is not advice. */
+    sqliteMmapMb: number | null;
+    /** `pragma cache_size`, in MB. `FINDERR_SQLITE_CACHE_MB`. */
+    sqliteCacheMb: number | null;
+    /**
+     * Force the boot-time page-cache prefault on or off. `FINDERR_INDEX_PREFAULT`.
+     *
+     * The derived answer is ON, always, and the ladder in `TUNING.md` is why: prefaulting an
+     * index that does not fit the budget still fills the budget, and never measured worse than
+     * not prefaulting on any rung. Turn it off only to make a container's first seconds cheaper
+     * in I/O at the cost of its first queries -- for instance on a machine building an index
+     * while serving nothing.
+     */
+    prefault: boolean | null;
   };
 
   radarr?: ArrService;
@@ -819,6 +859,11 @@ const DEFAULTS: Config = {
     refreshTz: "UTC",
     refreshOnBoot: true,
     staleRebuildDelayMs: 30_000,
+    // All four DERIVED from the cgroup limit and the index size at boot. See the fields.
+    memoryBudgetMb: null,
+    sqliteMmapMb: null,
+    sqliteCacheMb: null,
+    prefault: null,
   },
   regions: ["US"],
   tmdb: {
@@ -970,6 +1015,10 @@ function envOverrides(): Record<string, unknown> {
       refreshTz: envStr("FINDERR_INDEX_REFRESH_TZ"),
       castRefreshDays: envInt("FINDERR_INDEX_CAST_REFRESH_DAYS"),
       refreshOnBoot: envBool("FINDERR_INDEX_REFRESH_ON_BOOT"),
+      memoryBudgetMb: envInt("FINDERR_MEMORY_BUDGET_MB"),
+      sqliteMmapMb: envInt("FINDERR_SQLITE_MMAP_MB"),
+      sqliteCacheMb: envInt("FINDERR_SQLITE_CACHE_MB"),
+      prefault: envBool("FINDERR_INDEX_PREFAULT"),
       castMinVotes: envInt("FINDERR_INDEX_CAST_MIN_VOTES"),
       episodeSeriesMinVotes: envInt("FINDERR_INDEX_EPISODE_SERIES_MIN_VOTES"),
       titleTypes: envStr("FINDERR_INDEX_TITLE_TYPES")
