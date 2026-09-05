@@ -1204,11 +1204,27 @@ approval and quotas, Seerr is still the right tool today. If it is a handful of 
 invited yourself, and what bugs you about Seerr is the waiting and the fiddling on a small
 screen, run this instead. The two run side by side fine, against the same arrs.
 
+### If Seerr fixes this, finderr is done
+
+Nothing finderr does better is out of Seerr's reach. The index could be local. The search
+could stop waiting on TMDB for every keystroke. The phone irritations are a week's work for
+somebody who is annoyed by them. If that happens, this project has no reason to exist, and I
+will say so here and point you at Seerr rather than keep it alive out of pride.
+
+Until then it is maintained, because I use it every day and so does my household. Issues get
+answered, pull requests get read, and the index rebuilds itself every morning whether anybody
+is watching or not.
+
 ## Join the crew
 
 Bug reports, typos, an addon for a source nobody has wired up, a translated synopsis
 facet, a better "more like this" -- all welcome. Open an issue or a pull request. Not sure
 it fits? Open the issue anyway and we will figure it out ;-)
+
+It is a one-person project by accident rather than by design, and I would rather it were
+not. Small PRs need no permission: fix the typo, send it. If you want to take on something
+bigger, open an issue first so two people do not write the same thing twice -- that is the
+whole of the coordination there is. A PR I cannot take gets a reason, never silence.
 
 ```bash
 bun run test && bun run test:web && bun run typecheck && bun run lint
