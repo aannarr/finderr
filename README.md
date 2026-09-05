@@ -41,6 +41,154 @@ local disk. A handler that can block on a network call while somebody is waiting
 and I treat it as one. Metadata comes in from cached addons a moment later and fills in
 behind the page.
 
+## Speed
+
+I keep saying finderr is fast, so here is what that means and where the numbers came from.
+All of them are measured against the real index. `bun run bench` is in the repo and prints
+them for your own hardware.
+
+### Two databases, tuned as opposites
+
+There are two SQLite files here and they have nothing in common but the engine.
+
+`titles.db` is the search index. It gets built to a temp file, gated, and promoted with a
+rename, and from that moment nothing writes a row to it ever again. No concurrent writers to
+protect, no integrity to preserve at runtime, nothing to recover if it dies. So every setting
+that trades durability for speed is free rather than reckless, and I take all of them.
+
+`finderr.db` is the app: users, sessions, requests, the metadata cache, the search log.
+Written to constantly. Lose it and you lose your accounts and your request history. It gets
+the careful settings.
+
+| | `titles.db` | `finderr.db` |
+|---|---|---|
+| Written | once per build, then never | constantly, by real concurrent writers |
+| `journal_mode` | off during the build, none needed after | `wal` |
+| `synchronous` | `off` during the build | `normal` |
+| `temp_store` | `memory` for reads, `file` for the build | default |
+| `cache_size` | 256 MB | default |
+| `mmap_size` | 2 GB, larger than the file itself | default |
+| `query_only` | on | off, obviously |
+| Foreign keys | nothing declares one | on |
+| If you lose it | rebuild it from IMDb overnight | that was the only copy |
+
+The mistake worth avoiding is treating them as one kind of thing. A read-only file that is
+replaced wholesale every night wants pragmas that would be irresponsible on the file holding
+somebody's account.
+
+### Disk and build time are cheap. Latency is not.
+
+Standing rule since 2026-09-04: precompute it, denormalise it, store the derived column, add
+the covering index, widen the row. "That would make the build slower" is not an argument
+against a faster page. The build runs unattended at 09:00 UTC while everyone is asleep. The
+query runs while somebody is standing there waiting for it.
+
+Three things came out of that.
+
+#### The render path seeks now instead of sorting
+
+Three query plans were collecting every matching row and sorting it in a temp b-tree, so a
+page cost whatever the corpus cost rather than what the page cost. p50 against the real
+index:
+
+| | Before | After |
+|---|---|---|
+| `/browse?genre=Drama&sort=rank` | 807.48 ms | 0.11 ms |
+| the same at offset 200 | 1,074 ms | 0.24 ms |
+| the Top 250 | 82.23 ms | 0.06 ms |
+| a ranked list's members | 349.75 ms | 0.11 ms |
+| `/browse?decade=2010` | 161.11 ms | 0.92 ms |
+| "Best of the 2010s" | 372.53 ms | 1.25 ms |
+| the front page's genre aggregate | 23.79 ms | 0.01 ms |
+
+Most of it was index column order. `ix_tg_rank` was `(genre, kind, rank desc)`, which cannot
+be read in order by a query that pins no kind, and every computed top list in the product is
+exactly that query. Reshaping it to `(genre, rank desc, kind)` costs no extra bytes at all
+and made the kind-pinned case faster too. A decade is a range on the leading column, so no
+index can order across it: a votes-sorted decade is split into ten single-year seeks and
+merged, and a rank-sorted one names its index directly, because the planner keeps choosing
+`ix_year` and sorting anyway.
+
+#### Every browse total is counted at build time
+
+Once the rows were a seek, the `COUNT` was the entire remaining cost: 137 ms to count a
+genre and decade against 0.32 ms to fetch the rows you asked for. A count has to visit every
+matching row, so unlike an ordered read it cannot be turned into a seek, and the only way to
+stop paying for it while someone waits is to have paid already. `browse_count` holds one row per (kind, genre, year): 9,102 rows,
+0.30 MB, 6.75 s on the build, and every total is now a sum over a few hundred rows at 0.02
+to 0.50 ms.
+
+#### The index is read into the page cache at boot, and again after every swap
+
+My NAS is a Celeron with nine SATA disks in RAID5, where every page a query touches and the
+cache does not hold is a head seek. Measured against freshly cloned indexes the cache had
+never read, every scenario cost 0.6 to 3.5 seconds cold against 0.02 to 49 ms warm. A striped
+array is quick at sequential reads and terrible at seeks, so one background sequential read
+buys the whole tax back:
+
+```
+no prefault    first front page 5,026 ms   second 1,070 ms
+prefaulted     first front page 1,125 ms   second 1,088 ms   (the prefault: 3.40 s at 215 MB/s)
+```
+
+It runs after a swap as well, which is the half that would have rotted quietly. A promoted
+index is a different inode with a cold cache, so a nightly refresh without it hands the whole
+penalty straight back at 09:00 while every test covering the boot path stays green.
+
+### The same rule deletes an index that does not pay for itself
+
+`ix_ep_rating` went in on the same "bytes are cheap" reasoning and nobody measured it.
+Benchmarked across 30 query/parent pairs on the 7.8M-row episode table, it matched the
+parent-only index within noise on every single one. Its one measurable win was filtering a
+15,456-episode soap by minimum rating: 0.016 ms with it, 0.662 ms without. That is 445 MB for
+0.65 ms on the worst case in the corpus, and on that disk array those bytes are worse than
+idle, because the prefault above has to read them at ~300 MB/s before anything else can be
+cached. Dropped, with the stage version bumped so an existing index reclaims the space.
+
+### The harness
+
+```bash
+bun run bench                # every render-path scenario, 100 runs, p50/p95/p99, cold, and the plan
+bun run bench -- --reindex   # rebuild the clone's indexes and precomputes first, then measure again
+```
+
+It never restates a query. A scenario is a name, some example arguments and a call into the
+real code, and the runner records whatever statements that call actually ran and explains
+those. A list of SQL strings with example parameters is a second copy of every query, and the
+copy is always the one nobody updates, so you end up benchmarking a query that no longer
+exists and reading a green table about it.
+
+Cold is measured against a fresh reflink clone rather than a fresh handle. The OS page cache
+outlives the process, so reopening a `Database` measures a warm file through a new connection,
+which is how cold numbers end up looking like warm ones. It matters: a deep ranked genre
+browse is 5.50 ms warm and 98.3 ms cold, and a container that has just restarted pays the
+second one.
+
+The pass/fail gate lives in the test suite instead, and it asserts the query PLAN rather than
+a wall clock. A threshold in milliseconds is a fact about the machine that ran it. "The
+planner never sorts here" is a fact about the code.
+
+### Memory
+
+The shipped compose caps the container at 1.5 GB and the index build runs inside that.
+Serving idles far below it.
+
+The fuzzy tier is 78 MB resident. It replaced a trigram index I had written by hand that got
+rebuilt in RAM on every boot: 1.5 GB, nine million live objects, and enough garbage collection
+to burn 14% of a core on a container doing nothing at all. `spellfix1` does the same job out
+of one table on disk.
+
+The build spills its sorter to disk rather than into RAM. `temp_store = memory` left SQLite
+nowhere to put the sorter for a covering index over 7.8M episodes, and the NAS build was
+OOM-killed at exactly that step, leaving a 1.42 GB half-built file that was correctly never
+promoted. Spilling to spinning disks is slower. A build that dies is slower still.
+
+The front page can be held in memory for about 200 KiB of heap. `FINDERR_KEEP_SHELVES_FRESH=1`
+takes `/api/discover` from ~100 ms to ~33 ms by rebuilding each shelf from the timer that owns
+its data instead of computing all fifteen per request. It changes *when* rows are computed and
+never which ones: what you already own is still applied per request, so a title you just
+downloaded leaves the recommendation shelves immediately.
+
 ## Screenshots
 
 <!--
@@ -93,9 +241,19 @@ with headshots, crew, named seasons with air dates per episode, collection, more
 this, certification, release dates, keywords, Oscar wins and nominations, and a "Where to
 watch" row for your own country. Nothing on it waits for a provider.
 
+A series gets its episode scores off the same local index: 7.8 million episodes with IMDb's
+rating on each, drawn three ways in one panel. A grid of every season by episode number, so
+the good run and the bad season are a shape you see rather than a number you read. The
+episode list itself, each row carrying its air date, its score, whether we hold it and a
+button to ask for it. And a timeline. Under half of all episodes carry a rating at all,
+which is why the column is nullable: a new episode has none for weeks, and writing `0.0`
+there would say "rated terribly" where the truth is "nobody has rated it yet".
+
 Person and collection pages come from the local index too. Cast and crew names are links,
 a filmography is one click, and the reverse index is built from IMDb's `title.principals`
-dump, so it costs no API call at all.
+dump, so it costs no API call at all. Typing a name finds the person as well as the titles:
+they come back in their own row above the results, best known first, with the face we
+already hold from some title's cast.
 
 Requests return immediately. The POST answers `202`, a background worker adds the title
 to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
@@ -147,8 +305,15 @@ proxies (keyless), Rotten Tomatoes' public index (the audience score, keyless), 
 (needs a key; buys streaming availability and series keywords). Writing your own is one
 file with two exports. See [ADDONS.md](ADDONS.md).
 
-It is small: one process, one SQLite index, one app database, a ~150 MB image. No
-Postgres and no Redis, and it runs without a TMDB key.
+There is an assistant, for admins, in beta. It exists for one shape of question that a
+search box genuinely cannot take: the ones that are a join across cast, credits and
+episodes rather than a title you already know the name of. [Why there is one at
+all](#the-assistant-and-why-there-is-one-at-all).
+
+It is a small thing to run and a greedy one to store. One process, one SQLite index, one
+app database, a ~150 MB image, no Postgres and no Redis, and it runs without a TMDB key.
+Then it takes several gigabytes of disk and I would take more if it bought another
+millisecond. [Speed](#speed) is that argument in full.
 
 ## Install
 
@@ -159,10 +324,11 @@ Postgres and no Redis, and it runs without a TMDB key.
 - A running Radarr and Sonarr and their API keys (Settings -> General in each).
 - RAM: the shipped compose caps the container at 1.5 GB and the index build runs inside
   that. Serving idles far lower.
-- Disk: about 4 GB. The index is ~550 MB, the previous generation is kept, the dumps are
-  downloaded, and the poster cache ceiling is 2 GB by default. Put the data directory
-  somewhere with room. One heads up: if that volume has a filesystem quota, check it
-  first. A full quota on a shared NAS volume takes down whatever else lives there.
+- Disk: give it 10 GB. The index is around 2 GB and the previous generation is kept beside
+  it, the IMDb dumps are another 1.3 GB, and the poster cache ceiling is 2 GB by default.
+  It is a lot, and it is deliberate: see [Speed](#speed) for what those bytes buy. One heads
+  up: if that volume has a filesystem quota, check it first. A full quota on a shared NAS
+  volume takes down whatever else lives there.
 - Optional: a TMDB API key for streaming availability and series keywords, and a Plex
   token for the Play button.
 
@@ -220,10 +386,11 @@ itself when the index lands. Every route that needs an index answers `503` until
 while doing what you asked.
 
 The build downloads the IMDb dumps (a few hundred MB), builds the index, runs a canary
-suite of real queries against it, and only then swaps it live. Count on about 100 s on a
-desktop-class CPU and about six minutes on a low-power NAS (more under
-[Known gaps](#known-gaps-and-non-goals)). After that it refreshes itself daily and swaps
-in place. No restart.
+suite of real queries against it, and only then swaps it live. A few minutes on a
+desktop-class CPU and appreciably longer on a low-power NAS; the figures are measured and
+re-measured in the module docstring of `src/lib/index-builder.ts`, which is the only place
+in the repo they are written down, because a build time restated in six files goes stale in
+five of them. After the first one it refreshes itself daily and swaps in place. No restart.
 
 > [!NOTE]
 > Set `FINDERR_INDEX_REFRESH_ON_BOOT=false` if you would rather build the index yourself.
@@ -474,11 +641,15 @@ rebuild.
 | `FINDERR_INDEX_CAST_MIN_VOTES` | `1000` | Cast and crew are indexed for titles above this. `0` indexes everybody and the build takes tens of minutes |
 | `FINDERR_INDEX_CAST_CATEGORIES` | ten IMDb job categories | Which credits earn a row. Empty = no cast tables, no person pages |
 | `FINDERR_INDEX_CAST_REFRESH_DAYS` | `7` | How often the 100M-row `title.principals` dump is re-scanned. Other builds carry the cast tables forward in seconds |
+| `FINDERR_INDEX_EPISODE_SERIES_MIN_VOTES` | `0` | Votes a series needs before its episodes are indexed. `0` means every episode of every series, which is what makes the episode scores answer for a show nobody has heard of. Raise it to shrink the index and the build, and read the census in `src/lib/config.ts` before you do: at 1,000 it covers 12,797 series out of 240,909 |
 | `FINDERR_LIBRARY_REFRESH_SECONDS` | `60` | Arr and Plex mirror interval |
 | `FINDERR_KEEP_SHELVES_FRESH` | `false` | Hold the front page in memory instead of computing all fifteen shelves per request, rebuilding each shelf from the timer that owns its data — the arr mirror every 60s, the TMDB mirrors every 6h, the index once a day. `/api/discover` goes from ~100ms to ~33ms for about 200 KiB of heap. It changes *when* rows are computed and never which: what you own is still applied per request, so a title you just downloaded leaves the recommendation shelves immediately. `/api/health` reports `shelves` with a per-tier build time |
 | `FINDERR_ARTWORK_CACHE_MAX_BYTES` | `2000000000` | Poster cache ceiling, least-recently-written evicted first |
 | `FINDERR_TMDB_CACHE_IMAGES` | `true` | |
 | `FINDERR_RESOURCE_LOG_SECONDS` | `300` | One-line RSS/heap/GC summary in the log. `0` disables |
+| `FINDERR_OPENROUTER_API_KEY` | | Optional, and the whole on/off switch for [the assistant](#the-assistant-and-why-there-is-one-at-all). No key means the feature does not exist rather than failing |
+| `FINDERR_AI_MODELS` | `z-ai/glm-5.3-flash` | Comma list, best first, so an admin can benchmark an alternative without a deploy. **This and the cap below are one decision**: the cap has no reservation machinery and is only safe because one conversation costs about $0.003 on the default. A frontier model here quietly turns the cap into a suggestion |
+| `FINDERR_AI_DAILY_LIMIT_USD` | `1` | Per ordinary user per day, counted from the `ai_call` ledger rather than a running total. The day is the container's local calendar, not UTC, so a household's budget does not reset mid-evening. Admins are exempt, and during the admin-only beta that means nobody is capped while every call is still recorded |
 | `FINDERR_PLUGINS_DIR` | | Addon directory. Empty = the built-in `src/plugins` |
 | `FINDERR_PLUGIN_MODULES` | | Comma-separated installed packages. Runs their code; read [ADDONS.md](ADDONS.md) first |
 | `FINDERR_CONFIG_FILE` | `/config/config.yml` | Optional YAML, same keys in camelCase |
@@ -664,6 +835,106 @@ twenty-line hello world, both install paths, every facet you can provide, how to
 own pane on the title page, and a straight account of what the extension surface does not
 do yet.
 
+## The assistant, and why there is one at all
+
+Everything shipped a chat box this year and most of them are a worse search box with a
+spinner in front of it. I did not want one of those. What changed my mind was a question
+somebody asked me out loud, and this is it verbatim:
+
+> Who is that actor that's in that show Furious and that show that the actor from The Bear is
+> also in?
+
+Try that in a search box. Try it in Google. It is three lookups and a graph walk, and all
+three are things finderr already holds on local disk: 1.28 million titles, 453,000 people,
+1.38 million credits, 7.8 million episodes, rebuilt from IMDb every night. The answer is Emmy
+Rossum, via Shameless and Jeremy Allen White, and finderr gets there in a few hundred
+milliseconds because not one step of it is a network call.
+
+That is the whole case for it. Three specific things a conversation over this index does that
+nothing else available to me does:
+
+- **Questions that are joins rather than documents.** "What have Pacino and De Niro both been
+  in", "who does Nolan keep working with", "is there anything connecting Severance and
+  Yellowjackets". A search engine answers those when somebody has already written the
+  article. The index answers them whether or not anybody has.
+- **Recency.** The index was rebuilt this morning; a model's weights were frozen months ago.
+  Ask about something out last week and the model is confidently wrong while the tool
+  underneath it is simply right. The system prompt says so in as many words: the index knows
+  about titles released after your cutoff, and it is right and you are wrong.
+- **It can act.** "Get me the Star Trek episodes rated over 8" ends with those episodes
+  queued in Sonarr. One sentence doing what is otherwise a filter, a scroll and forty clicks.
+
+### The tools are a wall, not advice
+
+Eleven of them over the index: resolve a title, resolve a person, read either, list cast,
+list credits, list episodes, browse, find connections, open a page in the UI, and request.
+**Every one past the two resolvers takes `tt…` and `nm…` ids and nothing else**, so
+`list_cast("Furious")` is a schema violation rather than a bad idea. A description is advice,
+and a confident model talks straight past advice. A type is a wall. Across every model I
+measured, that wall on its own took answering-from-memory to zero.
+
+### A connection is a claim too
+
+Resolving both ends of a link does not license the link. Measured on 2026-09-04: a model
+resolved two shows correctly, pulled both cast lists with two separate calls, and then
+asserted that people from The Bear appear in Furious. They share nobody. Every proper noun in
+that sentence came back from a tool and the sentence was still false.
+
+So the harness reads what each tool RETURNED and works out which relations it actually
+established. Two `list_cast` calls, one title each, establish nothing between those titles,
+because each row names only the title its own call asked about. One call over both, returning
+a row that names both ids, is the database asserting the overlap. Spotting a name in both
+lists yourself is an inference, and the agent is told to ask for the join instead of making
+one.
+
+Names in the answer become links the same way, and only that way. The model brackets an id
+after each thing it names, the server resolves every id against the index, and a link is
+built from a resolved id and never from the shape of one. A model can emit a well-formed
+`tt99999999` that never existed; a miss keeps the name and drops the brackets. The label comes
+from our row rather than from the model's sentence, so if it writes the wrong name for a real
+id you see both and can tell that something is off.
+
+### Grading it
+
+```bash
+bun run agent:eval           # thirteen scenarios, graded on ids
+```
+
+Never on prose, and never by a second model. A judge is a second thing to be wrong, it costs
+money per case, and it makes a regression indistinguishable from the judge having an off day.
+Each case names the exact id that has to appear in the answer, and the grader resolves that id
+back to its name through the same index the agent read, because a model writes "Emmy Rossum"
+and not "nm0002536".
+
+Correctness and route are two separate scores. A model that gets there by a route I did not
+imagine is correct and inefficient, which is a real state worth reporting. It used to be
+scored as a failure, which was the benchmark lying about the thing it exists to measure.
+
+### The money, and who is allowed to spend it
+
+`ai_call` is one row per call: model, tokens, cost, outcome. The daily cap reads that table
+rather than a running counter, because a counter is a second owner of a fact the log already
+holds and it drifts on any failure between the call and the increment. Every outcome writes a
+row, failures included, because a run that died on turn six still spent five turns of tokens.
+
+One conversation is bounded by its turn and tool-call limits, so on the default model the
+worst overshoot past the cap is about $0.003 against a $1 default. That is the only reason the
+check can be a plain "have you spent more than the limit" with no reservation machinery, and
+it is why the model list and the cap are one decision instead of two. Put a frontier model in
+that list and the same check leaks most of the budget.
+
+It is an admin-only beta and there is deliberately no setting that widens it. A question
+typed in here goes to a third party, so what somebody searches for leaves the house. The
+honest handling is to say that at an opt-in and let each account decide, and that opt-in is
+not built. While the only people who can reach the feature are the admins who turned it on,
+there is nobody left to ask who has not already answered, which is what makes shipping without
+the opt-in defensible and what a widening flag would have destroyed. Build the opt-in, then
+widen.
+
+With no `FINDERR_OPENROUTER_API_KEY` the feature does not exist rather than failing, the same
+way no TMDB key means no streaming availability. A fresh checkout has no assistant and says
+nothing about one.
+
 ## API
 
 Everything except `/api/health`, `/api/index-status`, `/api/webhook/arr` and the sign-in
@@ -681,6 +952,8 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
 | `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
 | `GET` | `/api/discover` | the front-page shelves, pure index queries |
+| `GET` | `/api/agent/chat` | whether the assistant is available to you and which model answers. `403` during the admin-only beta, `404` when no key is configured, because a surface you may not use does not announce itself |
+| `POST` | `/api/agent/chat` | one turn. Streams the run as SSE when `Accept` asks for it and returns plain JSON otherwise, from one route, because they are one operation with one gate, one ledger and one memory |
 | `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
 | `GET` | `/api/awards/:award` | one award's timeline and its provenance. `oscars`, `palme-dor`, `emmy-drama-series` |
@@ -747,9 +1020,10 @@ Every line here is a real limitation. It is not a roadmap.
 
 ### Not built yet
 
-- No request quotas and no approval workflow. Requests are attributed to whoever made
-  them and admins can see who asked for what, but nothing limits how much one person may
-  ask for and nothing holds a request for review. Every request goes straight to the arr.
+- No approval workflow. Requests are attributed to whoever made them and admins can see who
+  asked for what, but nothing holds a request for review: every one goes straight to the
+  arr. There is a daily per-user quota (`FINDERR_REQUEST_QUOTA_PER_DAY`) and it is off by
+  default, so out of the box nothing limits how much anybody asks for.
 - Notifications go to the person who asked, and nowhere else. Web push tells them on their
   own devices when their own request arrives; there is no Discord, ntfy, Telegram or
   webhook, and no way to announce an arrival to a room. The lifecycle hooks an addon would
@@ -776,10 +1050,10 @@ Every line here is a real limitation. It is not a roadmap.
   skyhook carries any of them, so the `tmdb` addon serves them — and without
   `FINDERR_TMDB_API_KEY` those three panes are absent on every show. They ride the detail
   document that addon already fetches, so they cost no extra call.
-- A person in the search results has no face. Typing a name finds people now — they come
-  back in their own row above the titles, ranked by the votes on their best-known title —
-  but the tile draws initials, because the only headshots we hold are cached against a
-  TITLE's cast facet and there is no way to look one up by `nconst`.
+- A person's face in search is only there once somebody has opened one of their titles. No
+  IMDb dump carries a headshot, so the only ones finderr holds arrive on some title's cast
+  facet, one title at a time, and a face is filed against the person as that happens.
+  Coverage grows with use and is never complete. Initials are the ordinary fallback.
 - Regional release titles are not indexed. `originalTitle` is the production-language
   title; a foreign film's Swedish or German release title needs `title.akas` filtered to a
   region, and that is not wired in yet.
@@ -815,10 +1089,17 @@ Every line here is a real limitation. It is not a roadmap.
 
 ### Cost you should know about
 
-- The index rebuild is heavy on low-power hardware. About 100 s on a desktop-class CPU,
-  about six minutes on a Celeron NAS, inside the 1.5 GB the compose file allows. It runs
-  unattended at 09:00 UTC by default, and the cast stage (the part that scans a 100M-row
-  dump) runs weekly rather than daily. It only hurts if you rebuild by hand and wait.
+- The index rebuild is heavy on low-power hardware, and it has got heavier on purpose. The
+  cast stage scans a 100M-row dump to keep about 1% of it, and the episode stage adds a
+  fifth dump on top. Both were taken knowingly: see [Speed](#speed) for the trade, and
+  `src/lib/index-builder.ts` for the measured cost on real hardware. It runs unattended at
+  09:00 UTC, the cast stage runs weekly rather than daily, and it only hurts if you kick one
+  off by hand and stand there watching.
+- The index is big. Around 2 GB, plus the previous generation kept beside it. That is the
+  same trade from the other side, and if you want it smaller the dials are
+  `FINDERR_INDEX_EPISODE_SERIES_MIN_VOTES`, `FINDERR_INDEX_CAST_MIN_VOTES` and
+  `FINDERR_INDEX_TITLE_TYPES`. Every one of them buys space by making finderr unable to
+  answer about something.
 - The cast index is floored at 1,000 votes. Person pages and linked names exist for
   titles above that; below it a name is plain text. Lowering the floor is a config change
   and a much longer build.
@@ -850,18 +1131,23 @@ mature one, and it does plenty finderr does not:
 | | Seerr | finderr |
 |---|---|---|
 | Search | live TMDB round trip per keystroke | local index, milliseconds, typo-tolerant |
+| Browse and lists | live TMDB | local, and precomputed: 0.06 to 1 ms for a page, totals counted at build |
 | Needs a TMDB key | yes | no (optional, for streaming availability) |
 | Media servers | Plex, Jellyfin, Emby | Plex |
 | Users | any server user, imported | invite-only, passkey or Plex |
-| Request approval, quotas | yes | no |
+| Request approval | yes | no |
+| Request quotas | yes | per-user daily cap, off by default |
 | Notifications | Discord, Telegram, email, Pushover, webhooks, ... | web push to the asker's own devices, and an in-app unread count |
 | 4K / second instance | yes | no |
 | Issue reporting | yes | no |
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
+| Per-episode data | air dates | air dates and IMDb's score on all 7.8M episodes, as a grid, a list and a timeline |
 | Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination and two winner lists from Wikidata |
+| Ask it a question | no | an assistant with eleven tools over the index, admin-only beta |
 | Extensibility | none | addons: facets and panes |
 | On a phone | works | built for it: installs to the home screen, no zoom on focus, one-handed search, safe-area aware, works through a flaky connection |
-| Footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
+| Process footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |
+| Disk footprint | small | ~4 GB of index and dumps, and that is the trade, not an accident |
 
 Seerr is the more powerful of the two and that table is not close in its favour anywhere
 that matters for a big installation. finderr is the less annoying one, and mostly on a
