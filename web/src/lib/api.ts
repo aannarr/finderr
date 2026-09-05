@@ -623,6 +623,15 @@ export interface PersonPage {
   person: Person;
   credits: Credit[];
   total: number;
+  /**
+   * Their face, exactly as `PersonHit.image` carries it -- read that field for why `null`
+   * is the ordinary answer and why the key is optional.
+   *
+   * Beside `person` rather than inside it, mirroring the server: `Person` is what our index
+   * holds, and a headshot is an app-DB mirror of what a provider once sent. It is the one
+   * field on this payload that a nightly rebuild cannot re-derive.
+   */
+  image?: string | null;
   /** Counts over ALL their credits, not this page -- so the number does not shrink. */
   categories: { category: string; count: number }[];
   /**

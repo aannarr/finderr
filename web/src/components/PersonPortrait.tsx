@@ -18,7 +18,15 @@ import { initialsOf, localImageUrl } from "../lib/facet-panes";
  * screen. `shelf-row` is the same hidden-scrollbar treatment the discovery shelves use.
  */
 export const PERSON_ROW_CLASS = "shelf-row flex snap-x gap-3 overflow-x-auto pb-2";
-export const PERSON_TILE_CLASS = "w-24 shrink-0 snap-start";
+/**
+ * How wide one person is, WITHOUT the scroll-snapping a row implies.
+ *
+ * Split out because the person page's own header draws a portrait beside a name rather than
+ * inside a row, and `snap-start` outside a snap container is a class that does nothing while
+ * reading as though it does. The size stays single-owned, which is the point of this module.
+ */
+export const PERSON_TILE_SIZE_CLASS = "w-24 shrink-0";
+export const PERSON_TILE_CLASS = `${PERSON_TILE_SIZE_CLASS} snap-start`;
 export const PERSON_PORTRAIT_CLASS = "aspect-2/3 w-full rounded-lg";
 
 /**

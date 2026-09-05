@@ -18,6 +18,7 @@ import { NominationRow } from "../components/Awards";
 import { ToggleChip } from "../components/Chip";
 import { Pane } from "../components/FacetPane";
 import { useKeyAction } from "../components/Kbd";
+import { PERSON_TILE_SIZE_CLASS, PersonPortrait } from "../components/PersonPortrait";
 import { useChipGroup } from "../components/RovingFocus";
 import { StaleResults, TitleGrid } from "../components/TitleGrid";
 import { PERSON_LINK_CLASS } from "../components/TitlePanes";
@@ -166,6 +167,54 @@ function lifespan(person: PersonPage["person"]): string | null {
   if (person.birthYear === null && person.deathYear === null) return null;
   if (person.deathYear !== null) return `${person.birthYear ?? "?"}-${person.deathYear}`;
   return String(person.birthYear);
+}
+
+/**
+ * Who this page is about: their face, their name, their span and their award record.
+ *
+ * A COMPONENT rather than markup inline in the route, for the same reason the two panes
+ * below are: it is the one part of this page that does not change when a role chip or a
+ * sort chip is pressed, and naming it is what makes that visible in the route body.
+ *
+ * **The portrait is the same `PersonPortrait` a search tile and a cast tile draw**, at the
+ * same size, so the face a reader clicked on is the face that greets them. Until this
+ * shipped the page drew none at all, while the Open Graph card for the very same link
+ * already carried one -- so sharing a person looked richer than opening them.
+ *
+ * Initials remain the ordinary fallback, and the tile keeps its footprint either way: the
+ * header is one portrait beside text, so a person we hold no face for costs no more vertical
+ * space than one we do.
+ */
+export function PersonHeader({
+  person,
+  image,
+  total,
+  awards,
+}: Pick<PersonPage, "person" | "image" | "total" | "awards">) {
+  const years = lifespan(person);
+
+  return (
+    <div className="mb-4 flex items-start gap-4">
+      <div className={PERSON_TILE_SIZE_CLASS}>
+        <PersonPortrait name={person.name} image={image ?? null} />
+      </div>
+      <div className="min-w-0">
+        <h2 className="text-xl font-semibold tracking-tight">{person.name}</h2>
+        <p className="mt-0.5 text-xs text-muted">
+          {years && <span className="tabular-nums">{years}</span>}
+          {years && " · "}
+          {total.toLocaleString()} {total === 1 ? "credit" : "credits"}
+        </p>
+        {/*
+          Their award record, which is null for nearly everybody and therefore draws
+          nothing at all. It sits in the header rather than under the grid because it is a
+          fact ABOUT the person, like the lifespan beside it -- the grid below is what they
+          were in, and this is what it got them.
+        */}
+        <PersonAwardsSummary awards={awards ?? null} />
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -319,7 +368,6 @@ export function PersonRoute() {
   if (!shown) return null;
   const page = shown.page;
 
-  const years = lifespan(page.person);
   const roles = mergedCategories(page.categories);
   /** Both chip rows below go to the same place with a different question. */
   const showCredits = (search: Pick<SearchParams, "role" | "sort">) =>
@@ -327,21 +375,7 @@ export function PersonRoute() {
 
   return (
     <>
-      <div className="mb-4">
-        <h2 className="text-xl font-semibold tracking-tight">{page.person.name}</h2>
-        <p className="mt-0.5 text-xs text-muted">
-          {years && <span className="tabular-nums">{years}</span>}
-          {years && " · "}
-          {page.total.toLocaleString()} {page.total === 1 ? "credit" : "credits"}
-        </p>
-        {/*
-          Their award record, which is null for nearly everybody and therefore draws
-          nothing at all. It sits in the header rather than under the grid because it is a
-          fact ABOUT the person, like the lifespan beside it -- the grid below is what they
-          were in, and this is what it got them.
-        */}
-        <PersonAwardsSummary awards={page.awards ?? null} />
-      </div>
+      <PersonHeader person={page.person} image={page.image} total={page.total} awards={page.awards} />
 
       {/*
         Only worth a filter when there is something to filter BETWEEN. One role means

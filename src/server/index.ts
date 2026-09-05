@@ -940,7 +940,7 @@ const personPreviewDeps: PersonPreviewDeps = {
       credits: page.total,
     };
   },
-  faceKey: (nconst) => store.personImageKeys([nconst]).get(nconst) ?? null,
+  faceKey: (nconst) => faceKeyOf(nconst),
   // ONE bucket with the title card, deliberately: they are one anonymous surface, and a
   // second limiter would let a crawler spend the whole allowance twice.
   allow: (req) => previewLimiter.take(auth.limitKey(req)),
@@ -1081,18 +1081,42 @@ function creditsIn(resolvedFacets: ResolvedFacets): PersonCredit[] {
   ];
 }
 
+/*
+  THE READ SIDE of the `person_image` edge, in the three shapes its four callers want.
+
+  The title route files a face under an nconst (see `personFaces`); everything below is what
+  reads one back, and all of it is a local SQLite lookup on the render path.
+
+  `null` is the ORDINARY answer rather than a gap, at every one of them: coverage grows with
+  the titles people actually open, so a person whose filmography nobody has visited has no
+  face on file and their tile draws initials. `PersonPortrait` was written with that fallback
+  from the start.
+*/
+
+/** The stored proxy key, for the two preview surfaces that want the key itself. */
+function faceKeyOf(nconst: string): string | null {
+  return store.personImageKeys([nconst]).get(nconst) ?? null;
+}
+
+/**
+ * The same face as a PATH, for the JSON payloads that hand it to a browser.
+ *
+ * Separate from `faceKeyOf` rather than folded into it because the preview surfaces
+ * genuinely want the key: one serves the bytes itself and the other builds an absolute URL
+ * for a crawler. `facetImagePath` stays the single owner of what a path looks like.
+ */
+function faceOf(nconst: string): string | null {
+  const key = faceKeyOf(nconst);
+  return key ? facetImagePath(key) : null;
+}
+
 /**
  * A row of people, each carrying the face we hold for them, or null.
  *
- * The second half of the `person_image` edge: the title route files a face under an
- * nconst, and this is the only thing that reads it. ONE batched local SQLite read for the
- * whole row -- the same shape and the same reason as `tconstCandidatesByTmdbId` in
- * `relatedRows`.
- *
- * `null` is the ordinary case rather than a gap, and the tile draws initials for it exactly
- * as it always did: coverage grows with the titles people actually open, so a person whose
- * filmography nobody has visited has no face on file. `PersonPortrait` was written with
- * this fallback from the start and needs no change.
+ * The BATCH form of `faceOf`, and the batching is the whole reason it is its own function:
+ * a search row is eight people, and eight prepared-statement round trips to answer one
+ * question is the shape that turns a sub-millisecond lookup into a visible one. Same
+ * reasoning as `tconstCandidatesByTmdbId` in `relatedRows`.
  *
  * `undefined` in, `undefined` out -- the key must stay ABSENT on an index that cannot
  * search people at all, so a client can still tell "nobody by that name" from "this index
@@ -2009,6 +2033,21 @@ const appRoutes = {
         ...page,
         credits: decorate(page.credits),
         /*
+            THEIR FACE, or null -- the same `person_image` edge a search row reads, on the
+            page every one of those rows links to.
+
+            BESIDE `person` rather than inside it, which is the same rule `awards` and
+            `collaborators` below follow: `page.person` is our INDEX describing a human, and
+            this is an app-DB mirror of what a metadata provider once sent for them. The
+            index is rebuilt nightly from the dumps and no dump carries a headshot, so
+            merging the two would put a field on `Person` that the thing producing `Person`
+            can never fill.
+
+            Null for most people and that is the ordinary case: coverage grows with the
+            titles somebody has opened, and the header draws initials meanwhile.
+          */
+        image: faceOf(req.params.nconst),
+        /*
             THEIR AWARD RECORD, from our own tables and joined on the nconst.
 
             Beside the credits rather than inside them, the same shape `people` follows on
@@ -2730,7 +2769,7 @@ const appRoutes = {
       // A face is already in `facet_image` under a key the title route issued, so this
       // goes through the facet proxy rather than the artwork cache. `personImageKeys`
       // returns nothing for a person nobody has drawn yet, which is the ordinary 404.
-      const key = store.personImageKeys([id]).get(id);
+      const key = faceKeyOf(id);
       if (!key) return new Response("no artwork", { status: 404 });
       return facetImages.serve(key, PREVIEW_IMAGE_SIZE);
     }
