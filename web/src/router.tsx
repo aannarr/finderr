@@ -24,7 +24,11 @@ import {
 } from "./lib/easter-eggs";
 import { validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
-import { AdminRoute } from "./routes/AdminRoute";
+import { AdminInvitesRoute } from "./routes/AdminInvitesRoute";
+import { AdminLayout } from "./routes/AdminLayout";
+import { AdminOverviewRoute } from "./routes/AdminOverviewRoute";
+import { AdminUserRoute } from "./routes/AdminUserRoute";
+import { AdminUsersRoute } from "./routes/AdminUsersRoute";
 import { AwardsRoute } from "./routes/AwardsRoute";
 import { BrowseRoute } from "./routes/BrowseRoute";
 import { CeremonyRoute } from "./routes/CeremonyRoute";
@@ -180,17 +184,54 @@ const accountRoute = createRoute({
 });
 
 /**
- * `/admin` -- people, invitations and the attributed request log.
+ * `/admin` and everything under it -- a LAYOUT route with four children.
  *
  * The route exists for everybody; the DATA does not. Every endpoint behind it answers 404
  * to a non-admin, so this is a convenience rather than the boundary -- putting the check
  * in the router would be a second owner of a rule the server already enforces, and the
  * weaker of the two.
+ *
+ * Nested rather than four siblings, because they SHARE chrome: `AdminLayout` draws the
+ * heading and the tabs once and renders whichever child the URL names. Four sibling routes
+ * would each have had to import that nav, which is how a fifth one ships without it.
  */
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/admin",
-  component: AdminRoute,
+  component: AdminLayout,
+});
+
+/** `/admin` itself -- the overview. An index route, so the parent's tabs are already drawn. */
+const adminOverviewRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "/",
+  component: AdminOverviewRoute,
+});
+
+/** `/admin/users` -- everybody with an account. Rows link; nothing on one is an action. */
+const adminUsersRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "users",
+  component: AdminUsersRoute,
+});
+
+/**
+ * `/admin/users/nnn` -- one person: identity, access and activity.
+ *
+ * The id is a real route param rather than a selection held in the list's state, so the page
+ * is linkable, survives a refresh, and Back returns to the list.
+ */
+const adminUserRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "users/$id",
+  component: AdminUserRoute,
+});
+
+/** `/admin/invites` -- mint a way in, and see who has not used theirs. */
+const adminInvitesRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "invites",
+  component: AdminInvitesRoute,
 });
 
 /**
@@ -250,7 +291,7 @@ const routeTree = rootRoute.addChildren([
   requestsRoute,
   logRoute,
   accountRoute,
-  adminRoute,
+  adminRoute.addChildren([adminOverviewRoute, adminUsersRoute, adminUserRoute, adminInvitesRoute]),
   sourcesRoute,
 ]);
 

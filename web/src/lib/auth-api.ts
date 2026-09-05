@@ -288,6 +288,8 @@ export async function revokeAgentKey(): Promise<void> {
 export interface AdminUser extends PublicUser {
   credentials: number;
   sessions: number;
+  /** Titles asked for in the last seven UTC days, today included. */
+  requestsThisWeek: number;
 }
 
 export interface AdminInvite {
@@ -357,10 +359,26 @@ export function resetUser(
   return post(`/api/admin/users/${encodeURIComponent(id)}/reset`);
 }
 
+/**
+ * A request row as the ADMIN surfaces see it -- the whole log on `/admin`, and one person's
+ * own on `/admin/users/:id`.
+ *
+ * Narrower than `MediaRequest` in `./api.ts` on purpose: this is the raw stored row, so it
+ * carries no `requestVerdict` and no progress. Those are derived per reader by `/api/requests`
+ * and drawn on `/log`, which is where a reader goes to ask how a request is getting on. What
+ * an admin page needs is what was asked for, by whom, and when.
+ */
 export interface AttributedRequest {
+  /** The row's own key. `logOrder` breaks a same-millisecond tie on it. */
+  id: number;
   tconst: string;
   title: string;
+  year: number | null;
+  /** The state machine's own word -- "queued", "downloading", "available". */
   status: string;
+  /** Comma-joined season numbers, or null for "all". Series only. */
+  seasons: string | null;
+  created_at: string;
   updated_at: string;
   requested_by: string | null;
   requestedByName: string | null;
@@ -369,4 +387,39 @@ export interface AttributedRequest {
 /** ADMIN ONLY, and it is a separate route for that reason rather than a filtered field. */
 export function adminRequests(): Promise<{ requests: AttributedRequest[] }> {
   return get("/api/admin/requests");
+}
+
+/** Where one person stands against the daily request limit. See `src/lib/request-quota.ts`. */
+export interface QuotaState {
+  /** Titles per UTC day, as configured for the whole site. Zero or less is unlimited. */
+  limitPerDay: number;
+  usedToday: number;
+  /** ISO instant of the next UTC midnight. */
+  resetsAt: string;
+  /**
+   * Does the limit BIND this person? The server answers it, because the exemptions -- an
+   * admin, and a limit of zero -- are the request rule's to own and not a screen's to infer.
+   */
+  applies: boolean;
+}
+
+/**
+ * One person, whole: the admin-scoped twin of `getMe`, plus what only an admin may read.
+ *
+ * READ ONLY. Nothing on this payload is an action, and the page that draws it deliberately
+ * offers none -- promoting, disabling, revoking and removing all land together, with their
+ * confirmations, rather than one of them arriving early without one.
+ */
+export interface AdminUserDetail {
+  user: PublicUser;
+  credentials: CredentialSummary[];
+  sessions: SessionSummary[];
+  requests: AttributedRequest[];
+  quota: QuotaState;
+  /** Present or absent -- never the key itself, which exists only in the snippet shown once. */
+  agentKey: AgentKeySummary | null;
+}
+
+export function getAdminUser(id: string): Promise<AdminUserDetail> {
+  return get(`/api/admin/users/${encodeURIComponent(id)}`);
 }

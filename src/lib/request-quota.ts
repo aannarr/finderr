@@ -36,6 +36,18 @@ export function utcDayStart(now: Date = new Date()): string {
   return `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
 }
 
+/**
+ * The start of the UTC day `daysAgo` days before the one `now` falls in.
+ *
+ * `utcDayStart` is this with zero and keeps its own name, because the quota's window is
+ * genuinely "today" rather than "a window of one day". The people list on `/admin/users`
+ * reports a seven-day one, and that second caller is what generalised this rather than
+ * leaving `n * 86_400_000` spelled out in a route.
+ */
+export function utcDayStartDaysAgo(daysAgo: number, now: Date = new Date()): string {
+  return utcDayStart(new Date(now.getTime() - daysAgo * DAY_MS));
+}
+
 /** When the current day's allowance is replenished: the next UTC midnight. */
 export function utcDayReset(now: Date = new Date()): string {
   return new Date(Date.parse(utcDayStart(now)) + DAY_MS).toISOString();
@@ -63,6 +75,27 @@ export type QuotaVerdict =
       message: string;
     };
 
+/**
+ * Does the daily limit bind THIS person at all?
+ *
+ * Two exemptions, and both are stated once here rather than re-derived by every screen that
+ * wants to say "unlimited" instead of "0 of 0 today". `quotaVerdict` below is the first
+ * caller and the admin user page (`GET /api/admin/users/:id`) is the second -- a page that
+ * spelled `role === "admin" || limit <= 0` for itself would be a second owner of a rule that
+ * decides whether a request is refused.
+ *
+ * - **Zero or less is UNLIMITED**, the same reading `RateLimiter.take` uses. It also makes
+ *   the default safe: an operator who has never heard of this setting keeps the behaviour
+ *   every version so far has had, and a typo that lands a 0 in the env opens the gate rather
+ *   than locking every user out of the product.
+ * - **Admins are exempt.** `admin` is the set of people who administer the library rather
+ *   than ask it for things -- see `Role` in `./auth.ts` -- and an admin who cannot refill
+ *   their own library because they spent the day filling it is a limit pointed the wrong way.
+ */
+export function quotaApplies(role: Role, limit: number): boolean {
+  return limit > 0 && role !== "admin";
+}
+
 export function quotaVerdict(input: {
   role: Role;
   /** Titles per UTC day. Zero or less is UNLIMITED. */
@@ -77,20 +110,9 @@ export function quotaVerdict(input: {
   usedToday: () => number;
   now?: Date;
 }): QuotaVerdict {
-  /*
-    Zero or less means UNLIMITED, not "refuse everything".
-
-    The same reading `RateLimiter.take` already uses, so there is one convention here and
-    not two. It also makes the default safe: an operator who has never heard of this
-    setting keeps the behaviour every version so far has had, and a typo that lands a 0 in
-    the env opens the gate rather than locking every user out of the product.
-  */
-  if (input.limit <= 0) return { allowed: true };
-
-  // Admins are exempt. `admin` is the set of people who administer the library rather than
-  // ask it for things -- see `Role` in `./auth.ts` -- and an admin who cannot refill their
-  // own library because they spent the day filling it is a limit pointed the wrong way.
-  if (input.role === "admin") return { allowed: true };
+  // Both exemptions -- no configured limit, and an admin -- live in `quotaApplies`, which
+  // the admin user page reads too. They are the ordinary cases, and neither needs the count.
+  if (!quotaApplies(input.role, input.limit)) return { allowed: true };
 
   const used = input.usedToday();
   if (used < input.limit) return { allowed: true };

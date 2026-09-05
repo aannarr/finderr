@@ -19,6 +19,7 @@
  */
 
 import {
+  type AgentKey,
   attributedRequest,
   clearedSessionCookie,
   hashToken,
@@ -48,6 +49,7 @@ import {
   pollPin,
 } from "../lib/plex-auth";
 import { clientKey, RateLimiter } from "../lib/rate-limit";
+import { quotaApplies, utcDayReset, utcDayStart, utcDayStartDaysAgo } from "../lib/request-quota";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { AGENT_KEY_PATH, type AgentBucket, bootstrapSnippet } from "./agent-api";
@@ -77,6 +79,15 @@ const REFUSED = "that did not work";
  */
 export const NO_AUTH_USER = "the_user";
 
+/**
+ * How long "this week" is on the people list: seven UTC days, today included.
+ *
+ * A rolling window rather than a calendar week, because the question an operator is asking
+ * -- has this person been busy lately -- has no interest in which day the week starts on,
+ * and a calendar week answers "almost nothing" every Monday morning.
+ */
+const REQUEST_WEEK_DAYS = 7;
+
 async function body(req: Request): Promise<Record<string, unknown>> {
   try {
     const v = await req.json();
@@ -88,6 +99,21 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+}
+
+/**
+ * An agent key as anybody is allowed to see it: when it was made, when it was last used,
+ * and whether it may write. Null stays null, so "no key" has one spelling.
+ *
+ * Never the token -- only its sha256 is stored -- and never the HASH either. The hash is not
+ * a secret, but it is not anything a person can act on, and a field nobody uses is a field
+ * somebody eventually renders. Two readers now: the owner on `/api/auth/agent-key` and an
+ * admin on the user page, which is what earned it one owner.
+ */
+function agentKeySummary(
+  key: AgentKey | null,
+): { createdAt: string; lastUsedAt: string | null; readOnly: boolean } | null {
+  return key ? { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly } : null;
 }
 
 export interface AuthServiceDeps {
@@ -415,22 +441,7 @@ export class AuthService {
         if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
         return json({
           user: publicUser(p.user),
-          credentials: this.deps.auth.credentialsFor(p.user.id).map((c) => ({
-            id: c.id,
-            label: c.label,
-            deviceType: c.deviceType,
-            backedUp: c.backedUp,
-            createdAt: c.createdAt,
-            lastUsedAt: c.lastUsedAt,
-            current: false,
-          })),
-          sessions: this.deps.auth.sessionsFor(p.user.id).map((s) => ({
-            id: s.idHash,
-            createdAt: s.createdAt,
-            lastSeenAt: s.lastSeenAt,
-            userAgent: s.userAgent,
-            current: s.idHash === p.session?.idHash,
-          })),
+          ...this.accessFor(p.user.id, p.session?.idHash ?? null),
         });
       },
 
@@ -908,14 +919,7 @@ export class AuthService {
         GET: (req) => {
           const p = this.personalPrincipal(req);
           if (p instanceof Response) return p;
-          const key = this.deps.auth.agentKeyFor(p.id);
-          // Never the hash either. It is not a secret, but it is not anything a person can
-          // act on, and a field nobody uses is a field somebody eventually renders.
-          return json({
-            key: key
-              ? { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly }
-              : null,
-          });
+          return json({ key: agentKeySummary(this.deps.auth.agentKeyFor(p.id)) });
         },
 
         POST: async (req) => {
@@ -1027,18 +1031,77 @@ export class AuthService {
 
       "/api/admin/users": {
         GET: (req) =>
-          this.asAdmin(req, () =>
-            json({
+          this.asAdmin(req, () => {
+            // "This week" is the last seven UTC days INCLUDING today, so today's own asks
+            // count. A household is a handful of people, so a count per row is a handful of
+            // primary-key lookups against a table that is already open.
+            const weekStart = utcDayStartDaysAgo(REQUEST_WEEK_DAYS - 1);
+            return json({
               users: this.deps.auth.listUsers().map((u) => ({
                 ...publicUser(u),
                 credentials: this.deps.auth.credentialsFor(u.id).length,
                 sessions: this.deps.auth.sessionsFor(u.id).length,
+                requestsThisWeek: this.deps.store.countRequestsSince(u.id, weekStart),
               })),
-            }),
-          ),
+            });
+          }),
       },
 
       "/api/admin/users/:id": {
+        /**
+         * ONE PERSON, WHOLE. The admin-scoped twin of `/api/auth/me`, plus what only an
+         * admin has any business reading: what they have asked for, and where they stand
+         * against the daily quota.
+         *
+         * One endpoint rather than four, because the page is one page: a user view that had
+         * to fan out to `/users`, `/credentials`, `/sessions` and `/requests` would render in
+         * four steps and be four things to keep authorised. Everything here is already held
+         * in SQLite on the same host, so the join is cheaper than the round trips.
+         *
+         * It reads and never writes. Every ACTION on this person -- promote, disable, revoke
+         * one credential, remove -- is deliberately elsewhere, so that all of them get their
+         * confirmation at once rather than one of them getting it twice.
+         */
+        GET: (req) =>
+          this.asAdmin(req, (p) => {
+            const id = (req as Bun.BunRequest<"/api/admin/users/:id">).params.id;
+            const target = this.deps.auth.getUser(id);
+            if (!target) return json({ error: "not found" }, { status: 404 });
+            const limitPerDay = this.deps.cfg.requests.quotaPerDay;
+            return json({
+              user: publicUser(target),
+              ...this.accessFor(target.id, p.session?.idHash ?? null),
+              /*
+                Through `attributedRequest` like `/api/admin/requests`, so the per-request arr
+                overrides are stripped or kept by the ONE function that owns that rule. Every
+                row here belongs to `target` by construction, so the name lookup is a
+                comparison rather than a map over every user on the server.
+              */
+              requests: this.deps.store
+                .listRequestsFor(target.id)
+                .map((r) =>
+                  attributedRequest(r, p.role, (uid) => (uid === target.id ? target.displayName : null)),
+                ),
+              quota: {
+                limitPerDay,
+                usedToday: this.deps.store.countRequestsSince(target.id, utcDayStart()),
+                resetsAt: utcDayReset(),
+                /*
+                  Whether the limit BINDS this person, answered by the rule rather than by the
+                  page. An admin is exempt and a limit of 0 is unlimited, and a screen that
+                  worked that out from `limitPerDay` and `role` for itself would be a second
+                  owner of the rule that decides whether a request is refused.
+                */
+                applies: quotaApplies(target.role, limitPerDay),
+              },
+              /*
+                PRESENT OR ABSENT, never the key. Only the sha256 is stored, so there is no
+                token to send even to an admin -- what this answers is "does this person have
+                an agent acting for them", which is the question an operator is asking.
+              */
+              agentKey: agentKeySummary(this.deps.auth.agentKeyFor(target.id)),
+            });
+          }),
         PATCH: async (req) =>
           this.asAdmin(req, async () => {
             const id = (req as Bun.BunRequest<"/api/admin/users/:id">).params.id;
@@ -1178,6 +1241,58 @@ export class AuthService {
   limitKey(req: Request): string {
     const p = this.principal(req);
     return p?.user ? `u:${p.user.id}` : `ip:${this.ip(req)}`;
+  }
+
+  /**
+   * Every way into one account: the passkeys it holds and the sessions currently open on it.
+   *
+   * ONE owner for a shape with TWO readers -- `/api/auth/me` asks it about the caller, and
+   * `/api/admin/users/:id` asks it about somebody else. They are the same fact seen from two
+   * places, and the only thing that differs is whose session is the live one, so that is the
+   * parameter: an admin reading their OWN page still sees "this device" marked, and reading
+   * anybody else's marks nothing, because none of those sessions is holding the cookie.
+   *
+   * A session's `id` is its HASH. Knowing one is not authority to end it -- both delete
+   * routes re-check ownership -- but it is what a revoke button will have to name, which is
+   * why it is here and not withheld.
+   */
+  private accessFor(
+    userId: string,
+    currentSessionHash: string | null,
+  ): {
+    credentials: {
+      id: string;
+      label: string | null;
+      deviceType: string | null;
+      backedUp: boolean;
+      createdAt: string;
+      lastUsedAt: string | null;
+    }[];
+    sessions: {
+      id: string;
+      createdAt: string;
+      lastSeenAt: string;
+      userAgent: string | null;
+      current: boolean;
+    }[];
+  } {
+    return {
+      credentials: this.deps.auth.credentialsFor(userId).map((c) => ({
+        id: c.id,
+        label: c.label,
+        deviceType: c.deviceType,
+        backedUp: c.backedUp,
+        createdAt: c.createdAt,
+        lastUsedAt: c.lastUsedAt,
+      })),
+      sessions: this.deps.auth.sessionsFor(userId).map((s) => ({
+        id: s.idHash,
+        createdAt: s.createdAt,
+        lastSeenAt: s.lastSeenAt,
+        userAgent: s.userAgent,
+        current: s.idHash === currentSessionHash,
+      })),
+    };
   }
 
   /**

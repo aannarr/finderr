@@ -25,20 +25,10 @@ import {
   type SessionSummary,
   unlinkPlex,
 } from "../lib/auth-api";
+import { device } from "../lib/device";
 import { pollPlexPin } from "../lib/plex-poll";
 import { formatStamp } from "../lib/timestamps";
 import { LINK_BUTTON } from "../lib/ui";
-
-/** Enough of a user agent to tell a phone from a laptop, and no more. */
-function device(ua: string | null): string {
-  if (!ua) return "unknown device";
-  if (/iPhone|Android.*Mobile/.test(ua)) return "phone";
-  if (/iPad|Tablet/.test(ua)) return "tablet";
-  if (/Macintosh/.test(ua)) return "Mac";
-  if (/Windows/.test(ua)) return "Windows";
-  if (/Linux/.test(ua)) return "Linux";
-  return "browser";
-}
 
 export function AccountRoute() {
   const [user, setUser] = useState<PublicUser | null>(null);
