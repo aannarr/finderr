@@ -24,6 +24,8 @@ import {
   postSeasonRequest,
   prefetchTitle,
   resetCaches,
+  type SearchResponse,
+  search,
 } from "./api";
 
 const realFetch = globalThis.fetch;
@@ -252,6 +254,155 @@ describe("cachedBrowseRun", () => {
     pagedFetch([["a", "b"]]);
     await browse(filters, { limit: 2, offset: 0 });
     expect(cachedBrowseRun({ genre: "Comedy" }, { limit: 2 })).toBeUndefined();
+  });
+});
+
+/**
+ * ONE CALLER'S ABORT IS NEVER ANOTHER CALLER'S ANSWER.
+ *
+ * `dedupe()` hands every concurrent caller for a key the same promise, and that promise used
+ * to carry the FIRST caller's `AbortSignal` -- so an unmounting route cancelling its own
+ * request rejected the request of everybody still on screen, with an `AbortError` they had
+ * no way to tell from their own. A route that swallows `AbortError`, which is the correct
+ * thing to do about your own abort, then waits forever.
+ *
+ * `search()` is the only caller passing a signal today, so it is what these are written
+ * against -- but the rule lives in `dedupe`, which backs a dozen calls, and that is the
+ * point: the next function to take a signal inherits this rather than re-deciding it.
+ */
+describe("a shared request under abort", () => {
+  /** One entry per fetch that is still waiting, so a test decides when the server answers. */
+  interface Gate {
+    url: string;
+    signal: AbortSignal | null;
+    answer: (body: unknown) => void;
+  }
+
+  /**
+   * A fetch that hangs until the test answers it, and honours the signal it was handed.
+   *
+   * `stubFetch` resolves immediately, which cannot express any of this: every question here
+   * is about what happens to callers of a request that has NOT come back yet.
+   */
+  function gatedFetch(): Gate[] {
+    const gates: Gate[] = [];
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      calls.push(String(url));
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal ?? null;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        gates.push({
+          url: String(url),
+          signal,
+          answer: (body) => resolve({ ok: true, json: async () => body } as unknown as Response),
+        });
+      });
+    }) as unknown as typeof fetch;
+    return gates;
+  }
+
+  /** The smallest thing the server could truthfully answer with. */
+  const answer: SearchResponse = {
+    hits: [],
+    facets: { genre: [], decade: [], year: [], kind: [] },
+    tier: "exact",
+    ms: 1,
+    candidates: 0,
+    parsed: { text: "", stripped: [] },
+  };
+
+  /**
+   * Assert a caller's wait ended in an abort, and SETTLED.
+   *
+   * `.rejects.toThrow()` cannot say this: `signal.reason` is a `DOMException`, which is not
+   * an `Error`, so that matcher rethrows the rejection instead of asserting on it. The name
+   * is the thing worth pinning anyway -- it is exactly what `SearchRoute` branches on.
+   *
+   * The deadline is the other half. The bug being pinned here leaves a promise that never
+   * settles, and a bare `await` on one of those hangs the whole suite rather than failing
+   * it -- which is how this regression would arrive next time.
+   */
+  async function expectAborted(promise: Promise<unknown>): Promise<void> {
+    const outcome = await Promise.race([
+      promise.then(
+        () => "resolved",
+        (e: { name?: string }) => e?.name ?? "rejected without a name",
+      ),
+      Bun.sleep(500).then(() => "never settled"),
+    ]);
+    expect(outcome).toBe("AbortError");
+  }
+
+  test("the caller that stayed still gets the real answer after the other one aborts", async () => {
+    const gates = gatedFetch();
+    const leaving = new AbortController();
+    const staying = new AbortController();
+
+    const abandoned = search("inception", {}, leaving.signal);
+    const wanted = search("inception", {}, staying.signal);
+    expect(calls).toEqual(["/api/search?q=inception"]);
+
+    leaving.abort();
+    await expectAborted(abandoned);
+
+    gates[0]?.answer(answer);
+    expect(await wanted).toEqual(answer);
+  });
+
+  test("a caller that never aborted keeps the underlying fetch alive", async () => {
+    const gates = gatedFetch();
+    const leaving = new AbortController();
+
+    const wanted = search("dune", {});
+    const abandoned = search("dune", {}, leaving.signal);
+
+    leaving.abort();
+    await expectAborted(abandoned);
+    expect(gates[0]?.signal?.aborted).toBe(false);
+
+    gates[0]?.answer(answer);
+    expect(await wanted).toEqual(answer);
+  });
+
+  test("the fetch IS cancelled once every caller has walked away", async () => {
+    const gates = gatedFetch();
+    const first = new AbortController();
+    const second = new AbortController();
+
+    const a = search("alien", {}, first.signal);
+    const b = search("alien", {}, second.signal);
+
+    first.abort();
+    expect(gates[0]?.signal?.aborted).toBe(false);
+    second.abort();
+    expect(gates[0]?.signal?.aborted).toBe(true);
+
+    await expectAborted(a);
+    await expectAborted(b);
+  });
+
+  /**
+   * THE `?q=` DEEP LINK, as a test.
+   *
+   * React double-invokes effects in development, so a deep link fires `search()`, aborts it
+   * in the cleanup, and fires it again -- all in one tick, while the abandoned entry is still
+   * in `inFlight`. Joining that entry is joining a request already being cancelled, which is
+   * how the page came to sit on "Searching..." forever.
+   */
+  test("a caller arriving after the last one left starts a fresh request", async () => {
+    const gates = gatedFetch();
+    const mount = new AbortController();
+    const remount = new AbortController();
+
+    const first = search("blade runner", {}, mount.signal);
+    mount.abort();
+    await expectAborted(first);
+
+    const second = search("blade runner", {}, remount.signal);
+    expect(calls.length).toBe(2);
+
+    gates[1]?.answer(answer);
+    expect(await second).toEqual(answer);
   });
 });
 

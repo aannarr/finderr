@@ -278,21 +278,127 @@ const discoverCache = new Cache<{ shelves: DiscoverShelf[] }>(1);
 const DISCOVER_KEY = "discover";
 
 /**
+ * One fetch, and everybody currently waiting on it.
+ *
+ * The count is what makes an abort safe to share. Cancelling the underlying request is a
+ * decision about EVERY caller, so it may only be taken when there is no caller left -- see
+ * `release`.
+ */
+interface SharedRequest {
+  /** The key it is filed under, so it can drop itself without the caller passing it back. */
+  key: string;
+  /** The single underlying fetch. Every caller's answer is derived from this one promise. */
+  promise: Promise<unknown>;
+  /** Cancels that fetch. Pulled only once every caller has walked away. */
+  abort: AbortController;
+  /** Callers still waiting. A caller that passed no signal can never leave, so it never counts down. */
+  holders: number;
+}
+
+/**
  * Requests already in flight, so two identical keystrokes share one fetch.
  *
  * NOT a cache, and the distinction is the whole reason `browse()` and `getDiscover()`
- * used to refetch on every Back: the entry is dropped in `.finally()`, so it collapses
- * CONCURRENT callers and nothing else. Two sequential calls paid twice. Anything that
- * should survive a route unmount needs a real cache beside this.
+ * used to refetch on every Back: the entry is dropped as soon as its fetch settles, so it
+ * collapses CONCURRENT callers and nothing else. Two sequential calls paid twice. Anything
+ * that should survive a route unmount needs a real cache beside this.
  */
-const inFlight = new Map<string, Promise<unknown>>();
+const inFlight = new Map<string, SharedRequest>();
 
-function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const existing = inFlight.get(key) as Promise<T> | undefined;
-  if (existing) return existing;
-  const p = fn().finally(() => inFlight.delete(key));
-  inFlight.set(key, p);
-  return p;
+/**
+ * Collapse concurrent callers of one key onto one fetch, WITHOUT sharing their aborts.
+ *
+ * > [!IMPORTANT] One caller's abort is never another caller's answer
+ * > Every caller used to be handed the same promise, and that promise carried the FIRST
+ * > caller's `AbortSignal`. So an unmounting route cancelling its own request rejected the
+ * > request of everybody still on screen, with an `AbortError` indistinguishable from their
+ * > own -- and a route that swallows `AbortError`, which is correct for your own abort, then
+ * > waits forever. That is the `?q=` deep link sitting on "Searching..." on the dev server:
+ * > React double-invokes the effect, the cleanup aborts, and the second pass joins the
+ * > request already being cancelled.
+ *
+ * `fn` is handed the SHARED signal, so a fetch built here is cancellable by this module and
+ * never by one of its callers. The caller's own `signal` only ever ends the caller's wait.
+ */
+function dedupe<T>(key: string, fn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  // Gone before it asked -- so no fetch is started and no entry is joined.
+  if (signal?.aborted) return Promise.reject(signal.reason);
+
+  const entry = inFlight.get(key) ?? startShared(key, fn);
+  // THE ONE CAST. `inFlight` holds every payload this module fetches under one map, and the
+  // key is what says which; a caller asking for `search:x` is the only thing that can know.
+  const shared = entry.promise as Promise<T>;
+  entry.holders++;
+  // A caller with no signal cannot walk away, so it is counted and never counts down. That
+  // is what stops the fetch being abandoned underneath `browse()` and the ten others.
+  if (!signal) return shared;
+  return waitWithOwnAbort(entry, shared, signal);
+}
+
+function startShared<T>(key: string, fn: (signal: AbortSignal) => Promise<T>): SharedRequest {
+  const abort = new AbortController();
+  const entry: SharedRequest = {
+    key,
+    abort,
+    holders: 0,
+    // Dropped the moment the fetch settles, which is what keeps this a stampede guard
+    // rather than a cache.
+    promise: fn(abort.signal).finally(() => drop(entry)),
+  };
+  // Handled here as well as by each caller, so a rejection every caller has already walked
+  // away from does not surface as an unhandled promise rejection.
+  entry.promise.catch(() => {});
+  inFlight.set(key, entry);
+  return entry;
+}
+
+/** Forget an entry, unless a later one has already taken its key. */
+function drop(entry: SharedRequest): void {
+  if (inFlight.get(entry.key) === entry) inFlight.delete(entry.key);
+}
+
+/**
+ * One caller's own view of the shared fetch, which its own `signal` may leave.
+ *
+ * Leaving rejects THIS promise and nobody else's. The shared fetch is cancelled only by
+ * `release`, once the last caller has gone.
+ */
+function waitWithOwnAbort<T>(entry: SharedRequest, shared: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let left = false;
+    const leave = (): void => {
+      if (left) return;
+      left = true;
+      signal.removeEventListener("abort", onAbort);
+      release(entry);
+    };
+    function onAbort(): void {
+      leave();
+      reject(signal.reason);
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    shared.then(
+      (value) => {
+        leave();
+        resolve(value);
+      },
+      (error: unknown) => {
+        leave();
+        reject(error);
+      },
+    );
+  });
+}
+
+function release(entry: SharedRequest): void {
+  entry.holders--;
+  if (entry.holders > 0) return;
+  // DROPPED IN THE SAME STEP IT IS ABANDONED. A caller arriving one tick later -- React's
+  // double-invoked effects are exactly that -- must start a fresh fetch rather than join one
+  // already being cancelled.
+  drop(entry);
+  // A no-op when the fetch has already settled and its callers are simply leaving.
+  entry.abort.abort();
 }
 
 function filterKey(q: string, f: Filters): string {
@@ -308,20 +414,26 @@ export async function search(q: string, f: Filters = {}, signal?: AbortSignal): 
   const hit = searchCache.fresh(key);
   if (hit) return hit;
 
-  return dedupe(`search:${key}`, async () => {
-    const u = new URLSearchParams({ q });
-    if (f.genre) u.set("genre", f.genre);
-    if (f.decade !== undefined) u.set("decade", String(f.decade));
-    if (f.year !== undefined) u.set("year", String(f.year));
-    if (f.kind) u.set("kind", f.kind);
+  // The fetch takes `dedupe`'s SHARED signal, never the caller's -- the caller's is handed
+  // over as the third argument, and only ends this caller's wait. See `dedupe`.
+  return dedupe(
+    `search:${key}`,
+    async (shared) => {
+      const u = new URLSearchParams({ q });
+      if (f.genre) u.set("genre", f.genre);
+      if (f.decade !== undefined) u.set("decade", String(f.decade));
+      if (f.year !== undefined) u.set("year", String(f.year));
+      if (f.kind) u.set("kind", f.kind);
 
-    const res = await fetch(`/api/search?${u}`, { signal });
-    if (!res.ok) throw new Error(`search failed: ${res.status}`);
-    const data = (await res.json()) as SearchResponse;
-    searchCache.set(key, data);
-    for (const h of data.hits) titleCache.set(h.tconst, h);
-    return data;
-  });
+      const res = await fetch(`/api/search?${u}`, { signal: shared });
+      if (!res.ok) throw new Error(`search failed: ${res.status}`);
+      const data = (await res.json()) as SearchResponse;
+      searchCache.set(key, data);
+      for (const h of data.hits) titleCache.set(h.tconst, h);
+      return data;
+    },
+    signal,
+  );
 }
 
 /**
