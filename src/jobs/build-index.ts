@@ -135,6 +135,7 @@ async function main(): Promise<number> {
     `gate canary: ${canary.ok ? "PASS" : "FAIL"} -- ${canary.passed}/${canary.total} ` +
       `(${(canary.ratio * 100).toFixed(0)}%, floor ${(canary.floor * 100).toFixed(0)}%)`,
   );
+  if (canary.degraded) log(`    ${canary.degraded}`);
   if (canary.failures.length > 0) {
     for (const f of canary.failures.slice(0, 10))
       log(`    miss: "${f.query}" wanted ~${f.want}, got ${f.got}`);

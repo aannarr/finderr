@@ -800,6 +800,18 @@ results: a tokenizer change, or IMDb re-scoring its votes. Only running real que
 catches that, and the same suite validates the new file in the running process before the
 engine swaps to it. A refused swap shows up in `/api/health` as `index.reload.ok: false`.
 
+You can run it against any index without building one:
+
+```bash
+bun run canary                       # the configured index
+bun run canary path/to/titles.db     # some other one
+```
+
+Five of its cases can only be answered by the fuzzy tier, so on a checkout with no
+`spellfix1` they are reported as skipped and named, not counted as ranking failures. The
+score stays honest about what it measured, and the output says which capability is missing
+and how to get it.
+
 The build also pulls a fifth file that is not IMDb's: an id crosswalk, `tconst` to TMDB
 and TheTVDB id, queried in bulk out of Wikidata through
 [QLever](https://qlever.cs.uni-freiburg.de/). It covers 95% of films and 92% of series at

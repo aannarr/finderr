@@ -16,6 +16,7 @@
     "index:vocab": "bun src/jobs/build-vocab.ts",
     "logos:import": "bun src/jobs/import-logos.ts",
     "awards:import": "bun src/jobs/import-awards.ts",
+    "canary": "bun src/jobs/canary.ts",
     "search:report": "bun src/jobs/search-report.ts",
     "bench": "bun src/jobs/bench-index.ts",
     "agent:eval": "bun src/jobs/agent-eval.ts",

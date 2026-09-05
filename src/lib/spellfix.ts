@@ -88,6 +88,29 @@ export interface SpellfixLoad {
 }
 
 /**
+ * How to obtain the extension, in one sentence.
+ *
+ * Named once and referred to everywhere, because the SAME missing binary surfaces in at
+ * least three diagnostics -- the load failure here, the canary's degraded line, and the
+ * `canary` job -- and three hand-written copies of the remedy would drift. The dev recipe
+ * is macOS/Homebrew-specific (`package.json`'s `spellfix:build` shells out to `cc` with
+ * `$(brew --prefix sqlite)`); the image builds the same source in its own stage into
+ * `./ext`, so both routes are named rather than only the one that happens to fit the
+ * reader's machine.
+ */
+export const SPELLFIX_BUILD_HINT =
+  "build it with `bun run spellfix:build` (macOS/Homebrew), or take it from the Dockerfile's spellfix stage";
+
+/**
+ * What to tell a HUMAN when the extension is the thing that is missing.
+ *
+ * One string, so the search engine, the canary and anything else reporting the absence say
+ * the same sentence -- and so a test can pin the wording in one place instead of chasing
+ * three copies of it.
+ */
+export const SPELLFIX_MISSING = `spellfix1 is not loaded; ${SPELLFIX_BUILD_HINT}`;
+
+/**
  * Load spellfix1 into an open database.
  *
  * `loadExtension` wants the path WITHOUT its file extension -- SQLite appends the
@@ -112,7 +135,8 @@ export function loadSpellfix(db: Database, log: (m: string) => void = () => {}):
 
   log(
     `spellfix1: NOT loaded -- typo-tolerant search is off, FTS still works. ` +
-      `Looked in ${extensionCandidates().join(", ")}${lastError ? ` -- last error: ${lastError}` : ""}`,
+      `Looked in ${extensionCandidates().join(", ")}${lastError ? ` -- last error: ${lastError}` : ""}. ` +
+      `To enable it, ${SPELLFIX_BUILD_HINT}.`,
   );
   return { ok: false, path: null, error: lastError };
 }
