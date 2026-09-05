@@ -268,10 +268,12 @@ already hold from some title's cast.
 
 Requests return immediately. The POST answers `202`, a background worker adds the title
 to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
-before anything is queued. Retry is a button. There are three grains: a whole title, a
-season selection, and -- for a series Sonarr already holds -- a single episode, which is
-the case the other two refuse. An admin can also override the quality profile and root
-folder for one request without touching the defaults.
+before anything is queued. Retry is a button. There are four grains: a whole title, a
+season selection, and -- for a series Sonarr already holds, which is the case the first two
+refuse -- one episode, or every aired episode of a season you have no file for. That last
+one is the gap the season panel has been drawing all along, filled in one button. An admin
+can also override the quality profile and root folder for one request without touching the
+defaults.
 
 Changing your mind is a button too. Anything on your requests page that has not arrived yet
 carries Withdraw: it drops finderr's record of the ask, gives you back the daily quota row it
@@ -638,7 +640,7 @@ rebuild.
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
 | `FINDERR_AGENT_CHEAP_RATE_PER_MINUTE` | `120` | Per **agent key**, on everything a local SQLite seek answers. In addition to the per-IP limits, never instead of them |
 | `FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE` | `20` | Per **agent key**, on `/api/search`, `GET /api/title/:tconst` and the request POSTs — the operations that cost real CPU, a blocking provider wait, or a download. Also the cap on how many blocking title reads one key can have in flight |
-| `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, single-episode requests do not count, and a user over the limit gets `429` naming their reset time |
+| `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, the episode and season grains do not count because they write no `request` row, and a user over the limit gets `429` naming their reset time |
 | `FINDERR_SEARCH_LOG` | `true` | Keep what people search for, so the ranking can be tuned against real queries instead of invented ones. A row is **the query, a timestamp and a result count** — no session, no user, no address — and a click report adds which title was opened and at what rank. Set it to `false` and nothing is buffered and nothing is written; the tables stay. Read it with `bun run search:report` |
 | `FINDERR_SEARCH_LOG_KEEP_ROWS` | `50000` | Rows kept per table, oldest deleted first. A disk bound rather than a retention policy: there is no identity in this data to expire |
 | `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
@@ -1088,20 +1090,21 @@ Every line here is a real limitation. It is not a roadmap.
   default, so out of the box nothing limits how much anybody asks for.
 - Notifications go to the person who asked, and nowhere else. Web push tells them on their
   own devices when their own request arrives; there is no Discord, ntfy, Telegram or
-  webhook, and no way to announce an arrival to a room. The lifecycle hooks an addon would
+  outbound webhook, and no way to announce an arrival to a room. (The webhook finderr does
+  have points the other way: the arrs calling in. See
+  [Letting the arrs tell you](#letting-the-arrs-tell-you).) The lifecycle hooks an addon would
   need for that are designed and not built; [ADDONS.md](ADDONS.md) lists them and says
   plainly that they do not exist yet.
 - Withdrawing a request never removes the media, and a request that has already arrived
   cannot be withdrawn at all. Withdraw stops the search and forgets the ask; deleting the
   film, the series or the file is still done in the arr, where you can see what you are
   deleting.
-- A series already in Sonarr cannot be extended by the season. Season picking works when a
-  series is first requested; asking again for a show the library mirror already knows
-  answers `409 already in your library`, and the worker only ever calls *add*. Adding a
-  whole season to a partially-monitored show is done in Sonarr for now. Single episodes are
-  the exception and do work: an episode of a series Sonarr already holds is one button, and
-  it is tracked by the episode mirror rather than by a request row, so it does not appear in
-  the request log.
+- Topping up a series you already have is invisible to the request log. Asking for a show
+  the library mirror already knows still answers `409 already in your library`, so the two
+  whole-title grains are no use there; the episode and season grains are what fill the gap,
+  and neither writes a `request` row. The record that you asked is the episode mirror
+  itself, reporting `monitored` and then `hasFile` from Sonarr, which means neither shows
+  up on `/requests` or `/log` and neither spends anybody's daily quota.
 - A request that finds nothing goes `no_release` on its own after a day and nine
   reconcile passes, rather than showing "Processing" forever. You can retry it.
 - No per-addon configuration. An addon needing an API key reads `process.env` itself.
@@ -1136,7 +1139,8 @@ Every line here is a real limitation. It is not a roadmap.
 - `Episode.runtime` is always null. Skyhook carries a show-level typical runtime only,
   and the provider refuses to copy a guess onto every episode.
 - Most "Where to watch" tiles print a name, not a logo. Kometa ships 26 streaming marks
-  against the ~300 services TMDB knows, so outside the big ones you get text. Every tile
+  against the ~300 services TMDB knows (`STREAMING_MARKS` in `src/lib/watch-services.ts` is
+  the table, and owns that count), so outside the big ones you get text. Every tile
   links to TMDB's watch page for your country, which is the one URL TMDB provides; there is
   no per-offer link in the payload.
 - A studio badge appears only once the title's poster has been resolved. Both come from
@@ -1176,16 +1180,21 @@ Every line here is a real limitation. It is not a roadmap.
 - Not a Seerr replacement for a Jellyfin or Emby household. Plex is the only media server
   finderr talks to, for sign-in and for the Play button. Radarr and Sonarr are the only
   arrs.
-- No 4K or second-instance requests. One Radarr, one Sonarr, one quality profile and one
-  root folder each.
+- No 4K or second-instance requests. One Radarr and one Sonarr, each configured with one
+  default quality profile and one root folder. An admin can override those two for a single
+  request; nothing else about the destination is selectable, and there is no second instance
+  to send anything to.
 - Nothing is embedded from a third party. The trailer is a link out, never an iframe.
   finderr is meant to face the internet, and a third party's player and its tracking do
   not go on the page.
 - No addon marketplace, ever. An addon runs with the server's privileges, and the server
   holds the arr keys. Installing one means reading its code first. There is no catalogue
   to click through.
-- No feature that needs a live network call while someone is looking at the screen. See
-  [Why](#why).
+- Nothing on the render path may block on the network. A handler that can wait on a
+  provider while somebody is looking at the screen is treated as a bug, so a feature that
+  cannot be answered from local SQLite either fills in behind the page or does not ship. The
+  assistant is the one deliberate exception and it says so: a live model call is the whole
+  of what it is, which is why it is admin-only and in beta. See [Why](#why).
 
 ## finderr and Seerr, fairly
 
