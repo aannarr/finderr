@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { quotaVerdict, utcDayReset, utcDayStart } from "./request-quota";
+import { quotaApplies, quotaVerdict, utcDayReset, utcDayStart, utcDayStartDaysAgo } from "./request-quota";
 
 /** A thunk that records whether it was called, so "never counted" is an assertion. */
 function counter(value: number): (() => number) & { calls: number } {
@@ -65,6 +65,57 @@ describe("the UTC day boundary", () => {
     expect(utcDayReset(new Date("2026-09-02T13:45:12.921Z"))).toBe("2026-09-03T00:00:00.000Z");
     expect(utcDayReset(new Date("2026-09-30T23:00:00.000Z"))).toBe("2026-10-01T00:00:00.000Z");
     expect(utcDayReset(new Date("2026-12-31T23:00:00.000Z"))).toBe("2027-01-01T00:00:00.000Z");
+  });
+
+  test("a window of N days walks back whole days, across a month end", () => {
+    const now = new Date("2026-09-02T13:45:12.921Z");
+    // Six days back from the day `now` falls in is the seven-day window INCLUDING today,
+    // which is what "this week" means on the people list.
+    expect(utcDayStartDaysAgo(6, now)).toBe("2026-08-27T00:00:00.000Z");
+  });
+
+  test("zero days back is today, so it cannot disagree with utcDayStart", () => {
+    const now = new Date("2026-09-02T13:45:12.921Z");
+    expect(utcDayStartDaysAgo(0, now)).toBe(utcDayStart(now));
+  });
+});
+
+/**
+ * The two exemptions, asserted on their own rather than only through a verdict.
+ *
+ * They are read by a SECOND caller now -- `/api/admin/users/:id` sends the answer to the
+ * admin user page, so it can say "no daily limit applies" without working the rule out for
+ * itself. A page that re-derived it would be free to disagree with the endpoint that refuses
+ * the request, which is the exact drift `quotaApplies` exists to prevent.
+ */
+describe("quotaApplies", () => {
+  test("a limit of zero or less is unlimited, for anybody", () => {
+    expect(quotaApplies("user", 0)).toBe(false);
+    expect(quotaApplies("user", -1)).toBe(false);
+    expect(quotaApplies("admin", 0)).toBe(false);
+  });
+
+  test("an admin is exempt even where a limit is set", () => {
+    expect(quotaApplies("admin", 5)).toBe(false);
+  });
+
+  test("it binds a member with a limit, and only them", () => {
+    expect(quotaApplies("user", 5)).toBe(true);
+  });
+
+  test("the verdict agrees with it -- one rule, not two", () => {
+    for (const role of ["admin", "user"] as const) {
+      for (const limit of [-1, 0, 5]) {
+        // `usedToday` returns a count at the limit, so the ONLY thing that can let this
+        // through is the exemption. Agreement is then a property rather than a coincidence.
+        const verdict = quotaVerdict({ role, limit, usedToday: () => Math.max(limit, 0) });
+        expect({ role, limit, allowed: verdict.allowed }).toEqual({
+          role,
+          limit,
+          allowed: !quotaApplies(role, limit),
+        });
+      }
+    }
   });
 });
 

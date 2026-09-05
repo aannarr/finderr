@@ -40,8 +40,14 @@ export function seasonLine(request: Pick<MediaRequest, "seasons">): string | nul
  *
  * `id` breaks the tie, because two requests made in the same millisecond carry the same ISO
  * string and an order that reshuffles between loads is worse than one that is imperfect.
+ *
+ * Generic over the row rather than tied to `MediaRequest`, because the admin user page lists
+ * one person's requests from a NARROWER payload (`AttributedRequest`, no derived verdict) and
+ * needs this exact ordering rule. One rule, two row shapes, and the type parameter is what
+ * lets the second caller reuse it instead of re-sorting by `updated_at` and re-learning why
+ * that is wrong.
  */
-export function logOrder(rows: readonly MediaRequest[]): MediaRequest[] {
+export function logOrder<T extends Pick<MediaRequest, "id" | "created_at">>(rows: readonly T[]): T[] {
   return [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
 }
 

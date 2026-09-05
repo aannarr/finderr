@@ -11,26 +11,20 @@
  * > render is the missing step, and an eleven-line memory router is cheaper than the
  * > workaround AND stronger -- it renders real `href`s, so "does this row link to the
  * > SERIES rather than to the episode" is a fact these tests can check rather than assume.
- * > Kept local rather than shared, because this is so far the only file that needs it.
+ * > It is SHARED now (`../test/render-in-router`): four files had grown their own copy, and
+ * > the line that used to stand here saying this was the only one that needed it is what
+ * > every one of the other three read before writing a fifth.
  */
 
 import { describe, expect, test } from "bun:test";
-import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { StoredMessage } from "../lib/agent-store";
 import type { TranscriptEntry } from "../lib/agent-transcript";
+import { renderInRouter } from "../test/render-in-router";
 import { AssistantPanel, type AssistantPanelProps } from "./AssistantPanel";
 
-/** Render anything that contains a `<Link>`, with a router that has finished loading. */
-async function renderRouted(node: ReactNode): Promise<string> {
-  const router = createRouter({
-    routeTree: createRootRoute({ component: () => <>{node}</> }),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-  });
-  await router.load();
-  return renderToStaticMarkup(<RouterProvider router={router} />);
-}
+/** Render anything that contains a `<Link>`. No child routes -- nothing here links anywhere. */
+const renderRouted = (node: ReactNode) => renderInRouter(node, []);
 
 const NOOP = () => {};
 
