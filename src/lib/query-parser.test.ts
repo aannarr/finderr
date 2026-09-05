@@ -147,11 +147,13 @@ describe("anticipationWeight", () => {
     expect(w(2031)).toBeLessThan(0.001);
   });
 
-  test("it collapses FASTER behind, because a zero starts to be evidence", () => {
-    // The asymmetry is the design. A title out for a year with nobody rating it really is
-    // obscure, so the past side decays in half the distance the future side does.
-    expect(w(2025)).toBeCloseTo(0.0625, 4);
-    expect(w(2024)).toBeLessThan(0.001);
+  test("it decays behind with no plateau, because a zero starts to be evidence", () => {
+    // Half a year behind, near-nothing at two, gone by three. The past side has no plateau
+    // at all, which is what keeps it strictly under the future side at every distance even
+    // though the two scales are now the same number.
+    expect(w(2025)).toBeCloseTo(0.5, 6);
+    expect(w(2024)).toBeCloseTo(0.0625, 4);
+    expect(w(2023)).toBeLessThan(0.01);
     expect(w(1994)).toBe(0);
   });
 

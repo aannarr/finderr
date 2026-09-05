@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { loadConfig } from "./config";
 import { buildTitleSearchIndex, SCHEMA } from "./index-builder";
 import { despace, normalizeStripped } from "./normalize";
+import { anticipationWeight } from "./query-parser";
 import { SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-exact-"));
@@ -278,6 +279,69 @@ describe("the order is TOTAL", () => {
     } finally {
       forward.close();
       backward.close();
+    }
+  });
+});
+
+/**
+ * A PREMIERE MUST NEVER LOOK LIKE A DEMOTION.
+ *
+ * aannarr, 2026-09-05, naming the one behaviour he did not want: a title that is
+ * anticipated, disappears in premiere week, and comes back afterwards. These pin that it
+ * cannot happen -- as a property of the scoring shape rather than of today's constants.
+ */
+describe("a title crossing its own release", () => {
+  const popularityOf = (votes: number, year: number, now: Date) => {
+    const raw = 2.4 * Math.log(Math.min(votes, 300_000) + 10);
+    return raw + anticipationWeight(year, now) * Math.max(0, 2.4 * Math.log(1_500 + 10) - raw);
+  };
+
+  test("the score only ever RISES as votes arrive through the release year", () => {
+    // The heart of it. Through the whole release year the weight is 1, so the blend is
+    // max(actual, prior) -- monotonic in votes by construction. A premiere adds votes, so a
+    // premiere can only help. Walked across a real mid-year premiere, day by day.
+    const release = new Date("2026-06-15T00:00:00Z");
+    let previous = Number.NEGATIVE_INFINITY;
+    for (let day = 0; day < 365; day++) {
+      const on = new Date(Date.UTC(2026, 0, 1) + day * 86_400_000);
+      const elapsed = (on.getTime() - release.getTime()) / 86_400_000;
+      const votes = elapsed < 0 ? 0 : Math.round(80_000 * (1 - Math.exp(-elapsed / 30)));
+      const score = popularityOf(votes, 2026, on);
+      expect(score).toBeGreaterThanOrEqual(previous - 1e-9);
+      previous = score;
+    }
+  });
+
+  test("a title that finds an audience never steps down at the year turn either", () => {
+    // Its own votes have overtaken the prior long before New Year, so the weight going from
+    // 1 to 0.5 changes a `max(0, ...)` that was already zero. The step only exists for
+    // titles the imputation was still carrying.
+    const dec31 = new Date("2026-12-31T00:00:00Z");
+    const jan1 = new Date("2027-01-01T00:00:00Z");
+    expect(popularityOf(60_000, 2026, jan1)).toBeGreaterThanOrEqual(popularityOf(60_000, 2026, dec31) - 1e-9);
+  });
+
+  test("the New Year step is BOUNDED for the worst case, a late release nobody rated", () => {
+    // This is the one real discontinuity and the reason `PAST_SCALE_YEARS` is 1 rather than
+    // 0.5: the calendar grace after release is twelve months for a January title and four
+    // days for a 27 December one, so the worst case has to be sized rather than wished away.
+    // It was 10.23 points. Anything above 6 means the past scale has been narrowed again.
+    const step =
+      popularityOf(6, 2026, new Date("2026-12-31T00:00:00Z")) -
+      popularityOf(6, 2026, new Date("2027-01-01T00:00:00Z"));
+    expect(step).toBeGreaterThan(0);
+    expect(step).toBeLessThan(6);
+  });
+
+  test("and it never comes back: past the release year the curve only decays", () => {
+    // The other half of "disappears and comes back". Monotonic decay behind means there is
+    // no year in which an unrated title regains anything it lost.
+    const votes = 0;
+    let previous = Number.POSITIVE_INFINITY;
+    for (let year = 2026; year >= 2020; year--) {
+      const score = popularityOf(votes, year, new Date("2026-06-01T00:00:00Z"));
+      expect(score).toBeLessThanOrEqual(previous + 1e-9);
+      previous = score;
     }
   });
 });

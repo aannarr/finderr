@@ -183,13 +183,32 @@ export function recencyScore(year: number | null): number {
  * | +2 | 0.50 | announced and dated, but a way off |
  * | +3 | 0.06 | speculative |
  * | +5 | 0.00 | a 2031 slate entry gets nothing, as asked |
- * | -1 | 0.06 | out for a year with no votes: that IS evidence now |
- * | -2 and older | 0.00 | ordinary obscurity, judged on its votes like everything else |
+ * | -1 | 0.50 | out since last year: a zero is starting to mean something |
+ * | -2 | 0.06 | out two years with nobody rating it: that IS evidence now |
+ * | -3 and older | 0.00 | ordinary obscurity, judged on its votes like everything else |
  *
- *   - **Before release** a zero carries no information, so the plateau runs a full year out
- *     and the taper is slow.
- *   - **After release** a zero starts to BE evidence -- a title out for a year with nobody
- *     rating it really is obscure -- so it collapses in half the distance.
+ *   - **Before release** a zero carries no information, so the PLATEAU runs a full year out.
+ *   - **After release** there is no plateau at all -- decay starts immediately. That single
+ *     difference is the asymmetry, and it holds at every distance: being a year late is
+ *     always worth less than being a year early.
+ *
+ * > [!IMPORTANT] THE RELEASE-YEAR GRACE IS WHAT STOPS A PREMIERE LOOKING LIKE A DEMOTION
+ * > aannarr, 2026-09-05, on the thing he did not want: a title that is anticipated,
+ * > vanishes in premiere week, and comes back after. **That cannot happen**, and it is worth
+ * > knowing exactly why, because it is a property of the shape rather than a tuning choice.
+ * >
+ * > Through the WHOLE release year the weight is 1, so `rank()`'s blend reduces to
+ * > `max(actual votes, the prior)` -- which can only rise as votes arrive. Simulated day by
+ * > day across a mid-year premiere: **zero days on which the score went down.** And after the
+ * > year turns the curve only decays, so nothing ever comes back either. There is no
+ * > oscillation anywhere in it.
+ * >
+ * > What remains is ONE step, at New Year, and `PAST_SCALE_YEARS` is sized against it. The
+ * > grace after release is an accident of the calendar -- twelve months for a January title,
+ * > four days for one released on 27 December -- so the worst case is a late-December release
+ * > nobody rated, which stepped **10.23 points** in a night at the original half-year scale
+ * > and steps **5.46** now. A film that finds any audience at all never steps down at all,
+ * > because its own votes have already overtaken the prior by then.
  *
  * Note that no production system publishes a date-based anticipation curve. TMDB, Trakt and
  * Letterboxd all solve this by substituting a pre-release ENGAGEMENT signal -- watchlist
@@ -204,6 +223,14 @@ export function anticipationWeight(year: number | null, now: Date = new Date()):
   if (year === null || year === undefined) return 0;
 
   const away = year - now.getUTCFullYear();
+
+  // Outside the horizon the answer is EXACTLY zero rather than nearly zero. A Gaussian is
+  // never actually 0, so a 1927 title came out at 5.6e-309 -- numerically irrelevant, and
+  // it made "a slate entry for 2031 gets nothing" a claim that was not literally true. It
+  // is also the hot path: almost every candidate in any query is an old title, and this
+  // returns before the exp() rather than after it.
+  if (Math.abs(away) > ANTICIPATION_HORIZON_YEARS) return 0;
+
   const [offset, scale] =
     away >= 0 ? [FUTURE_PLATEAU_YEARS, FUTURE_SCALE_YEARS] : [PAST_GRACE_YEARS, PAST_SCALE_YEARS];
   const d = Math.max(0, Math.abs(away) - offset);
@@ -216,6 +243,16 @@ export function anticipationWeight(year: number | null, now: Date = new Date()):
 }
 
 /**
+ * Past this many years either way the weight is zero, exactly.
+ *
+ * Five, because the curve is already spent well before it: the largest weight this cuts off
+ * is 2.1e-7 ahead and 3.7e-11 behind, worth under a millionth of a point of a 24.7-point
+ * term. It is a truncation of noise, not of signal -- and it is what lets the doc table
+ * above say "0.00" and mean it.
+ */
+const ANTICIPATION_HORIZON_YEARS = 5;
+
+/**
  * Full weight for anything out this year or next.
  *
  * `0` is not a rounding allowance, it is the current year being genuinely unresolvable from
@@ -224,7 +261,20 @@ export function anticipationWeight(year: number | null, now: Date = new Date()):
 const FUTURE_PLATEAU_YEARS = 1;
 /** Half weight one scale past the plateau: +2 is 0.5, +3 is 0.06, +5 is nothing. */
 const FUTURE_SCALE_YEARS = 1;
-/** No grace behind: the current year is already covered by the plateau above. */
+/**
+ * No plateau behind: the release year itself is already covered by the future side, and
+ * this zero is what keeps the curve asymmetric now that the two scales match.
+ */
 const PAST_GRACE_YEARS = 0;
-/** Behind, a zero becomes evidence fast -- half the distance forward. */
-const PAST_SCALE_YEARS = 0.5;
+/**
+ * How fast a zero turns into evidence once a title is out. Half weight one year behind.
+ *
+ * SIZED AGAINST THE NEW YEAR STEP rather than picked to match the future side. It was 0.5,
+ * which made the step a **10.23-point** drop overnight for the worst case -- a late-December
+ * release nobody rated, whose calendar grace after release is four days rather than the
+ * twelve months a January release happens to get. At 1.0 the same step is **5.46**, and the
+ * whole cost is that a year-old unrated title is credited as though it had 113 votes: an
+ * eighth of the prior, well under the 1,000-vote line the browse floor and the cast floor
+ * both use, so it cannot outrank anything real.
+ */
+const PAST_SCALE_YEARS = 1;
