@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectMemoryBudget, resolveTuning } from "./memory-budget";
+import { detectMemoryBudget, readMemoryUsage, resolveTuning } from "./memory-budget";
 
 const budget = (mb: number) => ({ mb, source: "cgroup-v2" as const });
 const MB = 1e6;
@@ -15,6 +15,26 @@ describe("detectMemoryBudget", () => {
     const b = detectMemoryBudget();
     expect(b.mb).toBeGreaterThan(0);
     expect(["cgroup-v2", "cgroup-v1", "host-ram"]).toContain(b.source);
+  });
+});
+
+describe("readMemoryUsage", () => {
+  test("answers on every host, and says null rather than 0 where it cannot see", () => {
+    // Runs on macOS (no cgroup at all), in cgroup v1 on the deployment kernel and in cgroup v2
+    // under Docker Desktop and CI. The contract is the same in all three: either a number or
+    // an explicit null. A 0 would read as "no page cache", which is a claim, and on macOS the
+    // truth is that the file does not exist.
+    const u = readMemoryUsage();
+    expect([null, "cgroup-v1", "cgroup-v2"]).toContain(u.source);
+    for (const v of [u.currentMb, u.cacheMb, u.rssMb, u.swapMb, u.failcnt, u.pressureSome10]) {
+      expect(v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0)).toBe(true);
+    }
+    // The two spellings are read as one vocabulary: a source means the two numbers that
+    // matter are both present, never one of them.
+    if (u.source !== null) {
+      expect(typeof u.cacheMb).toBe("number");
+      expect(typeof u.rssMb).toBe("number");
+    }
   });
 });
 

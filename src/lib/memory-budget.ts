@@ -80,6 +80,116 @@ export function detectMemoryBudget(override?: number | null): MemoryBudget {
   return { mb: Math.floor(totalmem() / 1024 / 1024), source: "host-ram" };
 }
 
+/**
+ * What is ACTUALLY resident right now, as the kernel sees it.
+ *
+ * > [!IMPORTANT] `docker stats` cannot answer this and neither can anything in the process
+ * > `docker stats` subtracts `inactive_file` from its usage figure, which is precisely the
+ * > page-cache pages the prefault exists to create -- so a container holding 900 MB of index
+ * > in cache reports ~75 MB and looks idle. And inside the process, `process.memoryUsage()`
+ * > sees only the JS heap and the RSS, never the page cache, which is where the index lives.
+ * > The cgroup files are the only place the number exists.
+ *
+ * The two cgroup generations name the same two quantities differently and both spellings are
+ * read: v2 says `file`/`anon` in `memory.stat`, v1 says `cache`/`rss`. Everything is `null`
+ * where the kernel does not expose it -- notably PSI, which neither Docker Desktop's VM nor
+ * the DSM 4.4 kernel surfaces inside a container. A `0` there would read as "no pressure"
+ * when the truth is "cannot see", the same rule `coldIo` follows on macOS.
+ */
+export interface MemoryUsage {
+  /** Total charged to the cgroup: page cache plus anonymous. */
+  currentMb: number | null;
+  /** Page cache. THE number: how much of the index is actually resident. */
+  cacheMb: number | null;
+  /** Anonymous memory -- the JS heap and SQLite's own pager cache. */
+  rssMb: number | null;
+  /** Times an allocation hit the ceiling. Non-zero means the cap is binding, not decorative. */
+  failcnt: number | null;
+  swapMb: number | null;
+  /** `some avg10` from PSI, in percent of wall time stalled on memory. */
+  pressureSome10: number | null;
+  source: "cgroup-v2" | "cgroup-v1" | null;
+}
+
+function readNum(path: string): number | null {
+  try {
+    const n = Number(readFileSync(path, "utf8").trim());
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStat(path: string): Map<string, number> | null {
+  try {
+    const out = new Map<string, number>();
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const [k, v] = line.split(/\s+/);
+      if (k && v !== undefined) out.set(k, Number(v));
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** `some avg10=1.23 ...` -> 1.23. Absent on both kernels that matter here; read anyway. */
+function readPressure(path: string): number | null {
+  try {
+    const m = readFileSync(path, "utf8").match(/^some\s+avg10=([\d.]+)/m);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+const MB = 1024 * 1024;
+const toMb = (n: number | undefined | null): number | null =>
+  n === undefined || n === null ? null : Math.round(n / MB);
+
+export function readMemoryUsage(): MemoryUsage {
+  const v2 = readStat("/sys/fs/cgroup/memory.stat");
+  if (v2?.has("file")) {
+    const events = readStat("/sys/fs/cgroup/memory.events");
+    return {
+      currentMb: toMb(readNum("/sys/fs/cgroup/memory.current")),
+      cacheMb: toMb(v2.get("file")),
+      rssMb: toMb(v2.get("anon")),
+      // v2 has no `failcnt`; `memory.events`' `max` counts the same event -- an allocation
+      // that reached the ceiling and forced reclaim.
+      failcnt: events?.get("max") ?? null,
+      swapMb: toMb(readNum("/sys/fs/cgroup/memory.swap.current")),
+      pressureSome10: readPressure("/sys/fs/cgroup/memory.pressure"),
+      source: "cgroup-v2",
+    };
+  }
+  const v1 = readStat("/sys/fs/cgroup/memory/memory.stat");
+  if (v1?.has("cache")) {
+    const usage = readNum("/sys/fs/cgroup/memory/memory.usage_in_bytes");
+    const memsw = readNum("/sys/fs/cgroup/memory/memory.memsw.usage_in_bytes");
+    return {
+      currentMb: toMb(usage),
+      cacheMb: toMb(v1.get("cache")),
+      rssMb: toMb(v1.get("rss")),
+      failcnt: readNum("/sys/fs/cgroup/memory/memory.failcnt"),
+      // v1 reports memory+swap as one figure, so swap is the difference. Negative is
+      // impossible but clamps anyway -- the two files are read a microsecond apart.
+      swapMb: memsw !== null && usage !== null ? Math.max(0, toMb(memsw - usage) ?? 0) : null,
+      pressureSome10: null,
+      source: "cgroup-v1",
+    };
+  }
+  return {
+    currentMb: null,
+    cacheMb: null,
+    rssMb: null,
+    failcnt: null,
+    swapMb: null,
+    pressureSome10: null,
+    source: null,
+  };
+}
+
 /** The resolved read-side settings, and the reasoning, so boot can print both. */
 export interface StorageTuning {
   budgetMb: number;

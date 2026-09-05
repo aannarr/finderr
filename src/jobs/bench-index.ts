@@ -46,9 +46,10 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
+import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
 import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
@@ -194,48 +195,6 @@ function hostStamp(dbPath: string): Record<string, unknown> {
 }
 
 /**
- * Bytes this process has actually pulled off the BLOCK DEVICE, or null where unknowable.
- *
- * `/proc/self/io`'s `read_bytes` counts what went to the storage layer, so it is zero for a
- * read served from the page cache and non-zero only for real I/O. That is the single most
- * direct answer to "did this query touch the disk?", and it is exactly the column the harness
- * has never had -- its docstring says a pages-read counter would be a guess, and it is right
- * about SQLite's own counters, but the KERNEL knows.
- *
- * **Linux only, and deliberately null rather than 0 on macOS.** A zero would read as "no I/O
- * happened", which is the opposite of "we cannot see". The comparison the whole exercise is
- * for runs on Linux at the end that matters, so having it on one side is worth more than
- * having a fabricated symmetry.
- *
- * It is also PER PROCESS and cumulative, so only a delta across a measured section means
- * anything, and a concurrent read elsewhere in this process would pollute it. The harness is
- * single-threaded and does nothing else while measuring.
- */
-function ioReadBytes(): number | null {
-  try {
-    const m = readFileSync("/proc/self/io", "utf8").match(/^read_bytes:\s+(\d+)/m);
-    return m ? Number(m[1]) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read a file end to end and discard it, so the OS page cache holds it.
- *
- * The same thing `warmPageCache` does in `../server/live-index.ts`, reproduced rather than
- * imported because that one is a private method on a class that owns a live index and would
- * drag the whole holder in. It is four lines and the duplication is visible from both sides;
- * if it grows a third caller it should move.
- */
-async function prefault(path: string): Promise<{ mb: number; ms: number }> {
-  const t0 = Bun.nanoseconds();
-  let bytes = 0;
-  for await (const chunk of Bun.file(path).stream()) bytes += chunk.length;
-  return { mb: bytes / 1e6, ms: (Bun.nanoseconds() - t0) / 1e6 };
-}
-
-/**
  * Where to clone the index FROM.
  *
  * `cfg.dataDir` is `/data` by default, which is the container's path and is not there on a
@@ -250,56 +209,6 @@ function findIndex(dataDir: string): string | null {
     candidates.push(join(dirname(common.stdout.toString().trim()), "data", "titles.db"));
   }
   return candidates.find((p) => existsSync(p)) ?? null;
-}
-
-/**
- * Refuse to benchmark a file that something else might be serving from.
- *
- * A benchmark opens a connection, and this project has twice corrupted a SQLite file by
- * having two things open one. The check is on the DIRECTORY rather than on the exact name so
- * `titles.new.db` and `finderr.db` are refused too -- a build in progress is the worst
- * possible thing to point this at.
- */
-export function assertNotLiveIndex(path: string): void {
-  if (/(^|\/)data\/[^/]*$/.test(resolve(path).replace(/\\/g, "/"))) {
-    throw new Error(
-      `REFUSING to benchmark ${path}: it is inside a live data directory.\n` +
-        "Point --db at a copy. With no --db at all this clones data/titles.db for you.",
-    );
-  }
-}
-
-/**
- * A copy-on-write clone where the filesystem has one, a real copy where it does not.
- *
- * > [!IMPORTANT] The reflink is what makes a per-scenario COLD measurement affordable
- * > Cold is measured against a fresh clone -- a new inode the page cache has never read --
- * > so a run makes one clone per scenario. At 730 MB to 2.3 GB each, a real copy would mean
- * > tens of gigabytes of writes per run, and the copying would dwarf what is being measured.
- * > A reflink is instant and costs no space until something writes to it.
- *
- * BOTH spellings are tried, because the two filesystems that matter here disagree: macOS
- * APFS takes `cp -c`, and Linux btrfs -- which is what the Synology this deploys to runs,
- * across nine spinning disks in RAID5 -- takes `cp --reflink`. Trying only the Mac's spelling
- * meant the NAS fell silently through to copying the whole file once per scenario, onto the
- * slowest storage in the system.
- *
- * `--reflink=always` rather than `auto` on purpose: `auto` falls back to a full copy INSIDE
- * `cp` and reports success, so the slow path would be taken with nothing to show it had been.
- */
-async function cloneIndex(src: string, dest: string): Promise<"reflink" | "copy"> {
-  mkdirSync(dirname(dest), { recursive: true });
-  rmSync(dest, { force: true });
-  for (const argv of [
-    ["cp", "-c", src, dest], // APFS
-    ["cp", "--reflink=always", src, dest], // btrfs, XFS
-  ]) {
-    if (Bun.spawnSync(argv).exitCode === 0) return "reflink";
-    // A half-written destination from a failed attempt must not be measured.
-    rmSync(dest, { force: true });
-  }
-  await Bun.write(dest, Bun.file(src));
-  return "copy";
 }
 
 /**
@@ -691,7 +600,7 @@ async function measure(
       // the state a production container is in seconds after boot. Neither cold nor warm
       // describes it, and it is the state most reads actually happen in.
       if (args.prefault) {
-        const p = await prefault(coldPath);
+        const p = await prefaultFile(coldPath);
         prefaultMs = p.ms;
       }
       const coldEngine = openEngine(coldPath, cfg, args);
