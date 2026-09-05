@@ -53,6 +53,17 @@ function answer(over: Partial<StoredMessage> = {}): StoredMessage {
   return { id: "a1", role: "assistant", text: "Here you go.", at: 1_700_000_000_000, ...over };
 }
 
+/*
+  AN OPEN `<details>`, AS THIS RENDERER ACTUALLY SPELLS IT.
+
+  Two tests asserted `not.toContain("<details open")` until 2026-09-05 and neither could ever
+  have matched: `renderToStaticMarkup` writes the className first, so the markup is
+  `<details class="group" open="">`. Both passed by checking nothing, and would have stayed
+  green through a change that expanded every disclosure in the panel -- which is exactly the
+  change made that day. Named once so the next assertion cannot get it wrong privately.
+*/
+const EXPANDED = 'open=""';
+
 describe("with nothing asked yet", () => {
   test("says what it is for and offers a question to click", async () => {
     const html = await panel();
@@ -246,7 +257,7 @@ describe("what it did to answer", () => {
   test("is a disclosure that starts closed", async () => {
     const html = await panel({ messages: [answer({ toolCalls })] });
     expect(html).toContain("<details");
-    expect(html).not.toContain("<details open");
+    expect(html).not.toContain(EXPANDED);
     expect(html).toContain("2 lookups · 412ms");
   });
 
@@ -362,13 +373,52 @@ describe("the transcript of a turn", () => {
   });
 
   /**
-   * SECONDARY MEANS COLLAPSED. The answer is what the eye should land on; reasoning and raw
-   * arguments are one click away, which is a `<details>` that starts closed.
+   * SECONDARY MEANS COLLAPSED, ONCE IT HAS SETTLED. The answer is what the eye should land
+   * on; reasoning and raw arguments are one click away, which is a `<details>` that starts
+   * closed. The one exception is the block being written right now -- see below.
    */
-  test("reasoning and arguments start collapsed", async () => {
+  test("reasoning and arguments are collapsed on a finished turn", async () => {
     const html = await panel({ messages: [answer({ transcript: lookup })] });
     expect(html).toContain("Thinking");
-    expect(html).not.toContain("<details open");
+    expect(html).not.toContain(EXPANDED);
+  });
+
+  /**
+   * WHILE IT IS THINKING, THE THINKING IS OPEN.
+   *
+   * aannarr, 2026-09-05. Collapsed-always hid the only moving thing in a thirty-second wait:
+   * the reader got a "Thinking" line that never changed and no evidence that tokens were
+   * being generated at all. Open while live, folded the moment anything lands after it.
+   */
+  test("the thinking block being written is open, and pulses", async () => {
+    const html = await panel({
+      messages: [answer({ pending: true, text: "", transcript: [lookup[0]] })],
+    });
+    expect(html).toContain(EXPANDED);
+    expect(html).toContain("animate-pulse");
+  });
+
+  /**
+   * The same entry, same `pending` turn, with a lookup underneath it. Position is what
+   * closes a thinking block -- `appendProse` can only grow the LAST entry, so anything after
+   * it means that block will never receive another token.
+   */
+  test("a thinking block with a tool call under it has folded away again", async () => {
+    const html = await panel({ messages: [answer({ pending: true, text: "", transcript: lookup })] });
+    expect(html).toContain("Thinking");
+    expect(html).not.toContain(EXPANDED);
+    expect(html).not.toContain("animate-pulse");
+  });
+
+  /**
+   * The restored-transcript case, and the reason `streaming` is a prop rather than something
+   * derived from the entries. A conversation read back from `localStorage` is a plain array
+   * whose last element looks exactly like a live one.
+   */
+  test("a restored transcript is not still thinking", async () => {
+    const html = await panel({ messages: [answer({ transcript: [lookup[0]] })] });
+    expect(html).toContain("Thinking");
+    expect(html).not.toContain(EXPANDED);
   });
 
   /** Most models emit none, and a "Thinking" block over nothing advertises a fiction. */

@@ -19,10 +19,12 @@
  * does not throw the answer away -- see `useAssistantChat`.
  */
 
+import { useRouterState } from "@tanstack/react-router";
 import { Sparkles } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type AgentAvailability, probeAgent } from "../lib/agent-api";
+import { drawerMs, isCompactViewport } from "../lib/drawer-motion";
 import { useAssistantChat } from "../lib/use-assistant-chat";
 import { useKeyAction } from "./Kbd";
 import { Button } from "./ui/button";
@@ -48,6 +50,16 @@ export function Assistant({ userId }: { userId: string | null }) {
   /** `null` until the probe answers. Nothing is drawn in the meantime. */
   const [availability, setAvailability] = useState<AgentAvailability | null>(null);
   const [open, setOpen] = useState(false);
+  /**
+   * The panel is on its way out: still mounted, sliding right, and about to go.
+   *
+   * A second flag rather than an `"open" | "closing" | "closed"` enum because `open` already
+   * means something the rest of this component depends on -- the launcher's `aria-expanded`,
+   * the keyboard toggle -- and a retracting panel is genuinely still open as far as either
+   * is concerned. It answers no questions once `open` is false, and `close()` is the only
+   * thing that sets it.
+   */
+  const [retracting, setRetracting] = useState(false);
 
   useEffect(() => {
     // Aborted on unmount so a route change during the probe does not set state on a gone
@@ -69,12 +81,78 @@ export function Assistant({ userId }: { userId: string | null }) {
    */
   const onGone = useCallback(() => {
     setAvailability("absent");
+    // No retraction here. The feature has gone away underneath the reader, and sliding a
+    // panel out politely to report that would keep a dead surface on screen for another
+    // fifth of a second. The launcher disappears in the same commit.
+    setRetracting(false);
     setOpen(false);
   }, []);
 
   const chat = useAssistantChat({ userId, onGone });
 
-  const toggle = useCallback(() => setOpen((v) => !v), []);
+  /** Start the slide. The timer below is what actually removes the panel. */
+  const close = useCallback(() => setRetracting(true), []);
+
+  /*
+    UNMOUNT ONCE IT HAS FINISHED LEAVING, and not before.
+
+    `drawerMs()` is the same number the CSS animates over, and is zero for a reader who asked
+    for reduced motion -- for whom the panel is already off the screen, so waiting would only
+    leave an invisible element over the page still taking their taps.
+
+    The cleanup matters more than it looks: `onGone` can clear `open` mid-slide, and without
+    it a stale timer would fire afterwards and set state on a component the probe just
+    removed from the tree.
+  */
+  useEffect(() => {
+    if (!retracting) return;
+    const t = setTimeout(() => {
+      setOpen(false);
+      setRetracting(false);
+    }, drawerMs());
+    return () => clearTimeout(t);
+  }, [retracting]);
+
+  const toggle = useCallback(() => {
+    // Mid-retraction the launcher brings it straight back rather than queueing a second
+    // close behind the first: the reader is looking at a panel sliding away and pressing
+    // the button that summons it.
+    if (retracting) {
+      setRetracting(false);
+      setOpen(true);
+      return;
+    }
+    if (open) close();
+    else setOpen(true);
+  }, [open, retracting, close]);
+
+  /*
+    NAVIGATION RETRACTS IT, ON A PHONE ONLY.
+
+    aannarr, 2026-09-05: on a small screen the drawer IS the screen, so following a title
+    link out of an answer used to leave the reader looking at the same conversation with the
+    page they asked for hidden behind it -- the navigation happened and nothing on screen
+    said so. It parks at the right edge instead, and stays parked until the launcher is used
+    again; nothing brings it back on its own, because a panel that reappeared over the page
+    would undo the move that dismissed it.
+
+    On a desktop this does nothing, deliberately. The page renders BESIDE the panel there,
+    which is the whole reason those links are drawn -- see the scrim's own note below. So the
+    condition is the VIEWPORT rather than the device, and it is the same breakpoint the
+    panel's width class uses.
+
+    Keyed on the full `href` rather than the pathname: `/browse?genre=Horror` and
+    `/term/service/netflix?country=TH` are navigations the reader can only see the result of
+    if this gets out of the way, and neither changes the path.
+  */
+  const href = useRouterState({ select: (s) => s.location.href });
+  const lastHref = useRef(href);
+  useEffect(() => {
+    const moved = lastHref.current !== href;
+    lastHref.current = href;
+    if (moved && open && !retracting && isCompactViewport()) close();
+  }, [href, open, retracting, close]);
+
   // Bound only while the feature is actually here, so the key and the button appear and
   // disappear together -- `useKeyAction`'s `enabled` withdraws the glyph and the
   // `aria-keyshortcuts` at the same time, which is the whole reason it takes the flag.
@@ -94,7 +172,10 @@ export function Assistant({ userId }: { userId: string | null }) {
         variant="ghost"
         size="icon-sm"
         onClick={toggle}
-        aria-expanded={open}
+        // A retracting panel is already gone as far as a reader is concerned, so it is
+        // reported closed from the moment the slide starts rather than a fifth of a second
+        // later. `open` alone would announce a state that is on its way out.
+        aria-expanded={open && !retracting}
         aria-label="Assistant"
         title="Assistant"
         {...key.props}
@@ -130,8 +211,13 @@ export function Assistant({ userId }: { userId: string | null }) {
             <button
               type="button"
               aria-label="Close the assistant"
-              onClick={() => setOpen(false)}
-              className="fixed inset-0 z-30 bg-black/50 sm:hidden"
+              onClick={close}
+              // It FADES where the panel slides, because it is not an object arriving from
+              // an edge -- it is the page being dimmed, and dimming has no direction. Same
+              // duration either way, so the two land on the same frame.
+              className={`fixed inset-0 z-30 bg-black/50 transition-opacity duration-[var(--fdr-drawer-ms)] sm:hidden ${
+                retracting ? "opacity-0" : "animate-[fdr-scrim-in_var(--fdr-drawer-ms)_ease-out]"
+              }`}
             />
             {/*
               `fallback={null}` rather than a skeleton, on purpose.
@@ -152,7 +238,8 @@ export function Assistant({ userId }: { userId: string | null }) {
                 onCancelQueued={chat.cancelQueued}
                 onResumeQueue={chat.resumeQueue}
                 onClear={chat.clear}
-                onClose={() => setOpen(false)}
+                onClose={close}
+                retracting={retracting}
               />
             </Suspense>
           </>,

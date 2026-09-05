@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DRAWER_MS } from "./lib/drawer-motion";
 import { FIELD_FONT_VAR, ZOOM_THRESHOLD_PX } from "./lib/field-zoom";
 
 /**
@@ -233,5 +234,45 @@ describe("every fixed overlay carries the top inset", () => {
    */
   test("and its composer clears the home indicator", () => {
     expect(ASSISTANT_PANEL).toContain("env(safe-area-inset-bottom,0px)");
+  });
+});
+
+/**
+ * THE DRAWER'S MOTION, WHICH THREE FILES HAVE TO AGREE ON.
+ *
+ * The enter keyframe and the exit transition are CSS; the timer that keeps the panel mounted
+ * while it slides out is JavaScript. Nothing fails loudly when they disagree -- a JS value
+ * under the CSS makes the drawer vanish mid-slide, and one over it leaves an invisible panel
+ * over the page, still swallowing the taps meant for whatever the reader just navigated to.
+ * Both look like a rendering quirk rather than a number in the wrong place.
+ */
+describe("the assistant drawer's motion", () => {
+  test("the duration is named once, and the JS copy matches it", () => {
+    // `drawer-motion.ts` cannot read a stylesheet, so it holds the same number. This is the
+    // only thing standing between the two and a silent drift.
+    expect(ruleBody(CSS, /^:root \{/m)).toContain(`--fdr-drawer-ms: ${DRAWER_MS}ms`);
+  });
+
+  test("the enter is a keyframe, so it cannot be lost to a frame that never came", () => {
+    // A transition would need the panel rendered off-screen, painted, and then flipped by a
+    // `requestAnimationFrame` -- and the panel is a lazy chunk, so that frame can land
+    // before the element exists. The failure is a drawer parked off the side of the screen.
+    expect(ruleBody(CSS, /@keyframes fdr-drawer-in/)).toContain("translateX(100%)");
+  });
+
+  test("both halves of the panel read the duration from the property, never from a literal", () => {
+    // The exit transition and the enter animation are Tailwind arbitrary values in the TSX,
+    // which is exactly where a hardcoded `220ms` would go unnoticed.
+    expect(ASSISTANT_PANEL).toContain("duration-[var(--fdr-drawer-ms)]");
+    expect(ASSISTANT_PANEL).toContain("animate-[fdr-drawer-in_var(--fdr-drawer-ms)_ease-out]");
+  });
+
+  test("reduced motion is honoured by the blanket rule rather than by a query of its own", () => {
+    // The drawer deliberately adds no `prefers-reduced-motion` block. If that blanket rule
+    // is ever narrowed, this motion silently stops honouring the setting -- and it is the
+    // largest movement in the product outside the easter egg.
+    const reduce = ruleBody(CSS, /@media \(prefers-reduced-motion: reduce\)/);
+    expect(reduce).toContain("animation-duration: 0.01ms !important");
+    expect(reduce).toContain("transition-duration: 0.01ms !important");
   });
 });

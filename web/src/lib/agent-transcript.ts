@@ -318,6 +318,29 @@ export function hasProse(entries: readonly TranscriptEntry[]): boolean {
   return entries.some((e) => e.kind === "text");
 }
 
+/**
+ * IS THIS ENTRY STILL BEING WRITTEN?
+ *
+ * True only for the LAST entry, and only while the turn is running. That falls straight out
+ * of `appendProse`: a delta joins the last entry or opens a new one, so the moment anything
+ * else is appended -- a token, a tool call, the next turn -- the block above it is finished
+ * and can never grow again. There is no "closed" flag on an entry and there does not need to
+ * be one; its position IS the flag.
+ *
+ * `streaming` is the bubble's own `pending`. Without it a transcript restored from
+ * `localStorage`, or one left behind by a turn that died, would report its final entry as
+ * live forever -- which is how a "still thinking" affordance becomes a spinner that outlives
+ * the request, the same lie `unfinished` exists to avoid on the tool rows.
+ */
+export function isStreamingEntry(
+  entries: readonly TranscriptEntry[],
+  key: string,
+  streaming: boolean,
+): boolean {
+  if (!streaming || entries.length === 0) return false;
+  return entries[entries.length - 1].key === key;
+}
+
 // --- ending the turn -------------------------------------------------------
 
 /**

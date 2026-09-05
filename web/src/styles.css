@@ -79,6 +79,17 @@ body,
      a 16px field renders under the threshold and zooms anyway; that module owns the rule and
      this declaration is the fallback for a browser it never ran in. */
   --field-font-size: 16px;
+
+  /* HOW LONG THE ASSISTANT DRAWER TAKES TO ARRIVE AND TO LEAVE.
+
+     Named here because THREE things have to agree on it and two of them are not CSS: the
+     enter keyframe below, the exit transition in `AssistantPanel.tsx`, and the timer in
+     `Assistant.tsx` that unmounts the panel once it has finished sliding out. A JS timer
+     shorter than the CSS is a drawer that vanishes mid-slide; longer, and the page sits
+     under a panel that is already invisible. `web/src/lib/drawer-motion.ts` holds the
+     matching number and `styles.test.ts` pins the two together, which is the same trade
+     `--field-font-size` already takes with `field-zoom.ts`. */
+  --fdr-drawer-ms: 220ms;
 }
 
 body {
@@ -440,4 +451,47 @@ input[type="search"]::-webkit-search-results-decoration {
 :root:not(.fdr-wipe)::view-transition-old(root),
 :root:not(.fdr-wipe)::view-transition-new(root) {
   animation: none;
+}
+
+/* ---------------------------------------------------------------------------
+   THE ASSISTANT DRAWER ARRIVING.
+
+   > [!IMPORTANT] This is NOT the navigation motion the block above forbids
+   > The rule up there is that moving between PAGES is an instant swap, so the
+   > one deliberate 600ms wipe stays a surprise. A drawer is a different claim:
+   > it is an object entering the screen from an edge and leaving by the same
+   > edge, and where it came from is information -- on a phone it takes the
+   > whole viewport, so without the slide a tap on the launcher simply replaces
+   > the page and nothing says the page is still there behind it. The wipe is
+   > unspent: this motion is 220ms, on one element, and never on a navigation.
+
+   ENTER IS A KEYFRAME AND EXIT IS A TRANSITION, deliberately, because they are
+   asked in different ways. The enter has to happen the instant the element
+   exists and there is no previous value to transition FROM -- doing it with a
+   transition means rendering off-screen, waiting for a paint, then flipping a
+   class, and a `requestAnimationFrame` that never fires (a background tab, a
+   lazy chunk landing late) leaves the panel parked off the side of the screen
+   with nothing to say so. A keyframe cannot fail that way. The exit has a
+   value to leave from and needs the element to stay mounted while it runs, so
+   it is a transition on `transform` that `AssistantPanel` turns on. `animation:
+   none` while retracting is what stops a reader who taps close mid-arrival
+   from watching the enter animation win -- animations beat transitions.
+
+   No reduced-motion query here: the global rule above already floors every
+   animation and transition in the document at 0.01ms, so this collapses to a
+   snap for anybody who asked for one, and `drawerMs()` drops the unmount timer
+   to zero to match. */
+@keyframes fdr-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+/* The scrim behind it, on a phone only. It fades rather than sliding, because it is not an
+   object arriving from anywhere -- it is the page being dimmed, and dimming has no
+   direction. Same duration, so the two land together. */
+@keyframes fdr-scrim-in {
+  from {
+    opacity: 0;
+  }
 }

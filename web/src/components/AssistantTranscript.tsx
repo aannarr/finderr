@@ -21,7 +21,8 @@
  */
 
 import { Brain, Check, ChevronRight, CircleSlash, LoaderCircle, TriangleAlert } from "lucide-react";
-import type { ToolEntry, TranscriptEntry } from "../lib/agent-transcript";
+import { useState } from "react";
+import { isStreamingEntry, type ToolEntry, type TranscriptEntry } from "../lib/agent-transcript";
 import { formatDuration, toolArgFields, toolLabel, toolResultText, toolSubject } from "../lib/assistant-view";
 import type { ResolvedMention } from "../lib/mentions";
 import { Markdown } from "./Markdown";
@@ -36,10 +37,19 @@ import { Markdown } from "./Markdown";
 export function AssistantTranscript({
   entries,
   mentions,
+  streaming = false,
 }: {
   entries: readonly TranscriptEntry[];
   /** Resolved ids for this turn, so prose the transcript owns links like the answer does. */
   mentions?: readonly ResolvedMention[];
+  /**
+   * The turn is still running -- the bubble's own `pending`.
+   *
+   * Only the thinking blocks read it, and only to decide whether THIS one is the one being
+   * written right now. Passing it down rather than deriving it here because a transcript
+   * cannot tell a live turn from a settled one on its own: both are just arrays.
+   */
+  streaming?: boolean;
 }) {
   if (entries.length === 0) return null;
   // A turn divider is drawn only when there IS more than one turn. Labelling a single pass
@@ -55,7 +65,7 @@ export function AssistantTranscript({
         return (
           <div key={e.key} className="space-y-1.5">
             {opensTurn && <TurnDivider n={e.turn} />}
-            <Entry entry={e} mentions={mentions} />
+            <Entry entry={e} mentions={mentions} live={isStreamingEntry(entries, e.key, streaming)} />
           </div>
         );
       })}
@@ -80,33 +90,72 @@ function TurnDivider({ n }: { n: number }) {
   );
 }
 
-function Entry({ entry, mentions }: { entry: TranscriptEntry; mentions?: readonly ResolvedMention[] }) {
+function Entry({
+  entry,
+  mentions,
+  live,
+}: {
+  entry: TranscriptEntry;
+  mentions?: readonly ResolvedMention[];
+  /** This entry is the one currently being written. Only `Reasoning` acts on it. */
+  live: boolean;
+}) {
   if (entry.kind === "tool") return <ToolCall entry={entry} />;
-  if (entry.kind === "reasoning") return <Reasoning text={entry.text} />;
+  if (entry.kind === "reasoning") return <Reasoning text={entry.text} live={live} />;
   return <Markdown text={entry.text} mentions={mentions} />;
 }
 
 /**
- * The model thinking out loud, COLLAPSED.
+ * The model thinking out loud: OPEN WHILE IT IS THINKING, collapsed the moment it stops.
  *
  * A `<details>` rather than a state flag: it is the browser's own disclosure, keyboard
  * operable for free, and `summary` is a button in the accessibility tree with nothing here
  * saying so. Same choice `AgentToolCalls` makes, for the same reasons.
  *
+ * > [!IMPORTANT] The default is not one state, it is two, and `live` picks between them
+ * > aannarr, 2026-09-05: the thinking should be expanded *while* the tokens are arriving, so
+ * > a reader can watch the reasoning happen, and minimised once it is done. Collapsed-always
+ * > hid the only part of a thirty-second wait that shows anything is happening -- the reader
+ * > got a summary line that never moved. Open-always is the other failure: a settled answer
+ * > buried under paragraphs of working, which is the rule the file header states.
+ * >
+ * > So the block is open exactly while it is the entry being appended to (`isStreamingEntry`
+ * > owns that question) and folds itself away the instant a tool call, a token or the next
+ * > turn lands after it.
+ *
+ * **A reader's own click outranks both.** `override` is `null` until somebody touches the
+ * disclosure and holds their answer afterwards, so a block opened to re-read the working
+ * does not slam shut on the next frame -- and one closed mid-stream stays closed while the
+ * tokens keep coming. React's own attribute changes fire `toggle` too, but they only ever
+ * write back the value they just drove, so they cannot fight it.
+ *
  * **An empty reasoning block is never drawn.** Most models emit no reasoning at all and
  * that is the ordinary case rather than a failure -- a "Thinking" disclosure over nothing
  * would advertise a capability this deployment does not have.
  */
-function Reasoning({ text }: { text: string }) {
+function Reasoning({ text, live }: { text: string; live: boolean }) {
+  const [override, setOverride] = useState<boolean | null>(null);
   if (text.trim().length === 0) return null;
+  const open = override ?? live;
   return (
-    <details className="group">
+    <details
+      className="group"
+      open={open}
+      onToggle={(e) => setOverride((e.currentTarget as HTMLDetailsElement).open)}
+    >
       <summary className="flex cursor-pointer list-none items-center gap-1 text-[0.7rem] text-muted outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-accent">
         <ChevronRight
           className="size-3 shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none"
           aria-hidden="true"
         />
-        <Brain className="size-3 shrink-0" aria-hidden="true" />
+        <Brain
+          // It PULSES while the thinking is live and is still once it is not, which is the
+          // same promise `ToolIcon` makes: nothing on this page animates over work that has
+          // already finished. `live` rather than `open`, so a reader who folds it away
+          // mid-stream still has one moving thing telling them the turn is running.
+          className={`size-3 shrink-0${live ? " animate-pulse text-accent motion-reduce:animate-none" : ""}`}
+          aria-hidden="true"
+        />
         Thinking
       </summary>
       {/* Italic, muted, and one step in from the answer: this is not what it said, it is

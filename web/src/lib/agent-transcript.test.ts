@@ -15,6 +15,7 @@ import {
   applyAgentEvent,
   emptyTranscript,
   hasProse,
+  isStreamingEntry,
   parseAgentEvent,
   reconcileAnswer,
   settleTranscript,
@@ -254,6 +255,59 @@ describe("who owns the prose", () => {
 
   test("machinery alone owns nothing", () => {
     expect(hasProse(fold([{ type: "reasoning", text: "hm" }]).entries)).toBe(false);
+  });
+});
+
+/**
+ * WHICH ENTRY IS BEING WRITTEN RIGHT NOW.
+ *
+ * This is what opens a thinking block while its tokens arrive and folds it away when they
+ * stop. Getting it wrong is quiet in both directions: too eager and a settled turn sits with
+ * its working spread open under the answer, too shy and a thirty-second wait shows a summary
+ * line that never moves. Neither throws and neither looks like a bug in this file.
+ */
+describe("the entry still being written", () => {
+  const KEY = (t: Transcript, i: number) => t.entries[i].key;
+
+  test("the last entry is live while the turn runs", () => {
+    const t = fold([{ type: "reasoning", text: "Season 4 aired in" }]);
+    expect(isStreamingEntry(t.entries, KEY(t, 0), true)).toBe(true);
+  });
+
+  test("anything appended AFTER it closes it, with no flag on the entry itself", () => {
+    // Position is the flag. `appendProse` can only ever grow the last entry, so a reasoning
+    // block with a tool call under it can never receive another token.
+    const t = fold([
+      { type: "reasoning", text: "let me look" },
+      { type: "tool-start", id: "c1", name: "get_title", args: {} },
+    ]);
+    expect(isStreamingEntry(t.entries, KEY(t, 0), true)).toBe(false);
+    expect(isStreamingEntry(t.entries, KEY(t, 1), true)).toBe(true);
+  });
+
+  test("a new turn closes the previous turn's thinking", () => {
+    const t = fold([
+      { type: "reasoning", text: "first pass" },
+      { type: "turn", n: 2 },
+      { type: "reasoning", text: "second pass" },
+    ]);
+    expect(isStreamingEntry(t.entries, KEY(t, 0), true)).toBe(false);
+    expect(isStreamingEntry(t.entries, KEY(t, 1), true)).toBe(true);
+  });
+
+  test("nothing is live once the turn is over, however the transcript ends", () => {
+    // The case that matters for a transcript restored from `localStorage`: it is a plain
+    // array with a last element like any other, and reporting that as live is a spinner
+    // outliving its request -- the same lie `unfinished` exists to avoid on the tool rows.
+    const t = fold([{ type: "reasoning", text: "hm" }]);
+    expect(isStreamingEntry(t.entries, KEY(t, 0), false)).toBe(false);
+    expect(isStreamingEntry(settleTranscript(t, []).entries, KEY(t, 0), false)).toBe(false);
+    expect(isStreamingEntry(abandonTranscript(t).entries, KEY(t, 0), false)).toBe(false);
+  });
+
+  test("an empty transcript and an unknown key are both false, never a crash", () => {
+    expect(isStreamingEntry([], "e1", true)).toBe(false);
+    expect(isStreamingEntry(fold([{ type: "reasoning", text: "hm" }]).entries, "nope", true)).toBe(false);
   });
 });
 

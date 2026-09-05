@@ -17,6 +17,14 @@
  * > panel's own header renders under the status bar on an installed iPhone -- the same
  * > defect the sticky header and the toast stack each carry their own inset for, and
  * > `styles.test.ts` pins all three.
+ *
+ * > [!IMPORTANT] IT SLIDES IN, AND IT OWNS ONLY THE ARRIVAL
+ * > The enter is the `fdr-drawer-in` keyframe in `styles.css`, which runs the moment this
+ * > element exists and needs no state, no ref and no `requestAnimationFrame` -- see that
+ * > rule for why a transition is the wrong tool for a mount. The DEPARTURE is not this
+ * > component's decision, because a panel cannot animate itself out of a tree it has
+ * > already been removed from: `Assistant` sets `retracting`, this draws the slide, and
+ * > `Assistant` unmounts once `DRAWER_MS` has passed. All three timings are one number.
  */
 
 import { Eraser, SendHorizontal, X } from "lucide-react";
@@ -62,6 +70,14 @@ export interface AssistantPanelProps {
   onResumeQueue?: () => void;
   onClear: () => void;
   onClose: () => void;
+  /**
+   * Slide out to the right; `Assistant` unmounts this shortly after setting it.
+   *
+   * A prop rather than local state because the element has to OUTLIVE the decision to close
+   * by exactly the length of the animation, and only the parent that renders it can grant
+   * that. Defaults false so a test rendering the panel directly gets it on screen.
+   */
+  retracting?: boolean;
 }
 
 export function AssistantPanel({
@@ -75,6 +91,7 @@ export function AssistantPanel({
   onResumeQueue,
   onClear,
   onClose,
+  retracting = false,
 }: AssistantPanelProps) {
   const [draft, setDraft] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -147,7 +164,19 @@ export function AssistantPanel({
         e.stopPropagation();
         onClose();
       }}
-      className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-line bg-bg pt-[var(--safe-top)] sm:w-[26rem]"
+      /*
+        `w-full sm:w-[26rem]` is where "the drawer covers everything" is DECIDED, and
+        `SM_QUERY` in `drawer-motion.ts` is the same boundary asked in JavaScript so the
+        retract-on-navigation rule fires exactly where the panel starts hiding the page.
+        Move one and move the other.
+
+        `animate-none` while retracting is not tidying: a CSS animation beats a transition
+        on the same property, so a reader who closes the panel during its 220ms arrival
+        would otherwise watch it finish sliding IN before anything else could happen.
+      */
+      className={`fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-line bg-bg pt-[var(--safe-top)] transition-transform duration-[var(--fdr-drawer-ms)] ease-out sm:w-[26rem] ${
+        retracting ? "translate-x-full animate-none" : "animate-[fdr-drawer-in_var(--fdr-drawer-ms)_ease-out]"
+      }`}
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
         <h2 className="text-sm font-semibold tracking-tight">Assistant</h2>
@@ -327,7 +356,12 @@ function Bubble({ message: m }: { message: StoredMessage }) {
         the answer was arrived at, and reading them under the conclusion would be reading the
         turn backwards.
       */}
-      {m.transcript && <AssistantTranscript entries={m.transcript} mentions={m.mentions} />}
+      {/* `pending` is what tells the transcript that its last entry is still growing -- a
+          thinking block opens itself while it is being written and folds away when it is
+          not, and without this every restored transcript would claim to still be thinking. */}
+      {m.transcript && (
+        <AssistantTranscript entries={m.transcript} mentions={m.mentions} streaming={m.pending ?? false} />
+      )}
 
       {/*
         THINKING, and only while there is nothing to read AND nothing to watch.
