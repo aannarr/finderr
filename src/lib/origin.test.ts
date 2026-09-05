@@ -233,6 +233,47 @@ describe("the stage is LINEAR in its inputs, not quadratic", () => {
   });
 });
 
+describe("the filter SEEKS its index", () => {
+  /*
+    The second bug this stage had, and the reason the index shape is not obvious.
+
+    "Which titles are in one of these languages" sounds like it wants `ix_lang(lang,
+    title_rowid)`, and that is what shipped first. Measured on the real 1.28M-row index it
+    was **1,014 ms against 0.08 ms unfiltered**, because the fail-open backfill puts
+    `UNKNOWN_LANG` on 81% of the corpus and `in (select ...)` materialises every one of
+    those rowids on every browse.
+
+    A duration cannot be asserted on a seven-row fixture, so this asserts the PLAN instead:
+    the predicate must be a correlated seek into the index, never a list subquery and never
+    a scan. `browseSql` and `INDEXES.origin` have to change together, and this is what says
+    so when one of them moves.
+  */
+  const planOf = (db: Database, sql: string, args: unknown[]) =>
+    (db.query(`explain query plan ${sql}`).all(...(args as never[])) as { detail: string }[])
+      .map((r) => r.detail)
+      .join(" | ");
+
+  test("a genre browse seeks ix_lang and materialises no list", () => {
+    const db = indexOf(CORPUS);
+    db.run("analyze");
+    const sql = `select t.tconst from title t join title_genre g on g.title_rowid = t.rowid_
+       where g.genre = ? and exists (select 1 from title_lang l where l.title_rowid = g.title_rowid
+         and l.lang in (?, ?, ?)) order by g.rank desc limit 40`;
+    const plan = planOf(db, sql, ["Crime", ...EN_SV]);
+    expect(plan).toContain("ix_lang");
+    expect(plan).toContain("CORRELATED");
+    // The shape that was 1,014 ms. A LIST SUBQUERY here means the `in (select ...)` form
+    // has come back, whatever the index says.
+    expect(plan).not.toContain("LIST SUBQUERY");
+  });
+
+  test("the index leads with title_rowid, which is what makes the seek possible", () => {
+    // Pinned as DDL rather than by reading a plan, because the plan test above would still
+    // pass on a scan of a small fixture. Together they say seek AND why.
+    expect(INDEXES.origin.join("")).toContain("title_lang(title_rowid, lang)");
+  });
+});
+
 describe("languageFilter", () => {
   test("no preference stays no preference", () => {
     expect(languageFilter([])).toEqual([]);

@@ -411,6 +411,19 @@ export class SearchEngine {
    */
   readonly hasGenreVotes: boolean;
 
+  /**
+   * Whether `title_genre` carries its own copy of `year`.
+   *
+   * Degrades to SLOW rather than to absent, like `hasGenreVotes`: without it a year-sliced
+   * genre browse reads `t.year` through the join, which is right and is the path every
+   * version before 2026-09-05 took. It only became worth copying when a language preference
+   * gave that join a query the stored `browse_count` could not answer -- 1,091 ms against
+   * 59 ms, measured on the real index.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasGenreYear: boolean;
+
   /** Whether `browse_count` is in this file -- see `BrowseOptions.browseCounts`. */
   readonly hasBrowseCounts: boolean;
 
@@ -532,6 +545,7 @@ export class SearchEngine {
     this.hasPersonIds = this.tableExists("person_external");
     this.hasOrigin = this.tableExists("title_lang");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
+    this.hasGenreYear = this.columnExists("title_genre", "year");
     this.hasBrowseCounts = this.tableExists("browse_count");
     this.hasRankIndexes = this.indexExists("ix_rank") && this.indexExists("ix_rank_all");
     this.hasEpisodes = this.tableExists("episode");
@@ -1357,6 +1371,7 @@ export class SearchEngine {
       // titles they did not ask for is the right way for a preference to fail.
       languages: this.hasOrigin ? safe.languages : undefined,
       genreVotes: this.hasGenreVotes,
+      genreYear: this.hasGenreYear,
       browseCounts: this.hasBrowseCounts,
       rankIndexes: this.hasRankIndexes,
     });
@@ -1379,6 +1394,7 @@ export class SearchEngine {
       sort: "rank",
       limit: size,
       genreVotes: this.hasGenreVotes,
+      genreYear: this.hasGenreYear,
       rankIndexes: this.hasRankIndexes,
     });
   }
@@ -1531,6 +1547,13 @@ export interface BrowseOptions extends BrowseFilters {
    */
   genreVotes?: boolean;
   /**
+   * Whether `title_genre` carries its own `year` copy -- `SearchEngine.hasGenreYear`.
+   *
+   * Defaults to FALSE for the same reason `genreVotes` does: a caller that forgot to ask
+   * the file should get a slower answer, never `no such column` on a real index.
+   */
+  genreYear?: boolean;
+  /**
    * Whether this index carries `browse_count` -- `SearchEngine.hasBrowseCounts`.
    *
    * A CAPABILITY of the open file, passed in for the same reason `genreVotes` is: `browseIndex`
@@ -1660,13 +1683,39 @@ export function languageFilter(configured: readonly string[]): string[] {
  * work that out for itself -- there is no foreign key to tell it -- which is why this is
  * stated here rather than left to the planner.
  */
+/**
+ * What the OPEN FILE can do, plus the preference the caller is applying.
+ *
+ * An object rather than four trailing positional booleans, and the reason is mechanical:
+ * `browseSql` is called from five places and a capability added at the end has to be
+ * threaded correctly through every one of them. The fifth argument being `false` when it
+ * meant `rankIndexes` and the sixth meaning `genreVotes` is a bug no type can catch, and
+ * the failure is silent -- a query that is correct and a hundred times slower.
+ */
+interface BrowseCaps {
+  genreVotes?: boolean;
+  genreYear?: boolean;
+  rankIndexes?: boolean;
+  languages?: readonly string[];
+}
+
+/**
+ * The file's capabilities off a `BrowseOptions`, in one place.
+ *
+ * `languages` is deliberately NOT here: it is a PREFERENCE the caller applies rather than
+ * something the file can do, and two of the five call sites pass a different one from
+ * `opts.languages` -- the honest-empty recount deliberately drops it. Folding it in would
+ * make that recount silently filtered and `hiddenByLanguage` would always be zero.
+ */
+function capsOf(opts: BrowseOptions): BrowseCaps {
+  return { genreVotes: opts.genreVotes, genreYear: opts.genreYear, rankIndexes: opts.rankIndexes };
+}
+
 function browseSql(
   f: BrowseFilters,
   minVotes: number,
   sort: BrowseSort = "votes",
-  genreVotes = false,
-  rankIndexes = false,
-  languages: readonly string[] = [],
+  caps: BrowseCaps = {},
 ): {
   join: string;
   countFrom: string;
@@ -1676,6 +1725,7 @@ function browseSql(
   /** ` indexed by <name>`, or empty. Goes straight after `title t`. See the rank pin below. */
   indexedBy: string;
 } {
+  const { genreVotes = false, genreYear = false, rankIndexes = false, languages = [] } = caps;
   const where: string[] = [];
   const args: unknown[] = [];
   // Set by any clause that names a column only `title` has. It is what decides whether the
@@ -1711,26 +1761,34 @@ function browseSql(
     args.push(minVotes);
     if (voted.startsWith("t.")) touchesTitle = true;
   }
-  // `year` is NOT denormalised onto title_genre, so a decade or year slice is the one
-  // genre browse whose count still needs the join. Both take floor 0 and pin a narrow
-  // range, so the row set is small and the lookup is cheap -- which is why the column was
-  // not copied.
+  /*
+    WHICH TABLE'S COPY OF `year`, the same question `voted` and `ranked` answer below.
+
+    `title_genre` carries `year` denormalised since 2026-09-05, and naming it is what keeps
+    a year-sliced genre count reading `title_genre` alone. It was NOT copied before that,
+    on the stated grounds that a stored `browse_count` answers every unfiltered total so the
+    join was only ever paid by queries the count table could not express -- which was true
+    until a LANGUAGE PREFERENCE became such a query. Measured on the real index, Crime
+    movies 2011-2026 with a preference: 1,091 ms through `title`, 59 ms from this column.
+
+    `genreYear` false is an index built before the column existed: correct, on the old slow
+    path, until the rebuild the stage stamp has already ordered.
+  */
+  const yearCol = join && genreYear ? "g.year" : "t.year";
+  const yearOnTitle = yearCol.startsWith("t.");
   if (f.decade !== undefined) {
-    where.push("t.year >= ? and t.year <= ?");
+    where.push(`${yearCol} >= ? and ${yearCol} <= ?`);
     args.push(f.decade, f.decade + 9);
-    touchesTitle = true;
+    if (yearOnTitle) touchesTitle = true;
   }
   if (f.year !== undefined) {
-    where.push("t.year = ?");
+    where.push(`${yearCol} = ?`);
     args.push(f.year);
-    touchesTitle = true;
+    if (yearOnTitle) touchesTitle = true;
   } else if (f.years) {
-    // Same shape as `decade` above and the same reason the year column was never
-    // denormalised: a pinned range takes floor 0, so the row set is small enough that the
-    // primary-key lookup per candidate is cheaper than a copy of the column would be worth.
-    where.push("t.year >= ? and t.year <= ?");
+    where.push(`${yearCol} >= ? and ${yearCol} <= ?`);
     args.push(f.years[0], f.years[1]);
-    touchesTitle = true;
+    if (yearOnTitle) touchesTitle = true;
   }
   if (f.kind) {
     // `g.kind` on a join for the same reason as `voted` above: it is the trailing column of
@@ -1797,22 +1855,28 @@ function browseSql(
   }
 
   /*
-    THE LANGUAGE FILTER, and it is a semi-join on the ROWID for one specific reason.
+    THE LANGUAGE FILTER: a correlated EXISTS on the ROWID, and both halves of that were
+    measured rather than reasoned about.
 
-    `title_lang` is keyed on `title_rowid` -- the same integer `title_genre` carries -- so
-    this predicate names a column BOTH from-clauses already have. That is what keeps
-    `touchesTitle` untouched here, and so keeps a genre count reading `title_genre` alone:
-    the 182ms -> 2.5ms covering count survives having a language preference applied to it,
-    which it would not if the language lived on `title` as a column.
+    **Why the rowid.** `title_lang` is keyed on `title_rowid` -- the same integer
+    `title_genre` carries -- so this predicate names a column BOTH from-clauses already
+    have. That is what leaves `touchesTitle` alone and keeps a genre count reading
+    `title_genre` by itself: the 182ms -> 2.5ms covering count survives a language
+    preference, which it would not if the language lived on `title` as a column.
 
-    `in (select ...)` rather than a join, because a title with three languages has three
-    rows and a join would return it three times -- which a `limit` then silently turns into
-    a short page. SQLite runs it as a seek per language into `ix_lang(lang, title_rowid)`,
-    which yields rowids already in order.
+    **Why EXISTS and not `in (select ...)`.** The `in` form shipped first and was 1,014 ms
+    against 0.08 ms unfiltered, because the fail-open rule puts `UNKNOWN_LANG` on 81% of the
+    corpus and the list subquery materialises every one of those rowids on every browse. The
+    correlated form is one covering seek per candidate row into `ix_lang(title_rowid, lang)`
+    and measures 0.07 ms. **The predicate and that index are one decision** -- see `INDEXES.origin`.
+
+    EXISTS also happens to be the only form that is correct without care: a title with three
+    languages has three rows, and a plain join would return it three times, which a `limit`
+    then quietly turns into a short page.
 
     An EMPTY list is no filter at all rather than a filter matching nothing. That is the
     difference between "this reader has no preference" and "this reader wants no titles",
-    and only the first one is ever a thing anybody means.
+    and only the first is ever a thing anybody means.
   */
   if (languages.length > 0) {
     // WHICH TABLE'S ROWID, the same question `voted` and `ranked` answer above. A genre
@@ -1820,7 +1884,8 @@ function browseSql(
     // `no such column` on exactly the query the covering count exists to serve.
     const rowid = join ? "g.title_rowid" : "t.rowid_";
     where.push(
-      `${rowid} in (select title_rowid from title_lang where lang in (${languages.map(() => "?").join(",")}))`,
+      `exists (select 1 from title_lang l where l.title_rowid = ${rowid}` +
+        ` and l.lang in (${languages.map(() => "?").join(",")}))`,
     );
     args.push(...languages);
   }
@@ -2018,14 +2083,10 @@ function decadeRows<T extends { tconst: string }>(
   const merged: (T & { _sort: number | null })[] = [];
   for (let year = from; year <= to; year++) {
     // Both range forms cleared and `year` set: one seek per year, every other filter intact.
-    const per = browseSql(
-      { ...opts, decade: undefined, years: undefined, year },
-      minVotes,
-      sort,
-      opts.genreVotes,
-      opts.rankIndexes,
-      opts.languages ?? [],
-    );
+    const per = browseSql({ ...opts, decade: undefined, years: undefined, year }, minVotes, sort, {
+      ...capsOf(opts),
+      languages: opts.languages ?? [],
+    });
     // The order EXPRESSION is aliased and selected rather than re-derived here, so `votes`
     // and `rank` are merged by whichever column `browseSql` actually ordered on. Naming a
     // column would be a second owner of the sort and would silently mis-merge a ranked page.
@@ -2074,7 +2135,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
   const langs = opts.languages ?? [];
-  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes, langs);
+  const sql = browseSql(opts, minVotes, sort, { ...capsOf(opts), languages: langs });
   const counts = opts.browseCounts ?? false;
   const total = browseTotal(db, sql, opts, minVotes, sort, counts, langs.length > 0);
   const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
@@ -2105,7 +2166,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   if (langs.length > 0) {
     const unfiltered = browseTotal(
       db,
-      browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes),
+      browseSql(opts, minVotes, sort, capsOf(opts)),
       opts,
       minVotes,
       sort,
@@ -2128,7 +2189,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   if (minVotes === 0) return { rows, total };
   const unfloored = browseTotal(
     db,
-    browseSql(opts, 0, sort, opts.genreVotes, opts.rankIndexes, langs),
+    browseSql(opts, 0, sort, { ...capsOf(opts), languages: langs }),
     opts,
     0,
     sort,
@@ -2154,7 +2215,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
 export function browseMembers(db: Database, opts: BrowseOptions): string[] {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
-  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes, opts.languages ?? []);
+  const sql = browseSql(opts, minVotes, sort, { ...capsOf(opts), languages: opts.languages ?? [] });
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
   // Splits a decade the same way `browseIndex` does -- "best comedies of the 2020s" is a

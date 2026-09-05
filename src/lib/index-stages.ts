@@ -136,7 +136,13 @@ export const INDEX_STAGES = {
    * silently never adopted. Bump it whenever this stage's OUTPUT changes shape, not only
    * when its configuration does.
    */
-  rank: (cfg) => JSON.stringify({ v: 3, priorVotes: cfg.index.rankPriorVotes }),
+  /*
+   * **`v: 4` (2026-09-05) added `title_genre.year`.** Same class as `v: 3`: nothing about
+   * the recipe's inputs changed and every answer is identical, so without the bump an
+   * existing index would keep reading `t.year` through the join forever. That is correct
+   * and, for a browse carrying a language preference, 1,091 ms against 59 ms.
+   */
+  rank: (cfg) => JSON.stringify({ v: 4, priorVotes: cfg.index.rankPriorVotes }),
 
   /**
    * `title_ids`, the bulk `tconst -> tmdb/tvdb` crosswalk.

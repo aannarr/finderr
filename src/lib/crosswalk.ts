@@ -614,10 +614,10 @@ export function loadOrigin(
     THE BACKFILL. Every title carries a language row after this, so the filter is one
     `in (...)` and "unknown" is a code the caller either admits or does not.
 
-    The index is TEMPORARY on purpose: `ix_lang` leads with `lang` and so cannot serve a
-    lookup by rowid, and nothing after this stage ever asks in that direction -- the browse
-    semi-join goes lang -> rowid. Keeping it would be bytes on every future read for one
-    statement in the build.
+    The index is TEMPORARY because the real one does not exist yet: `ix_lang` is built by
+    `INDEXES.origin` after this function returns, and the statement below needs a rowid
+    lookup right now. Building the real index here instead would put its DDL in two places,
+    which is the drift `INDEXES` exists to prevent.
   */
   db.run("create index ix_lang_backfill on title_lang(title_rowid)");
   db.run(`

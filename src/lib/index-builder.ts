@@ -252,7 +252,16 @@ create table title_genre (
   genre       text not null,
   kind        text not null default '',
   rank        real,
-  votes       integer not null default 0
+  votes       integer not null default 0,
+  -- year arrived 2026-09-05, and the reason is the LANGUAGE FILTER rather than the year.
+  -- A stored browse_count answers every unfiltered total, so a year slice never needed the
+  -- column: the join to title was paid only by queries the count table could not express.
+  -- A language preference is exactly such a query -- the grain has no language dimension
+  -- and never can -- so a filtered year browse fell back to the live count AND to the join.
+  -- Measured on the real index, Crime movies 2011-2026 with a preference set: 1,091 ms
+  -- through title, 59 ms from this column. The unfiltered path is untouched at 0.01 ms.
+  -- (No backticks in here: this block is inside a template literal.)
+  year        integer
 );
 create table meta (key text primary key, value text not null);
 
@@ -367,14 +376,14 @@ export function buildTitleSearchIndex(db: Database): void {
  * is the one caller that gets the order right, and it exists so nobody has to remember this.
  */
 export const EXPLODE_GENRES = `
-insert into title_genre (title_rowid, genre, kind, rank, votes)
+insert into title_genre (title_rowid, genre, kind, rank, votes, year)
 with split(id, one, rest) as (
   select rowid_, '', genres || ',' from title where genres != ''
   union all
   select id, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
   from split where rest != ''
 )
-select s.id, s.one, t.kind, t.rank, t.votes from split s join title t on t.rowid_ = s.id where s.one != ''
+select s.id, s.one, t.kind, t.rank, t.votes, t.year from split s join title t on t.rowid_ = s.id where s.one != ''
 `;
 
 /**
@@ -541,17 +550,27 @@ export const INDEXES = {
   /**
    * Built by `originStage`, after `title_lang` is filled.
    *
-   * `(lang, title_rowid)` and never `(title_rowid, lang)`. The only question anybody asks of
-   * this table is "which titles are in one of these languages", which the browse filter
-   * spells as `in (select title_rowid from title_lang where lang in (...))` -- so leading
-   * with `lang` makes it a seek per language yielding rowids already in order, and SQLite
-   * can merge the small result straight into the outer query. Leading with the rowid would
-   * make the same filter a full scan of a 1.4M-row table on every browse.
+   * > [!CAUTION] `(title_rowid, lang)` and NEVER `(lang, title_rowid)`. Measured, because the
+   * > obvious reading is the wrong one.
+   * > "Which titles are in one of these languages" sounds like it wants to lead with `lang`,
+   * > and the first version of this did. Measured on the real 1.28M-row index, a ranked Crime
+   * > browse: **1,014 ms for the rows and 673 ms for the count, against 0.08 ms unfiltered.**
+   * >
+   * > The reason is the fail-open rule feeding back into the query plan. Every title with no
+   * > known language carries `UNKNOWN_LANG`, and that is **1,040,307 of 1,288,159 rows** --
+   * > 81% of the table. Leading with `lang` turns `in (select title_rowid from title_lang
+   * > where lang in (...))` into a LIST SUBQUERY that materialises a million rowids on every
+   * > browse, filtered or not.
+   * >
+   * > Leading with `title_rowid` makes the predicate a correlated `exists` -- one covering
+   * > seek per candidate row -- and the same query is **0.07 ms**, indistinguishable from
+   * > having no filter at all. Both index shapes are 17.3 MB, so this is a swap and not a
+   * > trade. `browseSql` writes the `exists` form; the two must change together.
    *
-   * COVERING by construction: the table has exactly these two columns, so the semi-join
+   * COVERING by construction: the table has exactly these two columns, so the predicate
    * never touches a table page.
    */
-  origin: ["create index ix_lang on title_lang(lang, title_rowid)"],
+  origin: ["create index ix_lang on title_lang(title_rowid, lang)"],
 } satisfies Record<string, readonly string[]>;
 
 /**
