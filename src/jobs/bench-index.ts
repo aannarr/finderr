@@ -46,8 +46,10 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { hostname, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
 import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import {
@@ -70,6 +72,35 @@ interface Args {
   keep: boolean;
   /** Rebuild the clone's indexes from the CURRENT `INDEXES` before measuring. */
   reindex: boolean;
+  /**
+   * Which index SHAPE to measure -- see `../lib/bench-profiles.ts`.
+   *
+   * Implies `--reindex`: a profile is a set of indexes, so selecting one has to rebuild them.
+   * `shipped` is the baseline and rebuilds to `allIndexes()`, which is what `--reindex`
+   * already did, so the two flags are one mechanism with two spellings.
+   */
+  profile: string | null;
+  /** `pragma mmap_size`, in bytes. `0` disables mmap entirely. Null leaves the default. */
+  mmap: number | null;
+  /** `pragma cache_size`, in KIBIBYTES (written negative into the pragma). */
+  cache: number | null;
+  /**
+   * How many COLD samples per scenario, each against its own fresh clone.
+   *
+   * One sample was enough while cold was a sanity check. It is not enough to compare two
+   * machines: on a spinning array a single cold number carries the whole variance of where
+   * the heads happened to be, and the measured spread there is seconds.
+   */
+  coldRuns: number;
+  /**
+   * Read the clone end to end before the cold sample, the way `warmPageCache` does at boot.
+   *
+   * This is the state PRODUCTION is actually in, and neither cold nor warm describes it. It
+   * is the cell that decides whether the covering columns are buying anything real.
+   */
+  prefault: boolean;
+  /** Free-text stamp carried into the JSON, so `bench-compare` can label a cell. */
+  label: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -81,6 +112,12 @@ function parseArgs(argv: string[]): Args {
     filter: null,
     keep: false,
     reindex: false,
+    profile: null,
+    mmap: null,
+    cache: null,
+    coldRuns: 1,
+    prefault: false,
+    label: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -91,9 +128,93 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--filter") out.filter = argv[++i] ?? null;
     else if (a === "--keep") out.keep = true;
     else if (a === "--reindex") out.reindex = true;
+    else if (a === "--profile") out.profile = argv[++i] ?? null;
+    else if (a === "--mmap") out.mmap = Number(argv[++i]);
+    else if (a === "--cache") out.cache = Number(argv[++i]);
+    else if (a === "--cold-runs") out.coldRuns = Number(argv[++i]);
+    else if (a === "--prefault") out.prefault = true;
+    else if (a === "--label") out.label = argv[++i] ?? null;
   }
   if (!Number.isFinite(out.runs) || out.runs < 1) throw new Error("--runs must be a positive number");
+  if (!Number.isFinite(out.coldRuns) || out.coldRuns < 1) throw new Error("--cold-runs must be positive");
+  if (out.profile && !STORAGE_PROFILES[out.profile]) {
+    throw new Error(`unknown --profile ${out.profile}; have ${Object.keys(STORAGE_PROFILES).join(", ")}`);
+  }
   return out;
+}
+
+/**
+ * Everything about the MACHINE that a number cannot be read without.
+ *
+ * A wall time is meaningless on its own: 4,635 ms is a catastrophe on one box and impossible
+ * on another. This travels in the JSON so `bench-compare` can label a column, and it is
+ * printed at the top of the report so a pasted terminal dump is still self-describing.
+ *
+ * `pageCacheMb` is the one field that is not a constant of the machine, and it is the most
+ * important of them here -- an index that fits in the page cache is on RAM no matter what it
+ * is stored on, so a cold-vs-warm comparison is only interesting relative to this number.
+ */
+function hostStamp(dbPath: string): Record<string, unknown> {
+  const linuxMeminfo = (): number | null => {
+    try {
+      const m = readFileSync("/proc/meminfo", "utf8").match(/^Cached:\s+(\d+) kB/m);
+      return m ? Math.round(Number(m[1]) / 1024) : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    host: hostname(),
+    platform: process.platform,
+    arch: process.arch,
+    cpus: navigator.hardwareConcurrency,
+    totalMemMb: Math.round(totalmem() / 1e6),
+    pageCacheMb: linuxMeminfo(),
+    bun: Bun.version,
+    indexBytes: existsSync(dbPath) ? statSync(dbPath).size : null,
+  };
+}
+
+/**
+ * Bytes this process has actually pulled off the BLOCK DEVICE, or null where unknowable.
+ *
+ * `/proc/self/io`'s `read_bytes` counts what went to the storage layer, so it is zero for a
+ * read served from the page cache and non-zero only for real I/O. That is the single most
+ * direct answer to "did this query touch the disk?", and it is exactly the column the harness
+ * has never had -- its docstring says a pages-read counter would be a guess, and it is right
+ * about SQLite's own counters, but the KERNEL knows.
+ *
+ * **Linux only, and deliberately null rather than 0 on macOS.** A zero would read as "no I/O
+ * happened", which is the opposite of "we cannot see". The comparison the whole exercise is
+ * for runs on Linux at the end that matters, so having it on one side is worth more than
+ * having a fabricated symmetry.
+ *
+ * It is also PER PROCESS and cumulative, so only a delta across a measured section means
+ * anything, and a concurrent read elsewhere in this process would pollute it. The harness is
+ * single-threaded and does nothing else while measuring.
+ */
+function ioReadBytes(): number | null {
+  try {
+    const m = readFileSync("/proc/self/io", "utf8").match(/^read_bytes:\s+(\d+)/m);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a file end to end and discard it, so the OS page cache holds it.
+ *
+ * The same thing `warmPageCache` does in `../server/live-index.ts`, reproduced rather than
+ * imported because that one is a private method on a class that owns a live index and would
+ * drag the whole holder in. It is four lines and the duplication is visible from both sides;
+ * if it grows a third caller it should move.
+ */
+async function prefault(path: string): Promise<{ mb: number; ms: number }> {
+  const t0 = Bun.nanoseconds();
+  let bytes = 0;
+  for await (const chunk of Bun.file(path).stream()) bytes += chunk.length;
+  return { mb: bytes / 1e6, ms: (Bun.nanoseconds() - t0) / 1e6 };
 }
 
 /**
@@ -181,7 +302,7 @@ async function cloneIndex(src: string, dest: string): Promise<void> {
  * Only ever run against a clone: `assertNotLiveIndex` has already refused a live path by the
  * time this is called, and this is the one place the harness WRITES.
  */
-function reindex(path: string): void {
+function reindex(path: string, want: readonly string[] = allIndexes()): void {
   const db = new Database(path);
   const existing = (
     db.query("select name from sqlite_master where type='index' and sql is not null").all() as {
@@ -200,17 +321,33 @@ function reindex(path: string): void {
   const t0 = Bun.nanoseconds();
   db.run("pragma journal_mode = off");
   db.run("pragma synchronous = off");
+  /*
+    DROP EVERY INDEX THIS CHECKOUT KNOWS ABOUT FIRST, not just the ones being rebuilt.
+
+    A profile that deliberately OMITS an index (slim drops `ix_pop_title`) would otherwise
+    inherit it from the clone, because the loop below only ever drops a name it is about to
+    recreate. The result reads as a successful slim run and is actually a shipped run wearing
+    slim's label -- the worst kind of wrong number, because nothing about it looks wrong.
+  */
+  const known = new Set(allIndexes().map((s) => s.match(/create index (?:if not exists )?(\w+)/i)?.[1]));
+  for (const name of existing) {
+    if (known.has(name)) db.run(`drop index ${name}`);
+  }
   let skipped = 0;
-  for (const sql of allIndexes()) {
-    // The name is needed to drop the OLD shape before creating the new one -- a reshape is a
-    // drop plus a create, and `create index if not exists` would silently keep the old order.
+  for (const sql of want) {
+    // The OLD shape is already gone -- the bulk drop above removed every index this checkout
+    // knows about, so a reshape needs no per-statement drop. An index the clone carries that
+    // this checkout has NEVER heard of survives on purpose: it belongs to a newer build and
+    // silently deleting it would make the clone stop resembling the file it came from.
     const name = sql.match(/create index (?:if not exists )?(\w+)/i)?.[1];
     const table = sql.match(/\bon\s+(\w+)\s*\(/i)?.[1];
     if (table && !tables.has(table)) {
       skipped++;
       continue;
     }
-    if (name && existing.includes(name)) db.run(`drop index ${name}`);
+    // Only reachable for an index outside `allIndexes()` -- a profile-only name. Dropping it
+    // here keeps `create` from failing on a rerun against a `--keep` clone.
+    if (name && existing.includes(name) && !known.has(name)) db.run(`drop index ${name}`);
     db.run(sql);
   }
   if (skipped > 0) console.log(`# skipped ${skipped} index(es) over tables this index does not have`);
@@ -268,7 +405,21 @@ interface Row {
   p50: number;
   p95: number;
   p99: number;
+  /** The worst warm sample. On a synchronous single-threaded server this IS the stall. */
+  max: number;
+  /** Median of `--cold-runs` samples, each against its own never-read inode. */
   cold: number;
+  coldMin: number;
+  coldMax: number;
+  /**
+   * Bytes off the block device during the first cold sample, or null where unknowable.
+   *
+   * This is the column that turns "it was slow" into "it read 41 MB to answer a 40-row page".
+   * Linux only -- see `ioReadBytes`.
+   */
+  coldIo: number | null;
+  /** How long the sequential prefault took, when `--prefault` was on. */
+  prefaultMs: number | null;
   rows: number;
   sorts: number;
   scans: number;
@@ -288,8 +439,33 @@ function countRows(v: unknown): number {
   return v === null || v === undefined ? 0 : 1;
 }
 
-function openEngine(path: string, cfg: ReturnType<typeof loadConfig>): SearchEngine {
+/**
+ * Open an engine, optionally overriding the two pragmas that decide how it reads.
+ *
+ * > [!IMPORTANT] Overridden AFTER construction, not passed in, and that is on purpose
+ * > `SearchEngine`'s constructor is the single owner of the read-side pragmas and has a long
+ * > comment explaining each one. Threading a bench-only options bag through it would put a
+ * > second owner beside that comment, for a knob only this file ever sets. Both pragmas are
+ * > connection settings that take effect when set on an open handle, so re-running them here
+ * > is a genuine override and costs production nothing.
+ *
+ * `mmap_size = 0` is the interesting one. With mmap on, a cold read is a PAGE FAULT inside a
+ * synchronous `bun:sqlite` call -- and because the render path is single-threaded, that fault
+ * stalls the whole server rather than one request. Turning it off makes the same read a
+ * `pread`, which is no faster but is at least accounted for in `/proc/self/io`.
+ */
+function openEngine(
+  path: string,
+  cfg: ReturnType<typeof loadConfig>,
+  pragmas?: { mmap: number | null; cache: number | null },
+): SearchEngine {
   const engine = new SearchEngine(path, cfg);
+  if (pragmas?.mmap !== null && pragmas?.mmap !== undefined) {
+    engine.rawDb.run(`pragma mmap_size = ${pragmas.mmap}`);
+  }
+  if (pragmas?.cache !== null && pragmas?.cache !== undefined) {
+    engine.rawDb.run(`pragma cache_size = -${pragmas.cache}`);
+  }
   // Without this the fuzzy tier silently does not load and `search.fuzzy` measures an absent
   // feature -- it comes back in microseconds because it finds nothing.
   engine.prepareFuzzy(() => {});
@@ -321,9 +497,36 @@ async function main(): Promise<void> {
   }
   const target = args.db ?? dbPath;
   assertNotLiveIndex(target);
-  if (args.reindex) reindex(target);
 
-  const engine = openEngine(target, cfg);
+  const profile = args.profile ? STORAGE_PROFILES[args.profile] : null;
+  if (profile) {
+    const drift = profileDrift(allIndexes());
+    if (drift.missing.length > 0 || drift.extra.length > 0) {
+      // Loud, and not fatal. A profile that has fallen behind `INDEXES` still produces a
+      // usable number for every OTHER index -- what it cannot do is be quoted without this
+      // caveat, so the caveat is printed where the number is.
+      console.log(
+        `# !! PROFILE DRIFT -- missing: ${drift.missing.join(",") || "none"} extra: ${drift.extra.join(",") || "none"}`,
+      );
+    }
+    console.log(`# profile: ${profile.name} -- ${profile.what}`);
+    reindex(target, profile.indexes ?? allIndexes());
+  } else if (args.reindex) {
+    reindex(target);
+  }
+
+  const stamp = hostStamp(target);
+  console.log(
+    `# host: ${stamp.host} ${stamp.platform}/${stamp.arch} ${stamp.cpus}cpu ` +
+      `ram=${stamp.totalMemMb}MB pagecache=${stamp.pageCacheMb ?? "?"}MB bun=${stamp.bun}`,
+  );
+  console.log(
+    `# index: ${((stamp.indexBytes as number) / 1e6).toFixed(0)} MB  ` +
+      `mmap=${args.mmap ?? "default"} cache=${args.cache ? `${args.cache}KiB` : "default"} ` +
+      `cold-runs=${args.coldRuns} prefault=${args.prefault}`,
+  );
+
+  const engine = openEngine(target, cfg, args);
   const meta = engine.meta();
   console.log(
     `# built_at=${meta.built_at ?? "?"} rows=${meta.rows ?? "?"} episodes=${meta.episode_rows ?? "0"}`,
@@ -361,7 +564,28 @@ async function main(): Promise<void> {
   report(results);
 
   if (args.json) {
-    await Bun.write(args.json, JSON.stringify({ meta, fixtures, runs: args.runs, results }, null, 2));
+    await Bun.write(
+      args.json,
+      JSON.stringify(
+        {
+          // The label is what a matrix column is titled. Defaulted rather than required, so a
+          // run without one is still comparable -- an unlabelled cell that silently collides
+          // with another is worse than an ugly name.
+          label: args.label ?? `${stamp.host}/${profile?.name ?? "as-is"}${args.prefault ? "/pf" : ""}`,
+          stamp,
+          profile: profile?.name ?? null,
+          pragmas: { mmap: args.mmap, cache: args.cache },
+          prefault: args.prefault,
+          coldRuns: args.coldRuns,
+          meta,
+          fixtures,
+          runs: args.runs,
+          results,
+        },
+        null,
+        2,
+      ),
+    );
     console.log(`\nwrote ${args.json}`);
   }
   engine.close();
@@ -393,18 +617,50 @@ async function measure(
     warm file through a new handle -- which is the mistake that makes cold numbers look like
     warm ones. A reflink clone is a new inode the cache has never read, so the first query
     against it pays real disk. Free on APFS, which is what makes this affordable per scenario.
+
+    > [!IMPORTANT] Reflink cold is REAL cold, on both filesystems, and the reason is the same
+    > A reflink shares physical extents with the source but is a new INODE, and both APFS's
+    > UBC and Linux's page cache are keyed on the inode. So the pages must be fetched from the
+    > device again even though identical bytes are cached under the original file. That is
+    > what makes a per-scenario cold measurement affordable rather than requiring a reboot or
+    > a `drop_caches` between every single one.
+
+    ONE SAMPLE IS NOT A MEASUREMENT ON A SPINNING ARRAY. Cold cost there is dominated by where
+    the heads happen to be, and the spread across identical runs is hundreds of milliseconds
+    to seconds. `--cold-runs` takes N samples against N fresh clones and reports the median
+    with its min and max, so a comparison between two machines is not a comparison of luck.
   */
-  let cold = 0;
+  const coldTimes: number[] = [];
+  let coldIo: number | null = null;
+  let prefaultMs: number | null = null;
   if (!args.db) {
-    const coldPath = join(scratch, `cold-${s.id.replace(/[^a-z0-9]/gi, "-")}.db`);
-    await cloneIndex(target, coldPath);
-    const coldEngine = openEngine(coldPath, cfg);
-    const t0 = Bun.nanoseconds();
-    s.run(coldEngine);
-    cold = (Bun.nanoseconds() - t0) / 1e6;
-    coldEngine.close();
-    rmSync(coldPath, { force: true });
+    for (let i = 0; i < args.coldRuns; i++) {
+      const coldPath = join(scratch, `cold-${s.id.replace(/[^a-z0-9]/gi, "-")}-${i}.db`);
+      await cloneIndex(target, coldPath);
+      // The PREFAULTED cell: the file pulled into the page cache sequentially first, which is
+      // the state a production container is in seconds after boot. Neither cold nor warm
+      // describes it, and it is the state most reads actually happen in.
+      if (args.prefault) {
+        const p = await prefault(coldPath);
+        prefaultMs = p.ms;
+      }
+      const coldEngine = openEngine(coldPath, cfg, args);
+      const io0 = ioReadBytes();
+      const t0 = Bun.nanoseconds();
+      s.run(coldEngine);
+      coldTimes.push((Bun.nanoseconds() - t0) / 1e6);
+      const io1 = ioReadBytes();
+      // Only the FIRST sample's I/O is kept. Later ones read the same extents through a
+      // different inode, and whether the device served them from its own cache is not
+      // something this process can see -- so averaging them would blend two different
+      // questions. The first is the honest one.
+      if (i === 0 && io0 !== null && io1 !== null) coldIo = io1 - io0;
+      coldEngine.close();
+      rmSync(coldPath, { force: true });
+    }
   }
+  coldTimes.sort((a, b) => a - b);
+  const cold = quantile(coldTimes, 0.5);
 
   // The plans, from the statements this scenario really ran.
   const seen: string[] = [];
@@ -447,7 +703,12 @@ async function measure(
     p50: quantile(times, 0.5),
     p95: quantile(times, 0.95),
     p99: quantile(times, 0.99),
+    max: times[times.length - 1] ?? 0,
     cold,
+    coldMin: coldTimes[0] ?? 0,
+    coldMax: coldTimes[coldTimes.length - 1] ?? 0,
+    coldIo,
+    prefaultMs,
     rows: countRows(first),
     sorts: plans.filter((p) => p.includes("USE TEMP B-TREE")).length,
     scans: plans.filter((p) => /SCAN (?!.*USING COVERING INDEX)/.test(p)).length,
@@ -460,17 +721,37 @@ const fixturesFiller = "tt0000001";
 
 function report(results: Row[]): void {
   const sorted = [...results].sort((a, b) => b.p50 - a.p50);
+  const anyIo = results.some((r) => r.coldIo !== null);
   console.log(
-    `${"scenario".padEnd(26)}${"p50".padStart(9)}${"p95".padStart(9)}${"p99".padStart(9)}${"cold".padStart(10)}${"rows".padStart(7)}  flags`,
+    `${"scenario".padEnd(26)}${"p50".padStart(9)}${"p99".padStart(9)}${"max".padStart(9)}` +
+      `${"cold".padStart(10)}${"coldMin".padStart(10)}${"coldMax".padStart(10)}` +
+      `${anyIo ? "coldIO".padStart(11) : ""}${"rows".padStart(7)}  flags`,
   );
-  console.log("-".repeat(86));
+  console.log("-".repeat(anyIo ? 108 : 97));
   for (const r of sorted) {
     const flags = [r.sorts > 0 ? `SORT x${r.sorts}` : "", r.scans > 0 ? `SCAN x${r.scans}` : ""]
       .filter(Boolean)
       .join(" ");
+    const io = anyIo ? (r.coldIo === null ? "-" : `${(r.coldIo / 1e6).toFixed(1)}MB`).padStart(11) : "";
     console.log(
-      `${r.id.padEnd(26)}${r.p50.toFixed(2).padStart(9)}${r.p95.toFixed(2).padStart(9)}${r.p99.toFixed(2).padStart(9)}${r.cold.toFixed(1).padStart(10)}${String(r.rows).padStart(7)}  ${flags}`,
+      `${r.id.padEnd(26)}${r.p50.toFixed(2).padStart(9)}${r.p99.toFixed(2).padStart(9)}` +
+        `${r.max.toFixed(2).padStart(9)}${r.cold.toFixed(1).padStart(10)}` +
+        `${r.coldMin.toFixed(1).padStart(10)}${r.coldMax.toFixed(1).padStart(10)}` +
+        `${io}${String(r.rows).padStart(7)}  ${flags}`,
     );
+  }
+
+  // The whole point of the exercise, in two numbers: what a page pays with a cache and
+  // without one. A ratio near 1 means the storage is irrelevant to this workload.
+  const sumP50 = results.reduce((a, r) => a + r.p50, 0);
+  const sumCold = results.reduce((a, r) => a + r.cold, 0);
+  console.log(
+    `\nsuite total: warm ${sumP50.toFixed(1)} ms | cold ${sumCold.toFixed(1)} ms ` +
+      `| cold/warm ${sumP50 > 0 ? (sumCold / sumP50).toFixed(0) : "?"}x`,
+  );
+  const pf = results.find((r) => r.prefaultMs !== null)?.prefaultMs;
+  if (pf !== null && pf !== undefined) {
+    console.log(`prefault: ${(pf / 1000).toFixed(2)}s to read the file sequentially, per cold sample`);
   }
 
   console.log("\nby surface (sum of p50, ms) -- what a page pays if it runs each once:");
