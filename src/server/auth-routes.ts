@@ -347,14 +347,19 @@ export class AuthService {
       "/api/auth/plex/finish",
       "/api/auth/logout",
       /*
-        The Open Graph poster, and the ONE image route an anonymous caller may reach.
+        The Open Graph image -- a poster for a `tt`, a headshot for an `nm` -- and the ONE
+        image route an anonymous caller may reach.
 
-        It serves only what the artwork cache already holds and never resolves upstream --
-        see the route itself in `./index.ts`, where the distinction from `/img/t/:tconst`
-        is the whole reason two routes exist. Listed here as the route PATTERN because
-        `withAuth` matches on the table's key, not on the request path.
+        It serves only what the artwork cache and `person_image` already hold, and never
+        resolves upstream -- see the route itself in `./index.ts`, where the distinction
+        from `/img/t/:tconst` is the whole reason two routes exist. Both id spaces go
+        through that one route precisely so this stays ONE line: a second pattern here is
+        a second thing to forget, and forgetting it serves a card whose image 401s.
+
+        Listed as the route PATTERN because `withAuth` matches on the table's key, not on
+        the request path -- so this string must track the key in `./index.ts` exactly.
       */
-      `${PREVIEW_IMAGE_PATH}/:tconst`,
+      `${PREVIEW_IMAGE_PATH}/:id`,
       /*
         The Radarr and Sonarr callback, and the ONE public route that CHANGES state.
 

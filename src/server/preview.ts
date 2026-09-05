@@ -1,4 +1,9 @@
-import { type PreviewTitle, renderPreviewPage } from "../lib/og-preview";
+import {
+  type PreviewPerson,
+  type PreviewTitle,
+  renderPersonPreviewPage,
+  renderPreviewPage,
+} from "../lib/og-preview";
 import { cacheHeaders, sharedPerSession } from "./cache-policy";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
 
@@ -60,7 +65,7 @@ export async function previewResponse(
   const posterUrl = known !== undefined ? known.url : await deps.resolvePoster(tconst, row.kind);
 
   const origin = deps.origin(req);
-  return new Response(
+  return cardResponse(
     renderPreviewPage({
       title: row,
       synopsis: deps.cachedSynopsis(tconst),
@@ -69,25 +74,90 @@ export async function previewResponse(
       returnPath: `/title/${tconst}`,
       siteName: deps.siteName,
     }),
-    {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        /*
-          The `Vary: Cookie` this policy carries is not optional and it is not tidiness.
-
-          This URL serves TWO different bodies -- the app shell to a session, this page to
-          everybody else -- and the app shell is deliberately withheld from anonymous
-          visitors. Without `Vary`, Caddy or CloudFlare may store one and serve it to the
-          other, which hands a stranger the bundle naming every route finderr has and
-          defeats the whole `login.html` split. `cache-policy.ts` is why the pair cannot
-          be separated by an edit to this file.
-
-          Ten minutes at the edge, because the caller worth optimising for is a crawler
-          fanning out over one shared link.
-        */
-        ...cacheHeaders(sharedPerSession(600)),
-        ...deps.headers,
-      },
-    },
+    deps.headers,
   );
+}
+
+/** What a person card is allowed to touch. Local SQLite only, and no bounded exception. */
+export interface PersonPreviewDeps {
+  /**
+   * The person, their best-known titles and how many credits we hold, or `null`.
+   *
+   * ONE dep rather than three, because all three come out of a single `personPage()` call
+   * and splitting them would invite a second read of the same rows per unfurl.
+   */
+  pageFor(nconst: string): { person: PreviewPerson; knownFor: string[]; credits: number } | null;
+  /**
+   * The face we have already filed under this person, or null.
+   *
+   * **There is no bounded-resolve escape hatch here, and that is the difference from the
+   * title card.** A poster can be bought from Radarr for an id we have never seen; a
+   * headshot only ever arrives as a side effect of somebody signed in opening a title page,
+   * so there is nothing to go and fetch. A person with no face cached unfurls without one,
+   * which is the ordinary degraded card rather than a gap worth an upstream call.
+   */
+  faceKey(nconst: string): string | null;
+  /** Per-caller fairness, shared with the title card -- one bucket, one shared surface. */
+  allow(req: Request): boolean;
+  origin(req: Request): string;
+  siteName: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * The Open Graph page for a shared person link, or `null` to fall through to the shell.
+ *
+ * Same `null`-is-the-only-failure rule as `previewResponse`, and for the same reason: a
+ * crawler that caches a 429 keeps the link broken in that channel long after the minute
+ * that produced it. An nconst we do not index is a fall-through, never a 404 -- the shell
+ * is a correct answer to "what is at this address" for a signed-out reader either way.
+ */
+export function personPreviewResponse(
+  req: Request,
+  nconst: string,
+  deps: PersonPreviewDeps,
+): Response | null {
+  const page = deps.pageFor(nconst);
+  if (!page) return null;
+  if (!deps.allow(req)) return null;
+
+  const origin = deps.origin(req);
+  const key = deps.faceKey(nconst);
+  return cardResponse(
+    renderPersonPreviewPage({
+      person: page.person,
+      knownFor: page.knownFor,
+      credits: page.credits,
+      imageUrl: key ? `${origin}${PREVIEW_IMAGE_PATH}/${nconst}` : null,
+      origin,
+      returnPath: `/person/${nconst}`,
+      siteName: deps.siteName,
+    }),
+    deps.headers,
+  );
+}
+
+/**
+ * One set of headers for both cards.
+ *
+ * > [!IMPORTANT] The `Vary: Cookie` this policy carries is not optional and it is not tidiness
+ * > Both URLs serve TWO different bodies -- the app shell to a session, a card to everybody
+ * > else -- and the app shell is deliberately withheld from anonymous visitors. Without
+ * > `Vary`, Caddy or CloudFlare may store one and serve it to the other, which hands a
+ * > stranger the bundle naming every route finderr has and defeats the whole `login.html`
+ * > split. `cache-policy.ts` is why the pair cannot be separated by an edit to this file.
+ *
+ * Ten minutes at the edge, because the caller worth optimising for is a crawler fanning out
+ * over one shared link. Shared by both cards so the person page cannot acquire a different
+ * caching rule by omission, which is exactly how the two definitions of the front page
+ * drifted apart before `shelves.ts` collapsed them.
+ */
+function cardResponse(html: string, headers: Record<string, string>): Response {
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...cacheHeaders(sharedPerSession(600)),
+      ...headers,
+    },
+  });
 }

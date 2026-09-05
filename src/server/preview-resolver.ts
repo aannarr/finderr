@@ -12,8 +12,43 @@ import { RateLimiter } from "../lib/rate-limit";
  */
 export const PREVIEW_IMAGE_PATH = "/img/og";
 
+/**
+ * How wide a card's image is fetched, and it is NOT `DEFAULT_IMAGE_SIZE`.
+ *
+ * > [!IMPORTANT] 342 is below the bar every client applies, and it degraded the card silently
+ * > Apple's [TN3156]: *"Images should be at least 900 pixels in width. Images less than 150
+ * > pixels in width may be ignored or presented as icons."* The proxy served a TMDB `w342`,
+ * > which clears the ignore floor and misses the quality one by a mile -- so Messages drew a
+ * > smaller, softer card and never said why. Measured 2026-09-05 against
+ * > `opengraphchecker.com`, which scored the live page 76/100 for iMessage with **one**
+ * > warning, *"Preview image is too small"*, and nothing critical.
+ *
+ * `w780` rather than `w1280` or `original`: a poster is 2:3, so 780 wide is 1170 tall and
+ * already past the 900 that Apple asks for on the LONG edge, while `original` is several
+ * megabytes of print-resolution artwork bought by a crawler for a thumbnail. TMDB publishes
+ * `w780` for posters and profiles alike, which is what lets one constant serve both cards.
+ *
+ * The app's own grid keeps `DEFAULT_IMAGE_SIZE` -- it draws these 171px wide and would pay
+ * five times the bytes for nothing. `IMAGE_W`/`IMAGE_H` in `../lib/og-preview.ts` declare
+ * this size to a client and must agree with it.
+ *
+ * [TN3156]: https://developer.apple.com/documentation/technotes/tn3156-create-rich-previews-for-messages
+ */
+export const PREVIEW_IMAGE_SIZE = "w780";
+
 /** The `/title/:tconst` shape a preview is served for. Nothing else gets one. */
 export const PREVIEW_PATH = /^\/title\/(tt\d{7,8})$/;
+
+/**
+ * The `/person/:nconst` shape, which gets a card for the same reason a title does.
+ *
+ * A person page was the loudest remaining instance of the anti-pattern TN3156 names -- it
+ * unfurled as the sign-in shell's `<title>`, the bare word `finderr`, for every one of the
+ * 353k people the index holds. It is a SEPARATE pattern rather than one alternation because
+ * the two resolve through different tables and neither handler should have to ask which
+ * kind of id it was handed.
+ */
+export const PREVIEW_PERSON_PATH = /^\/person\/(nm\d{7,8})$/;
 
 /**
  * What an anonymous link preview is allowed to buy from the network, and nothing more.

@@ -1,6 +1,6 @@
 /**
  * The Open Graph preview page: what a stranger's chat client is shown for a shared
- * `/title/:tconst` link.
+ * `/title/:tconst` or `/person/:nconst` link.
  *
  * > [!IMPORTANT] This module is PURE and takes no config object, no store and no fetch
  * > Everything it needs arrives as arguments, so the whole page -- escaping, tag order,
@@ -12,12 +12,21 @@
  * `login.html` and never the app shell, deliberately (`src/server/index.ts`). A crawler
  * unfurling a shared link gets that same bare sign-in page, so every finderr link posted
  * anywhere renders as an unlabelled box. This page is the narrow exception: enough to
- * describe ONE title, and nothing that describes this deployment.
+ * describe ONE title or ONE person, and nothing that describes this deployment.
+ *
+ * Apple names that exact failure in [TN3156], and it is the reason the person half exists
+ * rather than being a nicety: *"For pages that require authentication, the main resource
+ * should provide metadata for the page to which access is being provided, and not for the
+ * authentication page itself. This avoids showing 'Sign In' as the title for every page
+ * behind an authentication wall."* Before this, `/person/nm0000138` unfurled as the word
+ * `finderr` beside a favicon, which is the sign-in shell's own `<title>`.
  *
  * **What it must never carry**, and the rule is stricter than it looks: no library state,
  * no request state, no `requested_by`, no arr link, no episode state, no facet beyond the
- * synopsis. Everything here is a fact about the FILM, published by IMDb, for an id the
- * reader already had. Nothing here is a fact about this server having it.
+ * synopsis. Everything here is a fact published by IMDb, for an id the reader already had.
+ * Nothing here is a fact about this server having it.
+ *
+ * [TN3156]: https://developer.apple.com/documentation/technotes/tn3156-create-rich-previews-for-messages
  */
 
 /** The local index row this page is built from -- a subset of `TitleRow`, by design. */
@@ -40,6 +49,32 @@ export interface PreviewInput {
   /** This deployment's public origin, from `publicOrigin()`. */
   origin: string;
   /** What the sign-in button should return the reader to. Already validated. */
+  returnPath: string;
+  siteName?: string;
+}
+
+/** The `person` row a filmography card is built from -- a subset of `Person`, by design. */
+export interface PreviewPerson {
+  nconst: string;
+  name: string;
+  birthYear: number | null;
+  deathYear: number | null;
+}
+
+export interface PersonPreviewInput {
+  person: PreviewPerson;
+  /**
+   * The titles they are best known for, votes-ordered, already capped by the caller.
+   *
+   * Plain strings rather than rows: the card prints names and nothing else, and handing
+   * this half a `TitleRow` would invite it to draw library state onto an anonymous page.
+   */
+  knownFor: readonly string[];
+  /** Total credits we hold for them, which `knownFor` is the head of. */
+  credits: number;
+  /** Absolute URL of the headshot, or null to ship no `og:image` at all. */
+  imageUrl: string | null;
+  origin: string;
   returnPath: string;
   siteName?: string;
 }
@@ -118,6 +153,59 @@ export function factLine(t: PreviewTitle): string {
   return previewDescription(t, null);
 }
 
+/**
+ * `1937 – 2014`, `b. 1970`, `d. 2014`, or nothing at all.
+ *
+ * A birth year alone is the common case and the one worth getting right: printing a bare
+ * `1970` beside a name reads as a film year on a card whose neighbours are all film years.
+ * An unknown birth year with a known death year still says something, so it is not dropped.
+ */
+export function personLifespan(p: PreviewPerson): string {
+  if (p.birthYear && p.deathYear) return `${p.birthYear} – ${p.deathYear}`;
+  if (p.birthYear) return `b. ${p.birthYear}`;
+  if (p.deathYear) return `d. ${p.deathYear}`;
+  return "";
+}
+
+/**
+ * The muted line under a person's name: lifespan and how much of them we hold.
+ *
+ * `credits` is OUR count, not IMDb's, and it is smaller on purpose -- the index keeps only
+ * titles clearing `castMinVotes`. Printing it is still honest, because the number describes
+ * the filmography this link actually leads to.
+ */
+export function personFactLine(p: PreviewPerson, credits: number): string {
+  const parts = [personLifespan(p)].filter(Boolean);
+  if (credits > 0) parts.push(credits === 1 ? "1 credit" : `${credits.toLocaleString("en")} credits`);
+  return parts.join(" · ");
+}
+
+/**
+ * `Known for The Dark Knight, Inception and Memento.`
+ *
+ * Chosen over a role summary (`Acting · Directing`) deliberately: the reader unfurling this
+ * link is deciding whether they care, and three titles answer that where a job title does
+ * not. It also needs no credit-category vocabulary on the server -- `creditLabel` lives in
+ * `web/src/lib/credits.ts` and importing it here would pull a browser module into the
+ * server, the mirror of the cross-import `decadeOf` and `personNameKey` already refuse.
+ *
+ * Falls back to the fact line, so a person with credits we cannot name still unfurls with
+ * something rather than with an empty description.
+ */
+export function personDescription(
+  p: PreviewPerson,
+  knownFor: readonly string[],
+  credits: number,
+  limit = 200,
+): string {
+  const named = knownFor.map((t) => t.trim()).filter(Boolean);
+  if (!named.length) return personFactLine(p, credits);
+
+  const head = named.slice(0, -1).join(", ");
+  const list = named.length > 1 ? `${head} and ${named[named.length - 1]}` : named[0];
+  return truncateWords(`Known for ${list}.`, limit);
+}
+
 function truncateWords(text: string, limit: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= limit) return flat;
@@ -140,18 +228,92 @@ function truncateWords(text: string, limit: number): string {
  */
 export function renderPreviewPage(input: PreviewInput): string {
   const { title: t, synopsis, imageUrl, origin, returnPath } = input;
-  const siteName = input.siteName ?? "finderr";
-
   const heading = previewTitle(t);
-  const description = previewDescription(t, synopsis);
-  // The unfurl always carries a description, because an empty one is a worse card. The
-  // VISIBLE body is the synopsis alone -- see `factLine`.
-  const body = synopsis?.trim() ? truncateWords(synopsis, 400) : "";
-  const canonical = `${origin}/title/${t.tconst}`;
-  const signInHref = `/?next=${encodeURIComponent(returnPath)}`;
+
+  return renderCard({
+    ogType: ogType(t.kind),
+    heading,
+    displayName: t.title,
+    factLine: factLine(t),
+    description: previewDescription(t, synopsis),
+    // The unfurl always carries a description, because an empty one is a worse card. The
+    // VISIBLE body is the synopsis alone -- see `factLine`.
+    body: synopsis?.trim() ? truncateWords(synopsis, 400) : "",
+    imageUrl,
+    imageAlt: `Poster for ${heading}`,
+    canonical: `${origin}/title/${t.tconst}`,
+    returnPath,
+    siteName: input.siteName ?? "finderr",
+  });
+}
+
+/**
+ * The same card for a PERSON, and the only differences are the four values it is given.
+ *
+ * `og:type` is `profile`, which is Open Graph's own vertical for a human being and what
+ * tells a client this is not a film. Everything else -- the escaping, the icon links, the
+ * sign-in destination, the image tags -- is `renderCard`'s, because a second copy of that
+ * markup is a second place the `apple-touch-icon` would have to be remembered.
+ */
+export function renderPersonPreviewPage(input: PersonPreviewInput): string {
+  const { person: p, knownFor, credits, imageUrl, origin, returnPath } = input;
+
+  return renderCard({
+    ogType: "profile",
+    heading: p.name,
+    displayName: p.name,
+    factLine: personFactLine(p, credits),
+    description: personDescription(p, knownFor, credits),
+    // The fact line already prints the lifespan and the credit count, so repeating the
+    // description under it would print the same sentence twice -- the duplication
+    // `factLine` was split out to stop on the title card.
+    body: "",
+    imageUrl,
+    imageAlt: `Photograph of ${p.name}`,
+    canonical: `${origin}/person/${p.nconst}`,
+    returnPath,
+    siteName: input.siteName ?? "finderr",
+  });
+}
+
+/** Everything the one card template needs, with every editorial decision already taken. */
+interface PreviewCard {
+  ogType: string;
+  /** `og:title` and the document title. Carries the year for a film. */
+  heading: string;
+  /** The `<h1>`, which drops the year the fact line is about to print. */
+  displayName: string;
+  factLine: string;
+  description: string;
+  body: string;
+  imageUrl: string | null;
+  imageAlt: string;
+  canonical: string;
+  returnPath: string;
+  siteName: string;
+}
+
+/**
+ * The image every card ships, and why both numbers are stated.
+ *
+ * Slack lays the card out before the bytes arrive, so the aspect ratio has to be declared.
+ * `PREVIEW_IMAGE_SIZE` in `src/server/preview-resolver.ts` is the single owner of the width
+ * we actually request and these must agree with it; a TMDB `w780` poster and a TMDB `w780`
+ * headshot are both 2:3, which is what lets one pair of numbers serve both cards.
+ */
+const IMAGE_W = 780;
+const IMAGE_H = 1170;
+
+/** How large the poster is DRAWN for a human who follows the link, in CSS pixels. */
+const DRAWN_W = 171;
+const DRAWN_H = 257;
+
+function renderCard(card: PreviewCard): string {
+  const { heading, description, imageUrl, canonical, siteName } = card;
+  const signInHref = `/?next=${encodeURIComponent(card.returnPath)}`;
 
   const meta: [string, string][] = [
-    ["og:type", ogType(t.kind)],
+    ["og:type", card.ogType],
     ["og:site_name", siteName],
     ["og:title", heading],
     ["og:url", canonical],
@@ -159,11 +321,9 @@ export function renderPreviewPage(input: PreviewInput): string {
   if (description) meta.push(["og:description", description]);
   if (imageUrl) {
     meta.push(["og:image", imageUrl]);
-    // Slack lays the card out before the bytes arrive, so the aspect ratio is worth
-    // stating. Every poster this proxy serves is a TMDB w342, which is 342x513.
-    meta.push(["og:image:width", "342"]);
-    meta.push(["og:image:height", "513"]);
-    meta.push(["og:image:alt", `Poster for ${heading}`]);
+    meta.push(["og:image:width", String(IMAGE_W)]);
+    meta.push(["og:image:height", String(IMAGE_H)]);
+    meta.push(["og:image:alt", card.imageAlt]);
   }
 
   const tags = [
@@ -174,11 +334,16 @@ export function renderPreviewPage(input: PreviewInput): string {
     `<meta name="twitter:card" content="summary">`,
     `<meta name="twitter:title" content="${escapeHtml(heading)}">`,
     ...(description ? [`<meta name="twitter:description" content="${escapeHtml(description)}">`] : []),
-    ...(imageUrl ? [`<meta name="twitter:image" content="${escapeHtml(imageUrl)}">`] : []),
+    ...(imageUrl
+      ? [
+          `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">`,
+          `<meta name="twitter:image:alt" content="${escapeHtml(card.imageAlt)}">`,
+        ]
+      : []),
   ].join("\n    ");
 
   const poster = imageUrl
-    ? `<img src="${escapeHtml(imageUrl)}" alt="" width="171" height="257" class="poster">`
+    ? `<img src="${escapeHtml(imageUrl)}" alt="" width="${DRAWN_W}" height="${DRAWN_H}" class="poster">`
     : "";
 
   return `<!doctype html>
@@ -188,6 +353,7 @@ export function renderPreviewPage(input: PreviewInput): string {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(heading)} — ${escapeHtml(siteName)}</title>
     <link rel="canonical" href="${escapeHtml(canonical)}">
+    ${ICON_LINKS}
     ${tags}
     <style>
       :root { color-scheme: dark }
@@ -207,12 +373,35 @@ export function renderPreviewPage(input: PreviewInput): string {
     <main class="card">
       ${poster}
       <div>
-        <h1>${escapeHtml(t.title)}</h1>
-        <p class="meta">${escapeHtml(factLine(t))}</p>
-${body ? `        <p>${escapeHtml(body)}</p>\n` : ""}        <a href="${escapeHtml(signInHref)}">Sign in to ${escapeHtml(siteName)}</a>
+        <h1>${escapeHtml(card.displayName)}</h1>
+        <p class="meta">${escapeHtml(card.factLine)}</p>
+${card.body ? `        <p>${escapeHtml(card.body)}</p>\n` : ""}        <a href="${escapeHtml(signInHref)}">Sign in to ${escapeHtml(siteName)}</a>
       </div>
     </main>
   </body>
 </html>
 `;
 }
+
+/**
+ * The icon a chat client falls back to when it will not use `og:image`.
+ *
+ * > [!IMPORTANT] This is not decoration, and its absence is what produced the bare card
+ * > Apple's [TN3156] says the preview *"will use an `apple-touch-icon`, a favicon, or an
+ * > icon specified by `<link rel="...">`"* alongside the image, and *"if you do not have a
+ * > preview image of sufficient size or quality, use an `apple-touch-icon` instead."* This
+ * > page shipped none of the three, so a client that rejected the poster had nothing left
+ * > to draw and fell back to the domain's own card.
+ *
+ * The paths are the ones `bun run icons:build` writes into `web/public/`, and they are
+ * ROOT-RELATIVE so the same string is correct on every origin this ever runs on. That is
+ * also why they are not `origin`-prefixed like `og:image` is: an `og:` tag is read by a
+ * third party that has no base URL, a `<link>` is resolved by whoever fetched the page.
+ *
+ * [TN3156]: https://developer.apple.com/documentation/technotes/tn3156-create-rich-previews-for-messages
+ */
+const ICON_LINKS = [
+  `<link rel="icon" href="/favicon.ico" sizes="48x48">`,
+  `<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">`,
+  `<link rel="apple-touch-icon" href="/apple-touch-icon.png">`,
+].join("\n    ");

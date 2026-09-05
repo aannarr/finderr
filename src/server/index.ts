@@ -89,8 +89,14 @@ import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { json } from "./json-response";
 import { completionPayload, type ListsDeps } from "./lists";
 import { LiveIndex } from "./live-index";
-import { type PreviewDeps, previewResponse } from "./preview";
-import { PREVIEW_IMAGE_PATH, PREVIEW_PATH, PreviewResolver } from "./preview-resolver";
+import { type PersonPreviewDeps, type PreviewDeps, personPreviewResponse, previewResponse } from "./preview";
+import {
+  PREVIEW_IMAGE_PATH,
+  PREVIEW_IMAGE_SIZE,
+  PREVIEW_PATH,
+  PREVIEW_PERSON_PATH,
+  PreviewResolver,
+} from "./preview-resolver";
 import { PushNotifier } from "./push";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
@@ -901,6 +907,40 @@ const previewDeps: PreviewDeps = {
   },
   cachedPoster: (tconst) => store.getArtwork(tconst),
   resolvePoster: (tconst, kind) => previewResolver.tryResolve(() => artwork.resolveUrl(tconst, kind)),
+  allow: (req) => previewLimiter.take(auth.limitKey(req)),
+  origin: (req) => publicOrigin(req.url, cfg.auth.origins),
+  siteName: cfg.auth.rpName,
+  headers: HTML_HEADERS,
+};
+
+/**
+ * The same contract for a PERSON card, and it is even narrower than the title one.
+ *
+ * Two local reads and no network AT ALL -- there is no `resolvePoster` counterpart, because
+ * a headshot only ever enters `person_image` as a side effect of a signed-in reader opening
+ * a title page. Nothing to buy means nothing to bound, so `previewResolver` is not wired
+ * here and must not be: a bound that guards no call is a bound somebody later feeds one to.
+ *
+ * `KNOWN_FOR` is capped at three because the description reads as a sentence -- `Known for
+ * A, B and C.` -- and a fourth title pushes the useful half past where clients truncate.
+ * `personPage` orders by votes by default, which is what makes the head of the list the
+ * titles a reader would actually recognise.
+ */
+const KNOWN_FOR = 3;
+
+const personPreviewDeps: PersonPreviewDeps = {
+  pageFor: (nconst) => {
+    const page = live.current.personPage(nconst, { limit: KNOWN_FOR, sort: "votes" });
+    if (!page) return null;
+    return {
+      person: page.person,
+      knownFor: page.credits.map((c) => c.title),
+      credits: page.total,
+    };
+  },
+  faceKey: (nconst) => store.personImageKeys([nconst]).get(nconst) ?? null,
+  // ONE bucket with the title card, deliberately: they are one anonymous surface, and a
+  // second limiter would let a crawler spend the whole allowance twice.
   allow: (req) => previewLimiter.take(auth.limitKey(req)),
   origin: (req) => publicOrigin(req.url, cfg.auth.origins),
   siteName: cfg.auth.rpName,
@@ -2621,8 +2661,8 @@ const appRoutes = {
     facetImages.serve(req.params.key, sizeOf(req)),
 
   /**
-   * The poster an Open Graph card points at. ANONYMOUS-REACHABLE, and the only image route
-   * that is.
+   * The image an Open Graph card points at -- a POSTER for a `tt`, a HEADSHOT for an `nm`.
+   * ANONYMOUS-REACHABLE, and the only image route that is.
    *
    * > [!CAUTION] This is `/img/t/:tconst` with the amplifier taken out, not a duplicate of it
    * > The two look alike and differ in the one way that matters. `/img/t` calls
@@ -2632,13 +2672,31 @@ const appRoutes = {
    * > otherwise. The resolve happens, bounded, when the PAGE is rendered
    * > (`previewPage`), which is also the only place it can be rate limited as one act.
    *
+   * **One route for two id spaces, and that is the point rather than a shortcut.** It is
+   * the single edit that makes an image anonymous-reachable, so it is the single line in
+   * `publicPaths()` -- a second route would be a second thing to remember to list, and the
+   * failure of forgetting is a card whose image 401s, which no test of the page would
+   * catch. Both halves obey the same rule: serve a cached URL or 404, never resolve one.
+   *
+   * **The size is `PREVIEW_IMAGE_SIZE`, never `DEFAULT_IMAGE_SIZE`** -- see that constant
+   * for the measurement. The app's grid draws these 171px wide and keeps the smaller one.
+   *
    * A 404 here is a normal outcome, not an error: the crawler already has the page, and a
    * card without a picture is the intended degraded form.
    */
-  [`${PREVIEW_IMAGE_PATH}/:tconst`]: (req: Bun.BunRequest<`${typeof PREVIEW_IMAGE_PATH}/:tconst`>) => {
-    const known = store.getArtwork(req.params.tconst);
+  [`${PREVIEW_IMAGE_PATH}/:id`]: (req: Bun.BunRequest<`${typeof PREVIEW_IMAGE_PATH}/:id`>) => {
+    const id = req.params.id;
+    if (id.startsWith("nm")) {
+      // A face is already in `facet_image` under a key the title route issued, so this
+      // goes through the facet proxy rather than the artwork cache. `personImageKeys`
+      // returns nothing for a person nobody has drawn yet, which is the ordinary 404.
+      const key = store.personImageKeys([id]).get(id);
+      if (!key) return new Response("no artwork", { status: 404 });
+      return facetImages.serve(key, PREVIEW_IMAGE_SIZE);
+    }
+    const known = store.getArtwork(id);
     if (!known?.url) return new Response("no artwork", { status: 404 });
-    return artwork.serveUrl(known.url, DEFAULT_IMAGE_SIZE);
+    return artwork.serveUrl(known.url, PREVIEW_IMAGE_SIZE);
   },
 
   /** Legacy direct-TMDB-path proxy. Kept for anything addressing posters that way. */
@@ -2801,6 +2859,13 @@ const server: Bun.Server<undefined> = Bun.serve({
     const shared = principal ? null : PREVIEW_PATH.exec(u.pathname);
     if (shared?.[1]) {
       return previewResponse(req, shared[1], previewDeps).then((res) => res ?? shellResponse(shell));
+    }
+
+    // A shared PERSON link, same rule and same fall-through. Synchronous, because unlike a
+    // title it can never resolve an image and so never awaits anything.
+    const sharedPerson = principal ? null : PREVIEW_PERSON_PATH.exec(u.pathname);
+    if (sharedPerson?.[1]) {
+      return personPreviewResponse(req, sharedPerson[1], personPreviewDeps) ?? shellResponse(shell);
     }
 
     // `/` serves a DIFFERENT document to a session than to a stranger, so it is answered
