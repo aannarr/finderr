@@ -540,7 +540,7 @@ async function main(): Promise<void> {
 
   const profile = args.profile ? STORAGE_PROFILES[args.profile] : null;
   if (profile) {
-    const drift = profileDrift(allIndexes());
+    const drift = profileDrift(allIndexes(), profile);
     if (drift.missing.length > 0 || drift.extra.length > 0) {
       // Loud, and not fatal. A profile that has fallen behind `INDEXES` still produces a
       // usable number for every OTHER index -- what it cannot do is be quoted without this

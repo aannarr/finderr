@@ -91,6 +91,49 @@ const SLIM_INDEXES: readonly string[] = [
   "create index ix_ep_parent on episode(parent, season, number)",
 ];
 
+/**
+ * PAYLOAD ONLY -- the honest test of "do the covering bytes earn their keep?".
+ *
+ * > [!IMPORTANT] `slim` above turned out to conflate TWO different changes, and the Mac run proved it
+ * > Measured 2026-09-05 on the M1 Max: `slim` was **278x slower warm** on `browse.decade` and
+ * > **73x** on `browse.year`. That is not the covering columns being missed -- it is `ix_year`
+ * > losing its `votes desc` SORT column, which `decadeRows`' ten-seek split depends on
+ * > absolutely. The index's own comment warned that the widening and the split are one change,
+ * > and `slim` broke the pair.
+ * >
+ * > So `slim`'s totals answer a question nobody asked: "what if you also broke an ordering?".
+ * > This profile drops **trailing payload columns and nothing else** -- every key column and
+ * > every sort column stays, so the query PLANS are the same shape and only the row fetch
+ * > changes. That is the actual NVMe-vs-HDD trade, isolated.
+ *
+ * Keep both. `slim` is still worth having as the outer bound, and the gap between the two is
+ * itself the finding: it separates "bytes we pay to avoid a fetch" from "bytes that are load
+ * bearing for the plan".
+ */
+const SLIM_PAYLOAD_INDEXES: readonly string[] = [
+  "create index ix_rank on title(kind, rank desc)",
+  // Drops the `title_rowid, votes` payload pair (+9.9 MB) and KEEPS `kind`, which is a covered
+  // filter rather than payload -- and keeps the (genre, rank desc) ordering intact.
+  "create index ix_tg_rank on title_genre(genre, rank desc, kind)",
+  "create index ix_rank_all on title(rank desc)",
+  // Unchanged: `kind` here is a covered filter and the sort column is already minimal.
+  "create index ix_tg_votes on title_genre(genre, votes desc, kind)",
+  "create index ix_votes on title(votes desc)",
+  // Unchanged, deliberately -- `votes desc` is a SORT column here, not payload. This is the
+  // exact line `slim` got wrong.
+  "create index ix_year on title(year, votes desc)",
+  "create index ix_kind on title(kind, votes desc)",
+  // Still dropped: ix_pop_title is nothing BUT a covering index, so it belongs to this
+  // question rather than to the ordering one.
+  "create index ix_tg_title on title_genre(title_rowid)",
+  "create index ix_tp_person on title_principal(person_rowid)",
+  "create index ix_tp_title on title_principal(title_rowid)",
+  "create index ix_person_name on person(name)",
+  // Drops five payload columns, keeps the whole key. The pure case, and the one whose
+  // docstring already claims 20-30% warm and up to 496 ms cold.
+  "create index ix_ep_parent on episode(parent, season, number)",
+];
+
 /** A named index shape to measure. `shipped` is filled by the runner from `allIndexes()`. */
 export interface StorageProfile {
   name: string;
@@ -111,6 +154,11 @@ export const STORAGE_PROFILES: Record<string, StorageProfile> = {
     what: "every covering widening narrowed to its key columns; ix_pop_title dropped",
     indexes: SLIM_INDEXES,
   },
+  slimPayload: {
+    name: "slimPayload",
+    what: "trailing PAYLOAD columns dropped, every key and sort column kept -- the isolated trade",
+    indexes: SLIM_PAYLOAD_INDEXES,
+  },
 };
 
 /**
@@ -124,15 +172,19 @@ export const STORAGE_PROFILES: Record<string, StorageProfile> = {
  * Returns the mismatches rather than throwing, because the runner wants to print them beside
  * the profile header where somebody will read them.
  */
-export function profileDrift(shipped: readonly string[]): { missing: string[]; extra: string[] } {
+export function profileDrift(
+  shipped: readonly string[],
+  profile: StorageProfile,
+): { missing: string[]; extra: string[] } {
+  if (!profile.indexes) return { missing: [], extra: [] }; // the baseline cannot drift from itself
   const nameOf = (sql: string): string => sql.match(/create index (?:if not exists )?(\w+)/i)?.[1] ?? sql;
   const shippedNames = new Set(shipped.map(nameOf));
-  // ix_pop_title is dropped on purpose, so it is not "missing" -- it is the one deliberate
-  // absence and is named here rather than being an unexplained hole in the list.
+  // ix_pop_title is dropped on purpose by both variants, so it is not "missing" -- it is the
+  // one deliberate absence and is named here rather than being an unexplained hole in a list.
   const deliberatelyAbsent = new Set([nameOf(POPULAR_TITLE_INDEX)]);
-  const slimNames = new Set(SLIM_INDEXES.map(nameOf));
+  const has = new Set(profile.indexes.map(nameOf));
   return {
-    missing: [...shippedNames].filter((n) => !slimNames.has(n) && !deliberatelyAbsent.has(n)),
-    extra: [...slimNames].filter((n) => !shippedNames.has(n)),
+    missing: [...shippedNames].filter((n) => !has.has(n) && !deliberatelyAbsent.has(n)),
+    extra: [...has].filter((n) => !shippedNames.has(n)),
   };
 }
