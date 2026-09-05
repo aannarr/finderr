@@ -24,7 +24,7 @@ import {
 import { loadConfig } from "./config";
 import { Store } from "./store";
 
-const USER = "u_aannarr";
+const USER = "u_test";
 
 /** A sink that remembers, for the cases where the point is WHAT was written. */
 function fakeSink(): AiCallSink & { rows: ReturnType<typeof chargeRefusal>[] } {

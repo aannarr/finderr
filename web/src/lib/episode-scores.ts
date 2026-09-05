@@ -49,7 +49,7 @@ export type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episod
 /**
  * The quality bands, worst to best.
  *
- * These are OURS. They are modelled on the reference design aannarr asked for, read off its
+ * These are OURS. They are modelled on the reference design we were asked to match, read off its
  * own rendering rather than from any documentation, and the boundaries are whole tenths so
  * a reader can predict which colour a number gets without a legend. `cinema` is a
  * deliberately tiny top band -- it means something only because almost nothing reaches it.
