@@ -174,7 +174,21 @@ services:
       # > 2026-09-04: one conversation is ~$0.003 on the default model -- 0.3% of a $1 cap.
       # > On anthropic/claude-fable-5.1 the same check leaks ~90%. Adding an expensive model
       # > here without re-checking that turns the cap into a suggestion.
-      FINDERR_AI_MODELS: ${AI_MODELS:-z-ai/glm-5.3-flash}
+      #
+      # > [!CAUTION] THE FALLBACK IS EMPTY ON PURPOSE -- src/lib/config.ts OWNS THE MODEL
+      # > It used to read `${AI_MODELS:-z-ai/glm-5.3-flash}`, and that pinned name BEAT the
+      # > code default, silently. Measured on the live NAS 2026-09-05: the default moved to
+      # > meta/muse-spark-1.3-contributor in config.ts, and the deployment went on running
+      # > glm because nothing set AI_MODELS and compose supplied its own answer. Nothing
+      # > logged, nothing disagreed -- an env var that is always present is indistinguishable
+      # > from an operator's choice.
+      # >
+      # > The other fallbacks in this file are deployment SHAPE (/media/movies, localhost)
+      # > and stating them here helps whoever reads the compose. The model is different in
+      # > kind: it is a benchmark result that moves whenever somebody re-runs `agent:eval`,
+      # > so a second copy of it is a second thing to remember to change. `envStr` maps ""
+      # > to undefined, so an empty fallback lands on the code default cleanly.
+      FINDERR_AI_MODELS: ${AI_MODELS:-}
       # USD per user per day. 0 is unlimited. A "day" is a day in THIS CONTAINER'S timezone,
       # not in UTC, and every message about it states the reset as a delta. Admins are exempt
       # from this limit and from nothing else. Counted from the ai_call ledger, never a counter.

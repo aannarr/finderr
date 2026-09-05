@@ -19,6 +19,11 @@
  * > is 0.3% of a $1 cap and therefore noise. On `anthropic/claude-fable-5.1` the same check
  * > leaks ~90%.
  * >
+ * > The default moved to `meta/muse-spark-1.3-contributor` on 2026-09-05 and the bound did
+ * > not loosen: measured per QUESTION it is $0.0004 against glm's $0.00085, so the same
+ * > turn budget buys a cheaper worst case. The per-conversation figure has not been
+ * > re-measured on it, which is safe in this direction and would not be in the other.
+ * >
  * > So the cap and the model list are ONE decision. If an expensive model is added to
  * > `FINDERR_AI_MODELS`, re-check that a worst-case conversation still costs under ~1% of
  * > the cap, or this one-liner has quietly stopped being a cap.

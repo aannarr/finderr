@@ -59,3 +59,40 @@ describe("dotenv hygiene", () => {
     },
   );
 });
+
+/**
+ * The model list has ONE owner and it is `DEFAULTS.ai.models` in `src/lib/config.ts`.
+ *
+ * > [!CAUTION] A compose fallback beats the code default and looks exactly like a choice
+ * > Found on the live NAS 2026-09-05. `docker-compose.yml` read
+ * > `FINDERR_AI_MODELS: ${AI_MODELS:-z-ai/glm-5.3-flash}`, so every container was handed a
+ * > pinned model whether or not an operator had asked for one -- and moving the default in
+ * > `config.ts` therefore changed nothing anywhere it was deployed. Nothing logged and
+ * > nothing disagreed: the env var was simply always set.
+ *
+ * The other fallbacks in that file are deployment SHAPE and are welcome. This one is a
+ * BENCHMARK RESULT, which moves whenever somebody re-runs `bun run agent:eval`, so a second
+ * copy is a second thing to update in lockstep and the copy nobody updates is the one that
+ * wins. Empty is the correct fallback: `envStr` maps `""` to `undefined`.
+ */
+describe("compose does not pin the assistant's model", () => {
+  const COMPOSE = readFileSync(`${ROOT}docker-compose.yml`, "utf8");
+
+  test("FINDERR_AI_MODELS falls through to the code default", () => {
+    const line = COMPOSE.split("\n").find((l) => l.includes("FINDERR_AI_MODELS:"));
+    expect(line).toBeDefined();
+    // Built rather than written out: a bare "${AI_MODELS:-}" in a normal string trips
+    // biome's noTemplateCurlyInString, and escaping it would obscure what is asserted.
+    const EMPTY_FALLBACK = ["FINDERR_AI_MODELS: $", "{AI_MODELS:-}"].join("");
+    expect(line?.trim()).toBe(EMPTY_FALLBACK);
+  });
+
+  test("no model id is hardcoded anywhere in the compose file", () => {
+    // A provider-qualified id -- `vendor/model`, which is the only shape OpenRouter takes.
+    const ids = COMPOSE.split("\n")
+      .filter((l) => !l.trim().startsWith("#"))
+      .flatMap((l) => [...l.matchAll(/\b(?:openai|anthropic|google|meta|z-ai|mistralai)\/[a-z0-9.-]+/gi)])
+      .map((m) => m[0]);
+    expect(ids).toEqual([]);
+  });
+});
