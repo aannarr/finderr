@@ -493,7 +493,10 @@ export class LiveIndex {
           .map((f) => `"${f.query}" wanted ~${f.want}, got ${f.got}`)
           .join("; ");
         return {
-          error: `canary ${res.passed}/${res.total} is below the ${(res.floor * 100).toFixed(0)}% floor -- ${misses}`,
+          error:
+            `canary ${res.passed}/${res.total} is below the ${(res.floor * 100).toFixed(0)}% floor -- ${misses}` +
+            // Say what was NOT measured before the reader reasons about what was.
+            (res.degraded ? ` (${res.degraded})` : ""),
           canary,
         };
       }

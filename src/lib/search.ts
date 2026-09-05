@@ -56,7 +56,7 @@ import {
   yearScore,
 } from "./query-parser";
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
-import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
+import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_MISSING, SPELLFIX_TABLE } from "./spellfix";
 
 /**
  * Which escalation answered a query, as a value list rather than a bare union.
@@ -254,11 +254,36 @@ function saturating(votes: number): number {
   return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
 }
 
+/**
+ * Why the fuzzy tier is off, when it is off.
+ *
+ * The tier needs THREE things and each is missing for a different reason with a different
+ * remedy: the extension binary, a vocabulary in the index, and somebody having called
+ * `prepareFuzzy`. A caller that only knows "fuzzy is off" can only report the symptom, and
+ * a diagnostic that names the symptom instead of the cause is what sent one seat hunting
+ * through the ranker for a bug it had not written (`src/lib/canary.ts` carries the story).
+ */
+export type FuzzyAbsence = {
+  cause: "extension" | "vocabulary" | "unprepared";
+  /** One sentence: what is missing and how to get it. Safe to print to a human. */
+  detail: string;
+};
+
 export class SearchEngine {
   private db: Database;
 
-  /** Whether the fuzzy tier is available: extension loaded AND vocabulary present. */
-  private fuzzyReady = false;
+  /**
+   * Why the fuzzy tier is unavailable, or `null` once it is ready.
+   *
+   * ONE field rather than a boolean beside a reason, so "is fuzzy on" and "why is it off"
+   * can never disagree. Starts as `unprepared`: a `SearchEngine` nobody called
+   * `prepareFuzzy` on has no fuzzy tier, and saying that is more useful than blaming a
+   * binary that may well be sitting right there.
+   */
+  private fuzzyAbsence: FuzzyAbsence | null = {
+    cause: "unprepared",
+    detail: "prepareFuzzy() was never called on this engine",
+  };
   private vocabWords = 0;
 
   /**
@@ -527,6 +552,7 @@ export class SearchEngine {
     const t0 = Bun.nanoseconds();
     if (!loadSpellfix(this.db, log).ok) {
       log("fuzzy: DISABLED -- spellfix1 did not load. Exact and prefix search still work.");
+      this.fuzzyAbsence = { cause: "extension", detail: SPELLFIX_MISSING };
       return;
     }
 
@@ -537,13 +563,17 @@ export class SearchEngine {
       .get(SPELLFIX_TABLE) as { c: number };
     if (present.c === 0) {
       log(`fuzzy: DISABLED -- no '${SPELLFIX_TABLE}' table in this index. Rebuild it to enable typo search.`);
+      this.fuzzyAbsence = {
+        cause: "vocabulary",
+        detail: `this index has no '${SPELLFIX_TABLE}' table; rebuild it with \`bun run index:build\``,
+      };
       return;
     }
 
     this.vocabWords = (
       this.db.query(`select count(*) c from ${SPELLFIX_MAP_TABLE}`).get() as { c: number }
     ).c;
-    this.fuzzyReady = true;
+    this.fuzzyAbsence = null;
 
     // The vocabulary was built at whatever floor was configured AT BUILD TIME. If the
     // running config has moved since, fuzzy coverage is not what config says it is --
@@ -587,7 +617,17 @@ export class SearchEngine {
   }
 
   get ready(): boolean {
-    return this.fuzzyReady;
+    return this.fuzzyAbsence === null;
+  }
+
+  /**
+   * Why the fuzzy tier is off, or `null` when it is on.
+   *
+   * The canary asks this before it decides whether a typo case FAILED or was never
+   * runnable in the first place.
+   */
+  get fuzzyOff(): FuzzyAbsence | null {
+    return this.fuzzyAbsence;
   }
 
   /**
@@ -599,7 +639,7 @@ export class SearchEngine {
    * words (disk)`, which is the whole point: the number is large and costs nothing.
    */
   poolStats(): string {
-    if (!this.fuzzyReady) return "fuzzy off";
+    if (this.fuzzyAbsence) return "fuzzy off";
     return `vocab ${this.vocabWords.toLocaleString()} words (disk)`;
   }
 
@@ -882,7 +922,7 @@ export class SearchEngine {
    * to one title rowid, and the de-duplication happens in `rank()`.
    */
   private fuzzyCandidates(p: ParsedQuery, limit: number): number[] {
-    if (!this.fuzzyReady) return [];
+    if (this.fuzzyAbsence) return [];
     const nq = normalizeStripped(p.text);
     if (nq.length === 0) return [];
 
@@ -1009,7 +1049,7 @@ export class SearchEngine {
       // Levenshtein scan beside it. spellfix1 covers both cases in a single query, so the
       // split has no meaning any more -- and a second escalation that could only ever add
       // what the first already found is pure latency.
-      if (weak(ranked) && this.fuzzyReady) {
+      if (weak(ranked) && !this.fuzzyAbsence) {
         const before = candidates.size;
         add(this.hydrate(this.fuzzyCandidates(parsed, FUZZY_WINDOW)));
         if (candidates.size > before) {
