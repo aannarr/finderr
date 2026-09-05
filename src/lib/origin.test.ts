@@ -169,6 +169,70 @@ describe("the origin data", () => {
   });
 });
 
+describe("the stage is LINEAR in its inputs, not quadratic", () => {
+  /*
+    The regression test for the only bug this stage has had, and it is a SCALE test rather
+    than a duration one -- the assertion is that doubling the corpus does not square the
+    work, and the threshold is set two orders of magnitude away from the passing time so a
+    slow machine cannot fail it.
+
+    What it catches: the first draft of `loadOrigin` correlated two subqueries against
+    UNKEYED temp tables. At production scale that is ~600 billion row comparisons and the
+    real build sat at 98.8% CPU for seventeen minutes before it was killed. At the size
+    below it is a few seconds; with the seeks it is milliseconds. A unit test on a
+    seven-row fixture cannot see any of it, which is exactly why this one is here.
+  */
+  const N = 40_000;
+
+  test(`${N.toLocaleString()} titles and as many country rows load in well under a second`, () => {
+    const db = new Database(join(dir, `${crypto.randomUUID()}.db`), { create: true });
+    db.run(SCHEMA);
+    const insert = db.query(
+      "insert into title (tconst, kind, title, year, votes, rating, genres) values (?, ?, ?, ?, ?, ?, ?)",
+    );
+    db.transaction(() => {
+      for (let i = 0; i < N; i++) insert.run(`tt${i}`, "movie", `t${i}`, 2000, 100, 7, "Drama");
+    })();
+
+    // Half the corpus has a language, all of it has a country, and a tenth has two of each
+    // -- the multi-value path is where the aggregate does its work.
+    const langs: { imdb: string; code: string }[] = [];
+    const countries: { imdb: string; code: string }[] = [];
+    for (let i = 0; i < N; i++) {
+      if (i % 2 === 0) langs.push({ imdb: `tt${i}`, code: i % 3 === 0 ? "en" : "ta" });
+      countries.push({ imdb: `tt${i}`, code: "us" });
+      if (i % 10 === 0) {
+        langs.push({ imdb: `tt${i}`, code: "sv" });
+        countries.push({ imdb: `tt${i}`, code: "gb" });
+      }
+    }
+
+    const t0 = performance.now();
+    const res = loadOrigin(db, langs, countries);
+    const ms = performance.now() - t0;
+
+    /*
+      Correctness first -- a fast wrong answer is not the thing being tested.
+
+      Counted with `count(distinct)` rather than the `not exists` the small fixtures use.
+      At this size that correlated form is itself the quadratic shape this test exists to
+      catch (40,000 x 44,000 measured at 28 seconds), so the obvious assertion would have
+      made the test fail against correct code. Worth knowing before adding another one.
+    */
+    expect(res.langRows).toBeGreaterThan(N);
+    expect((db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number }).c).toBe(
+      N,
+    );
+    expect(
+      (db.query("select country from title where tconst = 'tt0'").get() as { country: string }).country,
+    ).toBe("GB,US");
+
+    // The gate. Measured at ~0.2s with the seeks in place on an M1 Max; the quadratic form
+    // does not finish inside this at a quarter of this size.
+    expect(ms).toBeLessThan(10_000);
+  });
+});
+
 describe("languageFilter", () => {
   test("no preference stays no preference", () => {
     expect(languageFilter([])).toEqual([]);

@@ -551,12 +551,27 @@ export function loadOrigin(
   withLang: number;
   withCountry: number;
 } {
+  /*
+    EVERY CORRELATED SUBQUERY BELOW SEEKS AN INDEX, and the first draft of this function did
+    not. That is the one bug this stage has actually had, and it is written down because
+    nothing in the code makes it visible.
+
+    Measured 2026-09-05 by running it: with unkeyed temp tables the build sat at 98.8% CPU
+    for seventeen minutes and had to be killed, against a whole-build cost of about two and
+    a half. `where exists (select 1 from country_in i where i.imdb = title.tconst)` over an
+    unindexed 467,796-row table, once per 1,276,508 titles, is ~600 billion row comparisons;
+    the backfill's `not exists` against an unindexed `title_lang` is the same shape again.
+    Neither is wrong, both are unrunnable. `loadCrosswalk` above had it right all along --
+    its temp table is keyed `imdb text primary key`.
+  */
   db.run("create temporary table lang_in (imdb text not null, code text not null)");
   const insLang = db.prepare("insert into lang_in values (?,?)");
   db.transaction(() => {
     for (const r of langs) insLang.run(r.imdb, r.code);
   })();
 
+  // Scans `lang_in` and seeks `title.tconst`'s unique index, which is the right way round:
+  // the source is a quarter the size of the title table.
   db.run(`
     insert into title_lang (title_rowid, lang)
     select distinct t.rowid_, i.code from title t join lang_in i on i.imdb = t.tconst
@@ -565,31 +580,52 @@ export function loadOrigin(
     .c;
   db.run("drop table lang_in");
 
+  /*
+    Country is AGGREGATED FIRST, into a keyed table, and only then joined.
+
+    One row per title with its codes already joined makes the update's two subqueries
+    primary-key seeks. Running the `group_concat` inside a correlated subquery -- which is
+    what this was -- re-derives the same string per title and scans the whole source to do it.
+  */
   db.run("create temporary table country_in (imdb text not null, code text not null)");
   const insCountry = db.prepare("insert into country_in values (?,?)");
   db.transaction(() => {
     for (const r of countries) insCountry.run(r.imdb, r.code.toUpperCase());
   })();
+  db.run("create temporary table country_agg (imdb text primary key, codes text not null)");
+  // Sorted inside the subquery so `group_concat` emits a stable string: two builds of the
+  // same data must produce the same column, or everything looks changed to anything diffing.
   db.run(`
-    update title set country = (
-      select group_concat(code) from (
-        select distinct i.code from country_in i where i.imdb = title.tconst order by i.code
-      )
-    )
-    where exists (select 1 from country_in i where i.imdb = title.tconst)
+    insert into country_agg (imdb, codes)
+    select imdb, group_concat(code) from (select distinct imdb, code from country_in order by imdb, code)
+     group by imdb
+  `);
+  db.run("drop table country_in");
+  db.run(`
+    update title set country = (select a.codes from country_agg a where a.imdb = title.tconst)
+     where exists (select 1 from country_agg a where a.imdb = title.tconst)
   `);
   const withCountry = (
     db.query("select count(*) c from title where country is not null").get() as { c: number }
   ).c;
-  db.run("drop table country_in");
+  db.run("drop table country_agg");
 
-  // THE BACKFILL. Every title carries a language row after this, so the filter is one
-  // `in (...)` and "unknown" is a code the caller either admits or does not.
+  /*
+    THE BACKFILL. Every title carries a language row after this, so the filter is one
+    `in (...)` and "unknown" is a code the caller either admits or does not.
+
+    The index is TEMPORARY on purpose: `ix_lang` leads with `lang` and so cannot serve a
+    lookup by rowid, and nothing after this stage ever asks in that direction -- the browse
+    semi-join goes lang -> rowid. Keeping it would be bytes on every future read for one
+    statement in the build.
+  */
+  db.run("create index ix_lang_backfill on title_lang(title_rowid)");
   db.run(`
     insert into title_lang (title_rowid, lang)
     select t.rowid_, '' from title t
      where not exists (select 1 from title_lang l where l.title_rowid = t.rowid_)
   `);
+  db.run("drop index ix_lang_backfill");
 
   const langRows = (db.query("select count(*) c from title_lang").get() as { c: number }).c;
   return { langRows, withLang, withCountry };
