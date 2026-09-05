@@ -72,15 +72,16 @@ describe("resolveTuning", () => {
     expect(resolveTuning({ budget: budget(500), indexBytes: 1868 * MB }).prefault).toBe(false);
   });
 
-  test("a forced prefault is honoured, and WARNS that below the knee it actively hurts", () => {
-    // This assertion was the opposite way round for one revision, on the belief that prefaulting
-    // below the knee merely wastes a background read. The rungs refuted it: 20,124 ms against
-    // 12,198 ms at a 1024 MB budget, because the read evicts pages the queries already faulted
-    // in. So the note must warn rather than reassure.
+  test("a forced prefault is honoured, and the note claims only what was measured", () => {
+    // This assertion has been written three ways and the third is the honest one. Below the knee
+    // the prefault measured no FASTER than skipping it; whether it is actively slower looked
+    // established from one pair per budget and did not survive a repeatability check (six
+    // measurements of one cell spanned 7,865-20,124 ms). So the note says "no faster" and names
+    // the variance, rather than asserting a 1.65x penalty it cannot support.
     const t = resolveTuning({ budget: budget(512), indexBytes: 1868 * MB, prefaultOverride: true });
     expect(t.prefault).toBe(true);
-    expect(t.notes.join(" ")).toContain("WARNING");
-    expect(t.notes.join(" ")).toContain("SLOWER");
+    expect(t.notes.join(" ")).toContain("no faster");
+    expect(t.notes.join(" ")).toContain("unresolved");
   });
 
   test("prefault can be forced off on a machine where it would have fitted", () => {

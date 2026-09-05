@@ -76,21 +76,29 @@ The obvious rule -- *only prefault if the index fits in memory* -- is **wrong, a
 Prefaulting an index larger than the budget does not fail. It fills the budget to the brim and
 keeps working:
 
-| memory budget | index / budget | of the index, still resident | first-touch suite, prefault ON | prefault OFF |
+| memory budget | index / budget | of the index, still resident | first pass, prefault ON | prefault OFF |
 |---|---|---|---|---|
 | 3072 MB | 61% | 99% | **224 ms** | 7,195 ms |
-| 1500 MB | 125% | 79% | **480 ms** | 7,858 ms |
-| 1024 MB | 182% | 54% | 7,865 ms | 7,573 ms |
+| **1500 MB** | **125%** | **79%** | **342-1,106 ms** | 7,858 ms |
+| 1308 MB | 143% | 69% | 11,087-12,046 ms | ~7,800 ms |
+| 1024 MB | 182% | 54% | 7,865-20,124 ms | 7,573-12,198 ms |
 
 *(spinning array; the laptop shows the same crossover at the same ratios, with all the times an
-order of magnitude smaller because its storage is not the bottleneck.)*
+order of magnitude smaller because its storage is not the bottleneck. Ranges are repeat
+measurements of the same cell -- see the note below.)*
 
 At a **1500 MB** budget the index is **125% of the budget** -- it plainly does not fit -- and the
-prefault is still worth **16x**. It only stops paying somewhere below that, when too little of the
-file survives for the queries to land on.
+prefault is still worth **7-23x**. The transition below it is a **cliff, not a slope**: ten points
+of retention, from 79% to 69%, is a ten-to-thirtyfold step. So the derived rule is not "does it
+fit" but "will at least 75% of it stay", and that threshold is measured rather than guessed. It is
+stated once, in `src/lib/memory-budget.ts`.
 
-So the derived rule is not "does it fit" but "will enough of it stay", and the threshold is
-measured rather than guessed. It is stated once, in `src/lib/memory-budget.ts`.
+> **How firm is this?** The cliff is: it reproduced in two independent runs hours apart under
+> different settings, and it is an order of magnitude larger than the noise. The fine detail below
+> the cliff is not. Repeat measurements of a single sub-cliff cell spanned **7,865 to 20,124 ms** --
+> about ±40% -- so this page does not rank the rungs beneath the cliff against each other, and it
+> does not claim prefaulting down there is actively harmful. It measured no *faster* than skipping
+> it, and it costs a full sequential read; that is the whole of what is established.
 
 ## Finding 2 -- the second cliff is the working set, and it is at about 500 MB
 
@@ -190,8 +198,14 @@ and steady-state performance are the same thing.
     memswap_limit: 2g
 ```
 
-Also nothing to tune. The index is slightly larger than the budget and the prefault still retains
-most of it -- this is squarely in the range where partial residency works. Expect full speed.
+Also nothing to tune, and this is the rung worth understanding because it looks like it should be
+a problem and is not. A ~1.9 GB index against a 2 GB budget keeps about **80%** of itself resident,
+which is on the good side of the cliff -- so the prefault still runs, still completes, and the
+first pass over the app costs well under a second. Partial residency is nearly as good as full
+residency right up to the edge.
+
+If your index is much larger than 1.9 GB, this is the rung that moves: the rule is about the
+**ratio**, so a 3 GB index wants 4 GB before the prefault turns on.
 
 ### 1 GB
 
@@ -205,8 +219,8 @@ is the fast first minute after a restart or after the nightly index rebuild, bec
 the index would stay resident for the prefault to be worth its own read. finderr detects this and
 **skips the prefault**, which saves a pointless 1.9 GB read rather than making anything faster.
 
-Concretely, on the spinning array: working through the whole app once costs about **7.6 s** here
-against **0.5 s** at 1.5 GB, and then it is warm and the difference is gone. On an SSD the gap is
+Concretely, on the spinning array: working through the whole app once costs **8-12 s** here against
+well under a second at 1.5 GB, and then it is warm and the difference is gone. On an SSD the gap is
 tens of milliseconds and you will not see it.
 
 If you would rather spend the I/O and keep the prefault anyway:
@@ -215,6 +229,9 @@ If you would rather spend the I/O and keep the prefault anyway:
     environment:
       FINDERR_INDEX_PREFAULT: "true"
 ```
+
+It will not help. At this budget prefaulting measured no faster than skipping it, and it costs a
+full read of the index on every boot and every nightly index swap.
 
 ### 512 MB -- the floor
 
@@ -232,16 +249,20 @@ rust.
 **If you have 768 MB rather than 512 MB, use it.** That single step is worth more than any setting
 on this page.
 
-At this size, two things help:
+**Do not bother shrinking `FINDERR_SQLITE_CACHE_MB` here**, which is the obvious lever and is a
+dead end. Measured at a 1 GB budget against a 1.9 GB index -- real memory pressure -- varying the
+pager cache across a 32x range moved nothing:
 
-```yaml
-    environment:
-      FINDERR_SQLITE_CACHE_MB: "16"     # every MB of pager cache is a MB not holding index pages
-```
+| `FINDERR_SQLITE_CACHE_MB` | first pass |
+|---|---|
+| 256 | 12,483 ms |
+| 128 | 11,925 ms |
+| 50 (the derived default) | 12,532 ms |
+| 8 | 12,695 ms |
 
-and **giving finderr its own container rather than sharing the budget with anything else**. The
-poster cache, the application database and the JS heap are all competing for the same few hundred
-megabytes here, and they were not in the measurements above.
+The one thing that does help at this size is **giving finderr its own container rather than sharing
+the budget with anything else**. The poster cache, the application database and the JS heap all
+compete for the same few hundred megabytes here, and none of them were in the measurements above.
 
 Below about 384 MB, don't. It runs, and it is several times slower again.
 
@@ -257,7 +278,7 @@ what it replaced.
 |---|---|
 | `FINDERR_MEMORY_BUDGET_MB` | Use this ceiling instead of reading the cgroup. For a host whose real limit is not a cgroup limit -- a VM sized for several services, or a box where something else is expected to want most of the RAM. |
 | `FINDERR_SQLITE_MMAP_MB` | `pragma mmap_size`, in MB. `0` disables memory-mapping. See Finding 4 before you do. |
-| `FINDERR_SQLITE_CACHE_MB` | `pragma cache_size`, in MB. Small is correct -- it duplicates pages the mmap already holds. |
+| `FINDERR_SQLITE_CACHE_MB` | `pragma cache_size`, in MB. Small is correct -- it duplicates pages the mmap already holds. Measured flat within 6% from 8 MB to 256 MB even under memory pressure, so this is a knob that does nothing; it exists for completeness. |
 | `FINDERR_INDEX_PREFAULT` | `true` / `false` to force the boot-time page-cache read on or off. |
 
 ## Checking what it decided

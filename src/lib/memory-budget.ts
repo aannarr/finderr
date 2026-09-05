@@ -244,21 +244,26 @@ export interface StorageTuning {
  * | 54% | 1024 MB | -- | 20,124 ms |
  * | 33% | 640 MB | -- | 23,780 ms |
  *
- * **0.75, because 0.70 was on the WRONG SIDE of that cliff.** An earlier revision of this file
- * shipped 0.7 with the reasoning that the errors were asymmetric -- that prefaulting needlessly
- * merely wastes a background read nobody waits on. **That reasoning was wrong, and the rungs
- * refuted it.** Below the knee the prefault is not wasteful, it is actively HARMFUL:
+ * **0.75, because 0.70 was on the WRONG SIDE of that cliff.** At 0.69 retention the prefault costs
+ * 11-12 seconds; a threshold of 0.70 admits exactly that case. 0.75 puts 0.79 on the prefault side
+ * and 0.69 on the skip side, which is the whole of the justification and all it needs to be.
  *
- * | budget | prefault ON | prefault OFF | prefaulting costs |
- * |---|---|---|---|
- * | 1024 MB | 20,124 ms | 12,198 ms | **1.65x** |
- * | 640 MB | 23,780 ms | 14,191 ms | **1.68x** |
- *
- * The mechanism is the one thing the "wasted read" story missed: under a cap that cannot hold the
- * file, the sequential read does not merely fail to help, it **evicts the pages the queries have
- * already faulted in** and keeps doing so for the whole read. So the errors are roughly symmetric
- * after all -- 16x for skipping it above the knee, 1.65x for doing it below -- and the threshold
- * belongs at the top of the measured band rather than the bottom.
+ * > [!CAUTION] THE FINE STRUCTURE BELOW THE KNEE IS NOISE. Do not read the last three rows as a trend.
+ * > A four-cell sweep varying only `cache_size` at a 1024 MB budget -- 256 / 128 / 50 / 8 MB --
+ * > returned **12,483 / 11,925 / 12,532 / 12,695 ms**, flat within 6% across a 32x range. Useful in
+ * > itself (see the `cache` note below), but the important part is what it says about repeatability:
+ * > `nas3-1024-cache50` and `nas2-1024-pf` are the SAME configuration and measured **12,532 ms and
+ * > 20,124 ms**. Six measurements of that one cell span **7,865 to 20,124 ms**.
+ * >
+ * > So the sub-knee regime carries roughly +-40% run-to-run variance on this array, and the
+ * > apparent monotonic decline from 1308 down to 640 sits inside it. **An earlier revision of this
+ * > comment claimed prefaulting below the knee is "1.65x SLOWER" than not prefaulting, from a
+ * > single pair at each of two budgets. That does not survive the variance and is retracted.**
+ * > What is established below the knee: the prefault costs a full sequential read and buys nothing
+ * > measurable. Whether it actively hurts is unresolved and would need n>=3 per side.
+ * >
+ * > The KNEE ITSELF is not in doubt -- 342/1,106 ms against 11,087/12,046 ms is a 10-30x step,
+ * > reproduced in two independent runs, an order of magnitude outside that band.
  *
  * Retention is approximated as `budget / index` -- what fraction of the file the budget can hold
  * at all. That is what the cgroup measured at every rung, to within the process's own ~25 MB.
@@ -320,11 +325,24 @@ export function resolveTuning(opts: {
   );
 
   /*
-    CACHE: small, because it duplicates what mmap already maps.
+    CACHE: small, because it duplicates what mmap already maps -- and now measured under pressure.
 
-    5% of the budget, clamped. At 1.5 GB that is 75 MB against the 256 MB that used to ship, and
-    the 32 MB cell measured equal-or-better than 256 MB on both machines -- so this is the
-    cautious end of the evidence rather than the aggressive one.
+    5% of the budget, clamped. The original evidence for a small cache was taken PREFAULTED IN AN
+    UNLIMITED CONTAINER, where the whole file is in the page cache and SQLite's own pager cache is
+    obviously redundant. That is exactly the condition under which the result was least likely to
+    generalise, so it was re-measured where it might not have: a 1024 MB budget against an 1,868 MB
+    index, which holds barely half the file.
+
+    | pager cache | first-touch suite |
+    |---|---|
+    | 256 MB | 12,483 ms |
+    | 128 MB | 11,925 ms |
+    | 50 MB  | 12,532 ms |
+    | 8 MB   | 12,695 ms |
+
+    **Flat within 6% across a 32x range**, under real memory pressure. The finding generalises, and
+    every megabyte not spent here is a megabyte holding index pages instead. Note this also makes
+    the pager cache a NON-lever for a small deployment: shrinking it further buys nothing.
   */
   const derivedCacheMb = Math.min(CACHE_MAX_MB, Math.max(CACHE_MIN_MB, Math.round(budget.mb * 0.05)));
   const cacheMb = opts.cacheMbOverride ?? derivedCacheMb;
@@ -349,11 +367,11 @@ export function resolveTuning(opts: {
     notes.push(`prefault ${prefault} (FINDERR_INDEX_PREFAULT)`);
     if (prefault && !worthIt) {
       notes.push(
-        `  WARNING: prefault forced ON with a ${budget.mb} MB budget against a ${indexMb} MB index, ` +
+        `  NOTE: prefault forced ON with a ${budget.mb} MB budget against a ${indexMb} MB index, ` +
           `so about ${pct(retention)} of it can stay resident -- below the ${pct(PREFAULT_MIN_RETENTION)} ` +
-          "where it stops paying for itself. Below that line it measured 1.65x SLOWER than not " +
-          "prefaulting at all, because the read evicts the pages the queries have already faulted " +
-          "in. This is not merely a wasted read; expect it to hurt.",
+          "where it stops paying for itself. It costs one full sequential read per boot and per " +
+          "index swap and measured no faster than skipping it. Whether it is actively slower is " +
+          "unresolved: the measurements below that line carry about +-40% run-to-run variance.",
       );
     }
   } else if (worthIt) {
