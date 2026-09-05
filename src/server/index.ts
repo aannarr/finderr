@@ -1396,6 +1396,9 @@ const appRoutes = {
             builtAt: meta.built_at ?? null,
             reload: live.lastReload,
             warm: warmHealth(live.warmStatus()),
+            // Read off the OPEN engine rather than from the stage stamp: the stamp says
+            // what the build intended, this says what the file being served can do.
+            origin: { available: live.current.hasOrigin, configured: [...cfg.languages] },
           },
           library: store.libraryCount(),
           plex: { items: store.plexCount(), machineId: store.plexMachineIdentifier() },

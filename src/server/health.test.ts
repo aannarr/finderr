@@ -18,6 +18,7 @@ function deps(onCoverage: () => void): HealthDeps {
       rows: 1_275_341,
       builtAt: "2026-08-30T06:26:27.095Z",
       reload: null,
+      origin: { available: true, configured: ["en", "sv"] },
       // The healthy shape: the prefault ran and the budget held nearly all of it. A
       // `residentMb` far below `readMb` here is the deployment that looks fine and is
       // serving half its index off the disk.
@@ -194,6 +195,10 @@ describe("healthPayload", () => {
         rows: 1_275_341,
         builtAt: "2026-08-30T06:26:27.095Z",
         reload: null,
+        // Cheap enough for the anonymous-detail path: two fields off the open engine and
+        // the config, no query. `available: false` beside a non-empty `configured` is the
+        // one combination worth alerting on -- an operator's filter silently not applied.
+        origin: { available: true, configured: ["en", "sv"] },
         warm: {
           prefault: true,
           last: { readMb: 1868, ms: 10_520, residentMb: 1851 },

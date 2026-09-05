@@ -130,6 +130,21 @@ export interface HealthDeps {
     builtAt: string | null;
     reload: HealthReload | null;
     warm: HealthWarm | null;
+    /**
+     * The language preference, and whether the open index can actually serve it.
+     *
+     * > [!IMPORTANT] This field exists because of the crosswalk, not because it is tidy
+     * > When the id crosswalk shipped, the container pulled the image, `hasIds` was false,
+     * > and it STAYED false while every render bought the calls the crosswalk existed to
+     * > remove -- nothing logged, health entirely green, found by hand days later.
+     * > `configured` beside `available: false` is the same shape and a worse one: the
+     * > operator has asked for a filter that is silently not being applied.
+     *
+     * `configured` is what `cfg.languages` holds, WITHOUT `UNKNOWN_LANG` -- the storage
+     * code is an implementation detail and printing it here would invite somebody to
+     * configure it.
+     */
+    origin: { available: boolean; configured: string[] };
   };
   /**
    * `episodes` is the per-episode Sonarr mirror, and zero beside a non-zero `sonarr` is
