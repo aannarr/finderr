@@ -229,6 +229,8 @@ describe("buildingPage", () => {
   test("names no path, host or product route -- an anonymous visitor reaches this", () => {
     // The page is served before any account exists, so it is held to the same rule as
     // `login.html`: it says what is happening and nothing about where it is running.
+    // `/volume` rather than any one host's share name: it is a superset, so it still
+    // catches a numbered NAS share without this file naming a real deployment.
     for (const leak of ["/data", "/volume", "titles.db", "radarr", "sonarr", "plex", "/api/search"]) {
       expect(html.toLowerCase()).not.toContain(leak.toLowerCase());
     }

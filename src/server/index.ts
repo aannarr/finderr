@@ -1427,7 +1427,7 @@ const appRoutes = {
             admins: authStore.adminCount(),
             sessions: authStore.sessionCount(),
             apiKey: !!cfg.auth.adminApiKey,
-            // The NAME, not a boolean: "auth is off" and "auth is off and everyone is aannarr"
+            // The NAME, not a boolean: "auth is off" and "auth is off and everyone is one account"
             // are different facts, and the second is the one that explains what a reader is
             // looking at. Null is the ordinary case and every deployment. This block is
             // admin-only, so it discloses the account name to nobody who could not already

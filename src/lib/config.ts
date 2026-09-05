@@ -536,7 +536,7 @@ export interface Config {
    * > `/api/webhook/arr` is on `AuthService.publicPaths()` -- it has to be, because an arr
    * > has no cookie and no Plex account -- so the credentials here are the whole of its
    * > authentication. **Unset `password` means the route refuses every caller**, which is
-   * > the right default for a surface reachable from `finderr.example.com`: a webhook nobody
+   * > the right default for a surface reachable from the internet: a webhook nobody
    * > configured is a webhook nobody misses, and a webhook nobody authenticated is an
    * > anonymous writer of somebody's request log.
    *
