@@ -30,6 +30,7 @@ import { rollback } from "../lib/index-builder";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
+import type { PersonHit } from "../lib/people";
 import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
 import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
@@ -79,7 +80,7 @@ import {
   REVALIDATED,
 } from "./cache-policy";
 import { episodeScoresFor } from "./episode-scores";
-import { FACET_IMAGE_PATH, FacetImageProxy } from "./facet-images";
+import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload } from "./health";
 import { ImageCache } from "./images";
@@ -618,6 +619,53 @@ async function warmShelves(): Promise<void> {
     `facets: shelves warmed -- ${facetWarm.fetched} titles fetched, ` +
       `${facetWarm.alreadyWarm} already warm, of ${titles.length}`,
   );
+
+  // Faces LAST, because it reads what the warm above just cached. Local SQLite only, so
+  // it costs nobody a call -- see `backfillPersonImages`.
+  backfillPersonImages();
+}
+
+/**
+ * File a face for every person in the cast and crew answers we already hold.
+ *
+ * WHY A BACKFILL EXISTS AT ALL. `person_image` is written by the title route, which only
+ * runs when somebody opens a page. Without this, an install would ship the fix and still
+ * draw initials for everybody until each person's titles had been visited one at a time --
+ * and every face already in the facet cache, bought and paid for, would stay unreachable.
+ *
+ * ENTIRELY LOCAL. It re-reads cached contributions, re-runs the same rewrite the route
+ * runs, and asks the index who each credit is. No provider is contacted, so it cannot
+ * become the sweep the one-click-deep rule forbids however many titles accumulate.
+ *
+ * IDEMPOTENT AND CHEAP TO REPEAT, which is why it rides `warmShelves` rather than owning a
+ * timer: the upsert only writes when a key actually moved, so the six-hourly re-run is a
+ * read of rows that mostly agree with themselves. It also picks up faces the warm loop
+ * fetched moments earlier, which is the run that matters on a first install.
+ */
+function backfillPersonImages(): void {
+  // `live.current` throws until an index exists, and `personLinks` needs one. Same guard,
+  // and same reason, as the `live.ready` check at the top of `warmShelves`.
+  if (!live.ready) return;
+
+  const t0 = Bun.nanoseconds();
+  let filed = 0;
+  let titles = 0;
+  for (const tconst of store.tconstsWithCredits()) {
+    const row = live.current.byTconst(tconst);
+    // A title the current index does not carry. The contribution is still valid -- the
+    // index is rebuilt nightly and this one may return -- so the row is left alone.
+    if (!row) continue;
+    const credits = creditsIn(facetImages.rewrite(facets.read(entityFor(row))));
+    if (credits.length === 0) continue;
+    const faces = personFaces(credits, live.current.personLinks(tconst, credits));
+    store.rememberPersonImages(faces);
+    titles++;
+    filed += faces.length;
+  }
+  log(
+    `faces: ${filed} filed from ${titles} cached titles in ` +
+      `${((Bun.nanoseconds() - t0) / 1e6).toFixed(0)}ms -- ${store.personImageCount()} people have one`,
+  );
 }
 
 /*
@@ -989,6 +1037,32 @@ function creditsIn(resolvedFacets: ResolvedFacets): PersonCredit[] {
     ...(cast?.status === "ready" ? (cast.data ?? []) : []),
     ...(crew?.status === "ready" ? (crew.data ?? []) : []),
   ];
+}
+
+/**
+ * A row of people, each carrying the face we hold for them, or null.
+ *
+ * The second half of the `person_image` edge: the title route files a face under an
+ * nconst, and this is the only thing that reads it. ONE batched local SQLite read for the
+ * whole row -- the same shape and the same reason as `tconstsByTmdbId` in `relatedRows`.
+ *
+ * `null` is the ordinary case rather than a gap, and the tile draws initials for it exactly
+ * as it always did: coverage grows with the titles people actually open, so a person whose
+ * filmography nobody has visited has no face on file. `PersonPortrait` was written with
+ * this fallback from the start and needs no change.
+ *
+ * `undefined` in, `undefined` out -- the key must stay ABSENT on an index that cannot
+ * search people at all, so a client can still tell "nobody by that name" from "this index
+ * has no people in it yet".
+ */
+function withFaces(hits: PersonHit[] | null): (PersonHit & { image: string | null })[] | null {
+  if (!hits) return null;
+  if (hits.length === 0) return [];
+  const keys = store.personImageKeys(hits.map((h) => h.nconst));
+  return hits.map((h) => {
+    const key = keys.get(h.nconst);
+    return { ...h, image: key ? facetImagePath(key) : null };
+  });
 }
 
 /**
@@ -1430,7 +1504,7 @@ const appRoutes = {
       mean for the title search it rides with. Cheap enough to stay on this request rather
       than becoming the separate endpoint the card offered as the escape hatch.
     */
-    const people = live.current.searchPeople(q);
+    const people = withFaces(live.current.searchPeople(q));
 
     // Resolve artwork for whatever the user is about to look at, in the
     // background. Never blocks the response.
@@ -1543,6 +1617,19 @@ const appRoutes = {
     const work = facets.workState(entity);
     facets.warm(entity);
 
+    /*
+      OUR ids for the people this title credits -- and, from the same pair of facts, the
+      one place in the product where a face and an nconst are ever in hand together.
+
+      The provider named the credits and `facetImages.rewrite` just turned their headshots
+      into keys; the index says which of those people are ours. Filing the pair here is
+      what lets /search draw a face for somebody instead of their initials, and it costs
+      one guarded write on a path that has already read both halves. `person_image` in
+      `store.ts` argues why the edge cannot be built anywhere else.
+    */
+    const titlePeople = live.current.personLinks(row.tconst, creditsIn(cached));
+    store.rememberPersonImages(personFaces(creditsIn(cached), titlePeople));
+
     return json(
       {
         ...decorate([row])[0],
@@ -1603,7 +1690,7 @@ const appRoutes = {
             actually named. `nconstForCredit` in the browser is the single owner of the
             precedence between the two halves.
           */
-        people: live.current.personLinks(row.tconst, creditsIn(cached)),
+        people: titlePeople,
         /*
             WHAT THE WORLD SCORED EACH EPISODE, from our own index.
 

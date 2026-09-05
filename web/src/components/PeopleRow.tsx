@@ -37,16 +37,21 @@ export function PeopleRow({ people }: { people: PersonHit[] }) {
               className={`block ${PERSON_LINK_CLASS}`}
             >
               {/*
-                ALWAYS INITIALS TODAY, and that is a data gap rather than a styling choice.
-                Every headshot finderr holds was cached against one TITLE's cast facet and
-                is keyed by the image URL, so there is no way to ask for "the face of
-                nm0634240". Drawing one here would mean a provider call per person on every
-                keystroke, which is the same trade the ceremony page already refused.
+                A FACE WHEN WE HAVE ONE, INITIALS WHEN WE DO NOT, and the second is the
+                ordinary case rather than a failure.
 
-                The prop stays because `PersonPortrait` is the single owner of "a face or
-                initials" and a headshot source is one field away, not a rewrite.
+                This used to be a hardcoded `null`, on the correct-at-the-time grounds that
+                every headshot finderr holds was cached against one TITLE's cast facet and
+                keyed by the image URL, so nothing could answer "the face of nm0000093".
+                `person_image` (`src/lib/store.ts`) is that missing edge: the title route
+                already resolves credits to nconsts in the same breath as it rewrites their
+                images, so the pair is filed there and read back here in one batched query.
+                No provider call, no keystroke cost -- the point that argument turned on.
+
+                Coverage therefore grows with the titles people open and is never complete.
+                A person nobody's filmography has been visited through still draws initials.
               */}
-              <PersonPortrait name={person.name} image={null} />
+              <PersonPortrait name={person.name} image={person.image ?? null} />
               <p className="mt-1.5 text-xs font-medium leading-tight text-ink">{person.name}</p>
             </Link>
             {/* What we hold for them, which is also what the row is ranked on beneath the

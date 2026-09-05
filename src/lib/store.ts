@@ -528,6 +528,33 @@ create table if not exists facet_image (
   seen_at text not null
 );
 
+-- One person's face, under OUR id for them, pointing at a key facet_image already holds.
+--
+-- WHY THIS TABLE EXISTS. Every headshot finderr holds arrived on some TITLE's cast facet
+-- and is keyed by a hash of its URL, so nothing could answer "what does nm0000093 look
+-- like?" -- and the people row on /search drew initials for everybody, forever, including
+-- for faces sitting in facet_image already. This is the missing edge and nothing more: it
+-- stores no bytes and no URL, only the key the proxy route already resolves.
+--
+-- IT IS A MATERIALISED JOIN, written where both halves are already in hand. The title
+-- route resolves a provider's credits to nconsts (personLinks) in the same breath as it
+-- rewrites their images to /img/f/<key>, so the pair costs one insert there instead of a
+-- scan of every cached cast blob per keystroke here. Runtime beats build time.
+--
+-- IN THE APP DB, NOT THE INDEX, and that is the decision worth knowing -- the same one
+-- award_nomination and plex_item took. titles.db is rebuilt from the IMDb dumps and
+-- swapped every night, so anything the builder cannot re-derive vanishes at 09:00; and the
+-- builder cannot re-derive this, because no dump carries a headshot. Only api.radarr.video
+-- does, one title at a time, which is exactly the sweep the one-click-deep rule forbids.
+--
+-- SO COVERAGE GROWS WITH USE and is never complete, the same bargain relatedRows takes:
+-- a person whose titles nobody has opened has no row and correctly draws initials.
+create table if not exists person_image (
+  nconst    text primary key,
+  image_key text not null,
+  seen_at   text not null
+);
+
 -- One award nomination, mirrored from a published dataset on its own timer.
 --
 -- NOTE: no backticks anywhere in this comment. SCHEMA is a template literal.
@@ -2027,6 +2054,75 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
 
   facetImageCount(): number {
     return (this.db.query("select count(*) c from facet_image").get() as { c: number }).c;
+  }
+
+  /**
+   * Remember which proxy key is a given person's face.
+   *
+   * One transaction for the whole title, like `rememberFacetImages` beside it and for the
+   * same reason: a cast and crew list is fifty people and this rides the render path.
+   *
+   * **Upsert rather than `insert or ignore`, and only when the key actually moved.** The
+   * key is a hash of the upstream URL, so a provider swapping a headshot yields a NEW key
+   * and an ignoring insert would pin the first face we ever saw for as long as the row
+   * lived. The `where` clause is what keeps that from costing a write per person per view:
+   * the common case is the same key arriving again, and SQLite skips it.
+   */
+  rememberPersonImages(faces: readonly { nconst: string; imageKey: string }[]): void {
+    if (faces.length === 0) return;
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      "insert into person_image (nconst, image_key, seen_at) values (?,?,?) " +
+        "on conflict(nconst) do update set image_key = excluded.image_key, seen_at = excluded.seen_at " +
+        "where person_image.image_key <> excluded.image_key",
+    );
+    this.db.transaction(() => {
+      for (const f of faces) ins.run(f.nconst, f.imageKey, now);
+    })();
+  }
+
+  /**
+   * The proxy keys for a batch of people, absent where we hold no face.
+   *
+   * A batch because the caller is a row of eight search hits, and eight prepared-statement
+   * round trips to answer one question is the shape that turns a sub-millisecond lookup
+   * into a visible one. Same reasoning as `nconstsByTmdbPersonId`.
+   */
+  personImageKeys(nconsts: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (nconsts.length === 0) return out;
+    const rows = this.db
+      .query(
+        `select nconst, image_key from person_image where nconst in (${nconsts.map(() => "?").join(",")})`,
+      )
+      .all(...(nconsts as never[])) as { nconst: string; image_key: string }[];
+    for (const r of rows) out.set(r.nconst, r.image_key);
+    return out;
+  }
+
+  personImageCount(): number {
+    return (this.db.query("select count(*) c from person_image").get() as { c: number }).c;
+  }
+
+  /**
+   * Every title we hold a cast or crew answer for -- the titles that have faces in them.
+   *
+   * Exists for the BACKFILL and only for it. `person_image` is written when a title page
+   * renders, so without this the edge would only ever know about titles opened AFTER it
+   * shipped, and every face already sitting in the cache would stay unreachable. It reads
+   * `ix_facet_facet` (the reverse index) rather than scanning.
+   *
+   * `outcome = 'ok'` because the other outcomes carry no data to harvest: `empty` is a
+   * provider saying there is nobody, and `failed` is one saying nothing at all.
+   */
+  tconstsWithCredits(): string[] {
+    const rows = this.db
+      .query(
+        "select distinct entity_id from facet_contribution " +
+          "where facet in ('cast','crew') and outcome = 'ok' order by entity_id",
+      )
+      .all() as { entity_id: string }[];
+    return rows.map((r) => r.entity_id);
   }
 
   // --- search log ----------------------------------------------------------

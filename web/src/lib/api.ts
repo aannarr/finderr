@@ -465,6 +465,19 @@ export interface Person {
 export interface PersonHit extends Person {
   /** Titles we hold credits for. */
   credits: number;
+  /**
+   * Their face as a same-origin `/img/f/<key>` path, or `null` where we hold none.
+   *
+   * `null` is ORDINARY, not a gap: every headshot finderr holds arrived on some title's
+   * cast facet, so coverage grows with the titles people actually open and a person whose
+   * filmography nobody has visited has no face on file. `PersonPortrait` falls back to
+   * initials, which is what the whole row used to draw.
+   *
+   * Optional because a client that has cached an older answer is still a valid client --
+   * the server has always been free to grow a field, and a missing one must render as "no
+   * face" rather than as a crash.
+   */
+  image?: string | null;
 }
 
 /**

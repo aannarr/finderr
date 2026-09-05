@@ -23,7 +23,8 @@
  */
 
 import type { ResolvedFacet, ResolvedFacets } from "../lib/facet-resolver";
-import { type FacetName, mapFacetImages } from "../lib/facets";
+import { type FacetName, mapFacetImages, type PersonCredit } from "../lib/facets";
+import { type PersonLinks, personNameKey } from "../lib/people";
 import { proxyableImageUrl } from "./artwork";
 
 /** Where the rewritten paths point. Owned here, so the route and the rewrite agree. */
@@ -31,6 +32,55 @@ export const FACET_IMAGE_PATH = "/img/f";
 
 /** A key is a hex hash we issued; anything else never named an image and is not a lookup. */
 const KEY = /^[0-9a-f]{1,16}$/;
+
+/**
+ * The faces on this title, under OUR id for the person wearing each one.
+ *
+ * The materialised half of `person_image`, and it is here rather than in `people.ts`
+ * because the KEY is the thing being harvested and this module owns what a key looks like.
+ * It reads the ALREADY-REWRITTEN credits, so no second hash is computed anywhere -- a
+ * member's `image` is `/img/f/<key>` by the time this sees it, and taking the key back out
+ * of the path is what keeps `pathFor` the only place a URL is ever hashed.
+ *
+ * > [!IMPORTANT] The precedence between the two id halves is stated in the BROWSER
+ * > `nconstForCredit` (`web/src/lib/facet-panes.ts`) is its single owner and this must
+ * > agree with it exactly: an id beats a folded name, and neither resolving means the
+ * > credit is not ours to file a face under. The duplication is the accepted one --
+ * > importing the browser copy is a value cross-import, the same trade `personNameKey` and
+ * > `decadeOf` already took, and the two disagreeing here would silently file a face under
+ * > the wrong person rather than fail.
+ *
+ * A person named twice on one title (wrote it and acted in it) contributes one entry:
+ * later credits win, which is arbitrary and harmless because both carry the same face.
+ */
+export function personFaces(
+  credits: readonly PersonCredit[],
+  links: PersonLinks,
+): { nconst: string; imageKey: string }[] {
+  const out = new Map<string, string>();
+  for (const c of credits) {
+    // A credit whose image was refused by `proxyableImageUrl` is `null` here, and a
+    // person we cannot name is not one we can file a face under. Both mean: skip.
+    const key = keyIn(c.image);
+    if (!key) continue;
+    const byId = c.personId ? links.byId[c.personId] : undefined;
+    const nconst = byId ?? links.byName[personNameKey(c.name)];
+    if (nconst) out.set(nconst, key);
+  }
+  return [...out].map(([nconst, imageKey]) => ({ nconst, imageKey }));
+}
+
+/** The key inside a path we issued, or null for anything else -- including a bare URL. */
+function keyIn(image: string | null): string | null {
+  if (!image?.startsWith(`${FACET_IMAGE_PATH}/`)) return null;
+  const key = image.slice(FACET_IMAGE_PATH.length + 1);
+  return KEY.test(key) ? key : null;
+}
+
+/** The path a stored key is served under. One owner, so the row and the route agree. */
+export function facetImagePath(key: string): string {
+  return `${FACET_IMAGE_PATH}/${key}`;
+}
 
 /** What this needs from `Store`. Narrow, so a test can hand over a plain object. */
 export interface FacetImageStore {
@@ -118,5 +168,5 @@ function pathFor(rawUrl: string, issued: Map<string, string>): string | null {
   if (!target) return null;
   const key = Bun.hash(target.href).toString(16);
   issued.set(key, target.href);
-  return `${FACET_IMAGE_PATH}/${key}`;
+  return facetImagePath(key);
 }

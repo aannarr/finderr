@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { loadConfig } from "../lib/config";
 import type { ResolvedFacets } from "../lib/facet-resolver";
 import { Store } from "../lib/store";
-import { FACET_IMAGE_PATH, FacetImageProxy, type ImageByteSource } from "./facet-images";
+import {
+  FACET_IMAGE_PATH,
+  FacetImageProxy,
+  facetImagePath,
+  type ImageByteSource,
+  personFaces,
+} from "./facet-images";
 
 const HEADSHOT = "https://image.tmdb.org/t/p/original/face.jpg";
 const SEASON_POSTER = "https://artworks.thetvdb.com/banners/seasons/1.jpg";
@@ -171,5 +177,96 @@ describe("serving a key back", () => {
 
     expect((await afterRestart.serve(keyIn(path), "w342")).status).toBe(200);
     expect(served).toEqual([{ url: HEADSHOT, size: "w342" }]);
+  });
+});
+
+/**
+ * `person_image`: the edge that lets `/search` draw a face instead of initials.
+ *
+ * THE BUG THIS EXISTS FOR, reported 2026-09-05: searching "Brad Pitt" drew "BP" in a grey
+ * box, while the app DB held his headshot on six different titles' cast facets. Nothing
+ * could ask for it, because every face is keyed by a hash of its URL and nothing mapped an
+ * nconst onto one.
+ *
+ * Against the real `Store` for the same reason the rest of this file is: the row surviving
+ * a restart is most of the point, since a proxy path can arrive with no title read in
+ * front of it.
+ */
+describe("filing a face under our own person id", () => {
+  const LINKS = { byId: { p1: "nm-cillian" }, byName: {} };
+
+  /** The credits as they look AFTER the rewrite, which is what the harvest reads. */
+  const rewrittenCast = (image: string | null) => proxy.rewrite(castFacets(image)).cast?.data ?? [];
+
+  test("a rewritten headshot is filed under the nconst its credit resolves to", () => {
+    const faces = personFaces(rewrittenCast(HEADSHOT), LINKS);
+    expect(faces).toHaveLength(1);
+    expect(faces[0].nconst).toBe("nm-cillian");
+
+    store.rememberPersonImages(faces);
+    // The stored key is the same one the proxy issued, so the face the row points at is
+    // one `/img/f/<key>` the route can already serve -- no second hash, no second table.
+    expect(store.personImageKeys(["nm-cillian"]).get("nm-cillian")).toBe(faces[0].imageKey);
+  });
+
+  test("the round trip is a servable path", async () => {
+    store.rememberPersonImages(personFaces(rewrittenCast(HEADSHOT), LINKS));
+    const key = store.personImageKeys(["nm-cillian"]).get("nm-cillian") as string;
+
+    expect(facetImagePath(key)).toBe(`${FACET_IMAGE_PATH}/${key}`);
+    expect((await proxy.serve(key, "w342")).status).toBe(200);
+    expect(served).toEqual([{ url: HEADSHOT, size: "w342" }]);
+  });
+
+  test("the FOLDED NAME resolves a credit carrying no person id", () => {
+    // Skyhook's series cast has no ids at all, so the name half is the only thing that can
+    // answer for a television actor. `personNameKey` folds case and surrounding space.
+    const withFace = rewrittenCast(HEADSHOT);
+    const idless = withFace.map((c) => ({ ...c, personId: null }));
+
+    expect(personFaces(idless, { byId: {}, byName: { "cillian murphy": "nm-cillian" } })).toEqual(
+      personFaces(withFace, LINKS),
+    );
+  });
+
+  test("a person we cannot name is not filed, and neither is a face we would not fetch", () => {
+    // Two separate refusals that must both end in silence rather than a junk row: a credit
+    // whose nconst we do not hold, and an image on a host `proxyableImageUrl` rejects --
+    // which the rewrite has already turned into `null` by the time the harvest sees it.
+    expect(personFaces(rewrittenCast(HEADSHOT), { byId: {}, byName: {} })).toEqual([]);
+    expect(personFaces(rewrittenCast("https://evil.example.com/face.jpg"), LINKS)).toEqual([]);
+    expect(personFaces(rewrittenCast(null), LINKS)).toEqual([]);
+  });
+
+  test("a NEW headshot for the same person replaces the old key rather than being ignored", async () => {
+    // `insert or ignore` would pin the first face we ever saw. The key is a hash of the
+    // URL, so a provider swapping a portrait yields a different key and the row must move.
+    store.rememberPersonImages(personFaces(rewrittenCast(HEADSHOT), LINKS));
+    const first = store.personImageKeys(["nm-cillian"]).get("nm-cillian");
+
+    const NEWER = "https://image.tmdb.org/t/p/original/newer-face.jpg";
+    store.rememberPersonImages(personFaces(rewrittenCast(NEWER), LINKS));
+    const second = store.personImageKeys(["nm-cillian"]).get("nm-cillian");
+
+    expect(second).not.toBe(first);
+    expect(await proxy.serve(second as string, "w342").then((r) => r.status)).toBe(200);
+    expect(served.at(-1)).toEqual({ url: NEWER, size: "w342" });
+  });
+
+  test("people we hold no face for are simply absent from the batch", () => {
+    // Which is what makes `null` the ordinary answer on a search row rather than an error:
+    // coverage grows with the titles somebody has opened and is never complete.
+    store.rememberPersonImages(personFaces(rewrittenCast(HEADSHOT), LINKS));
+    const keys = store.personImageKeys(["nm-cillian", "nm-stranger"]);
+    expect(keys.has("nm-cillian")).toBe(true);
+    expect(keys.has("nm-stranger")).toBe(false);
+    expect(store.personImageKeys([]).size).toBe(0);
+  });
+
+  test("the row survives the process that wrote it", () => {
+    store.rememberPersonImages(personFaces(rewrittenCast(HEADSHOT), LINKS));
+    store.close();
+    store = new Store(loadConfig(true));
+    expect(store.personImageKeys(["nm-cillian"]).get("nm-cillian")).toBeTruthy();
   });
 });

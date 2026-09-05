@@ -65,12 +65,39 @@ describe("PeopleRow", () => {
   });
 
   /**
-   * The one rule no person tile may ever break. We hold no headshot keyed by `nconst`, so
-   * this draws initials today -- but the guard is what stops a provider's CDN URL reaching
-   * a browser the day a source arrives, and initials are the honest fallback either way.
+   * The bug reported 2026-09-05: searching a name drew a grey box with initials in it
+   * while the app DB held that person's headshot on six titles' cast facets. `person_image`
+   * is the edge that answers, and this is the row finally drawing it.
    */
-  test("no upstream image URL, initials instead", async () => {
-    const html = await renderInRouter(<PeopleRow people={[person()]} />);
+  test("a face when the server sent one", async () => {
+    const html = await renderInRouter(<PeopleRow people={[person({ image: "/img/f/a1b2c3" })]} />);
+    expect(html).toContain('src="/img/f/a1b2c3"');
+    expect(html).not.toContain("CN");
+  });
+
+  /**
+   * Initials remain the ordinary answer, not an error: coverage grows with the titles
+   * somebody has opened, so most people have no face on file at any given moment. Absent
+   * and explicitly null must render identically -- the field is optional precisely so a
+   * client holding a cached older answer keeps working.
+   */
+  test("initials when the server sent no face, absent or null alike", async () => {
+    for (const p of [person(), person({ image: null })]) {
+      const html = await renderInRouter(<PeopleRow people={[p]} />);
+      expect(html).not.toContain("<img");
+      expect(html).toContain("CN");
+    }
+  });
+
+  /**
+   * The one rule no person tile may ever break, and the reason it is worth a test now that
+   * a real URL travels: `localImageUrl` drops anything not same-origin, so a provider's CDN
+   * address cannot reach an `<img>` even if one were ever written into the row.
+   */
+  test("an upstream URL is refused, and falls back to initials", async () => {
+    const html = await renderInRouter(
+      <PeopleRow people={[person({ image: "https://image.tmdb.org/t/p/original/face.jpg" })]} />,
+    );
     expect(html).not.toContain("image.tmdb.org");
     expect(html).not.toContain("<img");
     expect(html).toContain("CN");
