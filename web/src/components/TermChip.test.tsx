@@ -3,21 +3,14 @@
  *
  * `renderToStaticMarkup` like the other component tests here, but through a memory router:
  * the linkable branch renders a `<Link>`, which reads the router out of context and throws
- * without one. `await router.load()` before rendering is not optional either -- an unloaded
- * router renders nothing at all, so a test that skipped it would pass on empty output.
+ * without one. The ceremony lives in `../test/render-in-router`, which also owns the
+ * `await router.load()` that is not optional -- an unloaded router renders nothing at all.
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { Term } from "../lib/api";
+import { renderInRouter as render } from "../test/render-in-router";
 import { findTerm, TermChip } from "./TermChip";
 
 const term = (over: Partial<Term> = {}): Term => ({
@@ -29,17 +22,7 @@ const term = (over: Partial<Term> = {}): Term => ({
 });
 
 /** Just enough router for a `<Link to="/term/$dimension/$value">` to resolve an href. */
-async function renderInRouter(node: ReactNode): Promise<string> {
-  const rootRoute = createRootRoute({ component: () => node });
-  const termRoute = createRoute({ getParentRoute: () => rootRoute, path: "/term/$dimension/$value" });
-  const router = createRouter({
-    routeTree: rootRoute.addChildren([termRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-  });
-  await router.load();
-  // biome-ignore lint/suspicious/noExplicitAny: this tree is not the app's registered router
-  return renderToStaticMarkup(<RouterProvider router={router as any} />);
-}
+const renderInRouter = (node: ReactNode) => render(node, ["/term/$dimension/$value"]);
 
 describe("findTerm", () => {
   const terms = [term(), term({ dimension: "studio", key: "a24", label: "A24" })];

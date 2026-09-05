@@ -5,6 +5,7 @@ import { AUTH_SCHEMA, AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
 import type { FetchLike } from "../lib/plex-auth";
+import { utcDayReset, utcDayStart, utcDayStartDaysAgo } from "../lib/request-quota";
 import type { MediaRequest, Store } from "../lib/store";
 import { ARR_WEBHOOK_PATH } from "./arr-webhook";
 import { AuthService, withAuth } from "./auth-routes";
@@ -45,16 +46,33 @@ const REQUEST_ROW = {
   requested_by: "u-secret",
 } as unknown as MediaRequest;
 
+/** Every window a route asked the request log to count over, in the order it asked. */
+interface CountedWindow {
+  userId: string;
+  sinceIso: string;
+}
+
 /**
  * The slice of `Store` the auth surface actually touches: the request log, and the `kv`
  * the first-run latch persists itself in. The kv is a real Map rather than a no-op, because
  * "the claim never reopens" is a fact about what a WRITE left behind and a stub that forgets
  * would make the test pass for the wrong reason.
+ *
+ * `countRequestsSince` RECORDS its window and then ignores it. Filtering on `created_at` is
+ * SQLite's job and is pinned where the query lives; what belongs here is which window each
+ * route ASKS for -- today for a quota, seven days for the people list -- and a stub that also
+ * filtered would make those counts depend on the day the suite happens to run.
  */
-function fakeStore(): Store {
+function fakeStore(counted: CountedWindow[]): Store {
   const kv = new Map<string, string>();
+  const own = (userId: string) => [REQUEST_ROW].filter((r) => r.requested_by === userId);
   return {
     listRequests: () => [REQUEST_ROW],
+    listRequestsFor: (userId: string) => own(userId),
+    countRequestsSince: (userId: string, sinceIso: string) => {
+      counted.push({ userId, sinceIso });
+      return own(userId).length;
+    },
     getKv: (key: string) => kv.get(key) ?? null,
     setKv: (key: string, value: string) => void kv.set(key, value),
   } as unknown as Store;
@@ -65,6 +83,8 @@ interface Harness {
   service: AuthService;
   calls: string[];
   logs: string[];
+  /** Which windows the routes counted requests over. See `fakeStore`. */
+  counted: CountedWindow[];
   call: (path: string, init?: RequestInit & { cookie?: string; bearer?: string }) => Promise<Response>;
 }
 
@@ -75,11 +95,12 @@ function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
   const auth = new AuthStore(db);
   const logs: string[] = [];
   const calls: string[] = [];
+  const counted: CountedWindow[] = [];
   const cfg = opts.cfg ?? config();
 
   const service = new AuthService({
     auth,
-    store: fakeStore(),
+    store: fakeStore(counted),
     cfg,
     log: (m) => logs.push(m),
     fetchImpl:
@@ -148,7 +169,7 @@ function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
     )) as Response;
   };
 
-  return { auth, service, calls, logs, call };
+  return { auth, service, calls, logs, counted, call };
 }
 
 let h: Harness;
@@ -421,6 +442,158 @@ describe("who requested what", () => {
   */
   test("an ordinary user cannot reach the attributed log at all", async () => {
     expect((await h.call("/api/admin/requests", { cookie: signIn("user") })).status).toBe(404);
+  });
+});
+
+/**
+ * `GET /api/admin/users/:id` -- the one endpoint the redesigned user page is built on.
+ *
+ * The properties worth pinning are the ones a later change could quietly lose: that it is
+ * closed to a non-admin like the rest of `/api/admin/*`, that it reports the same access
+ * facts `/api/auth/me` reports (they are one method now, and this is what would notice them
+ * drifting apart again), and that "the quota does not apply" is an answer it SENDS rather
+ * than something the page infers.
+ */
+describe("one person, whole", () => {
+  /** A member with a passkey, a session and the one request in the fake log. */
+  function member(): { id: string } {
+    const u = h.auth.createUser({ id: "u-secret", displayName: "Ada", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0, label: "Ada's phone" });
+    h.auth.createSession({ userId: u.id, expiresAt: isoIn(60_000), userAgent: "Mozilla/5.0 (iPhone)" });
+    return u;
+  }
+
+  const detailOf = async (id: string) =>
+    (await (await h.call(`/api/admin/users/${id}`, { bearer: API_KEY })).json()) as {
+      user: { displayName: string };
+      credentials: { id: string; label: string | null }[];
+      sessions: { id: string; userAgent: string | null; current: boolean }[];
+      requests: { tconst: string; requested_by?: string }[];
+      quota: { limitPerDay: number; usedToday: number; resetsAt: string; applies: boolean };
+      agentKey: { readOnly: boolean } | null;
+    };
+
+  test("identity, every credential, every session and their requests, in one call", async () => {
+    const u = member();
+    const body = await detailOf(u.id);
+
+    expect(body.user.displayName).toBe("Ada");
+    expect(body.credentials.map((c) => c.label)).toEqual(["Ada's phone"]);
+    expect(body.sessions.map((s) => s.userAgent)).toEqual(["Mozilla/5.0 (iPhone)"]);
+    expect(body.requests.map((r) => r.tconst)).toEqual(["tt0111161"]);
+  });
+
+  /*
+    Only THEIR rows. The fake log holds one request and it belongs to `u-secret`, so a second
+    account must come back with an empty list -- the failure this guards is a page that draws
+    the whole house's log under one person's name.
+  */
+  test("somebody else's requests are not on their page", async () => {
+    member();
+    const other = h.auth.createUser({ displayName: "Bob", role: "user" });
+    expect((await detailOf(other.id)).requests).toEqual([]);
+  });
+
+  test("no session is 'this device' when an admin is reading somebody else's page", async () => {
+    const u = member();
+    expect((await detailOf(u.id)).sessions.every((s) => !s.current)).toBe(true);
+  });
+
+  /*
+    THE SAME ACCESS FACTS AS `/api/auth/me`, asserted as an equality rather than by listing
+    the fields twice. They are built by one method taking whose session is live, and the day
+    somebody re-inlines one of them this is what fails.
+  */
+  test("the access half matches what the person's own /api/auth/me reports", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    h.auth.addCredential({ id: "c1", userId: u.id, publicKey: "pk", counter: 0, label: "phone" });
+    const token = h.auth.createSession({ userId: u.id, expiresAt: isoIn(60_000), userAgent: "iPhone" });
+    h.auth.createUser({ displayName: "Root", role: "admin" });
+
+    const mine = (await (await h.call("/api/auth/me", { cookie: `${SESSION_COOKIE}=${token}` })).json()) as {
+      credentials: unknown[];
+      sessions: { current: boolean }[];
+    };
+    const theirs = await detailOf(u.id);
+
+    expect(theirs.credentials).toEqual(mine.credentials as typeof theirs.credentials);
+    // Same rows, and `current` is the ONE field that legitimately differs: the cookie is
+    // theirs on their own page and nobody's on the admin's.
+    expect(theirs.sessions.map((s) => ({ ...s, current: true }))).toEqual(
+      mine.sessions.map((s) => ({ ...s, current: true })) as typeof theirs.sessions,
+    );
+    expect(mine.sessions.map((s) => s.current)).toEqual([true]);
+  });
+
+  test("an unknown id is a 404, not an empty person", async () => {
+    expect((await h.call("/api/admin/users/nobody", { bearer: API_KEY })).status).toBe(404);
+  });
+
+  test("an ordinary user cannot read anybody's page, their own included", async () => {
+    const u = member();
+    const cookie = signIn("user");
+    expect((await h.call(`/api/admin/users/${u.id}`, { cookie })).status).toBe(404);
+  });
+
+  describe("the quota it reports", () => {
+    test("does not apply when no limit is configured -- the default", async () => {
+      const u = member();
+      const body = await detailOf(u.id);
+      expect(body.quota).toEqual({
+        limitPerDay: 0,
+        usedToday: 1,
+        resetsAt: utcDayReset(),
+        applies: false,
+      });
+    });
+
+    test("applies to a member once a limit is set, and never to an admin", async () => {
+      const limited = harness({ cfg: { ...config(), requests: { quotaPerDay: 5 } } });
+      const u = limited.auth.createUser({ id: "u-secret", displayName: "Ada", role: "user" });
+      const boss = limited.auth.createUser({ displayName: "Root", role: "admin" });
+      const applies = async (id: string) =>
+        (
+          (await (await limited.call(`/api/admin/users/${id}`, { bearer: API_KEY })).json()) as {
+            quota: { applies: boolean };
+          }
+        ).quota.applies;
+
+      expect(await applies(u.id)).toBe(true);
+      expect(await applies(boss.id)).toBe(false);
+    });
+
+    test("counts against TODAY, not against some other window", async () => {
+      const u = member();
+      await detailOf(u.id);
+      expect(h.counted).toEqual([{ userId: u.id, sinceIso: utcDayStart() }]);
+    });
+  });
+
+  /*
+    Present or absent. Only the sha256 is stored, so there is no token to leak -- but the
+    HASH is in the row, and this is what stops it being spread into an admin's JSON by a
+    later hand reaching for `agentKeyFor` directly.
+  */
+  test("an agent key is reported as existing, never as a credential", async () => {
+    const u = member();
+    expect((await detailOf(u.id)).agentKey).toBeNull();
+
+    const { token } = h.auth.putAgentKey({ userId: u.id, readOnly: true });
+    const body = await detailOf(u.id);
+    expect(body.agentKey?.readOnly).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(token);
+    expect(JSON.stringify(body)).not.toContain(hashToken(token));
+  });
+});
+
+describe("the people list", () => {
+  test("counts each person's requests over the last seven UTC days, today included", async () => {
+    h.auth.createUser({ id: "u-secret", displayName: "Ada", role: "user" });
+    const body = (await (await h.call("/api/admin/users", { bearer: API_KEY })).json()) as {
+      users: { displayName: string; requestsThisWeek: number }[];
+    };
+    expect(body.users.map((u) => [u.displayName, u.requestsThisWeek])).toEqual([["Ada", 1]]);
+    expect(h.counted).toEqual([{ userId: "u-secret", sinceIso: utcDayStartDaysAgo(6) }]);
   });
 });
 

@@ -8,16 +8,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { PersonPage } from "../lib/api";
+import { renderInRouter as render } from "../test/render-in-router";
 import { PersonHeader } from "./PersonRoute";
 
 type HeaderProps = Pick<PersonPage, "person" | "image" | "total" | "awards">;
@@ -28,21 +21,7 @@ const header = (over: Partial<HeaderProps> = {}): HeaderProps => ({
   ...over,
 });
 
-async function renderInRouter(node: ReactNode): Promise<string> {
-  const rootRoute = createRootRoute({ component: () => node });
-  const awardRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/awards/$award/$ceremony",
-  });
-  const titleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/title/$tconst" });
-  const router = createRouter({
-    routeTree: rootRoute.addChildren([awardRoute, titleRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-  });
-  await router.load();
-  // biome-ignore lint/suspicious/noExplicitAny: this tree is not the app's registered router
-  return renderToStaticMarkup(<RouterProvider router={router as any} />);
-}
+const renderInRouter = (node: ReactNode) => render(node, ["/awards/$award/$ceremony", "/title/$tconst"]);
 
 describe("PersonHeader", () => {
   test("the name, the span and the credit count", async () => {
