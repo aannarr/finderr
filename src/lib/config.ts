@@ -286,6 +286,34 @@ export interface Config {
    */
   regions: string[];
 
+  /**
+   * ISO 639-1 codes this instance's readers actually watch. EMPTY MEANS EVERYTHING.
+   *
+   * > [!IMPORTANT] It filters BROWSE, and it does not touch RANK or SEARCH
+   * > Ranking stays language-blind on purpose. It was measured both ways on 2026-09-05
+   * > (`.claude/docs/2026-09-05-rank-experiments.md`) and a rank penalty turned out to be
+   * > identical to this filter in 20 of 20 positions wherever it was strong enough to
+   * > matter, while being invisible to the reader and impossible to lift without a
+   * > rebuild. So the preference lives at query time, where it can announce itself and be
+   * > turned off. Search is untouched for a plainer reason: somebody typing a title's name
+   * > has already told us which title they want.
+   *
+   * **Empty is the default and it is not a placeholder.** A checkout that does not opt in
+   * behaves exactly as every version before this one, which is what makes it safe to ship
+   * to a running instance -- the same argument `tmdb.watchProviderCountries` makes.
+   *
+   * A title matches if ANY of its original languages is listed. Titles whose language
+   * nobody knows are ADMITTED rather than hidden: coverage is 84% at the browse floor, so
+   * excluding them would hide thousands of titles for a gap that is ours, and a preference
+   * should fail toward showing too much. See `languageFilter`.
+   *
+   * DELIBERATELY NOT `regions`, for the reason that key states about `watchProviderCountries`:
+   * "which countries is this instance FOR" and "what do these people watch" are different
+   * questions, and `regions` defaults to `["US"]` -- reusing it would silently switch on an
+   * English-only filter for every existing deployment.
+   */
+  languages: string[];
+
   tmdb: {
     apiKey?: string;
     imageBase: string;
@@ -871,6 +899,9 @@ const DEFAULTS: Config = {
     prefault: null,
   },
   regions: ["US"],
+  // Empty = every language, which is what every version before this one did. An operator
+  // opts in; nobody wakes up to a filter they did not choose. Same shape as `requests.quotaPerDay`.
+  languages: [],
   tmdb: {
     imageBase: "https://image.tmdb.org/t/p",
     cacheImages: true,
@@ -1042,6 +1073,13 @@ function envOverrides(): Record<string, unknown> {
     regions: envStr("FINDERR_REGIONS")
       ?.split(",")
       .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
+    // LOWER-cased, the opposite of `regions` and for the same kind of reason: ISO 639-1 is
+    // written in lower case and `title_lang` stores it that way, so `FINDERR_LANGUAGES=EN`
+    // would match nothing at all and look like an empty index rather than a typo.
+    languages: envStr("FINDERR_LANGUAGES")
+      ?.split(",")
+      .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
     tmdb: {
       apiKey: envStr("FINDERR_TMDB_API_KEY"),

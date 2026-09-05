@@ -19,7 +19,7 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
-import type { HiddenByFloor } from "../../../src/lib/search";
+import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
 import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
@@ -38,6 +38,7 @@ export type {
   CollectionSummary,
   EpisodeState,
   HiddenByFloor,
+  HiddenByLanguage,
   PaneBlock,
   PersonLinks,
   RenderedPane,
@@ -1203,6 +1204,8 @@ export interface BrowseResponse {
   total: number;
   /** Set only when the vote floor is why `rows` is empty -- see `HiddenByFloor`. */
   hiddenByFloor?: HiddenByFloor;
+  /** Set only when the LANGUAGE preference is why `rows` is empty -- see `HiddenByLanguage`. */
+  hiddenByLanguage?: HiddenByLanguage;
 }
 
 /**
@@ -1213,7 +1216,18 @@ export interface BrowseResponse {
  */
 export type BrowseSort = "votes" | "rank";
 
-export type BrowseOpts = { limit?: number; offset?: number; minVotes?: number; sort?: BrowseSort };
+export type BrowseOpts = {
+  limit?: number;
+  offset?: number;
+  minVotes?: number;
+  sort?: BrowseSort;
+  /**
+   * Lift the deployment's language preference. A request option like `minVotes`, and for
+   * the same reason -- a `?languages=` in the address bar would be shareable state naming
+   * a filter the operator, not the reader, owns. The client can only turn it OFF.
+   */
+  anyLanguage?: boolean;
+};
 
 /**
  * The canonical query string for a browse, and therefore its cache key.
@@ -1239,6 +1253,9 @@ function browseQuery(filters: Filters, opts: BrowseOpts): string {
   // looking at rather than a threshold somebody has to keep meaningful, and a list is a
   // destination worth sending to someone. It rides here too because it changes the rows.
   if (opts.sort !== undefined) params.set("sort", opts.sort);
+  // In the cache key for the same reason `minVotes` is: the hatch re-runs the identical
+  // filter with the preference lifted and must not be served the filtered rows back.
+  if (opts.anyLanguage) params.set("anyLanguage", "1");
   params.sort();
   return params.toString();
 }
@@ -1263,7 +1280,9 @@ export function cachedBrowse(filters: Filters, opts: BrowseOpts = {}): BrowseRes
 export function cachedBrowseRun(
   filters: Filters,
   opts: Omit<BrowseOpts, "offset"> & { limit: number },
-): { rows: Title[]; total: number; hiddenByFloor?: HiddenByFloor } | undefined {
+):
+  | { rows: Title[]; total: number; hiddenByFloor?: HiddenByFloor; hiddenByLanguage?: HiddenByLanguage }
+  | undefined {
   const first = cachedBrowse(filters, { ...opts, offset: 0 });
   if (!first) return undefined;
 
@@ -1273,7 +1292,12 @@ export function cachedBrowseRun(
     if (!page) break;
     rows.push(...page.rows);
   }
-  return { rows, total: first.total, hiddenByFloor: first.hiddenByFloor };
+  return {
+    rows,
+    total: first.total,
+    hiddenByFloor: first.hiddenByFloor,
+    hiddenByLanguage: first.hiddenByLanguage,
+  };
 }
 
 export async function browse(filters: Filters, opts: BrowseOpts = {}): Promise<BrowseResponse> {

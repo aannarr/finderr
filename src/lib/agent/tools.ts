@@ -50,6 +50,17 @@ export interface AgentContext {
    * cannot work. See `./actions.ts`.
    */
   actions?: AgentActions;
+  /**
+   * The deployment's language preference, already through `languageFilter`.
+   *
+   * On the CONTEXT rather than read from config inside the tool, for the reason every other
+   * capability here follows: these functions are pure over what they are handed, so a test
+   * sets a preference by constructing a context rather than by mutating global config. It
+   * is also what keeps `makeContext` the one place the fail-open rule is applied.
+   *
+   * Absent or empty = no preference, which is the default and the behaviour before this.
+   */
+  languages?: readonly string[];
 }
 
 /** How much the caller trusts the string it is passing. Never about spelling ability. */
@@ -62,7 +73,7 @@ export const TITLE_KINDS = ["movie", "tvSeries", "tvMovie", "tvMiniSeries"] as c
 export type TitleKind = (typeof TITLE_KINDS)[number];
 
 /** Extras a caller may opt into on `findTitle`. Local seeks only -- never a facet. */
-export const TITLE_FIELDS = ["genres", "runtime", "rating", "orig"] as const;
+export const TITLE_FIELDS = ["genres", "runtime", "rating", "orig", "origin"] as const;
 export type TitleField = (typeof TITLE_FIELDS)[number];
 
 /** Extras a caller may opt into on `findPerson`. */
@@ -94,6 +105,16 @@ export interface TitleRef {
   genres?: string[];
   runtime?: number | null;
   rating?: number;
+  /**
+   * ISO 639-1 original languages, opt-in via `fields: ["origin"]`.
+   *
+   * ABSENT means not asked for; `[]` means asked for and nobody knows. A model must be able
+   * to tell those apart, because the second is a fact about the title and the first is a
+   * fact about the call it made.
+   */
+  lang?: string[];
+  /** ISO 3166-1 countries of origin, opt-in on the same field. Same absent-vs-empty rule. */
+  country?: string[];
 }
 
 export interface PersonRef {
@@ -143,7 +164,12 @@ function sameName(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-function toTitleRef(row: TitleRow, fields: readonly TitleField[] = [], matchedBy?: string): TitleRef {
+function toTitleRef(
+  ctx: AgentContext,
+  row: TitleRow,
+  fields: readonly TitleField[] = [],
+  matchedBy?: string,
+): TitleRef {
   const want = new Set(fields);
   const ref: TitleRef = {
     tconst: row.tconst,
@@ -158,6 +184,16 @@ function toTitleRef(row: TitleRow, fields: readonly TitleField[] = [], matchedBy
   if (want.has("genres")) ref.genres = row.genres ? row.genres.split(",").filter(Boolean) : [];
   if (want.has("runtime")) ref.runtime = row.runtime;
   if (want.has("rating")) ref.rating = row.rating;
+  if (want.has("origin")) {
+    // One extra seek per row, which is why it is opt-in. An index with no origin stage
+    // leaves both fields ABSENT rather than empty -- see `SearchEngine.originOf`: "I cannot
+    // tell you" and "nobody knows" must not arrive looking the same.
+    const origin = ctx.engine.originOf(row.tconst);
+    if (origin) {
+      ref.lang = origin.lang;
+      ref.country = origin.country;
+    }
+  }
   return ref;
 }
 
@@ -201,7 +237,7 @@ export function findTitle(ctx: AgentContext, args: FindTitleArgs): Resolution<Ti
   }
 
   const found = hits.slice(0, limit).map((h) => {
-    const ref = toTitleRef(h, args.fields ?? [], result.tier);
+    const ref = toTitleRef(ctx, h, args.fields ?? [], result.tier);
     const end = endYearOf(ctx.db, h.tconst);
     if (end !== null) ref.end_year = end;
     return ref;
@@ -272,7 +308,7 @@ export function findPerson(
     if (want.has("credit_count")) ref.credit_count = p.credits;
     if (want.has("known_for")) {
       const page = ctx.engine.personPage(p.nconst, { limit: 3, sort: "votes" });
-      ref.known_for = (page?.credits ?? []).map((c) => toTitleRef(c));
+      ref.known_for = (page?.credits ?? []).map((c) => toTitleRef(ctx, c));
     }
     return ref;
   });
@@ -438,7 +474,19 @@ export interface BrowseArgs {
   kind?: TitleKind;
   year?: number;
   decade?: number;
+  /** Inclusive `[from, to]`, for the span no decade expresses -- "the last fifteen years". */
+  years?: [number, number];
   min_votes?: number;
+  /**
+   * Lift the deployment's language preference for this one call.
+   *
+   * `true` means "show me everything regardless of language", and it is the agent's half of
+   * the same escape hatch `min_votes: 0` is for the vote floor -- the tool reports
+   * `hidden_by_language` and the model may then ask again without it. There is deliberately
+   * no way to REQUEST a language here: the preference is the deployment's, and a model
+   * choosing its own would be inventing an answer to a question nobody asked it.
+   */
+  any_language?: boolean;
   sort?: BrowseSort;
   limit?: number;
 }
@@ -457,15 +505,27 @@ export function browseTitles(ctx: AgentContext, args: BrowseArgs) {
     kind: args.kind,
     year: args.year,
     decade: args.decade,
+    years: args.years,
     minVotes: args.min_votes,
+    // The preference comes from the CONTEXT, never from the model. `any_language` can only
+    // remove it -- see `BrowseArgs.any_language`.
+    languages: args.any_language ? [] : ctx.languages,
     sort: args.sort ?? "votes",
     limit,
   });
   return {
-    titles: res.rows.map((r) => toTitleRef(r, ["genres", "rating"])),
+    titles: res.rows.map((r) => toTitleRef(ctx, r, ["genres", "rating"])),
     total: res.total,
     ...(res.hiddenByFloor
       ? { hidden_by_floor: { titles: res.hiddenByFloor.titles, min_votes: res.hiddenByFloor.minVotes } }
+      : {}),
+    ...(res.hiddenByLanguage
+      ? {
+          hidden_by_language: {
+            titles: res.hiddenByLanguage.titles,
+            languages: res.hiddenByLanguage.languages,
+          },
+        }
       : {}),
   };
 }
@@ -474,7 +534,9 @@ export function browseTitles(ctx: AgentContext, args: BrowseArgs) {
 export function getTitle(ctx: AgentContext, tconst: string): (TitleRef & { genres: string[] }) | null {
   const row = ctx.engine.byTconst(tconst);
   if (!row) return null;
-  const ref = toTitleRef(row, ["genres", "runtime", "rating"]) as TitleRef & { genres: string[] };
+  const ref = toTitleRef(ctx, row, ["genres", "runtime", "rating", "origin"]) as TitleRef & {
+    genres: string[];
+  };
   const end = endYearOf(ctx.db, tconst);
   if (end !== null) ref.end_year = end;
   return ref;
@@ -489,7 +551,7 @@ export function getPerson(ctx: AgentContext, nconst: string, opts: { credits?: n
     birth_year: page.person.birthYear,
     death_year: page.person.deathYear,
     credit_count: page.total,
-    top_credits: page.credits.map((c) => toTitleRef(c)),
+    top_credits: page.credits.map((c) => toTitleRef(ctx, c)),
     collaborators: ctx.engine.frequentCollaborators(nconst, { limit: 5 }).map((c) => ({
       nconst: c.nconst,
       name: c.name,

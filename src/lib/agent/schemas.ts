@@ -16,6 +16,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { languageFilter } from "../search.js";
 import { findConnections, MemoryResumeStore, type ResumeStore } from "./connections.js";
 import {
   type AgentContext,
@@ -88,10 +89,12 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           match: MATCH,
           fields: {
             type: "array",
-            items: { type: "string", enum: ["genres", "runtime", "rating"] },
+            items: { type: "string", enum: ["genres", "runtime", "rating", "origin"] },
             description:
               "Opt-in extras. 'runtime' IS FILM-ONLY -- for a series the column holds the " +
-              "whole run for some titles and one episode for others, so never quote it for a show.",
+              "whole run for some titles and one episode for others, so never quote it for a show. " +
+              "'origin' returns lang and country; ask for it whenever the user's question is " +
+              "about language or country, because you cannot tell either from a title.",
           },
           limit: { type: "integer", description: "Default 5, max 20." },
         },
@@ -213,9 +216,14 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       name: "browse_titles",
       description:
         "Find titles by CONSTRAINT when there is no name to look up -- 'good sci-fi from " +
-        "the 80s', 'popular comedies'. This is the only tool that works without an id. " +
+        "the 80s', 'popular comedies', 'crime films of the last fifteen years'. This is the " +
+        "only tool that works without an id. " +
+        "USE `years` FOR ANY SPAN THAT IS NOT ONE DECADE. Two decade calls stitched together " +
+        "is two lists and a join you made yourself, which is not what the index told you. " +
         "If it returns hidden_by_floor, a popularity threshold WE applied is what emptied " +
         "the page; re-run with min_votes:0 rather than reporting that nothing matches. " +
+        "If it returns hidden_by_language, this deployment's own language preference removed " +
+        "titles; SAY SO, and offer any_language:true rather than pretending they do not exist. " +
         "Cost: <=50 rows, 1 call.",
       parameters: {
         type: "object",
@@ -224,7 +232,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           kind: KIND_ENUM,
           year: { type: "integer" },
           decade: { type: "integer", description: "e.g. 1980 means the 1980s." },
+          years: {
+            type: "array",
+            items: { type: "integer" },
+            minItems: 2,
+            maxItems: 2,
+            description:
+              "Inclusive [from, to] release years. Use this for 'the last N years' and any " +
+              "other span a single decade does not express. Overrides decade.",
+          },
           min_votes: { type: "integer" },
+          any_language: {
+            type: "boolean",
+            description:
+              "Ignore this deployment's language preference for this call. Use it ONLY after a " +
+              "result came back with hidden_by_language, or when the user explicitly asks for a " +
+              "language or a country. There is no way to ask for a particular language here.",
+          },
           sort: {
             type: "string",
             enum: ["votes", "rank"],
@@ -420,6 +444,18 @@ function guardIds(value: unknown, prefix: "tt" | "nm", resolver: string): { erro
 export type { AgentContext, ResumeStore };
 export { MemoryResumeStore };
 
-export function makeContext(db: Database, engine: AgentContext["engine"]): AgentContext {
-  return { db, engine };
+/**
+ * The read-only context, with the deployment's language preference already resolved.
+ *
+ * `languageFilter` is applied HERE and nowhere else on this path, so the fail-open rule
+ * (titles of unknown language are admitted) has one owner for every agent call. A caller
+ * passing no config gets no preference, which is what every test and the benchmark harness
+ * want and what every deployment that has not opted in gets.
+ */
+export function makeContext(
+  db: Database,
+  engine: AgentContext["engine"],
+  languages: readonly string[] = [],
+): AgentContext {
+  return { db, engine, languages: languageFilter(languages) };
 }

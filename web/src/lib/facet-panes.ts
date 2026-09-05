@@ -643,6 +643,34 @@ export function releaseRows(dates: ReleaseDates): ReleaseRow[] {
  * Formatted in UTC deliberately. A date-only `2010-07-16` parses as UTC midnight, so
  * rendering it in the viewer's own zone shows the 15th to everybody west of Greenwich.
  */
+/**
+ * `English or Swedish` -- ISO 639-1 codes as a reader would say them.
+ *
+ * Beside the date formatters and for the same reason they are one function: this is the
+ * only place a language code becomes prose, so the escape hatch and anything that names
+ * the preference later cannot spell it two ways.
+ *
+ * `Intl.DisplayNames` does the naming, because a hand-written table of 180 languages is a
+ * table that goes stale and gets a name wrong for somebody's mother tongue. A code it
+ * cannot name falls back to the code itself, which is honest and rare -- and a code that
+ * came from a config typo therefore shows up as a typo rather than vanishing.
+ *
+ * Takes a locale for the reason `formatCalendarDate` does: with none, `Intl` follows the
+ * test runner's, and an assertion on the output is then machine-dependent.
+ */
+export function formatLanguages(codes: readonly string[], locales?: string | string[]): string {
+  const names = codes.map((c) => {
+    try {
+      return new Intl.DisplayNames(locales ?? "en", { type: "language" }).of(c) ?? c;
+    } catch {
+      return c;
+    }
+  });
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0] as string;
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]|$)/;
 
 export function formatCalendarDate(value: string, locales?: string | string[]): string {

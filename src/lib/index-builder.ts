@@ -112,12 +112,18 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { type Config, paths } from "./config";
 import {
+  COUNTRY_CROSSWALK,
   CROSSWALK_SCHEMA,
+  LANGUAGE_CROSSWALK,
   loadCrosswalk,
+  loadOrigin,
   loadPersonCrosswalk,
+  ORIGIN_SCHEMA,
+  type OriginRow,
   PERSON_CROSSWALK,
   PERSON_CROSSWALK_SCHEMA,
   parseCrosswalkCsv,
+  parseOriginCsv,
   parsePersonCrosswalkCsv,
   TITLE_CROSSWALK,
 } from "./crosswalk";
@@ -220,6 +226,10 @@ create table title (
   -- ends the schema mid-table and the parse errors it produces point at the lines AFTER
   -- it, naming neither the string nor the character.
   rank      real,
+  -- Comma-joined ISO 3166-1 codes, sorted. DISPLAY ONLY -- nothing filters on it, so it
+  -- is a column here rather than a second exploded table. See loadOrigin() for why the
+  -- LANGUAGE is exploded and the country is not.
+  country   text,
   -- normalized forms, precomputed once so every query is a lookup not a transform
   ntitle    text not null default '',
   norig     text not null default '',
@@ -323,7 +333,7 @@ create table episode (
   votes   integer not null default 0,
   year    integer
 );
-${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}`;
+${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}${ORIGIN_SCHEMA}`;
 
 /**
  * The FTS index every title query runs through, over the normalized columns.
@@ -527,6 +537,21 @@ export const INDEXES = {
     */
     "create index ix_ep_parent on episode(parent, season, number, tconst, title, rating, votes, year)",
   ],
+
+  /**
+   * Built by `originStage`, after `title_lang` is filled.
+   *
+   * `(lang, title_rowid)` and never `(title_rowid, lang)`. The only question anybody asks of
+   * this table is "which titles are in one of these languages", which the browse filter
+   * spells as `in (select title_rowid from title_lang where lang in (...))` -- so leading
+   * with `lang` makes it a seek per language yielding rowids already in order, and SQLite
+   * can merge the small result straight into the outer query. Leading with the rowid would
+   * make the same filter a full scan of a 1.4M-row table on every browse.
+   *
+   * COVERING by construction: the table has exactly these two columns, so the semi-join
+   * never touches a table page.
+   */
+  origin: ["create index ix_lang on title_lang(lang, title_rowid)"],
 } satisfies Record<string, readonly string[]>;
 
 /**
@@ -894,9 +919,11 @@ export async function buildIndex(
   // AFTER the cast stage, not beside it: this one keeps only people `person` already holds,
   // so running it first would restrict against an empty table and keep nothing.
   const personIdRows = personCrosswalkStage(db, dumpDir, log);
+  const origin = originStage(db, dumpDir, log);
 
   log("building secondary indexes ...");
   for (const sql of INDEXES.secondary) db.run(sql);
+  for (const sql of INDEXES.origin) db.run(sql);
 
   log("counting every browse slice ...");
   const countRows = buildBrowseCounts(db);
@@ -918,6 +945,8 @@ export async function buildIndex(
   setMeta.run("episode_series_min_votes", String(cfg.index.episodeSeriesMinVotes));
   setMeta.run("id_rows", String(idRows));
   setMeta.run("person_id_rows", String(personIdRows));
+  setMeta.run("origin_lang_titles", String(origin.withLang));
+  setMeta.run("origin_country_titles", String(origin.withCountry));
   // How the lists were ranked, so a list page can say it rather than restate a constant
   // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
   setMeta.run("rank_prior_votes", String(prior.c));
@@ -980,6 +1009,50 @@ function crosswalkStage(db: Database, dumpDir: string, log: (m: string) => void)
   const kept = loadCrosswalk(db, rows);
   log(`  ${kept.toLocaleString()} of our titles carry an id (${rows.length.toLocaleString()} in the source)`);
   return kept;
+}
+
+/**
+ * Fill `title_lang` and `title.country` -- what language a title is in, and where from.
+ *
+ * ADDITIVE AND OPTIONAL like every stage around it, with one twist that is easy to get
+ * wrong: **it runs even when neither file is on disk.** The backfill in `loadOrigin` is
+ * what guarantees every title carries a language row, and a stage that returned early
+ * would leave `title_lang` empty -- at which point a language filter matches nothing and
+ * a browse renders an empty page for a preference the reader set once and forgot. Empty
+ * inputs give every title `UNKNOWN_LANG`, so a sourceless build filters to everything,
+ * which is the same answer as having no preference at all.
+ *
+ * **READS THE DISK AND NEVER THE NETWORK**, the same division `crosswalkStage` follows.
+ */
+function originStage(
+  db: Database,
+  dumpDir: string,
+  log: (m: string) => void,
+): { withLang: number; withCountry: number } {
+  const read = (file: string): OriginRow[] => {
+    const path = `${dumpDir}/${file}`;
+    return existsSync(path) ? parseOriginCsv(readFileSync(path, "utf8")) : [];
+  };
+  const langs = read(LANGUAGE_CROSSWALK.file);
+  const countries = read(COUNTRY_CROSSWALK.file);
+  if (langs.length === 0 && countries.length === 0) {
+    log("no origin data on disk -- every title is filed as unknown, so no filter hides anything");
+  } else {
+    log("loading languages and countries of origin ...");
+  }
+
+  const res = loadOrigin(db, langs, countries);
+  const pct = (n: number) => `${((100 * n) / Math.max(1, kept(db))).toFixed(1)}%`;
+  log(
+    `  ${res.withLang.toLocaleString()} titles carry a language (${pct(res.withLang)}), ` +
+      `${res.withCountry.toLocaleString()} a country (${pct(res.withCountry)})`,
+  );
+  return res;
+}
+
+/** How many titles this index holds, for the one percentage `originStage` prints. */
+function kept(db: Database): number {
+  return (db.query("select count(*) c from title").get() as { c: number }).c;
 }
 
 /**

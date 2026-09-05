@@ -269,7 +269,10 @@ function streamResponse(
         has: deps.has,
         quotaPerDay: deps.cfg.requests.quotaPerDay,
       });
-      const ctx: AgentContext = { ...makeContext(deps.indexDb(), deps.live.current), actions };
+      const ctx: AgentContext = {
+        ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),
+        actions,
+      };
 
       let result: RunResult | null = null;
       try {
@@ -451,7 +454,10 @@ export function makeChatHandler(deps: ChatDeps) {
       has: deps.has,
       quotaPerDay: deps.cfg.requests.quotaPerDay,
     });
-    const ctx: AgentContext = { ...makeContext(deps.indexDb(), deps.live.current), actions };
+    const ctx: AgentContext = {
+      ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),
+      actions,
+    };
 
     let result: RunResult;
     try {

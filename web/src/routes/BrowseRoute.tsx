@@ -27,10 +27,12 @@ import {
   browse,
   cachedBrowseRun,
   type HiddenByFloor,
+  type HiddenByLanguage,
   subscribeTitleState,
   type Title,
   titleStateVersion,
 } from "../lib/api";
+import { formatLanguages } from "../lib/facet-panes";
 import { filtersOf, type SearchParams } from "../lib/search-params";
 import { useListCompletions } from "../lib/use-list-completions";
 
@@ -59,6 +61,7 @@ export function BrowseRoute() {
   const [rows, setRows] = useState<Title[]>([]);
   const [total, setTotal] = useState(0);
   const [hiddenByFloor, setHiddenByFloor] = useState<HiddenByFloor | undefined>(undefined);
+  const [hiddenByLanguage, setHiddenByLanguage] = useState<HiddenByLanguage | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -93,6 +96,17 @@ export function BrowseRoute() {
   const minVotes = unflooredFilter === filterKey ? 0 : undefined;
 
   /**
+   * Which filter the user asked to see past the LANGUAGE preference for.
+   *
+   * Its own piece of state rather than a second meaning for `unflooredFilter`, because the
+   * two hatches are lifted independently and the server offers only one at a time -- see
+   * `browseIndex`. Keyed on the filter for the same reason: moving to another genre drops
+   * it rather than quietly carrying a preference override across the whole session.
+   */
+  const [anyLanguageFilter, setAnyLanguageFilter] = useState<string | null>(null);
+  const anyLanguage = anyLanguageFilter === filterKey ? true : undefined;
+
+  /**
    * Seed from cache DURING RENDER, so Back never paints an empty grid.
    *
    * Adjusting state while rendering is React's documented way to react to a changed
@@ -102,30 +116,32 @@ export function BrowseRoute() {
    * without the route remounting -- a genre chip clicked from inside /browse keeps this
    * component alive, so a lazy `useState` initializer would only ever seed the first one.
    */
-  const requestKey = `${filterKey}|${minVotes ?? ""}|${sort ?? ""}`;
+  const requestKey = `${filterKey}|${minVotes ?? ""}|${sort ?? ""}|${anyLanguage ? "any" : ""}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (seededFor !== requestKey) {
-    const run = cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort });
+    const run = cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort, anyLanguage });
     setSeededFor(requestKey);
     setRows(run?.rows ?? []);
     setTotal(run?.total ?? 0);
     setHiddenByFloor(run?.hiddenByFloor);
+    setHiddenByLanguage(run?.hiddenByLanguage);
     setError(null);
   }
 
   useEffect(() => {
     // Already served from cache -- no request, no spinner, nothing to wait for.
-    if (cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort })) return;
+    if (cachedBrowseRun(JSON.parse(filterKey), { limit: PAGE, minVotes, sort, anyLanguage })) return;
 
     let stale = false;
     setLoading(true);
     setError(null);
-    browse(JSON.parse(filterKey), { limit: PAGE, offset: 0, minVotes, sort })
+    browse(JSON.parse(filterKey), { limit: PAGE, offset: 0, minVotes, sort, anyLanguage })
       .then((r) => {
         if (stale) return;
         setRows(r.rows);
         setTotal(r.total);
         setHiddenByFloor(r.hiddenByFloor);
+        setHiddenByLanguage(r.hiddenByLanguage);
       })
       .catch((e: Error) => {
         if (!stale) setError(e.message);
@@ -136,12 +152,18 @@ export function BrowseRoute() {
     return () => {
       stale = true;
     };
-  }, [filterKey, minVotes, sort]);
+  }, [filterKey, minVotes, sort, anyLanguage]);
 
   const loadMore = async () => {
     setLoading(true);
     try {
-      const r = await browse(JSON.parse(filterKey), { limit: PAGE, offset: rows.length, minVotes, sort });
+      const r = await browse(JSON.parse(filterKey), {
+        limit: PAGE,
+        offset: rows.length,
+        minVotes,
+        sort,
+        anyLanguage,
+      });
       setRows((prev) => [...prev, ...r.rows]);
       setTotal(r.total);
     } catch (e) {
@@ -244,7 +266,23 @@ export function BrowseRoute() {
 
       {!loading && rows.length === 0 && !error && (
         <p className="py-16 text-center text-muted">
-          {hiddenByFloor ? (
+          {/*
+            The LANGUAGE hatch is offered first because the server offers only one at a
+            time and this is the outer filter -- see `browseIndex`. Both read the same way:
+            name the threshold that WE applied, then offer to lift exactly it.
+          */}
+          {hiddenByLanguage ? (
+            <>
+              Nothing in {formatLanguages(hiddenByLanguage.languages)} matches.{" "}
+              <button
+                type="button"
+                onClick={() => setAnyLanguageFilter(filterKey)}
+                className="underline hover:text-ink"
+              >
+                Show all {hiddenByLanguage.titles.toLocaleString()} in any language
+              </button>
+            </>
+          ) : hiddenByFloor ? (
             <>
               Nothing with {hiddenByFloor.minVotes.toLocaleString()} votes or more matches.{" "}
               <button

@@ -251,6 +251,21 @@ export const INDEX_STAGES = {
    * it is printed to the reader as a fact.
    */
   browseCounts: () => JSON.stringify({ v: 1, floor: BROWSE_VOTE_FLOOR }),
+
+  /**
+   * `title_lang` + `title.country` -- what language a title is in and where it came from.
+   *
+   * Constant like `ids`, because there is no knob: which languages a READER wants is a
+   * runtime preference and never a property of the file, which is the whole reason the
+   * filter is liftable at query time. Only the presence of the data is a build fact.
+   *
+   * Its own entry rather than riding on `ids` because the sources are separate files that
+   * either can be on disk without the other, and because this one has a failure mode `ids`
+   * does not: an index built before this stage has NO `title_lang` rows at all, so a
+   * configured language preference would filter every title away. `hasOrigin` is what stops
+   * that at query time and this stamp is what gets it fixed at the next boot.
+   */
+  origin: () => JSON.stringify({ v: 1 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

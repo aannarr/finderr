@@ -23,7 +23,7 @@
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import type { Config } from "./config";
-import { type TitleIds, titleIds } from "./crosswalk";
+import { type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
 import type { PersonCredit } from "./facets";
 // The builder is already in the server's module graph (`src/server/index.ts` imports
 // `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
@@ -374,6 +374,25 @@ export class SearchEngine {
   readonly hasPersonIds: boolean;
 
   /**
+   * Whether this index carries `title_lang` -- the language every filter reads.
+   *
+   * > [!CAUTION] This guard is not "degrade to slower". It is the difference between a
+   * > filter and a blank page.
+   * > Every other capability here fails toward MORE: no rank column and a browse sorts by
+   * > votes, no `title_ids` and a provider buys its own. An index built before this stage
+   * > has no `title_lang` rows at all, so the semi-join `browseSql` writes matches NOTHING
+   * > -- a configured `languages` would empty every list in the product for the up-to-a-day
+   * > window before the next refresh lands, and `hiddenByLanguage` would faithfully report
+   * > that we had hidden all of it.
+   * >
+   * > So the filter is not applied at all when this is false. A reader briefly sees titles
+   * > they did not ask for, which is the right way for a preference to fail.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasOrigin: boolean;
+
+  /**
    * Whether `title_genre` carries its own copy of `votes`.
    *
    * The fourth guard, for the same reason as the three above: the index a deploy meets is
@@ -511,6 +530,7 @@ export class SearchEngine {
     this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
+    this.hasOrigin = this.tableExists("title_lang");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
     this.hasBrowseCounts = this.tableExists("browse_count");
     this.hasRankIndexes = this.indexExists("ix_rank") && this.indexExists("ix_rank_all");
@@ -1299,6 +1319,31 @@ export class SearchEngine {
    * "finderr Top 250" ordered by popularity is a wrong answer wearing a right one's label.
    * A generic `/browse` grid is happy with the fallback; a named list is not.
    */
+  /**
+   * What language a title is in and where it came from, or `null` on an index without them.
+   *
+   * `null` and not `{lang: [], country: []}`, which is the same distinction `findPerson`
+   * draws with `unavailable`: "this index cannot answer" and "nobody knows this title's
+   * language" are different facts, and a caller that merges them will report the second
+   * when the first is true. An agent in particular must be able to say "I cannot tell you"
+   * rather than "it is unknown", because only one of those is worth rebuilding for.
+   *
+   * `UNKNOWN_LANG` never leaks out of here -- it is a storage device for keeping the browse
+   * filter to one predicate, not a language, so it is stripped and an empty list is the
+   * honest answer.
+   */
+  originOf(tconst: string): { lang: string[]; country: string[] } | null {
+    if (!this.hasOrigin) return null;
+    const row = this.db.query("select rowid_, country from title where tconst = ?").get(tconst) as
+      | { rowid_: number; country: string | null }
+      | undefined;
+    if (!row) return null;
+    const langs = this.db
+      .query("select lang from title_lang where title_rowid = ? and lang != '' order by lang")
+      .all(row.rowid_) as { lang: string }[];
+    return { lang: langs.map((l) => l.lang), country: row.country ? row.country.split(",") : [] };
+  }
+
   browse(opts: BrowseOptions): BrowseResult {
     const safe = opts.sort === "rank" && !this.hasRank ? { ...opts, sort: "votes" as const } : opts;
     // `genreVotes` is a CAPABILITY, so it comes from the open file and is never something a
@@ -1306,6 +1351,11 @@ export class SearchEngine {
     // can this particular file do" here.
     return browseIndex(this.db, {
       ...safe,
+      // THE SECOND DOWNGRADE, and it drops the filter rather than narrowing it. An index
+      // built before the origin stage has no `title_lang` rows, so applying a preference to
+      // it would empty every list in the product -- see `hasOrigin`. A reader briefly seeing
+      // titles they did not ask for is the right way for a preference to fail.
+      languages: this.hasOrigin ? safe.languages : undefined,
       genreVotes: this.hasGenreVotes,
       browseCounts: this.hasBrowseCounts,
       rankIndexes: this.hasRankIndexes,
@@ -1417,6 +1467,19 @@ export interface BrowseFilters {
   decade?: number;
   year?: number;
   kind?: string;
+  /**
+   * An inclusive `[from, to]` release-year range, for the span no decade expresses.
+   *
+   * "The last fifteen years" is the question that made this exist: it is two decades and
+   * neither of them, so an agent asked for it had to fire two `decade` calls and stitch the
+   * answers -- which is how it came to be reading two lists instead of one and reasoning
+   * over the join itself.
+   *
+   * `year` wins over this and this wins over `decade`, which is the order of how specific
+   * they are. Nothing sends more than one; the precedence exists so that a caller which
+   * does gets a defined answer rather than two conflicting predicates.
+   */
+  years?: [number, number];
 }
 
 /**
@@ -1438,6 +1501,22 @@ export function isBrowseSort(v: unknown): v is BrowseSort {
 export interface BrowseOptions extends BrowseFilters {
   /** Overrides the floor `browseVoteFloor` would pick. 0 means "show everything". */
   minVotes?: number;
+  /**
+   * ISO 639-1 codes a title's ORIGINAL language must be one of. Empty or absent = no filter.
+   *
+   * > [!IMPORTANT] An OPTION, deliberately, and never a `BrowseFilters` key
+   * > It rides beside `minVotes` for exactly the reason `minVotes` does: it is a
+   * > PREFERENCE the deployment holds, not a description of the list, so it must not reach
+   * > the address bar. A `?languages=en,sv` would be shareable state that then has to be
+   * > validated, kept meaningful across index rebuilds, and reconciled with the config
+   * > every time the two disagreed. Passing `[]` is how the "show everything" hatch lifts
+   * > it, which is the same shape as `minVotes: 0`.
+   *
+   * `UNKNOWN_LANG` -- the empty string -- is a member like any other, and including it is
+   * what makes the filter FAIL OPEN over the corpus's 16% with no language on record. The
+   * caller decides; `languageFilter` is where the deployment's answer is spelled.
+   */
+  languages?: readonly string[];
   /** Defaults to `votes`. */
   sort?: BrowseSort;
   limit?: number;
@@ -1482,11 +1561,32 @@ export interface HiddenByFloor {
   minVotes: number;
 }
 
+/**
+ * How many titles the LANGUAGE preference removed, and which languages were kept.
+ *
+ * The same contract `HiddenByFloor` has and for the same reason: a threshold of ours may
+ * empty a result, and it may never let that be mistaken for absence. It carries the
+ * languages actually applied rather than leaving the client to restate them from config,
+ * so the copy on screen cannot name a set different from the one the query used.
+ */
+export interface HiddenByLanguage {
+  titles: number;
+  languages: string[];
+}
+
 export interface BrowseResult {
   rows: TitleRow[];
   total: number;
   /** Present ONLY when the vote floor is the reason this query came back empty. */
   hiddenByFloor?: HiddenByFloor;
+  /**
+   * Present ONLY when the language preference is the reason this query came back empty.
+   *
+   * Never set alongside `hiddenByFloor`: they are two answers to one question and the
+   * outer one wins, because lifting the floor inside a language filter would offer a
+   * number the reader cannot reach. See `browseIndex`.
+   */
+  hiddenByLanguage?: HiddenByLanguage;
 }
 
 /**
@@ -1524,7 +1624,24 @@ export { BROWSE_VOTE_FLOOR };
  */
 export function browseVoteFloor(f: BrowseFilters, sort: BrowseSort = "votes"): number {
   if (sort === "rank") return 0;
-  return f.year !== undefined || f.decade !== undefined ? 0 : BROWSE_VOTE_FLOOR;
+  // A `years` range drops the floor for the identical reason a decade does -- it pins a
+  // narrow span that cannot flood anything, and the floor there censors rather than curates.
+  return f.year !== undefined || f.decade !== undefined || f.years !== undefined ? 0 : BROWSE_VOTE_FLOOR;
+}
+
+/**
+ * The language list a query should carry, given what the deployment configured.
+ *
+ * THE SINGLE OWNER of the fail-open rule, and the only reason it is a function rather than
+ * `cfg.languages` passed straight through. Every caller that filters has to append
+ * `UNKNOWN_LANG`, and a caller that forgot would hide the 16% of the corpus whose language
+ * Wikidata has never recorded -- silently, and only for readers who had opted in, which is
+ * the shape of bug nobody reports because the titles were simply never there.
+ *
+ * Empty in, empty out: no preference is not a preference for nothing.
+ */
+export function languageFilter(configured: readonly string[]): string[] {
+  return configured.length === 0 ? [] : [...configured, UNKNOWN_LANG];
 }
 
 /**
@@ -1549,6 +1666,7 @@ function browseSql(
   sort: BrowseSort = "votes",
   genreVotes = false,
   rankIndexes = false,
+  languages: readonly string[] = [],
 ): {
   join: string;
   countFrom: string;
@@ -1605,6 +1723,13 @@ function browseSql(
   if (f.year !== undefined) {
     where.push("t.year = ?");
     args.push(f.year);
+    touchesTitle = true;
+  } else if (f.years) {
+    // Same shape as `decade` above and the same reason the year column was never
+    // denormalised: a pinned range takes floor 0, so the row set is small enough that the
+    // primary-key lookup per candidate is cheaper than a copy of the column would be worth.
+    where.push("t.year >= ? and t.year <= ?");
+    args.push(f.years[0], f.years[1]);
     touchesTitle = true;
   }
   if (f.kind) {
@@ -1670,6 +1795,36 @@ function browseSql(
     order = `${ranked} desc`;
     if (!join) touchesTitle = true;
   }
+
+  /*
+    THE LANGUAGE FILTER, and it is a semi-join on the ROWID for one specific reason.
+
+    `title_lang` is keyed on `title_rowid` -- the same integer `title_genre` carries -- so
+    this predicate names a column BOTH from-clauses already have. That is what keeps
+    `touchesTitle` untouched here, and so keeps a genre count reading `title_genre` alone:
+    the 182ms -> 2.5ms covering count survives having a language preference applied to it,
+    which it would not if the language lived on `title` as a column.
+
+    `in (select ...)` rather than a join, because a title with three languages has three
+    rows and a join would return it three times -- which a `limit` then silently turns into
+    a short page. SQLite runs it as a seek per language into `ix_lang(lang, title_rowid)`,
+    which yields rowids already in order.
+
+    An EMPTY list is no filter at all rather than a filter matching nothing. That is the
+    difference between "this reader has no preference" and "this reader wants no titles",
+    and only the first one is ever a thing anybody means.
+  */
+  if (languages.length > 0) {
+    // WHICH TABLE'S ROWID, the same question `voted` and `ranked` answer above. A genre
+    // count reads `title_genre` alone and has no `t` to name; naming one would be a
+    // `no such column` on exactly the query the covering count exists to serve.
+    const rowid = join ? "g.title_rowid" : "t.rowid_";
+    where.push(
+      `${rowid} in (select title_rowid from title_lang where lang in (${languages.map(() => "?").join(",")}))`,
+    );
+    args.push(...languages);
+  }
+
   return {
     join,
     indexedBy,
@@ -1710,8 +1865,14 @@ function browseTotal(
   minVotes: number,
   sort: BrowseSort,
   hasBrowseCounts: boolean,
+  filtered = false,
 ): number {
-  if (hasBrowseCounts) {
+  // A LANGUAGE FILTER PUTS THE STORED COUNT OUT OF REACH, and it has to say so here rather
+  // than in `countFromTable`. The grain is (kind, genre, year) and carries no language, so
+  // every stored number answers the unfiltered question -- which is not close enough, it
+  // is a different question, and this total is printed to the reader as a fact. The live
+  // count runs instead and is the one thing that can be right.
+  if (hasBrowseCounts && !filtered) {
     const stored = countFromTable(db, opts, minVotes, sort);
     if (stored !== null) return stored;
   }
@@ -1755,6 +1916,11 @@ function countFromTable(
   if (opts.year !== undefined) {
     where.push("year = ?");
     args.push(opts.year);
+  } else if (opts.years) {
+    // The grain is per-year, so an arbitrary range sums exactly like a decade does. It is
+    // spelled before `decade` for the same precedence `browseSql` applies.
+    where.push("year >= ? and year <= ?");
+    args.push(opts.years[0], opts.years[1]);
   } else if (opts.decade !== undefined) {
     where.push("year >= ? and year <= ?");
     args.push(opts.decade, opts.decade + 9);
@@ -1787,8 +1953,33 @@ const DECADE_YEARS = 10;
  * > and sorts. See `indexedBy` in `browseSql`.
  */
 function splitsByYear(opts: BrowseOptions, sort: BrowseSort): boolean {
-  return opts.decade !== undefined && sort === "votes";
+  return yearSpan(opts) !== null && sort === "votes";
 }
+
+/**
+ * The inclusive `[from, to]` a browse's year RANGE covers, or null when it pins no range.
+ *
+ * One owner for "is this a range and which years" because two callers need the identical
+ * answer -- `splitsByYear` decides whether to split and `decadeRows` decides what to split
+ * INTO, and a disagreement between them is an off-by-one page nobody would see in a test.
+ *
+ * A `years` range is capped at the width of the split, and the cap is the honest part: the
+ * split fires one query per year and merges `limit + offset` rows from each, so a caller
+ * asking for 1900-2026 would run 127 queries to draw forty rows. Past the cap the range
+ * scan is the cheaper wrong answer, and it is still correct -- just sorted rather than
+ * seeked. Fifteen years, which is the span that started this, sits comfortably inside it.
+ */
+function yearSpan(opts: BrowseOptions): [number, number] | null {
+  if (opts.year !== undefined) return null;
+  if (opts.years) {
+    const [from, to] = opts.years;
+    return to >= from && to - from < MAX_SPLIT_YEARS ? [from, to] : null;
+  }
+  return opts.decade !== undefined ? [opts.decade, opts.decade + DECADE_YEARS - 1] : null;
+}
+
+/** How wide a year range may be before the per-year split stops being worth its queries. */
+const MAX_SPLIT_YEARS = 30;
 
 /**
  * A decade page, served as TEN single-year seeks merged in memory.
@@ -1823,16 +2014,17 @@ function decadeRows<T extends { tconst: string }>(
   limit: number,
   offset: number,
 ): T[] {
-  const decade = opts.decade as number;
+  const [from, to] = yearSpan(opts) as [number, number];
   const merged: (T & { _sort: number | null })[] = [];
-  for (let year = decade; year < decade + DECADE_YEARS; year++) {
-    // `decade: undefined` and `year` set: one seek per year, every other filter intact.
+  for (let year = from; year <= to; year++) {
+    // Both range forms cleared and `year` set: one seek per year, every other filter intact.
     const per = browseSql(
-      { ...opts, decade: undefined, year },
+      { ...opts, decade: undefined, years: undefined, year },
       minVotes,
       sort,
       opts.genreVotes,
       opts.rankIndexes,
+      opts.languages ?? [],
     );
     // The order EXPRESSION is aliased and selected rather than re-derived here, so `votes`
     // and `rank` are merged by whichever column `browseSql` actually ordered on. Naming a
@@ -1881,9 +2073,10 @@ function decadeRows<T extends { tconst: string }>(
 export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
-  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes);
+  const langs = opts.languages ?? [];
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes, langs);
   const counts = opts.browseCounts ?? false;
-  const total = browseTotal(db, sql, opts, minVotes, sort, counts);
+  const total = browseTotal(db, sql, opts, minVotes, sort, counts, langs.length > 0);
   const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
@@ -1898,18 +2091,49 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
         )
         .all(...([...sql.args, limit, offset] as never[])) as TitleRow[]);
 
-  // The second count only runs when the floor could be what emptied the page, so the
-  // overwhelmingly common case -- a query that found rows -- pays for one count, not two.
+  /*
+    WHICH of our own thresholds emptied this page, asked in the order they were applied.
+
+    The language preference is checked FIRST because it is the outer one: with a filter in
+    force, the count without the vote floor is still a count of one language, so offering
+    "show all 1,132" from there would name a number the reader cannot actually reach. Only
+    one hatch is ever offered, and it is the one whose removal would actually help.
+
+    Same guard as the floor's: a page that found rows pays for one count, never two.
+  */
+  if (total > 0) return { rows, total };
+  if (langs.length > 0) {
+    const unfiltered = browseTotal(
+      db,
+      browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes),
+      opts,
+      minVotes,
+      sort,
+      counts,
+      false,
+    );
+    if (unfiltered > total) {
+      return {
+        rows,
+        total,
+        // `UNKNOWN_LANG` is stripped HERE rather than by each reader. It is a storage
+        // device that keeps the filter to one predicate, not a language, and printing
+        // "English, Swedish or unknown" would name a thing no reader chose.
+        hiddenByLanguage: { titles: unfiltered - total, languages: langs.filter(Boolean) },
+      };
+    }
+  }
   // A rank browse takes no floor, so it never reaches here and never offers a hatch it
   // has nothing behind: an empty ranked list is empty because nothing is ranked.
-  if (total > 0 || minVotes === 0) return { rows, total };
+  if (minVotes === 0) return { rows, total };
   const unfloored = browseTotal(
     db,
-    browseSql(opts, 0, sort, opts.genreVotes, opts.rankIndexes),
+    browseSql(opts, 0, sort, opts.genreVotes, opts.rankIndexes, langs),
     opts,
     0,
     sort,
     counts,
+    langs.length > 0,
   );
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }
@@ -1930,7 +2154,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
 export function browseMembers(db: Database, opts: BrowseOptions): string[] {
   const sort = opts.sort ?? "votes";
   const minVotes = opts.minVotes ?? browseVoteFloor(opts, sort);
-  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes);
+  const sql = browseSql(opts, minVotes, sort, opts.genreVotes, opts.rankIndexes, opts.languages ?? []);
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
   // Splits a decade the same way `browseIndex` does -- "best comedies of the 2020s" is a

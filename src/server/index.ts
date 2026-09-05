@@ -40,7 +40,7 @@ import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
-import { type BrowseSort, isBrowseSort, type TitleRow } from "../lib/search";
+import { type BrowseSort, isBrowseSort, languageFilter, type TitleRow } from "../lib/search";
 import {
   NO_SEARCH_LOG,
   parseClickBody,
@@ -1852,6 +1852,15 @@ const appRoutes = {
       // bookmark asking for a sort we removed should still render the grid.
       sort: isBrowseSort(u.searchParams.get("sort")) ? (u.searchParams.get("sort") as BrowseSort) : undefined,
       minVotes: num("minVotes"),
+      /*
+        The deployment's preference, liftable by `anyLanguage=1` and by nothing else.
+
+        A FETCH OPTION, exactly like `minVotes`, and never `?languages=en,sv`. The client
+        may only turn the preference OFF -- it can neither name a language nor add one, so
+        no bookmark can carry a filter the operator did not configure, and the escape hatch
+        is one boolean rather than a list to validate. Same shape as "Show all 1,132".
+      */
+      languages: u.searchParams.get("anyLanguage") === "1" ? [] : languageFilter(cfg.languages),
       limit: Math.min(num("limit") ?? 60, 200),
       offset: num("offset") ?? 0,
     });

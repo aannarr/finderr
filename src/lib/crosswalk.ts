@@ -118,8 +118,68 @@ SELECT ?imdb ?tmdb WHERE {
 }`,
 };
 
+/**
+ * Every title's ORIGINAL LANGUAGE, as an ISO 639-1 code.
+ *
+ * P364 resolved through P218 rather than kept as a Q-id: the codes are what a config, a
+ * query parameter and `navigator.languages` all already speak, and a Q-id would need a
+ * second lookup table nobody else in this tree wants.
+ *
+ * **P364 IS MULTI-VALUED and the extra rows are the point.** `Sardar Udham` is `hi/en/pa`
+ * and `Captain Phillips` is `so/en`; a title matches a language preference if ANY of its
+ * languages match, because "is there a version of this I can watch" is the question a
+ * reader is really asking. Picking one primary language would be picking it arbitrarily --
+ * the property carries no order.
+ *
+ * Measured 2026-09-05: 353,143 rows, 4.6 MB, 2.6s.
+ */
+export const LANGUAGE_CROSSWALK: CrosswalkSource = {
+  file: "wikidata-lang.csv",
+  label: "original languages",
+  query: `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?imdb ?code WHERE {
+  ?s wdt:P345 ?imdb .
+  ?s wdt:P364 ?lang .
+  ?lang wdt:P218 ?code .
+  FILTER(STRSTARTS(?imdb, "tt"))
+}`,
+};
+
+/**
+ * Every title's COUNTRY OF ORIGIN, as an ISO 3166-1 alpha-2 code.
+ *
+ * Its own source rather than a third column on the language query, because the two have
+ * genuinely different coverage and either can be present without the other: measured on the
+ * real index, country reaches 93.9% at the browse floor against language's 84.1%, and 99.6%
+ * against 97.9% at 25,000 votes.
+ *
+ * **It is carried for DISPLAY and never used to filter**, which is a decision the experiments
+ * made rather than a gap -- see `.claude/docs/2026-09-05-rank-experiments.md`. Country's extra
+ * coverage is all in the low-vote tail, and a title with no language there is already admitted
+ * by the fail-open rule, so filtering on it as a fallback would buy nothing and would need a
+ * country-to-language table that gets India wrong for every Tamil film.
+ *
+ * Measured 2026-09-05: 467,796 rows, 6.2 MB, 2.8s.
+ */
+export const COUNTRY_CROSSWALK: CrosswalkSource = {
+  file: "wikidata-country.csv",
+  label: "countries of origin",
+  query: `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?imdb ?code WHERE {
+  ?s wdt:P345 ?imdb .
+  ?s wdt:P495 ?c .
+  ?c wdt:P297 ?code .
+  FILTER(STRSTARTS(?imdb, "tt"))
+}`,
+};
+
 /** Every crosswalk the build job downloads, in the order it downloads them. */
-export const CROSSWALK_SOURCES: readonly CrosswalkSource[] = [TITLE_CROSSWALK, PERSON_CROSSWALK];
+export const CROSSWALK_SOURCES: readonly CrosswalkSource[] = [
+  TITLE_CROSSWALK,
+  PERSON_CROSSWALK,
+  LANGUAGE_CROSSWALK,
+  COUNTRY_CROSSWALK,
+];
 
 /**
  * How long a downloaded crosswalk is reused before being fetched again.
@@ -396,6 +456,143 @@ export function loadPersonCrosswalk(db: Database, rows: PersonCrosswalkRow[]): n
   db.run("drop table pcw_in");
 
   return (db.query("select count(*) c from person_external").get() as { c: number }).c;
+}
+
+// ---------------------------------------------------------------------------
+// Origin -- what language a title is in, and where it came from
+// ---------------------------------------------------------------------------
+
+/**
+ * The code a title carries when nothing upstream knows its language.
+ *
+ * An EXPLICIT code rather than an absent row, and this one choice is what keeps the whole
+ * filter to a single semi-join. Every title gets at least one `title_lang` row, so
+ * "unknown" is a value the `in (...)` list either contains or does not -- which makes the
+ * fail-open policy a member of the caller's language set rather than a second predicate,
+ * a second index and a `not exists` nobody would remember to keep in step.
+ *
+ * It cannot collide with a real code: ISO 639-1 is exactly two letters.
+ */
+export const UNKNOWN_LANG = "";
+
+export const ORIGIN_SCHEMA = `
+-- One row per (title, original language). EXPLODED rather than a comma column on title,
+-- for the same reason title_genre is: a language preference is a set membership test, and
+-- a set membership test wants an index seek rather than a LIKE over a joined string.
+--
+-- KEYED ON THE ROWID, not the tconst, so the filter is a semi-join against the same
+-- integer title_genre already carries -- which is what lets a genre browse apply a
+-- language filter without joining title and losing its covering count.
+--
+-- Every title has at least one row here. A title with no known language gets the empty
+-- string; see UNKNOWN_LANG for why that is a value rather than an absence.
+-- (No backticks in this string: it is a template literal.)
+create table title_lang (
+  title_rowid integer not null,
+  lang        text not null
+);
+`;
+
+/** One `(imdb id, code)` pair, as both origin queries return them. */
+export interface OriginRow {
+  imdb: string;
+  code: string;
+}
+
+/**
+ * Parse the two-column CSV both origin queries return.
+ *
+ * Dropped rather than repaired on anything unexpected, the same rule the id crosswalks
+ * follow. The codes are length-checked because that is the whole validation available: an
+ * ISO 639-1 language code is two letters and an ISO 3166-1 alpha-2 country code is two
+ * letters, so anything else is a property somebody has mis-modelled upstream rather than a
+ * value to act on.
+ */
+export function parseOriginCsv(text: string): OriginRow[] {
+  const out: OriginRow[] = [];
+  const lines = text.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const parts = line.split(",");
+    if (parts.length !== 2) continue;
+    const [imdb, code] = parts;
+    if (!imdb || !/^tt\d+$/.test(imdb)) continue;
+    const c = code?.trim().toLowerCase();
+    if (!c || !/^[a-z]{2}$/.test(c)) continue;
+    out.push({ imdb, code: c });
+  }
+  return out;
+}
+
+/**
+ * Fill `title_lang` and `title.country` from the two origin sources.
+ *
+ * ONE function for both, because they are one stage with one invariant to maintain: every
+ * title ends up with a `title_lang` row. Loading them separately would let a build with a
+ * language file and no country file leave half the rule applied.
+ *
+ * **The `UNKNOWN_LANG` backfill is the last statement and it is not optional.** Coverage is
+ * 84.1% at the browse floor and 18.5% over the whole corpus (measured 2026-09-05), so most
+ * rows in this table are the backfill -- and without it a language filter would silently
+ * delete every title Wikidata has never heard of, which is the exact "our own threshold
+ * emptied the result" failure the house rule exists to prevent.
+ *
+ * Country is a COMMA-JOINED COLUMN on `title` rather than a second exploded table, because
+ * nothing filters on it -- it is carried to be displayed. Sorted so two builds of the same
+ * data produce the same string.
+ */
+export function loadOrigin(
+  db: Database,
+  langs: OriginRow[],
+  countries: OriginRow[],
+): {
+  langRows: number;
+  withLang: number;
+  withCountry: number;
+} {
+  db.run("create temporary table lang_in (imdb text not null, code text not null)");
+  const insLang = db.prepare("insert into lang_in values (?,?)");
+  db.transaction(() => {
+    for (const r of langs) insLang.run(r.imdb, r.code);
+  })();
+
+  db.run(`
+    insert into title_lang (title_rowid, lang)
+    select distinct t.rowid_, i.code from title t join lang_in i on i.imdb = t.tconst
+  `);
+  const withLang = (db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number })
+    .c;
+  db.run("drop table lang_in");
+
+  db.run("create temporary table country_in (imdb text not null, code text not null)");
+  const insCountry = db.prepare("insert into country_in values (?,?)");
+  db.transaction(() => {
+    for (const r of countries) insCountry.run(r.imdb, r.code.toUpperCase());
+  })();
+  db.run(`
+    update title set country = (
+      select group_concat(code) from (
+        select distinct i.code from country_in i where i.imdb = title.tconst order by i.code
+      )
+    )
+    where exists (select 1 from country_in i where i.imdb = title.tconst)
+  `);
+  const withCountry = (
+    db.query("select count(*) c from title where country is not null").get() as { c: number }
+  ).c;
+  db.run("drop table country_in");
+
+  // THE BACKFILL. Every title carries a language row after this, so the filter is one
+  // `in (...)` and "unknown" is a code the caller either admits or does not.
+  db.run(`
+    insert into title_lang (title_rowid, lang)
+    select t.rowid_, '' from title t
+     where not exists (select 1 from title_lang l where l.title_rowid = t.rowid_)
+  `);
+
+  const langRows = (db.query("select count(*) c from title_lang").get() as { c: number }).c;
+  return { langRows, withLang, withCountry };
 }
 
 /**

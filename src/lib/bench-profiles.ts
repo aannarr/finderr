@@ -83,6 +83,10 @@ const SLIM_INDEXES: readonly string[] = [
   "create index ix_tp_person on title_principal(person_rowid)",
   "create index ix_tp_title on title_principal(title_rowid)",
   "create index ix_person_name on person(name)",
+  // UNCHANGED, and there is no narrower form to test. `title_lang` has exactly two columns
+  // and the semi-join needs both -- `lang` to seek and `title_rowid` to return -- so this
+  // index is entirely key and carries no payload for a slim profile to drop.
+  "create index ix_lang on title_lang(lang, title_rowid)",
   // Was `(parent, season, number, tconst, title, rating, votes, year)`. THIS narrow form is
   // quoted verbatim in `ix_ep_parent`'s own docstring as what it was benchmarked against --
   // "20-30% slower warm, 4-13 ms cold on a title page, and up to 496 ms cold on a
@@ -129,6 +133,8 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   "create index ix_tp_person on title_principal(person_rowid)",
   "create index ix_tp_title on title_principal(title_rowid)",
   "create index ix_person_name on person(name)",
+  // Unchanged for the reason `slim` gives: two columns, both key, no payload to drop.
+  "create index ix_lang on title_lang(lang, title_rowid)",
   // Drops five payload columns, keeps the whole key. The pure case, and the one whose
   // docstring already claims 20-30% warm and up to 496 ms cold.
   "create index ix_ep_parent on episode(parent, season, number)",
