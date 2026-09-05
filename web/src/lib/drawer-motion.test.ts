@@ -57,22 +57,30 @@ describe("isCompactViewport", () => {
   });
 });
 
+/**
+ * ONE DURATION, FOR EVERYBODY.
+ *
+ * This used to return 0 under `prefers-reduced-motion`, on the reasoning that the stylesheet
+ * had already floored the exit to nothing so there was no animation left to wait for. That
+ * was the bug aannarr reported as "not animating": the drawer now CROSS-FADES under the
+ * preference rather than teleporting, so there is a real 220ms exit, and unmounting at zero
+ * would cut it off on its first frame. Reduced motion is a CSS question and `styles.css` is
+ * now the only thing that answers it.
+ */
 describe("drawerMs", () => {
-  test("a reader with no preference gets the full slide", () => {
+  test("a reader with no preference waits for the full exit", () => {
     withMatching();
     expect(drawerMs()).toBe(DRAWER_MS);
   });
 
-  test("`prefers-reduced-motion: reduce` unmounts immediately", () => {
-    // The stylesheet has already floored the transition at 0.01ms, so the panel is off the
-    // screen. Waiting the full duration would leave an invisible element over the page,
-    // still taking the taps meant for it.
+  test("and so does one who asked for reduced motion -- they get a fade, not a jump", () => {
     withMatching("(prefers-reduced-motion: reduce)");
-    expect(drawerMs()).toBe(0);
+    expect(drawerMs()).toBe(DRAWER_MS);
   });
 
-  test("no `matchMedia` is treated as reduce, not as full motion", () => {
+  test("it does not consult `matchMedia` at all any more", () => {
+    // A second opinion about the preference is exactly what let the JS and the CSS disagree.
     withoutMatchMedia();
-    expect(drawerMs()).toBe(0);
+    expect(drawerMs()).toBe(DRAWER_MS);
   });
 });

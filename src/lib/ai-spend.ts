@@ -188,7 +188,16 @@ export function chargeRefusal(
   return row;
 }
 
-export type AiGateReason = "not_configured" | "beta_admin_only" | "over_daily_limit";
+/**
+ * `beta_admin_only` was the third of these and is GONE, not deprecated.
+ *
+ * Nothing produces it since the audience widened on 2026-09-05, so leaving it in the union
+ * would keep every consumer carrying a branch for a refusal that cannot happen -- and the
+ * client's 403 handler is exactly where a dead branch survives a rewrite unnoticed. The
+ * browser still copes with an unrecognised reason, because a cached bundle can outlive a
+ * deploy in either direction; see `refusalFrom`.
+ */
+export type AiGateReason = "not_configured" | "over_daily_limit";
 
 export type AiGateVerdict =
   | { allowed: true }
@@ -246,31 +255,31 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
   }
 
   /*
-    THIS IS AN ADMIN-ONLY BETA, AND THERE IS DELIBERATELY NO SWITCH THAT WIDENS IT.
+    THE AUDIENCE IS EVERY SIGNED-IN ACCOUNT, and the only condition is the deployment key.
 
-    aannarr, 2026-09-04: "we're building a ADMIN ONLY beta." An earlier draft made this a
-    config flag defaulting to on, and that was wrong -- a setting one env var away from
-    letting the whole household in is the footgun, not the safeguard, because the thing that
-    would make a wider audience acceptable IS NOT BUILT.
+    aannarr, 2026-09-05: *"make assistant available to all users if key etc are set."* This
+    was an ADMIN-ONLY beta until that instruction, and the paragraph that stood here argued
+    at length that it must stay one until a per-account opt-in existed. That argument is
+    recorded below rather than deleted, because the concern it names did not go away -- it
+    was overruled, which is a different thing, and a reader who cannot tell the two apart
+    will "restore" the gate as a bugfix.
 
-    What has to exist before this line may take a parameter: THE PER-ACCOUNT OPT-IN. A
-    question typed into finderr is sent to a third party, so what someone searches for leaves
-    the house. That is a fact about the feature rather than a risk to be mitigated, and the
-    honest handling is to say so at the opt-in and let each account decide -- an admin
-    enabling it globally must not enable it for anybody else. While the audience is
-    administrators there is nobody to ask who has not already answered by turning the feature
-    on, which is exactly why admin-only is what makes shipping without the opt-in defensible.
+    > [!IMPORTANT] WHAT WAS TRADED, so nobody re-derives it or quietly reverts it
+    > A question typed into finderr is sent to a third party, so what somebody searches for
+    > leaves the house. While the audience was administrators there was nobody to ask who had
+    > not already consented by turning the feature on. That is no longer true: an invited
+    > household member now has a box that ships their words to OpenRouter, and nothing asks
+    > them first. The composer's standing note ("It can start real downloads. Kept on this
+    > device only.") describes the LOCAL transcript and says nothing about the upstream call.
+    >
+    > The per-account opt-in is therefore still worth building and is still the right shape:
+    > each account decides, and an admin enabling the feature globally does not decide for
+    > anybody else. It is now a FOLLOW-UP rather than a precondition. Do not re-add a role
+    > check in its place -- that is not the missing piece, and it was removed deliberately.
 
-    So: build the opt-in, THEN widen this. Adding a flag first inverts the order and ships
-    the consent problem to production ahead of the consent mechanism.
+    What remains true is the deployment gate above: no key means the feature does not exist,
+    for everybody, which is the `tmdb` shape and is unchanged.
   */
-  if (input.role !== "admin") {
-    return {
-      allowed: false,
-      reason: "beta_admin_only",
-      message: "The assistant is in beta and is limited to administrators.",
-    };
-  }
 
   /*
     Admins are exempt from the DAILY LIMIT and from nothing else.
@@ -280,16 +289,15 @@ export function aiGate(input: AiGateInput): AiGateVerdict {
     benchmarking a model is the person most likely to spend, and the person least likely to
     be doing it by accident.
 
-    > [!CAUTION] DURING THE ADMIN-ONLY BETA THIS EXEMPTION MAKES THE CAP INERT, AND THAT IS
-    > TWO DECISIONS COMPOSING RATHER THAN A BUG IN EITHER
-    > "Only admins may use it" and "admins are exempt from the cap" are both aannarr's, both
-    > 2026-09-04, and together they mean NOBODY IS CAPPED until the audience widens. Every
-    > branch below is reachable and unit-tested, and none of it fires in production today.
+    > [!IMPORTANT] THE CAP IS LIVE FOR THE FIRST TIME, AND NOTHING BELOW HAS EVER FIRED IN PRODUCTION
+    > While the audience was administrators and administrators were exempt, the two decisions
+    > composed into NOBODY BEING CAPPED -- every branch under here was reachable and
+    > unit-tested and none of it ran. Widening the audience is what switches it on, per
+    > account, at `ai.dailyLimitUsd` (default $1/day, and `FINDERR_AI_DAILY_LIMIT_USD` is not
+    > set on the live deployment as of 2026-09-05, so the default is what applies).
     >
-    > The ledger still records every call, so the spend is VISIBLE even while it is not
-    > LIMITED -- which is what makes this survivable rather than blind. If a benchmark ever
-    > runs away, the one-word fix is to drop this early return; the refusal machinery under
-    > it already works and is pinned by tests.
+    > `spentToday` is scoped to ONE user id by every caller, so this is a per-account budget
+    > rather than a shared pot -- one person exhausting theirs does not refuse anybody else.
   */
   if (input.role === "admin") return { allowed: true };
 

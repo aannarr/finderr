@@ -214,9 +214,10 @@ export function Assistant({ userId }: { userId: string | null }) {
               onClick={close}
               // It FADES where the panel slides, because it is not an object arriving from
               // an edge -- it is the page being dimmed, and dimming has no direction. Same
-              // duration either way, so the two land on the same frame.
-              className={`fixed inset-0 z-30 bg-black/50 transition-opacity duration-[var(--fdr-drawer-ms)] sm:hidden ${
-                retracting ? "opacity-0" : "animate-[fdr-scrim-in_var(--fdr-drawer-ms)_ease-out]"
+              // duration either way, so the two land on the same frame. The classes live in
+              // `styles.css` beside the drawer's, for the reduced-motion reason stated there.
+              className={`fdr-scrim fixed inset-0 z-30 bg-black/50 sm:hidden ${
+                retracting ? "fdr-scrim-out" : "fdr-scrim-in"
               }`}
             />
             {/*

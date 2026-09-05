@@ -477,10 +477,28 @@ input[type="search"]::-webkit-search-results-decoration {
    none` while retracting is what stops a reader who taps close mid-arrival
    from watching the enter animation win -- animations beat transitions.
 
-   No reduced-motion query here: the global rule above already floors every
-   animation and transition in the document at 0.01ms, so this collapses to a
-   snap for anybody who asked for one, and `drawerMs()` drops the unmount timer
-   to zero to match. */
+   IT IS SPELT AS CLASSES HERE RATHER THAN AS TAILWIND ARBITRARY VALUES IN THE
+   TSX, and that is what the reduced-motion block below needs: the override has
+   to beat `* { animation-duration: 0.01ms !important }`, which takes both a
+   class selector and an `!important` of its own, and neither is expressible in
+   a utility. One owner for both states, in one place. */
+.fdr-drawer {
+  transition:
+    transform var(--fdr-drawer-ms) ease-out,
+    opacity var(--fdr-drawer-ms) ease-out;
+}
+
+.fdr-drawer-in {
+  animation: fdr-drawer-in var(--fdr-drawer-ms) ease-out;
+}
+
+/* Leaving. `animation: none` is what stops a reader who taps close mid-arrival from having
+   to watch the enter finish first -- an animation beats a transition on the same property. */
+.fdr-drawer-out {
+  transform: translateX(100%);
+  animation: none;
+}
+
 @keyframes fdr-drawer-in {
   from {
     transform: translateX(100%);
@@ -490,8 +508,77 @@ input[type="search"]::-webkit-search-results-decoration {
 /* The scrim behind it, on a phone only. It fades rather than sliding, because it is not an
    object arriving from anywhere -- it is the page being dimmed, and dimming has no
    direction. Same duration, so the two land together. */
+.fdr-scrim {
+  transition: opacity var(--fdr-drawer-ms) ease-out;
+}
+
+.fdr-scrim-in {
+  animation: fdr-scrim-in var(--fdr-drawer-ms) ease-out;
+}
+
+.fdr-scrim-out {
+  opacity: 0;
+  animation: none;
+}
+
 @keyframes fdr-scrim-in {
   from {
+    opacity: 0;
+  }
+}
+
+@keyframes fdr-drawer-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   REDUCED MOTION GETS A CROSS-FADE, NOT A TELEPORT.
+
+   > [!CAUTION] This is the bug aannarr reported on 2026-09-05: "not animating"
+   > The drawer shipped relying on the blanket rule above to handle the
+   > preference, on the reasoning that flooring it to 0.01ms is the honest
+   > reading of "reduce". It is not, and the cost is bigger than it looks:
+   >
+   > **iOS reports `prefers-reduced-motion: reduce` in LOW POWER MODE**, not
+   > only when somebody has turned the accessibility setting on. So a phone
+   > below 20% battery silently got a drawer that teleports, which reads as a
+   > feature that was never built rather than as a preference being honoured.
+   > Everything else was measured and ruled out first: the deployed stylesheet
+   > carries the keyframe, Chrome runs it 390px to 0 over 215ms, real iOS
+   > Safari 18.6 resolves `var()` inside the `animation` shorthand (probed on
+   > the simulator, shorthand and longhand identical), and the service worker
+   > serves navigations network-first with content-hashed assets. This block
+   > was the only mechanism left that reproduces the symptom exactly.
+   >
+   > The accessible answer was never "remove the motion" -- it is to remove the
+   > MOVEMENT. A 220ms opacity fade carries no vestibular risk and still says
+   > the panel arrived. So the slide becomes a cross-fade and the duration is
+   > restored; the drawer opts out of the blanket rule and nothing else does.
+   >
+   > `!important` is not decoration here. The blanket rule is `!important`, and
+   > an important declaration beats a non-important one at any specificity --
+   > so the only way out is important-versus-important, which a class selector
+   > then wins on specificity. Removing these keywords silently restores the
+   > teleport. */
+@media (prefers-reduced-motion: reduce) {
+  .fdr-drawer,
+  .fdr-scrim {
+    transition-property: opacity !important;
+    transition-duration: var(--fdr-drawer-ms) !important;
+  }
+
+  .fdr-drawer-in,
+  .fdr-scrim-in {
+    animation-name: fdr-drawer-fade !important;
+    animation-duration: var(--fdr-drawer-ms) !important;
+  }
+
+  /* No `translateX` on the way out either -- the same movement, in reverse, is the same
+     thing the preference asked us not to do. */
+  .fdr-drawer-out {
+    transform: none;
     opacity: 0;
   }
 }

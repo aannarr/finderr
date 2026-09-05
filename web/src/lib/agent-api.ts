@@ -145,7 +145,15 @@ export interface AgentAnswer {
 export type AgentRefusal =
   /** 404: no assistant on this deployment. Not an error; the feature does not exist. */
   | { kind: "absent" }
-  /** 403: the beta is admin-only and this reader is not one. */
+  /**
+   * 403: this reader may not use the assistant, whatever the server's reason.
+   *
+   * NOTHING IN THIS TREE PRODUCES ONE any more -- it meant "the beta is admin-only" until
+   * 2026-09-05, and the audience is now every signed-in account. It stays because the client
+   * does not get to assume it is talking to a server of its own vintage: a cached bundle can
+   * meet an older deploy, and a proxy in front can refuse on its own account. Removing the
+   * kind would turn either into `unknown`, which draws a launcher that fails on every click.
+   */
   | { kind: "forbidden"; message: string }
   /** 402: the daily budget is spent. */
   | { kind: "over-limit"; message: string; remainingUsd: number; retryAfterSeconds: number }

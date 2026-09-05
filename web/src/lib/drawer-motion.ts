@@ -56,18 +56,16 @@ export function isCompactViewport(): boolean {
 /**
  * How long to hold the panel mounted after asking it to leave.
  *
- * Zero under `prefers-reduced-motion`, because the global rule in `styles.css` floors every
- * transition in the document at 0.01ms -- so the panel is already gone from the screen and
- * the only thing the full delay would buy is a fifth of a second of an invisible element
- * still swallowing taps over the page the reader just navigated to.
- *
- * A missing `matchMedia` is treated as "reduce", matching `prefersReducedMotion` in
- * `easter-eggs.ts`: the environments without one are the ones with no compositor to animate
- * on, and an unmount that happens too early is invisible while one that happens too late is
- * a component leaking past the end of a test.
+ * > [!IMPORTANT] IT IS THE SAME NUMBER FOR EVERYBODY NOW, and that is the fix rather than a simplification
+ * > This read the reduced-motion preference and returned 0 for it, on the reasoning that the
+ * > blanket rule in `styles.css` had already flooed the transition to nothing so there was
+ * > no exit left to wait for. Both halves of that were the same mistake: the drawer now
+ * > CROSS-FADES under `prefers-reduced-motion` instead of teleporting, so there is a real
+ * > 220ms exit to wait for, and unmounting at zero would cut it off at the first frame.
+ * >
+ * > Reduced motion is a CSS question and CSS is now the only thing that answers it. A second
+ * > opinion here is what let the two disagree in the first place.
  */
 export function drawerMs(): number {
-  const m = mql("(prefers-reduced-motion: reduce)");
-  if (!m || m.matches) return 0;
   return DRAWER_MS;
 }

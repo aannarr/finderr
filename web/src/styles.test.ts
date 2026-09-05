@@ -19,6 +19,8 @@ const CSS = await Bun.file(new URL("./styles.css", import.meta.url)).text();
 const ROOT_LAYOUT = await Bun.file(new URL("./routes/RootLayout.tsx", import.meta.url)).text();
 const TOASTS = await Bun.file(new URL("./lib/toasts.tsx", import.meta.url)).text();
 const ASSISTANT_PANEL = await Bun.file(new URL("./components/AssistantPanel.tsx", import.meta.url)).text();
+/** The scrim's half of the drawer motion lives here rather than in the panel. */
+const ASSISTANT = await Bun.file(new URL("./components/Assistant.tsx", import.meta.url)).text();
 
 /** The declaration block following the first occurrence of `prelude`, braces balanced. */
 function ruleBody(css: string, prelude: RegExp): string | null {
@@ -260,19 +262,62 @@ describe("the assistant drawer's motion", () => {
     expect(ruleBody(CSS, /@keyframes fdr-drawer-in/)).toContain("translateX(100%)");
   });
 
-  test("both halves of the panel read the duration from the property, never from a literal", () => {
-    // The exit transition and the enter animation are Tailwind arbitrary values in the TSX,
-    // which is exactly where a hardcoded `220ms` would go unnoticed.
-    expect(ASSISTANT_PANEL).toContain("duration-[var(--fdr-drawer-ms)]");
-    expect(ASSISTANT_PANEL).toContain("animate-[fdr-drawer-in_var(--fdr-drawer-ms)_ease-out]");
+  test("both halves read the duration from the property, never from a literal", () => {
+    for (const rule of [".fdr-drawer {", ".fdr-drawer-in {", ".fdr-scrim {", ".fdr-scrim-in {"]) {
+      expect(ruleBody(CSS, new RegExp(rule.replace(/[.{]/g, "\\$&")))).toContain("var(--fdr-drawer-ms)");
+    }
   });
 
-  test("reduced motion is honoured by the blanket rule rather than by a query of its own", () => {
-    // The drawer deliberately adds no `prefers-reduced-motion` block. If that blanket rule
-    // is ever narrowed, this motion silently stops honouring the setting -- and it is the
-    // largest movement in the product outside the easter egg.
-    const reduce = ruleBody(CSS, /@media \(prefers-reduced-motion: reduce\)/);
-    expect(reduce).toContain("animation-duration: 0.01ms !important");
-    expect(reduce).toContain("transition-duration: 0.01ms !important");
+  test("the components name the classes rather than spelling the motion in utilities", () => {
+    // A Tailwind arbitrary value cannot carry an `!important`, and the reduced-motion
+    // override below needs one. Motion moved into `styles.css` for exactly that reason, so a
+    // utility creeping back is the regression -- it would take the override with it.
+    expect(ASSISTANT_PANEL).toContain("fdr-drawer-out");
+    expect(ASSISTANT_PANEL).toContain("fdr-drawer-in");
+    expect(ASSISTANT_PANEL).not.toContain("animate-[");
+    expect(ASSISTANT).toContain("fdr-scrim-out");
+    expect(ASSISTANT).not.toContain("animate-[");
+  });
+
+  /**
+   * REDUCED MOTION CROSS-FADES; IT DOES NOT TELEPORT.
+   *
+   * aannarr reported "not animating" on 2026-09-05 and this block is the whole answer. iOS
+   * reports `prefers-reduced-motion: reduce` in LOW POWER MODE as well as when the
+   * accessibility setting is on, so a phone under 20% battery was silently getting a drawer
+   * that jumped -- indistinguishable from the feature not existing. Everything else was
+   * measured and cleared first: the deployed stylesheet carries the keyframe, Chrome runs it,
+   * real iOS Safari 18.6 resolves `var()` in the `animation` shorthand, and the service
+   * worker serves navigations network-first.
+   */
+  describe("under prefers-reduced-motion", () => {
+    const reduce = CSS.slice(CSS.indexOf("REDUCED MOTION GETS A CROSS-FADE"));
+    const block = ruleBody(reduce, /@media \(prefers-reduced-motion: reduce\)/);
+
+    test("the drawer keeps a real duration instead of the blanket 0.01ms floor", () => {
+      expect(block).toContain("var(--fdr-drawer-ms) !important");
+    });
+
+    test("and it is an OPACITY fade, with no movement left in it", () => {
+      // "Reduce" means remove the MOVEMENT, not the feedback. A 220ms fade carries no
+      // vestibular risk and still says the panel arrived.
+      expect(block).toContain("fdr-drawer-fade");
+      expect(block).toContain("transform: none");
+    });
+
+    test("the overrides keep `!important`, which is the only thing that beats the floor", () => {
+      // The blanket rule is `!important`, and an important declaration wins over a
+      // non-important one at ANY specificity. Dropping these keywords as tidying silently
+      // restores the teleport, with the fix still visible in the file.
+      for (const decl of ["transition-duration", "animation-name", "animation-duration"]) {
+        expect(block).toMatch(new RegExp(`${decl}:[^;]*!important`));
+      }
+    });
+
+    test("the blanket floor itself is still there for everything that is NOT the drawer", () => {
+      expect(ruleBody(CSS, /@media \(prefers-reduced-motion: reduce\)/)).toContain(
+        "animation-duration: 0.01ms !important",
+      );
+    });
   });
 });

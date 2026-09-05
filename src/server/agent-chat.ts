@@ -205,14 +205,10 @@ export function makeChatProbe(deps: Pick<ChatDeps, "cfg">) {
     if (!deps.cfg.ai.openrouterApiKey || !deps.cfg.ai.models[0]) {
       return new Response("Not Found", { status: 404 });
     }
-    const role = principal?.user?.role;
-    if (!role) return new Response("Not Found", { status: 404 });
-    if (role !== "admin") {
-      return json(
-        { error: "beta_admin_only", message: "The assistant is limited to administrators." },
-        { status: 403 },
-      );
-    }
+    // SIGNED IN IS THE WHOLE TEST. It was `role !== "admin"` until 2026-09-05; the audience
+    // is now every account, and the deployment key above is the only remaining condition.
+    // `aiGate` is the single owner of that rule -- do not re-add a role check here.
+    if (!principal?.user) return new Response("Not Found", { status: 404 });
     return json({ available: true, model: deps.cfg.ai.models[0] });
   };
 }
@@ -406,9 +402,9 @@ export function makeChatHandler(deps: ChatDeps) {
     if (!verdict.allowed) {
       // A refusal is a ledger row too, at zero -- it is how the wall becomes countable.
       chargeRefusal(deps.store, { userId: user.id, convId: conversationId, model });
-      if (verdict.reason === "beta_admin_only") {
-        return json({ error: verdict.reason, message: verdict.message }, { status: 403 });
-      }
+      // The 403 branch that stood here answered `beta_admin_only` and is gone with it. Every
+      // refusal `aiGate` can still return is a BUDGET, which is a wait rather than a wall --
+      // so 402 with a `Retry-After` is now the only shape, and the client reads it as one.
       return json(
         {
           error: verdict.reason,

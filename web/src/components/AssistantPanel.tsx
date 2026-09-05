@@ -170,12 +170,14 @@ export function AssistantPanel({
         retract-on-navigation rule fires exactly where the panel starts hiding the page.
         Move one and move the other.
 
-        `animate-none` while retracting is not tidying: a CSS animation beats a transition
-        on the same property, so a reader who closes the panel during its 220ms arrival
-        would otherwise watch it finish sliding IN before anything else could happen.
+        THE MOTION IS `fdr-drawer*` IN `styles.css` AND NOT A UTILITY HERE. It has to be:
+        under `prefers-reduced-motion` the slide becomes a cross-fade, and overriding the
+        stylesheet's blanket `!important` floor takes a class selector plus an `!important`
+        of its own -- neither of which a Tailwind arbitrary value can express. That block
+        also explains why the enter is a keyframe and the exit a transition.
       */
-      className={`fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-line bg-bg pt-[var(--safe-top)] transition-transform duration-[var(--fdr-drawer-ms)] ease-out sm:w-[26rem] ${
-        retracting ? "translate-x-full animate-none" : "animate-[fdr-drawer-in_var(--fdr-drawer-ms)_ease-out]"
+      className={`fdr-drawer fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-line bg-bg pt-[var(--safe-top)] sm:w-[26rem] ${
+        retracting ? "fdr-drawer-out" : "fdr-drawer-in"
       }`}
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">

@@ -87,27 +87,31 @@ describe("the gate, in the order it decides", () => {
     expect(read).toBe(0);
   });
 
-  test("a non-admin is refused, and no configuration can change that", () => {
-    // The admin-only beta, enforced with no switch to widen it. `base` carries every other
-    // setting at its most permissive and the answer is still no.
-    const v = aiGate({ ...base, spentToday: () => 0 });
+  /**
+   * THE AUDIENCE, since 2026-09-05.
+   *
+   * These three replace a pair asserting that a non-admin is refused whatever else is set.
+   * That was the admin-only beta and it is over; the tests are rewritten rather than deleted
+   * because the interesting property survived the change and merely inverted -- an ordinary
+   * account's answer must now turn on the BUDGET and on nothing else.
+   */
+  test("an ordinary account is allowed, on the deployment key alone", () => {
+    expect(aiGate({ ...base, spentToday: () => 0 }).allowed).toBe(true);
+  });
+
+  test("and is refused only once its own budget is spent", () => {
+    const v = aiGate({ ...base, limitUsd: 1, spentToday: () => 1.5 });
     expect(v.allowed).toBe(false);
-    if (!v.allowed) expect(v.reason).toBe("beta_admin_only");
+    // A budget is a wait rather than a wall, so the refusal has to carry when it lifts.
+    if (!v.allowed) {
+      expect(v.reason).toBe("over_daily_limit");
+      expect(v.retryAfterSeconds).toBeGreaterThan(0);
+    }
   });
 
-  test("a non-admin is refused before any spend is counted", () => {
-    let read = 0;
-    aiGate({
-      ...base,
-      spentToday: () => {
-        read++;
-        return 0;
-      },
-    });
-    expect(read).toBe(0);
-  });
-
-  test("an admin passes the beta gate", () => {
+  test("no role is refused for its ROLE any more -- only the key and the budget decide", () => {
+    // The regression guard for a re-added role check: same inputs, both roles, both allowed.
+    expect(aiGate({ ...base, role: "user", spentToday: () => 0 }).allowed).toBe(true);
     expect(aiGate({ ...base, role: "admin", spentToday: () => 0 }).allowed).toBe(true);
   });
 
