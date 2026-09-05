@@ -169,3 +169,115 @@ describe("an exact title match", () => {
     }
   });
 });
+
+/**
+ * The anticipation curve, through the whole engine.
+ *
+ * Years are stated RELATIVE to the real current year, because `rank()` reads the clock and
+ * a fixture with hardcoded years would drift into a different part of the curve every
+ * January. The curve's own shape is pinned against a fixed `now` in
+ * `query-parser.test.ts`; these are about what it does to an ordering.
+ */
+describe("a title that has not come out yet", () => {
+  const thisYear = new Date().getUTCFullYear();
+
+  test("outranks an equally unvoted title from years ago", () => {
+    // aannarr, 2026-09-05: a reader is MORE likely to be looking for the new thing. The
+    // live index has exactly this pair -- two films called "Heart of the Beast", one from
+    // 2017 and one still to come -- and before the curve they scored identically.
+    const engine = engineOf([
+      { tconst: "tt-old", title: "Heart of the Beast", year: thisYear - 9, votes: 0 },
+      { tconst: "tt-soon", title: "Heart of the Beast", year: thisYear, votes: 0 },
+    ]);
+    try {
+      expect(engine.search("heart of the beast", { limit: 5 }).hits[0]?.tconst).toBe("tt-soon");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a SERIES is anticipated exactly as a film is", () => {
+    // aannarr asked for titles, not films. `year` is a first-air year, so a long-running
+    // show is never in the future here and nothing needs to know the kind.
+    const engine = engineOf([
+      { tconst: "tt-film", title: "Ripcurrent", year: thisYear - 9, votes: 0, kind: "movie" },
+      { tconst: "tt-series", title: "Ripcurrent", year: thisYear + 1, votes: 0, kind: "tvSeries" },
+    ]);
+    try {
+      expect(engine.search("ripcurrent", { limit: 5 }).hits[0]?.tconst).toBe("tt-series");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a distant announcement gets no lift, so it cannot jump a real film", () => {
+    // The taper's whole job. A slate entry five years out is speculative, and treating it
+    // as anticipated would let anything anybody ever announced outrank released work.
+    const engine = engineOf([
+      { tconst: "tt-slate", title: "Ripcurrent", year: thisYear + 5, votes: 0 },
+      { tconst: "tt-real", title: "Ripcurrent", year: thisYear - 20, votes: 4_000 },
+    ]);
+    try {
+      expect(engine.search("ripcurrent", { limit: 5 }).hits[0]?.tconst).toBe("tt-real");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("it cannot outrank a genuinely popular title, which is the bound that matters", () => {
+    // The lift is capped at what 1,500 votes are worth, so anything above that line still
+    // wins on popularity alone. This is the assertion that fails first if the prior is
+    // ever raised carelessly.
+    const engine = engineOf([
+      { tconst: "tt-soon", title: "Ripcurrent", year: thisYear + 1, votes: 0 },
+      { tconst: "tt-loved", title: "Ripcurrent", year: thisYear - 20, votes: 300_000 },
+    ]);
+    try {
+      expect(engine.search("ripcurrent", { limit: 5 }).hits[0]?.tconst).toBe("tt-loved");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("the lift SELF-EXTINGUISHES once the votes it stands in for arrive", () => {
+    // `max(0, prior - actual)` rather than an added bonus: a title releasing next year that
+    // already has 50k votes is scored on those votes and gets nothing extra, so there is no
+    // moment where anticipation and real popularity are both being counted.
+    const engine = engineOf([
+      { tconst: "tt-soon-big", title: "Ripcurrent", year: thisYear + 1, votes: 50_000 },
+      { tconst: "tt-old-big", title: "Ripcurrent", year: thisYear - 20, votes: 50_000 },
+    ]);
+    try {
+      const hits = engine.search("ripcurrent", { limit: 5 }).hits;
+      const soon = hits.find((h) => h.tconst === "tt-soon-big");
+      const old = hits.find((h) => h.tconst === "tt-old-big");
+      // Identical votes, and the only thing left between them is `recencyScore`'s small
+      // nudge -- NOT twelve points of anticipation.
+      expect((soon?.score ?? 0) - (old?.score ?? 0)).toBeLessThan(2);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+describe("the order is TOTAL", () => {
+  test("two titles that tie on score do not depend on which arrived first", () => {
+    // Score alone left ties to the candidate order out of FTS, which is a bm25-and-votes
+    // artefact rather than a decision. Year then tconst makes it total, so the same query
+    // twice is the same answer twice -- the rule the rest of this codebase calls fair.
+    const rows = [
+      { tconst: "tt-b", title: "Ripcurrent", year: 1999, votes: 0 },
+      { tconst: "tt-a", title: "Ripcurrent", year: 1999, votes: 0 },
+    ];
+    const forward = engineOf(rows);
+    const backward = engineOf([...rows].reverse());
+    try {
+      const order = (e: SearchEngine) => e.search("ripcurrent", { limit: 5 }).hits.map((h) => h.tconst);
+      expect(order(forward)).toEqual(order(backward));
+      expect(order(forward)).toEqual(["tt-a", "tt-b"]);
+    } finally {
+      forward.close();
+      backward.close();
+    }
+  });
+});

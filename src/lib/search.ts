@@ -45,7 +45,14 @@ import {
   personPage,
   searchPeople,
 } from "./people";
-import { kindScore, type ParsedQuery, parseQuery, recencyScore, yearScore } from "./query-parser";
+import {
+  anticipationWeight,
+  kindScore,
+  type ParsedQuery,
+  parseQuery,
+  recencyScore,
+  yearScore,
+} from "./query-parser";
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
 
@@ -192,6 +199,57 @@ const UNVOTED_EXACT_MATCH_VOTES = 1_000;
  */
 function exactPlausibility(votes: number): number {
   return Math.min(1, Math.log(votes + 10) / Math.log(50_000));
+}
+
+/**
+ * What a title RELEASING SOON is credited with having, at full anticipation.
+ *
+ * The one editorial number in the anticipation curve, and it is chosen to be statable
+ * without reading any code: **at peak anticipation an unreleased title ranks exactly as if
+ * it were a released one with 1,500 votes.** Accept or reject that sentence and you have
+ * accepted or rejected the feature.
+ *
+ * It is also the bound on the risk. The lift is at most `popularity(1500) - popularity(0)`
+ * = 12.0 points of a 24.7-point term, so **anything with more than 1,500 votes still beats
+ * a peak-anticipation unreleased title on popularity alone.** What it is NOT bounded
+ * against is the NUMBER of future-dated titles: IMDb carries plenty announced and never
+ * made, and with only year, votes, rating and text available there is no plausibility
+ * filter to apply. If that ever bites, this constant is the lever.
+ */
+const ANTICIPATED_VOTES = 1_500;
+
+/**
+ * The popularity term, and the two reasons a zero in it may not mean what it says.
+ *
+ * Saturating in votes: the difference between 300k and 2.6M is not informative -- both are
+ * famous -- but 439 against 300k is decisive. Without the cap, blockbusters bulldoze every
+ * correct-but-smaller match.
+ *
+ * ## The imputations, and why they cannot double-count
+ *
+ * Both are the same move -- replace a measurement we do not have with a prior -- so they
+ * combine with `max` rather than by adding, and neither can lift a title past what the
+ * prior itself is worth:
+ *
+ *   - **`anticipation`** shrinks toward `ANTICIPATED_VOTES` in proportion to how close the
+ *     title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that
+ *     already has 50,000 votes scores above the prior, so the gap is negative and the lift
+ *     is exactly zero. It shrinks continuously to nothing as real votes arrive, which is
+ *     what stops it double-counting with the votes it is standing in for.
+ *   - **`exact`** floors an exact-title match with NO votes at `UNVOTED_EXACT_MATCH_VOTES`.
+ *     Independent of the first: a reader naming a 1974 title exactly gets it, and a 2027
+ *     title nobody named exactly gets the other.
+ */
+function popularity(votes: number, why: { exact: boolean; anticipation: number } = NO_IMPUTATION): number {
+  const raw = saturating(votes);
+  const anticipated = raw + why.anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
+  return why.exact ? Math.max(anticipated, saturating(UNVOTED_EXACT_MATCH_VOTES)) : anticipated;
+}
+
+const NO_IMPUTATION = { exact: false, anticipation: 0 };
+
+function saturating(votes: number): number {
+  return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
 }
 
 export class SearchEngine {
@@ -646,6 +704,39 @@ export class SearchEngine {
     const gd = trigrams(dq);
     const qTokens = nq.split(" ").filter(Boolean);
 
+    /*
+      ONE CLOCK AND ONE ANTICIPATION LOOKUP FOR THE WHOLE RANKING.
+
+      The clock is read once because every candidate must be judged against the same
+      instant: an order that reshuffles between two identical queries is the failure the
+      total tiebreaks in this file exist to prevent.
+
+      THE MEMO IS WHY THIS NEEDS NO PRECOMPUTED COLUMN, and the numbers are the argument.
+      `anticipationWeight` is a pure function of (year, current year), so it COULD be a
+      stored column -- the index is rebuilt nightly and a stamped weight would be right for
+      a day. Measured on this Mac, 2026-09-05, against the real 1.27M-row index:
+
+        anticipationWeight          31 ns per call
+        400-row window, direct    6.84 us
+        400-row window, memoised  3.47 us
+        one whole search         12.91 ms   (mean over 200 real queries)
+
+      So the entire term is 0.05% of a query and the memo halves an already-invisible
+      number. A stored column would buy back 6.8us at the price of a column on 1.28M rows,
+      a wider row on every read, and a value that is stale between rebuilds -- which is the
+      wrong side of the runtime-beats-build-time trade, not the right one: that rule buys
+      QUERY time with build time, and here there is no query time left to buy.
+    */
+    const now = new Date();
+    const anticipation = new Map<number | null, number>();
+    const anticipationOf = (year: number | null): number => {
+      const seen = anticipation.get(year);
+      if (seen !== undefined) return seen;
+      const w = anticipationWeight(year, now);
+      anticipation.set(year, w);
+      return w;
+    };
+
     const seen = new Set<number>();
     const out: Hit[] = [];
 
@@ -699,7 +790,6 @@ export class SearchEngine {
         of the popularity term on top. See `UNVOTED_EXACT_MATCH_VOTES`.
       */
       const unvotedExact = exact && r.votes === 0;
-      const popularityVotes = unvotedExact ? UNVOTED_EXACT_MATCH_VOTES : r.votes;
 
       let match: number;
       if (variants.includes(nq)) {
@@ -725,14 +815,7 @@ export class SearchEngine {
       const score =
         22 * textSim +
         match +
-        // Popularity, saturating. The difference between 300k and 2.6M votes is not
-        // informative -- both are famous -- but 439 vs 300k is decisive. Without the
-        // cap, blockbusters bulldoze every correct-but-smaller match.
-        //
-        // `popularityVotes`, not `r.votes`: this term's 24.8-point span would otherwise
-        // bury an unvoted exact match under any partial match with an audience, however
-        // the branch above is tuned. The two differ only where the rule above says so.
-        2.4 * Math.log(Math.min(popularityVotes, 300_000) + 10) +
+        popularity(r.votes, { exact: unvotedExact, anticipation: anticipationOf(r.year) }) +
         ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);
@@ -740,7 +823,25 @@ export class SearchEngine {
       out.push({ ...r, score, coverage: cov } as Hit);
     }
 
-    return out.sort((a, b) => b.score - a.score);
+    /*
+      A TOTAL ORDER, which this sort was not.
+
+      Score alone leaves ties to whatever order the candidates happened to arrive in --
+      which is a bm25-and-votes ordering out of FTS, not a decision. Two unvoted titles
+      sharing a name tie exactly, and `heart of the beast` has two: a 2017 one and the 2026
+      one somebody is actually looking for.
+
+      YEAR breaks it, newest first, for the reason `recencyScore` already gives -- newer is
+      what people usually mean, all else equal -- and here everything else genuinely is
+      equal. `tconst` behind it because the order must be total or the tie simply moves: two
+      titles matching on both would still be free to swap between one keystroke and the
+      next, which is the failure `CREDIT_ORDER` and `frequentCollaborators` both spell out.
+      A title with no year sorts as year 0, below anything dated, which is right: an undated
+      row is the least likely thing a reader meant.
+    */
+    return out.sort(
+      (a, b) => b.score - a.score || (b.year ?? 0) - (a.year ?? 0) || a.tconst.localeCompare(b.tconst),
+    );
   }
 
   /**

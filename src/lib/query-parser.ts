@@ -138,3 +138,93 @@ export function recencyScore(year: number | null): number {
   if (year >= 2000) return 0.4;
   return 0;
 }
+
+/**
+ * How near a title is to coming out, as a weight in `[0, 1]`.
+ *
+ * ## The problem it solves
+ *
+ * An unreleased title has zero votes BY CONSTRUCTION, not because nobody wanted it. The
+ * popularity term in `rank()` spans 24.7 points and reads that zero as obscurity, so a
+ * film or series releasing next year is buried under anything with an audience. aannarr,
+ * 2026-09-05: a reader is *more* likely to be looking for the new thing, not less.
+ *
+ * ## Why it is a WEIGHT and not a bonus
+ *
+ * It multiplies a shrinkage toward an imputed vote count rather than adding points of its
+ * own -- the empirical-Bayes shape used for item cold start in product search (Han et al.,
+ * CIKM 2022), and the same move IMDb's own weighted rating makes when it blends a sparse
+ * rating toward the corpus mean. An additive bonus would stack on titles that do not need
+ * it and would have no natural ceiling; this one is bounded by construction and
+ * self-extinguishes as real votes arrive. `rank()` owns the blend; this owns the clock.
+ *
+ * ## WHOLE YEARS, because that is all the index has
+ *
+ * `title.year` is an integer and there is no finer release date anywhere in the corpus. So
+ * the distance is measured in whole years and the curve steps on 1 January rather than
+ * drifting daily. That is the better trade here for a reason beyond simplicity: a weight
+ * that moved every day would make an identical query return a slightly different order
+ * tomorrow, and "fair ranking" in this product means stable.
+ *
+ * The corollary is the honest reading of a year-only stamp: **a title stamped Y is not
+ * known to have been released until Y is over.** A 2026 film read in September 2026 may
+ * come out in November, and nothing in the data can say otherwise -- so the current year
+ * counts as unreleased.
+ *
+ * ## The curve, and why it is ASYMMETRIC
+ *
+ * Two half-Gaussians in Elasticsearch's `function_score` form -- `exp(-d^2 / 2*sigma^2)`
+ * with `sigma = scale / sqrt(2*ln 2)`, so the weight is exactly 0.5 one `scale` past the
+ * offset. The asymmetry is the whole design and it is about information, not taste:
+ *
+ * | year - now | weight | meaning |
+ * |---|---|---|
+ * | 0, +1 | 1.00 | out this year or next: a zero says nothing at all |
+ * | +2 | 0.50 | announced and dated, but a way off |
+ * | +3 | 0.06 | speculative |
+ * | +5 | 0.00 | a 2031 slate entry gets nothing, as asked |
+ * | -1 | 0.06 | out for a year with no votes: that IS evidence now |
+ * | -2 and older | 0.00 | ordinary obscurity, judged on its votes like everything else |
+ *
+ *   - **Before release** a zero carries no information, so the plateau runs a full year out
+ *     and the taper is slow.
+ *   - **After release** a zero starts to BE evidence -- a title out for a year with nobody
+ *     rating it really is obscure -- so it collapses in half the distance.
+ *
+ * Note that no production system publishes a date-based anticipation curve. TMDB, Trakt and
+ * Letterboxd all solve this by substituting a pre-release ENGAGEMENT signal -- watchlist
+ * adds, list counts, page views -- which we do not have and cannot get without a new source.
+ * So this is an explicit proxy for a signal we cannot buy, and it is sized to be a tiebreak
+ * against obscurity rather than evidence of quality.
+ *
+ * Kind-blind on purpose: a series announced for next year is as anticipated as a film, and
+ * `year` is a first-air year, so a long-running show is never in the future here.
+ */
+export function anticipationWeight(year: number | null, now: Date = new Date()): number {
+  if (year === null || year === undefined) return 0;
+
+  const away = year - now.getUTCFullYear();
+  const [offset, scale] =
+    away >= 0 ? [FUTURE_PLATEAU_YEARS, FUTURE_SCALE_YEARS] : [PAST_GRACE_YEARS, PAST_SCALE_YEARS];
+  const d = Math.max(0, Math.abs(away) - offset);
+  if (d === 0) return 1;
+
+  // sigma from Elasticsearch's own constant for decay 0.5 at one scale: sigma^2 =
+  // -scale^2 / (2 ln 0.5), i.e. sigma = scale / sqrt(2 ln 2).
+  const sigma = scale / Math.sqrt(2 * Math.LN2);
+  return Math.exp(-(d * d) / (2 * sigma * sigma));
+}
+
+/**
+ * Full weight for anything out this year or next.
+ *
+ * `0` is not a rounding allowance, it is the current year being genuinely unresolvable from
+ * a year stamp -- see the whole-years note above. `1` is the "next year" aannarr asked for.
+ */
+const FUTURE_PLATEAU_YEARS = 1;
+/** Half weight one scale past the plateau: +2 is 0.5, +3 is 0.06, +5 is nothing. */
+const FUTURE_SCALE_YEARS = 1;
+/** No grace behind: the current year is already covered by the plateau above. */
+const PAST_GRACE_YEARS = 0;
+/** Behind, a zero becomes evidence fast -- half the distance forward. */
+const PAST_SCALE_YEARS = 0.5;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { kindScore, parseQuery, recencyScore, yearScore } from "./query-parser";
+import { anticipationWeight, kindScore, parseQuery, recencyScore, yearScore } from "./query-parser";
 
 describe("parseQuery -- years", () => {
   test("extracts a trailing year and removes it from the text", () => {
@@ -118,5 +118,70 @@ describe("recencyScore", () => {
     expect(recencyScore(2020)).toBeLessThanOrEqual(1.5);
     expect(recencyScore(1950)).toBe(0);
     expect(recencyScore(null)).toBe(0);
+  });
+});
+
+/**
+ * The anticipation curve: how much credit a title gets for not being out yet.
+ *
+ * A FIXED `now` in every case. `new Date()` would make these assertions expire, and the
+ * one thing worse than an untested curve is one whose tests go red on New Year's Day.
+ */
+describe("anticipationWeight", () => {
+  const now = new Date("2026-09-05T00:00:00Z");
+  const w = (year: number | null) => anticipationWeight(year, now);
+
+  test("a title out this year or next gets full weight", () => {
+    // The current year counts as unreleased, and that is the honest reading of a year-only
+    // stamp rather than a rounding allowance: a film dated 2026, read in September 2026,
+    // may still come out in November and nothing in the index can say otherwise.
+    expect(w(2026)).toBe(1);
+    expect(w(2027)).toBe(1);
+  });
+
+  test("it tapers into the future and is gone by the speculative end", () => {
+    // Half at one scale past the plateau, which is Elasticsearch's own definition of the
+    // decay parameter. The point of the taper is that a 2031 slate entry gets nothing.
+    expect(w(2028)).toBeCloseTo(0.5, 6);
+    expect(w(2029)).toBeCloseTo(0.0625, 4);
+    expect(w(2031)).toBeLessThan(0.001);
+  });
+
+  test("it collapses FASTER behind, because a zero starts to be evidence", () => {
+    // The asymmetry is the design. A title out for a year with nobody rating it really is
+    // obscure, so the past side decays in half the distance the future side does.
+    expect(w(2025)).toBeCloseTo(0.0625, 4);
+    expect(w(2024)).toBeLessThan(0.001);
+    expect(w(1994)).toBe(0);
+  });
+
+  test("the past side is strictly steeper than the future side, at every distance", () => {
+    // Stated as a property rather than as more numbers: whatever the constants become,
+    // being a year late must never be worth as much as being a year early.
+    for (const d of [1, 2, 3, 4]) expect(w(2026 - d)).toBeLessThan(w(2026 + d));
+  });
+
+  test("it never leaves [0, 1], for anything a dump can contain", () => {
+    // The blend in `popularity` multiplies by this, so a weight outside the unit interval
+    // would either do nothing or lift a title past the prior it is being shrunk toward.
+    for (const y of [null, 0, 1874, 1900, 2026, 2050, 9999]) {
+      expect(w(y)).toBeGreaterThanOrEqual(0);
+      expect(w(y)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test("an undated title is credited with nothing, never guessed at", () => {
+    // The same rule `applyRank` follows for an unrated one: no year is the absence of a
+    // fact, and imputing a release date would be inventing the very thing being measured.
+    expect(w(null)).toBe(0);
+  });
+
+  test("it steps on whole years rather than drifting daily", () => {
+    // Deliberate: the index carries no finer date, and a weight that moved every day would
+    // reorder an identical query overnight. "Fair ranking" here means stable.
+    const janOne = new Date("2026-01-01T00:00:00Z");
+    const newYearsEve = new Date("2026-12-31T23:59:59Z");
+    expect(anticipationWeight(2027, janOne)).toBe(anticipationWeight(2027, newYearsEve));
+    expect(anticipationWeight(2026, janOne)).toBe(anticipationWeight(2026, newYearsEve));
   });
 });
