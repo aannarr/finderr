@@ -194,14 +194,34 @@ async function main(): Promise<void> {
 
   const engine = openEngine(dbPath, cfg, args);
   const meta = engine.meta();
-  const top = engine.topRated({ limit: 1 })[0];
-  const series = engine.browse({ kind: "tvSeries", sort: "votes", limit: 1 }).rows[0];
+
+  /*
+    FIXTURES COME OFF THE SOURCE FILE, NOT OFF THE CLONE, and that is not fussiness.
+
+    Resolving them needs four real queries -- `topRated`, a `browse`, a `personPage`, a
+    `topGenres` -- and running those against the clone would fault their pages in BEFORE the
+    first-touch pass that is supposed to be measuring exactly that. Three scenarios
+    (`discover.topRated`, `discover.topGenres`, `person.page`) would report a warm number in a
+    column labelled cold.
+
+    The source is a different INODE, so its page cache is a different set of pages and reading
+    it cannot warm the clone. It is opened read-only and closed immediately; nothing writes to
+    a `titles.db` after it is promoted, so this is safe even against a live file.
+
+    The runs on 2026-09-05 predate this and resolved fixtures from the clone. The flaw is a
+    CONSTANT across every cell, so every comparison in that ladder stands -- but the absolute
+    first-touch figure for those three scenarios is understated there.
+  */
+  const fx = new SearchEngine(args.source, cfg);
+  const top = fx.topRated({ limit: 1 })[0];
+  const series = fx.browse({ kind: "tvSeries", sort: "votes", limit: 1 }).rows[0];
   const fixtures: BenchFixtures = {
     tconst: top?.tconst ?? "tt0111161",
     seriesTconst: series?.tconst ?? "tt0944947",
-    nconst: engine.personPage("nm0000138") ? "nm0000138" : "nm0000199",
-    genre: engine.topGenres(1)[0] ?? "Drama",
+    nconst: fx.personPage("nm0000138") ? "nm0000138" : "nm0000199",
+    genre: fx.topGenres(1)[0] ?? "Drama",
   };
+  fx.close();
   residency.afterOpen = readMemoryUsage();
 
   /*
