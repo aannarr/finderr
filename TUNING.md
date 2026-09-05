@@ -19,13 +19,18 @@ exist for the cases the measurement cannot see.
 |---|---|
 | **3 GB or more** | everything below is moot. Full speed, the whole index cached, the first page after a restart is as fast as the thousandth. |
 | **2 GB** | full speed. The index does not fit with room to spare, and it does not need to -- see the crossover below. |
-| **1 GB** | full speed once warm. The first minute after a restart is slow on a spinning disk (seconds per new query, not milliseconds) and unremarkable on an SSD. |
-| **512 MB** | still correct, still usable, noticeably slower. This is the floor. |
-| **below ~384 MB** | do not. Query time degrades several-fold and keeps going. |
+| **1 GB** | full speed once warm. On a spinning disk the first minute after a restart is slower -- working through a few dozen distinct pages costs seconds in total rather than milliseconds. On an SSD you will not notice. |
+| **512 MB** | the floor, and it is a real step down rather than a small one: on a spinning disk the first pass over the app costs **5x** what it does at 768 MB. Fine on an SSD, grudging on spinning rust. |
+| **below ~384 MB** | do not. Steady-state query time degrades several-fold and keeps going. |
 
 The single most useful thing to know: **finderr's queries touch about 500 MB of the index**, not
-all of it. That is why a 1 GB container works at all, and why 512 MB is the point where things
-start to hurt rather than 1.9 GB.
+all of it. That is why a 1 GB container works at all, and why the trouble starts near 500 MB rather
+than near 1.9 GB. Two different things break at two different sizes, and it is worth knowing which
+is which:
+
+- Around **1 GB**, the boot-time prefault stops being worth its own read. You lose a fast first
+  minute. The steady state is untouched.
+- Around **512 MB**, the *working set itself* stops fitting. That one is not about boot.
 
 ---
 
@@ -81,23 +86,33 @@ file survives for the queries to land on.
 So the derived rule is not "does it fit" but "will enough of it stay", and the threshold is
 measured rather than guessed. It is stated once, in `src/lib/memory-budget.ts`.
 
-## Finding 2 -- the steady state does not care about the cap until 512 MB
+## Finding 2 -- the second cliff is the working set, and it is at about 500 MB
 
-Warm query time was **flat within noise from 8 GB down to 512 MB** on both machines. It is the
-working set that matters, and the working set is about 500 MB:
+The queries touch roughly **500 MB** of the 1,868 MB index -- every rung that skipped the prefault
+read 479-484 MB off the disk to answer the whole suite once, and the laptop's cells settled at
+518 MB resident. So the number that decides whether finderr is comfortable is not the size of the
+index; it is that 500 MB.
 
-| memory budget | warm suite (spinning array) | warm suite (NVMe VM) |
+Working through the whole app once, on the spinning array, with no prefault:
+
+| memory budget | first pass over 29 distinct queries | read from disk |
 |---|---|---|
-| 3072 MB | 128 ms | 51 ms |
-| 1500 MB | 129 ms | 52 ms |
-| 1024 MB | 130 ms | 52 ms |
-| 768 MB | 132 ms | 49 ms |
-| 512 MB | see the table below | 54 ms |
-| 384 MB | -- | **267 ms** |
-| 256 MB | -- | **743 ms** |
+| 3072 MB | 7,195 ms | 479 MB |
+| 1500 MB | 7,858 ms | 479 MB |
+| 1024 MB | 7,573 ms | 479 MB |
+| 768 MB | 8,272 ms | 482 MB |
+| **512 MB** | **40,396 ms** | **1,587 MB** |
 
-Between 512 MB and 384 MB the working set stops fitting and query time goes up roughly five-fold,
-then keeps going. **384 MB is not a smaller version of 512 MB; it is a different regime.**
+Nothing much happens between 3 GB and 768 MB. Between 768 MB and 512 MB the working set stops
+fitting, so pages get evicted before they are reused and the same work reads three times the data.
+On the laptop the equivalent break lands lower, at 384 MB, where steady-state query time triples
+and at 256 MB roughly triples again.
+
+> **A caveat on "warm" numbers, including the ones people usually quote.** Repeated-query timing
+> was flat within noise from 8 GB all the way down to 512 MB -- 127-135 ms on the array at every
+> rung. That is true and it is misleading: running one query twenty times in a row keeps its own
+> pages hot under any cap. The first-pass column above is the honest proxy for a real mixed
+> workload, and it is the one that shows the cliff.
 
 ## Finding 3 -- CPU cores do nothing; single-core speed does everything
 
@@ -161,13 +176,14 @@ most of it -- this is squarely in the range where partial residency works. Expec
     memswap_limit: 1g
 ```
 
-Warm performance is unaffected -- the ~500 MB working set fits comfortably. What you lose is the
-first minute after a restart or after the nightly index rebuild, because too little of the index
-stays resident for the prefault to be worth its own read. finderr detects this and **skips the
-prefault**, which saves a pointless 1.9 GB read rather than making anything faster.
+Steady-state performance is unaffected -- the ~500 MB working set fits comfortably. What you lose
+is the fast first minute after a restart or after the nightly index rebuild, because too little of
+the index would stay resident for the prefault to be worth its own read. finderr detects this and
+**skips the prefault**, which saves a pointless 1.9 GB read rather than making anything faster.
 
-On an SSD this is barely perceptible. On a spinning disk the first few distinct queries after a
-restart cost seconds rather than milliseconds, and it settles as the pages that matter get touched.
+Concretely, on the spinning array: working through the whole app once costs about **7.6 s** here
+against **0.5 s** at 2 GB, and then it is warm and the difference is gone. On an SSD the gap is
+tens of milliseconds and you will not see it.
 
 If you would rather spend the I/O and keep the prefault anyway:
 
@@ -183,17 +199,25 @@ If you would rather spend the I/O and keep the prefault anyway:
     memswap_limit: 512m
 ```
 
-This works and it is slower, in the steady state and not just at boot -- the working set no longer
-quite fits, so ordinary queries fault pages in. Two things help:
+This is the rung where the working set stops fitting, and on a spinning disk that is a **5x** step
+rather than a gentle slope: the first pass over the app measured 40 s against 8 s at 768 MB, reading
+1.6 GB instead of 0.5 GB, because pages get evicted before they are used again. On an SSD the same
+eviction happens and costs far less, so 512 MB is genuinely fine there and grudging on spinning
+rust.
+
+**If you have 768 MB rather than 512 MB, use it.** That single step is worth more than any setting
+on this page.
+
+At this size, two things help:
 
 ```yaml
     environment:
       FINDERR_SQLITE_CACHE_MB: "16"     # every MB of pager cache is a MB not holding index pages
 ```
 
-and **giving finderr its own container rather than sharing the budget with anything else**. At this
-size the poster cache, the application database and the JS heap are all competing for the same few
-hundred megabytes.
+and **giving finderr its own container rather than sharing the budget with anything else**. The
+poster cache, the application database and the JS heap are all competing for the same few hundred
+megabytes here, and they were not in the measurements above.
 
 Below about 384 MB, don't. It runs, and it is several times slower again.
 
