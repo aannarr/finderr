@@ -467,9 +467,9 @@ nothing appearing. It draws on the next read once the facet lands.
 
 ## What an addon cannot do yet
 
-**There are two extension groups: `facets` and `panes`.** Everything below is designed in
-[`finderr-plugin-system-with-lifecycle-hooks`](.rclaude/project/cards/finderr-plugin-system-with-lifecycle-hooks.md)
-and **none of it is built**. `on`, `shelves`, `routes`, `config` and `c.dataDir` do not
+**There are two extension groups: `facets` and `panes`.** Everything below is designed in an
+internal planning card, `finderr-plugin-system-with-lifecycle-hooks`, and **none of it is
+built**. `on`, `shelves`, `routes`, `config` and `c.dataDir` do not
 exist.
 
 Returning one anyway is safe, and deliberately so: an unknown group is a log line, your

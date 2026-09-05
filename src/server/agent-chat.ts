@@ -1,9 +1,12 @@
 /**
  * `POST /api/agent/chat` -- the assistant, as a browser meets it.
  *
- * One turn in, one answer out. There is no streaming yet and the shape is deliberately
- * chosen so adding it later is not a rewrite: the client already renders from the structured
- * fields rather than by parsing the prose.
+ * One turn in, one answer out, delivered two ways. A caller whose `Accept` asks for
+ * `text/event-stream` gets the run as SSE; everybody else gets the finished answer as JSON.
+ * Streaming was added on top of the original shape rather than replacing it, because the
+ * client renders from the structured fields rather than by parsing the prose. The two paths
+ * share every rule and differ only in when the caller is told things -- `streamResponse`
+ * below is where that is spelled out.
  *
  * > [!IMPORTANT] THE GATE IS ASKED BEFORE THE MODEL, THE LEDGER IS WRITTEN AFTER -- ALWAYS
  * > `aiGate` (`../lib/ai-spend.ts`) owns who may spend; `chargeRun` owns recording what was

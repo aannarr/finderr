@@ -514,7 +514,52 @@ export function RootLayout() {
         <JumpKeysProvider>
           <Outlet />
         </JumpKeysProvider>
+
+        <SourceFooter />
       </div>
     </AppProvider>
+  );
+}
+
+/**
+ * The two notices we are REQUIRED to print, and the way to the rest.
+ *
+ * > [!IMPORTANT] These two sentences are contractual, not courtesy -- do not reword them
+ * > IMDb's non-commercial terms and TMDB's API terms each specify their wording, and both
+ * > ask for it somewhere prominent. So they sit under every page rather than only on
+ * > `/sources`: a credits page nobody opens is not prominence, and this is the cheapest
+ * > place that is true on every route.
+ *
+ * Everything else finderr reads -- the Servarr proxies, Rotten Tomatoes, Wikidata,
+ * oscar_data, Kometa, Plex -- is credited on `/sources`, which renders `ATTRIBUTION.md`
+ * itself. JustWatch is credited on the "Where to watch" row instead, beside the data it is
+ * for, because that is the only page carrying it.
+ *
+ * It is deliberately not in `NAV_LINKS`: the section links are places to go looking for
+ * something, and this is a footnote. It draws on the login screen too, or rather it does
+ * not -- that bundle is its own entry and stays bare on purpose.
+ */
+function SourceFooter() {
+  return (
+    <footer className="mt-16 border-t border-line pt-4 pb-8 text-xs leading-relaxed text-muted">
+      <p>
+        Information courtesy of{" "}
+        <a
+          href="https://www.imdb.com"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2 hover:text-ink"
+        >
+          IMDb (https://www.imdb.com)
+        </a>
+        . Used with permission.
+      </p>
+      <p className="mt-1">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+      <p className="mt-2">
+        <Link to="/sources" className="underline underline-offset-2 hover:text-ink">
+          Every source finderr reads
+        </Link>
+      </p>
+    </footer>
   );
 }
