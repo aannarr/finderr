@@ -1197,7 +1197,7 @@ Every line here is a real limitation. It is not a roadmap.
   provider while somebody is looking at the screen is treated as a bug, so a feature that
   cannot be answered from local SQLite either fills in behind the page or does not ship. The
   assistant is the one deliberate exception and it says so: a live model call is the whole
-  of what it is, which is why it is admin-only and in beta. See [Why](#why).
+  of what it is, for every caller. See [Why](#why) for who may make one.
 
 ## finderr and Seerr, fairly
 
