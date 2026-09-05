@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { FIELD_FONT_VAR, ZOOM_THRESHOLD_PX } from "./lib/field-zoom";
 
 /**
  * The iOS focus-zoom guard is a CSS rule with no JavaScript behind it, so nothing else
@@ -57,12 +58,26 @@ describe("iOS input focus-zoom guard", () => {
     expect(body).not.toBeNull();
   });
 
-  test("it floors text-entry controls at 16px", () => {
-    const size = body?.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
-    expect(size).not.toBeNull();
-    // 16 is the browser's threshold, not a taste. Below it Safari zooms; at or above
-    // it does not.
-    expect(Number(size?.[1])).toBeGreaterThanOrEqual(16);
+  test("it floors text-entry controls at the shared custom property", () => {
+    // The value is `--field-font-size` rather than a flat 16px because Safari's threshold
+    // is a RENDERED size: 16px on a page at scale 0.84 renders at 13.4 and zooms anyway.
+    // `field-zoom.ts` publishes the property; this is the consumer.
+    expect(body).toContain(`font-size: var(${FIELD_FONT_VAR}`);
+  });
+
+  test("the property falls back to the threshold in `var()` AND on `:root`", () => {
+    // Two independent ways the property can be missing -- a browser where the module never
+    // ran, and a `var()` that resolves to nothing -- and both have to land on 16px rather
+    // than on an inherited size, which would be the bug with the fix still in the file.
+    expect(body).toContain(`var(${FIELD_FONT_VAR}, ${ZOOM_THRESHOLD_PX}px)`);
+    expect(ruleBody(CSS, /^:root \{/m)).toContain(`${FIELD_FONT_VAR}: ${ZOOM_THRESHOLD_PX}px`);
+  });
+
+  test("the focus enlargement is a RATIO of the floor, never a second flat pixel value", () => {
+    // A flat 19px renders at 15.96 on a page at 0.84 -- under the threshold by a fortieth
+    // of a pixel, which is the zoom back on the exact control this exists for.
+    const focus = ruleBody(CSS, /input\[type="search"\]:focus\s*\{/);
+    expect(focus).toContain(`calc(var(${FIELD_FONT_VAR}`);
   });
 
   test("it covers select and textarea, not just input", () => {
@@ -109,6 +124,36 @@ describe("search fields have no native appearance", () => {
     // Safari honours the unprefixed property for many controls but NOT for the search
     // field's own decorations, so dropping the prefixed line silently restores the bug.
     expect(body).toContain("-webkit-appearance: none");
+  });
+});
+
+/**
+ * The viewport meta, in BOTH entries, character for character.
+ *
+ * Every term in it is load-carrying and none of them fails loudly: drop `viewport-fit=cover`
+ * and the safe-area rules below go inert, drop `minimum-scale` and the page can sit at 0.84
+ * where a 16px field renders at 13.4 and zooms on every focus, and let the two files drift
+ * and the defect comes back on the sign-in screen alone -- the one an invited stranger meets
+ * first and nobody here ever opens on a phone.
+ *
+ * Pinned as one string rather than term by term precisely because the failure is a term
+ * QUIETLY GOING MISSING, and a per-term assertion is a list somebody has to remember to add
+ * to.
+ */
+describe("the viewport meta", () => {
+  const EXPECTED =
+    "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content";
+
+  const content = (html: string) => html.match(/<meta\s+name="viewport"\s+content="([^"]*)"/s)?.[1] ?? null;
+
+  test("the app shell carries every term", async () => {
+    const html = await Bun.file(new URL("../index.html", import.meta.url)).text();
+    expect(content(html)).toBe(EXPECTED);
+  });
+
+  test("and the sign-in bundle carries the identical one", async () => {
+    const html = await Bun.file(new URL("../login.html", import.meta.url)).text();
+    expect(content(html)).toBe(EXPECTED);
   });
 });
 

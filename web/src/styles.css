@@ -72,6 +72,13 @@ body,
    normal-flow content is inset by that one rule and nothing else has to know. */
 :root {
   --safe-top: env(safe-area-inset-top, 0px);
+
+  /* The size every text-entry control renders at. 16px is Safari's focus-zoom threshold and
+     the value this stays at for every reader whose page scale is 1 -- which is every desktop
+     and most phones. `web/src/lib/field-zoom.ts` raises it while the page sits BELOW 1, where
+     a 16px field renders under the threshold and zooms anyway; that module owns the rule and
+     this declaration is the fallback for a browser it never ran in. */
+  --field-font-size: 16px;
 }
 
 body {
@@ -132,6 +139,18 @@ body {
    control that ever wants to be larger needs its own rule here, because CSS has no way
    to express "at least this big" for a font size.
 
+   > [!CAUTION] 16px IS NOT ENOUGH ON ITS OWN, because the threshold is a RENDERED size
+   > Safari measures what the field renders at AFTER the page scale, so a 16px control on a
+   > page sitting at 0.84 renders at 13.4pt and zooms exactly like a 13px one would. That is
+   > not hypothetical: it is what this app does on a real iPhone, reported 2026-09-05, and
+   > the stylesheet has no way to see a scale. `web/src/lib/field-zoom.ts` measures it from
+   > `visualViewport` and raises `--field-font-size` to compensate; at scale 1 it publishes
+   > exactly the 16px written above, so nothing here changes for anybody unzoomed.
+   >
+   > The two halves must keep agreeing: the fallback in `var()` and the `:root` default are
+   > both 16, and `ZOOM_THRESHOLD_PX` in that module is the same number. `styles.test.ts`
+   > pins this side, `field-zoom.test.ts` the other.
+
    > [!IMPORTANT] It is NOT scoped to `@media (pointer: coarse)`, and that is a correction
    > It was, for one commit, on the reasoning that a desktop browser never does this. The
    > reasoning is right and the scoping is still wrong, because it cannot be VERIFIED from
@@ -145,7 +164,7 @@ body {
 input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
-  font-size: 16px;
+  font-size: var(--field-font-size, 16px);
 }
 
 /* THE SEARCH BOX WAS ALREADY 16px AND STILL ZOOMED. This is what fixed it.
@@ -202,7 +221,12 @@ input[type="search"]::-webkit-search-results-decoration {
    Coarse-pointer scoping is fine HERE, unlike the 16px floor above: if the
    query fails to match, nothing breaks -- the field simply does not grow. A
    guard that fails safe may rest on a condition I cannot verify; one that
-   prevents a defect may not. */
+   prevents a defect may not.
+
+   It is a RATIO of the floor rather than a second flat pixel value, so it rides
+   whatever `--field-font-size` currently is. Written flat it would be 19px on a
+   page at 0.84 -- 15.96 rendered, a twenty-fifth of a pixel under the threshold,
+   which is the zoom back on the one interaction this whole block exists for. */
 @media (pointer: coarse) and (prefers-reduced-motion: no-preference) {
   input[type="search"] {
     transition: font-size 150ms ease-out;
@@ -210,7 +234,7 @@ input[type="search"]::-webkit-search-results-decoration {
 }
 @media (pointer: coarse) {
   input[type="search"]:focus {
-    font-size: 19px;
+    font-size: calc(var(--field-font-size, 16px) * 1.1875);
   }
 }
 

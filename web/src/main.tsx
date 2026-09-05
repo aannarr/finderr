@@ -2,6 +2,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { flushCaches, hydrateCaches } from "./lib/api";
+import { watchFieldScale } from "./lib/field-zoom";
 import { serviceWorker } from "./lib/sw-register";
 import { ToastProvider } from "./lib/toasts";
 import { router } from "./router";
@@ -18,6 +19,16 @@ import "./styles.css";
   one and never rejects, so there is nothing here for the app to wait on or handle.
 */
 void serviceWorker();
+
+/*
+  Before the first render, because it decides how big every form control is and a field that
+  resizes one frame after it is drawn is a field that jumps under the caret. It is one
+  `setProperty` on `:root` and no layout read, so there is nothing here to defer.
+
+  Both entry points install it -- the sign-in screen has a text field too, and it is the one
+  an invited stranger meets first.
+*/
+watchFieldScale(window);
 
 const el = document.getElementById("root");
 if (!el) throw new Error("#root is missing from index.html");

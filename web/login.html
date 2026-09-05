@@ -2,10 +2,12 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
-    <!-- Matches index.html; see the note there for why there is no `maximum-scale`. -->
+    <!-- Matches index.html VERBATIM; the note there is the single owner of why each term is
+         in it. The two must not drift: this bundle shares `styles.css`, so a scale the app
+         pins and the sign-in screen does not would zoom on the invite field only. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#1A1C22" />

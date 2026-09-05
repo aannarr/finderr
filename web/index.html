@@ -5,14 +5,29 @@
     <!-- `interactive-widget=resizes-content`: the soft keyboard SHRINKS the layout viewport
          instead of sliding over the page. Without it a focused field near the bottom is
          covered by the keyboard and the browser scrolls to compensate, which on iOS reads
-         as the page lurching. There is deliberately no `maximum-scale` or `user-scalable=no`
-         here: both have been IGNORED by iOS Safari since iOS 10, on purpose, because
-         disabling pinch-zoom breaks the browser for anybody who needs to enlarge text. The
-         only real cure for an unwanted zoom is to give Safari no reason to do it -- see the
-         form-control block in styles.css. -->
+         as the page lurching.
+
+         `minimum-scale=1, maximum-scale=1` is a CORRECTION, 2026-09-05. This tag used to
+         carry neither, with a comment saying both are ignored by iOS Safari and that
+         disabling pinch-zoom is an accessibility loss. The first half is true of SAFARI THE
+         BROWSER and is not the whole story: finderr is installed to the home screen and runs
+         `display: standalone`, which is a different container. The evidence is another
+         installed PWA on the same phone that never auto-zooms despite 14px inputs, and whose
+         only relevant difference is `maximum-scale=1.0` in this exact tag -- so where it is
+         honoured, it is the mechanism, and where it is ignored, it costs nothing.
+
+         `minimum-scale` is the half that matches the reported symptom: the page was found
+         sitting at scale 0.84 with no reader having asked for it, which renders a correct
+         16px field at 13.4pt and re-triggers the zoom on every single focus. Pinning the
+         floor at 1 is what breaks that loop.
+
+         NEITHER TAG IS THE REAL FIX and neither is trusted to be honoured. The stylesheet's
+         16px floor plus `web/src/lib/field-zoom.ts`, which raises it to compensate for
+         whatever scale the page is actually at, work with no cooperation from the browser at
+         all. Read the form-control block in `styles.css` first. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#1A1C22" />
