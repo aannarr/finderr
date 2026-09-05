@@ -304,3 +304,49 @@ export function requestedHeading(queued: readonly AgentRequested[]): string {
   }
   return `Started downloading ${queued.length} titles`;
 }
+
+// --- the thinking disclosure's open/closed rule -----------------------------
+
+/**
+ * WHETHER A THINKING BLOCK IS OPEN, as a state machine rather than as a boolean.
+ *
+ * It has to satisfy three things that pull against each other: open itself while the tokens
+ * are arriving, fold itself away when they stop, and never overrule a reader who clicked.
+ * Two booleans and a nullable third is the whole of it, and it is here rather than inline in
+ * the component because the failure below is invisible to a render test.
+ *
+ * > [!CAUTION] `<details>` FIRES `toggle` FOR ITS OWN ATTRIBUTE, NOT ONLY FOR A HUMAN
+ * > This shipped without `sync` for about an hour on 2026-09-05 and was caught by driving a
+ * > real turn in a browser, not by the suite: React setting `open` on a live block fires
+ * > `toggle`, `toggled` latched `true`, and the block could then never fold -- a settled
+ * > answer buried under three open blocks of working, which is the exact state the file
+ * > header says must not happen. There is no `isTrusted` to filter on; a programmatic
+ * > toggle and a real one are the same event.
+ * >
+ * > So a CHANGE in `live` spends the reader's choice. It is the only thing that does.
+ */
+export interface Disclosure {
+  /** What the reader last chose, or `null` if they have not chosen since `live` changed. */
+  choice: boolean | null;
+  /** What `live` was when `choice` was recorded, so a change to it can be noticed. */
+  seenLive: boolean;
+}
+
+export function disclosureFor(live: boolean): Disclosure {
+  return { choice: null, seenLive: live };
+}
+
+/** The stream started or stopped writing this block: whatever was chosen was about the other state. */
+export function syncDisclosure(d: Disclosure, live: boolean): Disclosure {
+  return d.seenLive === live ? d : { choice: null, seenLive: live };
+}
+
+/** The reader (or React) moved the disclosure. */
+export function toggleDisclosure(d: Disclosure, open: boolean): Disclosure {
+  return { ...d, choice: open };
+}
+
+/** Open while it is being written, unless the reader has said otherwise since. */
+export function disclosureOpen(d: Disclosure, live: boolean): boolean {
+  return syncDisclosure(d, live).choice ?? live;
+}

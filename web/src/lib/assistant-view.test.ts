@@ -12,6 +12,8 @@ import {
   argLabel,
   declinedOf,
   declinedPhrase,
+  disclosureFor,
+  disclosureOpen,
   episodeCode,
   episodeScore,
   formatArgValue,
@@ -24,6 +26,8 @@ import {
   requestedHeading,
   requestedNoun,
   retryPhrase,
+  syncDisclosure,
+  toggleDisclosure,
   toolCallSummary,
   toolLabel,
   toolResultText,
@@ -284,5 +288,64 @@ describe("how a tool call reads", () => {
     expect(toolResultText(null, null)).toBeNull();
     expect(toolResultText("  ", null)).toBeNull();
     expect(toolResultText("24 episodes", "upstream refused")).toBe("upstream refused");
+  });
+});
+
+/**
+ * THE THINKING DISCLOSURE, AS A SEQUENCE.
+ *
+ * Every case here is a sequence rather than a single call, because the bug this exists for
+ * is not expressible as one: each individual state was correct and the ORDER is what broke
+ * it. It shipped, rendered correctly in every render test in this repo, and was caught by
+ * opening the panel on a phone-width browser and watching three blocks of working sit open
+ * under a finished answer.
+ */
+describe("the thinking disclosure", () => {
+  test("opens itself while the block is being written", () => {
+    expect(disclosureOpen(disclosureFor(true), true)).toBe(true);
+  });
+
+  test("and a settled one stays shut", () => {
+    expect(disclosureOpen(disclosureFor(false), false)).toBe(false);
+  });
+
+  /**
+   * THE REGRESSION, measured in a browser 2026-09-05.
+   *
+   * `<details>` fires `toggle` when its ATTRIBUTE changes, not only when a human clicks it.
+   * So React opening a live block fires the handler, the reader's choice latches `true`, and
+   * the block can never fold again -- a settled answer buried under its own working, which
+   * is the state this whole pane is arranged to prevent. There is no `isTrusted` to filter
+   * on: a programmatic toggle and a real one are the same event.
+   */
+  test("folds when the thinking stops, even though React's own open fired a toggle", () => {
+    let d = disclosureFor(true);
+    expect(disclosureOpen(d, true)).toBe(true);
+    // React set `open`; the browser fired `toggle` back at us with the value we just drove.
+    d = toggleDisclosure(d, true);
+    expect(disclosureOpen(d, true)).toBe(true);
+    // A tool call lands after it, so this block is finished and must fold.
+    expect(disclosureOpen(d, false)).toBe(false);
+  });
+
+  test("a reader who closes it mid-stream keeps it closed while tokens keep arriving", () => {
+    const d = toggleDisclosure(disclosureFor(true), false);
+    expect(disclosureOpen(d, true)).toBe(false);
+  });
+
+  test("a reader who opens a finished one keeps it open, and can close it again", () => {
+    let d = toggleDisclosure(disclosureFor(false), true);
+    expect(disclosureOpen(d, false)).toBe(true);
+    d = toggleDisclosure(d, false);
+    expect(disclosureOpen(d, false)).toBe(false);
+  });
+
+  /** Spending the choice is what the reset does, and only a CHANGE in `live` spends it. */
+  test("`live` staying the same never discards the reader's choice", () => {
+    const d = toggleDisclosure(disclosureFor(false), true);
+    // Identity, not just equality: the component compares by reference to decide whether to
+    // set state during render, and a fresh object every call would loop forever.
+    expect(syncDisclosure(d, false)).toBe(d);
+    expect(syncDisclosure(d, true).choice).toBeNull();
   });
 });

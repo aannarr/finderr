@@ -23,7 +23,17 @@
 import { Brain, Check, ChevronRight, CircleSlash, LoaderCircle, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { isStreamingEntry, type ToolEntry, type TranscriptEntry } from "../lib/agent-transcript";
-import { formatDuration, toolArgFields, toolLabel, toolResultText, toolSubject } from "../lib/assistant-view";
+import {
+  disclosureFor,
+  disclosureOpen,
+  formatDuration,
+  syncDisclosure,
+  toggleDisclosure,
+  toolArgFields,
+  toolLabel,
+  toolResultText,
+  toolSubject,
+} from "../lib/assistant-view";
 import type { ResolvedMention } from "../lib/mentions";
 import { Markdown } from "./Markdown";
 
@@ -123,25 +133,46 @@ function Entry({
  * > owns that question) and folds itself away the instant a tool call, a token or the next
  * > turn lands after it.
  *
- * **A reader's own click outranks both.** `override` is `null` until somebody touches the
- * disclosure and holds their answer afterwards, so a block opened to re-read the working
- * does not slam shut on the next frame -- and one closed mid-stream stays closed while the
- * tokens keep coming. React's own attribute changes fire `toggle` too, but they only ever
- * write back the value they just drove, so they cannot fight it.
+ * **A reader's own click outranks both, until the stream contradicts it.** `override` is
+ * `null` until somebody touches the disclosure, so a block opened to re-read the working
+ * does not slam shut on the next frame, and one closed mid-stream stays closed while the
+ * tokens keep coming. Every CHANGE in `live` clears it, which is the half that has to be
+ * there.
+ *
+ * > [!CAUTION] Without that reset every thinking block stays open forever, and no test sees it
+ * > Measured in a browser 2026-09-05, on a phone-width viewport, three blocks open under a
+ * > settled answer. `<details>` fires `toggle` when the ATTRIBUTE changes, not only when a
+ * > human clicks -- so React opening a live block fires it, `override` latches `true`, and
+ * > the block can never fold again. The reasoning that says it is harmless ("it only writes
+ * > back the value it just drove") is exactly wrong: writing back a non-null value is what
+ * > freezes it. There is no `isTrusted` to filter on either, because a programmatic `toggle`
+ * > and a real one are indistinguishable here.
+ * >
+ * > The reset is the documented "adjust state during render" pattern rather than an effect,
+ * > so the fold happens in the same commit that ends the thinking. An effect would paint one
+ * > frame with the block still open.
  *
  * **An empty reasoning block is never drawn.** Most models emit no reasoning at all and
  * that is the ordinary case rather than a failure -- a "Thinking" disclosure over nothing
  * would advertise a capability this deployment does not have.
  */
 function Reasoning({ text, live }: { text: string; live: boolean }) {
-  const [override, setOverride] = useState<boolean | null>(null);
+  const [disclosure, setDisclosure] = useState(() => disclosureFor(live));
+  // Adjust-during-render rather than an effect, so the block folds in the SAME commit that
+  // ends the thinking. An effect would paint one frame with it still open.
+  const synced = syncDisclosure(disclosure, live);
+  if (synced !== disclosure) setDisclosure(synced);
   if (text.trim().length === 0) return null;
-  const open = override ?? live;
   return (
     <details
       className="group"
-      open={open}
-      onToggle={(e) => setOverride((e.currentTarget as HTMLDetailsElement).open)}
+      open={disclosureOpen(synced, live)}
+      onToggle={(e) => {
+        // Read it HERE, not inside the updater: `currentTarget` is only valid for the
+        // duration of the handler, and the updater runs on the next render.
+        const isOpen = e.currentTarget.open;
+        setDisclosure((d) => toggleDisclosure(d, isOpen));
+      }}
     >
       <summary className="flex cursor-pointer list-none items-center gap-1 text-[0.7rem] text-muted outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-accent">
         <ChevronRight
