@@ -323,9 +323,10 @@ proxies (keyless), Rotten Tomatoes' public index (the audience score, keyless), 
 (needs a key; buys streaming availability and series keywords). Writing your own is one
 file with two exports. See [ADDONS.md](ADDONS.md).
 
-There is an assistant, for admins, in beta. It exists for one shape of question that a
-search box genuinely cannot take: the ones that are a join across cast, credits and
-episodes rather than a title you already know the name of. [Why there is one at
+There is an assistant, in beta, for every signed-in account on a deployment that
+configures an OpenRouter key. It exists for one shape of question that a search box
+genuinely cannot take: the ones that are a join across cast, credits and episodes rather
+than a title you already know the name of. [Why there is one at
 all](#the-assistant-and-why-there-is-one-at-all).
 
 It is a small thing to run and a greedy one to store. One process, one SQLite index, one
@@ -667,7 +668,7 @@ rebuild.
 | `FINDERR_RESOURCE_LOG_SECONDS` | `300` | One-line RSS/heap/GC summary in the log. `0` disables |
 | `FINDERR_OPENROUTER_API_KEY` | | Optional, and the whole on/off switch for [the assistant](#the-assistant-and-why-there-is-one-at-all). No key means the feature does not exist rather than failing |
 | `FINDERR_AI_MODELS` | `meta/muse-spark-1.3-contributor` | Comma list, best first, so an admin can benchmark an alternative without a deploy; only the first is used. **This and the cap below are one decision**: the cap has no reservation machinery and is only safe because one conversation costs a fraction of a cent on the default. A frontier model here quietly turns the cap into a suggestion. **The default is a data-sharing tier**: it is roughly 21x cheaper because the provider may train on the prompts and completions it receives, which are your users' questions and public index rows, never a credential. Set `meta/muse-spark-1.3` instead to pay full price and opt out |
-| `FINDERR_AI_DAILY_LIMIT_USD` | `1` | Per ordinary user per day, counted from the `ai_call` ledger rather than a running total. The day is the container's local calendar, not UTC, so a household's budget does not reset mid-evening. Admins are exempt, and during the admin-only beta that means nobody is capped while every call is still recorded |
+| `FINDERR_AI_DAILY_LIMIT_USD` | `1` | Per ordinary user per day, counted from the `ai_call` ledger rather than a running total. The day is the container's local calendar, not UTC, so a household's budget does not reset mid-evening. Admins are exempt from this cap and from nothing else; every call is recorded either way |
 | `FINDERR_PLUGINS_DIR` | | Addon directory. Empty = the built-in `src/plugins` |
 | `FINDERR_PLUGIN_MODULES` | | Comma-separated installed packages. Runs their code; read [ADDONS.md](ADDONS.md) first |
 | `FINDERR_CONFIG_FILE` | `/config/config.yml` | Optional YAML, same keys in camelCase |
@@ -983,14 +984,16 @@ That is the only reason the check can be a plain "have you spent more than the l
 reservation machinery, and it is why the model list and the cap are one decision instead of
 two. Put a frontier model in that list and the same check leaks most of the budget.
 
-It is an admin-only beta and there is deliberately no setting that widens it. A question typed
-in here goes to a third party, so what somebody searches for leaves the house -- and on the
-default model that third party may train on it, which is the discount being paid for. The
-honest handling is to say that at an opt-in and let each account decide, and that opt-in is
-not built. While the only people who can reach the feature are the admins who turned it on,
-there is nobody left to ask who has not already answered, which is what makes shipping without
-the opt-in defensible and what a widening flag would have destroyed. Build the opt-in, then
-widen.
+Every signed-in account may use it, and there is no setting that changes that: `aiGate` in
+`src/lib/ai-spend.ts` owns who may spend, and the deployment's own key is its only condition.
+A question typed in here goes to a third party, so what somebody searches for leaves the house
+-- and on the default model that third party may train on it, which is the discount being paid
+for. The honest handling is to say that at a per-account opt-in and let each person decide,
+and that opt-in is not built. It was defensible to ship without one while the audience was the
+administrators who turned the feature on, because there was nobody left to ask who had not
+already answered. That stopped being true when the audience widened on 2026-09-05: an invited
+household member now has the same box and nothing asks them first. The opt-in is the next
+thing owed here, and a role check is not a substitute for it.
 
 With no `FINDERR_OPENROUTER_API_KEY` the feature does not exist rather than failing, the same
 way no TMDB key means no streaming availability. A fresh checkout has no assistant and says
@@ -1013,7 +1016,7 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
 | `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
 | `GET` | `/api/discover` | the front-page shelves, pure index queries |
-| `GET` | `/api/agent/chat` | whether the assistant is available to you and which model answers. `403` during the admin-only beta, `404` when no key is configured, because a surface you may not use does not announce itself |
+| `GET` | `/api/agent/chat` | whether the assistant is available to you and which model answers. `404` when no key is configured and `404` when you are not signed in, because a surface you may not use does not announce itself |
 | `POST` | `/api/agent/chat` | one turn. Streams the run as SSE when `Accept` asks for it and returns plain JSON otherwise, from one route, because they are one operation with one gate, one ledger and one memory |
 | `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
 | `GET` | `/api/collection/:id`, `/api/collections` | franchise membership |
@@ -1207,7 +1210,7 @@ mature one, and it does plenty finderr does not:
 | Cast, crew, person pages | via TMDB, live | local, from the IMDb dumps |
 | Per-episode data | air dates | air dates and IMDb's score on all 7.8M episodes, as a grid, a list and a timeline |
 | Ranked lists, awards | TMDB's popular / trending | a weighted rank computed at build time, plus every Oscar nomination and two winner lists from Wikidata |
-| Ask it a question | no | an assistant with eleven tools over the index, admin-only beta |
+| Ask it a question | no | an assistant with eleven tools over the index, in beta, for every signed-in account |
 | Extensibility | none | addons: facets and panes |
 | On a phone | works | built for it: installs to the home screen, no zoom on focus, one-handed search, safe-area aware, works through a flaky connection |
 | Process footprint | Node + SQLite/Postgres, TMDB on every render | one Bun process, one SQLite index, ~150 MB image |

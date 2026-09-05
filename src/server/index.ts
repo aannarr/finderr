@@ -2161,7 +2161,7 @@ const appRoutes = {
    *
    * Private by omission from `publicPaths()`, which is the design `withAuth` exists for --
    * a new route is behind the login wall by having been added. Everything else it enforces
-   * (the admin-only beta, the daily spend cap, the ledger) lives in `./agent-chat.ts` and
+   * (the audience rule, the daily spend cap, the ledger) lives in `./agent-chat.ts` and
    * `../lib/ai-spend.ts`, so this line is a mount and not a second owner of any of it.
    */
   "/api/agent/chat": {

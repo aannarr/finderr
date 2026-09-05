@@ -3,17 +3,17 @@
  *
  * > [!IMPORTANT] A DEPLOYMENT WITHOUT AN ASSISTANT DRAWS NOTHING AT ALL
  * > Not a disabled button, not a tooltip explaining what is missing, not an error on click.
- * > `/api/agent/chat` answers 404 where no model is configured and 403 where the beta is
- * > admin-only, and either answer removes this component from the page entirely. A control
- * > that can only fail is worse than no control: it advertises a feature to somebody who
- * > cannot enable it, on every screen, forever.
+ * > `/api/agent/chat` answers 404 where no model is configured, and any refusal the probe
+ * > returns removes this component from the page entirely. A control that can only fail is
+ * > worse than no control: it advertises a feature to somebody who cannot enable it, on
+ * > every screen, forever.
  *
  * > [!CAUTION] The probe is the SERVER's answer and never a client-side role check
- * > `useApp().isAdmin` is right here today and would be the wrong thing to gate on: the
- * > beta's audience is the server's decision, so the day it widens to everybody this
- * > component needs no change and no deploy of the browser bundle. Asking is one request
- * > that usually 404s, once per page load. Reading a flag instead would be a second owner
- * > of a rule that lives on the server.
+ * > `useApp().isAdmin` is in reach here and would be the wrong thing to gate on: the
+ * > audience is the server's decision, and it was proved on 2026-09-05 -- the assistant
+ * > widened from admins to every signed-in account and this component needed no change and
+ * > no deploy of the browser bundle. Asking is one request, once per page load. Reading a
+ * > flag instead would be a second owner of a rule that lives on the server.
  *
  * The conversation lives HERE rather than in the panel, so closing the panel mid-answer
  * does not throw the answer away -- see `useAssistantChat`.

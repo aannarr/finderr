@@ -125,11 +125,11 @@ describe("the gate, in the order it decides", () => {
 /*
   The cap's own branches, called directly.
 
-  NONE OF THIS FIRES IN PRODUCTION TODAY and that is worth saying plainly rather than burying:
-  the admin-only beta means the only people who reach the cap are the people exempt from it,
-  so `aiGate` cannot get here. It is tested anyway because the rule has to be right BEFORE the
-  audience widens, and because widening is deleting one early return -- at which point this
-  suite is the only thing standing between a household and an unbounded bill.
+  THIS SUITE IS WHAT STANDS BETWEEN A HOUSEHOLD AND AN UNBOUNDED BILL, and since 2026-09-05 it
+  says so about production rather than about a hypothetical. None of it fired while the beta
+  was admin-only -- the only people who reached the cap were the people exempt from it -- and
+  it was written anyway so the rule would be right before the audience widened. It widened by
+  deleting one early return in `aiGate`, and every branch below went live in that commit.
 */
 describe("the daily cap, once somebody can reach it", () => {
   const cap = (spent: number, limitUsd = 1) => dailyCapVerdict({ limitUsd, spentToday: () => spent });
