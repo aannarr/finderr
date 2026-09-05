@@ -1,0 +1,34 @@
+# The bench image. Deliberately NOT built from `oven/bun` or from the main Dockerfile.
+#
+# It inherits FROM the published runtime image, so it carries THE SAME Bun, the same compiled
+# spellfix1 extension and the same `node_modules` that production runs. aannarr, 2026-09-05:
+# "important we run the same bun runtime for tests" -- and that is not a formality here, because
+# Bun ships its own SQLite build and this benchmark's whole subject is `bun:sqlite`'s pragma,
+# page cache and mmap behaviour. A bench built on a fresh base would be measuring a runtime that
+# merely OUGHT to match the one being reasoned about.
+#
+# Building it from `main`'s Dockerfile would also mean recompiling spellfix1 with gcc on every
+# iteration, on a Celeron. This is two layers and takes seconds.
+#
+#   docker build -f Dockerfile.bench -t finderr-bench:local .
+#   docker run --rm \
+#     -v /path/to/bench:/bench \
+#     finderr-bench:local \
+#     --source /bench/titles.db --out /bench/results --scratch /bench/scratch --prefix nas
+#
+# Add `-m 1500m --memory-swap 1500m` to reproduce the production container's cgroup limit,
+# which is the single most important variable this image exists to test: the deployed container
+# is capped BELOW the size of the index it is serving, and SQLite cannot see a cgroup limit.
+ARG BASE=ghcr.io/aannarr/finderr:latest
+FROM ${BASE}
+
+# Only the sources. Everything else -- vendor/spellfix1, node_modules, the Bun binary -- comes
+# from the base image untouched, which is the entire point.
+COPY src /app/src
+
+WORKDIR /app
+
+# The sweep runner, never a single cell: it serialises the matrix and takes a lock, because two
+# concurrent bench runs on one array produce two invalid results and, sharing a scratch
+# directory, two writers on one SQLite file. Both happened on 2026-09-05.
+ENTRYPOINT ["bun", "/app/src/jobs/bench-sweep.ts"]
