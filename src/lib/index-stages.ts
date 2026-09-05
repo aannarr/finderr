@@ -75,15 +75,46 @@ export const STAGES_META_KEY = "stages";
  * every time somebody reordered a config array, and a stamp that always disagrees is a
  * stamp nobody can act on.
  */
+/**
+ * The earliest release year a title may carry and still earn cast credits on age alone.
+ *
+ * The current year, and it is the SAME boundary `anticipationWeight` draws in
+ * `./query-parser.ts` -- stated there at length, in one sentence here: a year stamp cannot
+ * say whether a title dated this year has come out yet, so its zero votes are the absence
+ * of a measurement rather than a low one. The two must AGREE, or a search result and the
+ * filmography behind it disagree about which titles are too new to judge.
+ *
+ * It lives HERE rather than in `index-builder.ts` because both the build filter and the
+ * stage recipe need it, and the builder already imports this module -- putting it the other
+ * way round would be a cycle. Not imported from `query-parser` for the opposite reason: a
+ * ranking weight and a build filter are different questions that happen to share a number,
+ * and coupling them would let a scoring tweak silently reshape the index.
+ *
+ * It shifts on 1 January, which is why it is in the recipe -- see `INDEX_STAGES.cast`.
+ */
+export function unreleasedCastCutoffYear(now: Date = new Date()): number {
+  return now.getUTCFullYear();
+}
+
 export const INDEX_STAGES = {
   /**
    * `person` + `title_principal`. Reuses the SAME derivation the carry-forward decision
    * uses (`castRecipe`), so the two cannot disagree about what "the same cast" means.
+   *
+   * **`unreleasedFrom` is in the recipe because the eligible set moves without the config
+   * moving**, which nothing else here does. Credits are kept for a title clearing
+   * `minVotes` OR dated from that year on, so the set changes on two occasions the config
+   * cannot see: the release that introduced the age rule, and every 1 January afterwards.
+   * Leaving it out is precisely the crosswalk failure documented below -- a carried-forward
+   * cast would keep last year's eligible set indefinitely while `/api/health` stayed green,
+   * and the unreleased titles this rule exists to admit would never appear. It costs one
+   * full cast rescan a year, on a stage that already rescans weekly.
    */
   cast: (cfg) =>
     JSON.stringify({
       categories: [...new Set(cfg.index.castCategories)].sort(),
       minVotes: cfg.index.castMinVotes,
+      unreleasedFrom: unreleasedCastCutoffYear(),
     }),
 
   /**

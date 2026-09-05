@@ -26,6 +26,19 @@
  *
  * The Mac does the refresh build in 102.7s (measured 2026-08-31, not re-run here).
  *
+ * **The unreleased-title exception to the cast floor cost +4.8%, measured 2026-09-05** on
+ * this Mac, both runs back to back from the same on-disk dumps:
+ *
+ * | cast eligibility | wall | credits | people |
+ * |---|---|---|---|
+ * | votes >= 1,000 only | **140.0s** | 1,169,952 | 353,291 |
+ * | ...or dated this year onwards | **146.7s** | 1,379,052 | 454,253 |
+ *
+ * So **+17.9% credits and +28.6% people for +6.7 seconds** -- people grow faster than
+ * credits because an unreleased film brings in names no older title indexed. That ratio is
+ * the paragraph below restated as a measurement: the scan dominates, so admitting more
+ * titles is nearly free while not reading the dump at all is the only real saving.
+ *
  * So the cast scan is ~234s, about 60% of a refresh build. That figure is a DELTA between
  * two runs and carries run-to-run noise: the rank stage alone moved 43.4s -> 25.3s between
  * these two, on an otherwise idle box.
@@ -109,7 +122,7 @@ import {
   TITLE_CROSSWALK,
 } from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
-import { INDEX_STAGES, stampStages } from "./index-stages";
+import { INDEX_STAGES, stampStages, unreleasedCastCutoffYear } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
 import { buildPersonSearchIndex } from "./people";
 import { POPULAR_TITLE_INDEX } from "./search-stopwords";
@@ -1305,6 +1318,9 @@ function hasCastData(path: string): boolean {
  * table, it is a different product with a different build time. The counts behind that
  * live on `castMinVotes` in `./config.ts`, which owns them.
  *
+ * **The floor is on votes OR AGE**, because a title that has not come out yet has no votes
+ * by construction -- see `unreleasedCastCutoffYear` and the block inside `buildCast`.
+ *
  * Two passes, in this order, because the second depends on the first: principals decides
  * WHICH people matter, and only then is `name.basics` worth reading -- it carries 15.6M
  * people and we need a third of a million of them.
@@ -1332,17 +1348,38 @@ async function buildCast(
     return { creditRows: 0, people: 0 };
   }
 
-  // Which titles earn credits, and what rowid to attach them to. Built from the table
-  // we just wrote rather than from the ratings map, so a title excluded by type or by
-  // the adult filter cannot sneak credits in through the side door.
+  /*
+    Which titles earn credits, and what rowid to attach them to. Built from the table we
+    just wrote rather than from the ratings map, so a title excluded by type or by the
+    adult filter cannot sneak credits in through the side door.
+
+    THE FLOOR HAS AN EXCEPTION, AND IT IS THE SAME ONE THE RANKER MAKES. A title that has
+    not come out yet has no votes BY CONSTRUCTION, so flooring on votes silently means "no
+    unreleased title has a cast" -- and that is not a smaller filmography, it is a wrong
+    one. Measured on the live index 2026-09-05: `tt7526136` (Brad Pitt, 2026) had ZERO
+    `title_principal` rows, so it was missing from `/person/nm0000093` entirely, while
+    `title.principals` carried twelve rows for it including Brad Pitt billed first.
+
+    `unreleasedCastCutoffYear` is the single owner of the boundary, and it is deliberately
+    the same one `anticipationWeight` uses: a zero is unmeasured through the release year
+    and evidence after it. Two floors disagreeing about which titles are "too new to judge"
+    is exactly how a search result and the filmography behind it come to contradict.
+
+    THE COST IS REAL AND IT IS THE AGREED SIDE OF THE TRADE. Measured on the live corpus:
+    23,316 more titles become eligible against 65,112, so credits grow by about a third.
+    Runtime beats build time -- and the alternative is a person page that lies about what
+    somebody is working on next, which is the one thing a filmography is for.
+  */
   const eligible = new Map<string, number>();
+  const cutoff = unreleasedCastCutoffYear();
   for (const row of db
-    .query("select tconst, rowid_ from title where votes >= ?")
-    .all(cfg.index.castMinVotes) as { tconst: string; rowid_: number }[]) {
+    .query("select tconst, rowid_ from title where votes >= ? or (year is not null and year >= ?)")
+    .all(cfg.index.castMinVotes, cutoff) as { tconst: string; rowid_: number }[]) {
     eligible.set(row.tconst, row.rowid_);
   }
   log(
-    `cast: ${eligible.size.toLocaleString()} titles clear ${cfg.index.castMinVotes.toLocaleString()} votes`,
+    `cast: ${eligible.size.toLocaleString()} titles eligible -- ` +
+      `${cfg.index.castMinVotes.toLocaleString()} votes, or dated ${cutoff} and later`,
   );
 
   // --- pass 1: principals. The expensive one -- 101.5M rows streamed to keep ~1.4M.

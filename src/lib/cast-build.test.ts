@@ -19,6 +19,8 @@ import { join } from "node:path";
 import type { Config } from "./config";
 import { EXPECTED_HEADERS } from "./dumps";
 import { buildIndex } from "./index-builder";
+import { INDEX_STAGES, unreleasedCastCutoffYear } from "./index-stages";
+import { anticipationWeight } from "./query-parser";
 
 const root = mkdtempSync(join(tmpdir(), "finderr-cast-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -452,5 +454,73 @@ describe("schema drift", () => {
     await expect(
       buildIndex(configWith(), dir, join(root, `${crypto.randomUUID()}.db`), () => {}),
     ).rejects.toThrow(/schema drift in title\.principals/);
+  });
+});
+
+/**
+ * THE FLOOR'S EXCEPTION: a title that has not come out yet has no votes to clear it with.
+ *
+ * Reported 2026-09-05 against the live deployment. `/person/nm0000093?sort=year` stopped at
+ * 2025 and did not list `tt7526136` -- Brad Pitt's 2026 film -- because zero votes meant
+ * zero `title_principal` rows, even though `title.principals` carried twelve rows for it
+ * with him billed first. A filmography that silently omits what somebody is working on next
+ * is a wrong answer, not a smaller one.
+ */
+describe("the vote floor's age exception", () => {
+  const UNRELEASED = "tt0003";
+  const thisYear = new Date().getUTCFullYear();
+
+  /** The same fixture, plus one unvoted title dated this year with a real cast. */
+  const withUnreleased = (year: number) => ({
+    ratings: [...BASE.ratings, [UNRELEASED, "0", "0"]],
+    basics: [...BASE.basics, basics(UNRELEASED, "Heart of the Beast", String(year))],
+    principals: [...CREDITS.principals, principal(UNRELEASED, "1", "nm0001", "actor")],
+    names: CREDITS.names,
+  });
+
+  const creditedTitles = (db: Database, nconst: string) =>
+    (
+      db
+        .query(
+          "select t.tconst from title_principal tp join title t on t.rowid_ = tp.title_rowid " +
+            "join person p on p.rowid_ = tp.person_rowid where p.nconst = ? order by t.tconst",
+        )
+        .all(nconst) as { tconst: string }[]
+    ).map((r) => r.tconst);
+
+  test("a title dated THIS YEAR earns credits with no votes at all", async () => {
+    // The reported bug. Nothing about the title clears a 1,000-vote floor and nothing ever
+    // will before it opens, so the floor alone means "no unreleased title has a cast".
+    const db = await build({}, withUnreleased(thisYear));
+    expect(creditedTitles(db, "nm0001")).toContain(UNRELEASED);
+  });
+
+  test("so does one dated NEXT year", async () => {
+    const db = await build({}, withUnreleased(thisYear + 1));
+    expect(creditedTitles(db, "nm0001")).toContain(UNRELEASED);
+  });
+
+  test("but an OLD unvoted title is still dropped, which is what keeps the floor a floor", async () => {
+    // The exception is about a zero that is unmeasured, never about zeros in general.
+    // Admitting every unvoted title is the different product the stage docstring refuses.
+    const db = await build({}, withUnreleased(thisYear - 5));
+    expect(creditedTitles(db, "nm0001")).not.toContain(UNRELEASED);
+  });
+
+  test("the exception is the SAME boundary the ranker uses, not a second opinion", async () => {
+    // Two floors disagreeing about which titles are too new to judge is how a search result
+    // and the filmography behind it come to contradict each other. `anticipationWeight`
+    // gives full weight exactly where credits are now kept on age.
+    const cutoff = unreleasedCastCutoffYear();
+    expect(anticipationWeight(cutoff)).toBe(1);
+    expect(anticipationWeight(cutoff - 1)).toBeLessThan(1);
+  });
+
+  test("the cutoff is IN the cast recipe, so a carried-forward index cannot miss it", async () => {
+    // Without this the upgrade is invisible: the cast stage is carried forward six nights
+    // in seven, so an existing index would keep last year's eligible set indefinitely with
+    // /api/health entirely green -- the crosswalk failure, exactly.
+    const recipe = JSON.parse(INDEX_STAGES.cast(configWith())) as { unreleasedFrom?: number };
+    expect(recipe.unreleasedFrom).toBe(unreleasedCastCutoffYear());
   });
 });
