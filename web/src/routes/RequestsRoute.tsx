@@ -8,11 +8,20 @@
  * It draws NO cards. Every row is one request and the interesting part of it is the state,
  * which `RequestVerdictPanel` already knows how to say -- the same component the title page
  * uses, so a request can never be described one way here and another way there.
+ *
+ * IT UPDATES WHILE YOU WATCH IT, and it has to: this is the one page somebody opens in order
+ * to see a bar move, and a page that loaded once left that bar frozen at whatever percentage
+ * it arrived with while the countdown beside it ticked toward an ETA nothing refreshed. The
+ * timer belongs to the shell (`requestsTick`), not to this file.
+ *
+ * AND AN ARRIVED REQUEST OFFERS SOMETHING TO PRESS -- `PlayOnPlex`, the same pair of links
+ * the title page draws, off the same server-built `plex` field.
  */
 
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isWithdrawable } from "../../../src/lib/request-withdrawal";
+import { PlayOnPlex } from "../components/PlayOnPlex";
 import { RequestVerdictPanel } from "../components/RequestProgress";
 import {
   getRequests,
@@ -21,19 +30,9 @@ import {
   patchTitleState,
   withdrawRequest,
 } from "../lib/api";
-import { seasonLine } from "../lib/request-log";
+import { useApp } from "../lib/app-context";
+import { hasWorkInFlight, newsFirst, seasonLine } from "../lib/request-log";
 import { LINK_BUTTON } from "../lib/ui";
-
-/**
- * Newly-arrived first, then everything else by most recent activity.
- *
- * The server already sorts by `updated_at`, so this only lifts the news to the top --
- * which is the one thing a reader who followed the badge came here for. A stable partition
- * rather than a full comparator: within each group the server's order is kept.
- */
-function newsFirst(requests: readonly MediaRequest[]): MediaRequest[] {
-  return [...requests.filter((r) => r.isNew), ...requests.filter((r) => !r.isNew)];
-}
 
 /**
  * Undo one ask, behind a confirmation.
@@ -108,16 +107,57 @@ export function WithdrawControl({
   );
 }
 
+/**
+ * What a reader may DO about one request: play it if Plex holds it, withdraw it if it has
+ * not arrived. The two are not alternatives -- a series can be half-playable and still
+ * downloading -- so this stacks them rather than choosing between them.
+ *
+ * Exported for its test, and it exists as a component for the same reason `WithdrawControl`
+ * does: the rule worth pinning is which affordance a given row earns, and asserting that
+ * through the whole route would need a router and an `AppProvider` to say something that is
+ * true of one row.
+ */
+export function RequestActions({ request, onWithdrawn }: { request: MediaRequest; onWithdrawn: () => void }) {
+  return (
+    <>
+      {/*
+        THE THING YOU WERE WAITING FOR, AS SOMETHING TO PRESS.
+
+        Drawn off `request.plex` and never off the verdict: Plex having SCANNED the item is
+        the only fact that makes a deeplink play anything, and it is a strictly later event
+        than the arr importing the file. So a row can read "Available" with no button here
+        for the minute before the next Plex sync -- which is the honest version, and the
+        alternative is a link that opens a server home screen and looks like it worked.
+
+        Not gated on the verdict in the other direction either. A series whose early seasons
+        are in Plex while a later one downloads is both playable and still working, and
+        withholding Play until every episode landed would be this page declining to answer
+        the question it exists for.
+      */}
+      {request.plex && <PlayOnPlex plex={request.plex} variant="inline" />}
+      <WithdrawControl request={request} onWithdrawn={onWithdrawn} />
+    </>
+  );
+}
+
 export function RequestsRoute() {
   const [requests, setRequests] = useState<MediaRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Everything that has been news at any point during this visit. See `newsFirst`. */
+  const news = useRef<Set<string>>(new Set());
+  const { requestsTick } = useApp();
 
-  const load = useCallback(async () => {
+  /** Fetch the caller's rows, and say whether any of them are news to them. */
+  const load = useCallback(async (): Promise<boolean> => {
     try {
       const { requests } = await getRequests({ mine: true });
-      setRequests(newsFirst(requests));
+      for (const r of requests) if (r.isNew) news.current.add(r.tconst);
+      setRequests(newsFirst(requests, news.current));
+      setError(null);
+      return requests.some((r) => r.isNew);
     } catch (e) {
       setError((e as Error).message);
+      return false;
     }
   }, []);
 
@@ -132,11 +172,49 @@ export function RequestsRoute() {
 
       Marking is fire-and-forget. It cannot fail in a way the reader can act on, and a
       failed mark simply leaves the badge up -- which is the honest outcome.
+
+      UNCONDITIONAL here, unlike the poll below: `?mine=1` returns the most recent 200 rows,
+      so an unread arrival older than that never appears in `requests` at all and would keep
+      the header badge up forever if the mark waited to see one.
     */
     void load().then(() => markRequestsSeen().catch(() => {}));
   }, [load]);
 
-  if (error) return <p className="text-sm text-danger">{error}</p>;
+  /*
+    THE PAGE THAT EXISTS TO WATCH A DOWNLOAD, WATCHING IT.
+
+    On the shell's poll rather than a timer of its own -- see `requestsTick` in
+    `AppActions` -- and only while something is actually moving, because a page of arrived
+    and dead-ended rows reads the same however often it is fetched.
+
+    The ref is what makes this a subscription rather than a second load on mount: the effect
+    runs once with whatever tick was current when the reader arrived, and only a CHANGE is a
+    cue. Without it the mount would fire two identical reads a moment apart.
+
+    Marking seen is conditional here and unconditional above, for the reason stated there.
+    What it covers is the arrival that lands WHILE the page is open: it is on screen and
+    marked, so leaving the page must not then raise a badge for news the reader watched break.
+  */
+  const seenTick = useRef(requestsTick);
+  const working = requests !== null && hasWorkInFlight(requests);
+  useEffect(() => {
+    if (requestsTick === seenTick.current) return;
+    seenTick.current = requestsTick;
+    if (!working) return;
+    void load().then((isNews) => {
+      if (isNews) markRequestsSeen().catch(() => {});
+    });
+  }, [requestsTick, working, load]);
+
+  /*
+    THE ERROR ONLY TAKES THE PAGE WHEN THERE IS NO PAGE TO TAKE.
+
+    It replaced the whole view unconditionally, which was right when this loaded exactly
+    once and is wrong now that it polls: a single failed poll would throw away a list the
+    reader is watching and put a sentence where their downloads were. A stale list plus the
+    next tick is the better answer, and a successful load clears the flag either way.
+  */
+  if (error && !requests) return <p className="text-sm text-danger">{error}</p>;
   if (!requests) return <p className="text-sm text-muted">Loading…</p>;
 
   if (requests.length === 0) {
@@ -191,9 +269,9 @@ export function RequestsRoute() {
                 Reloading the whole list rather than splicing the row out locally: the poll
                 that feeds this page is the server's, and a withdraw also frees a quota row
                 and can change what the arr is doing. One read gives the true state of all of
-                it, and this page fetches once per visit anyway.
+                it, and the same read is what the tick above asks for.
               */}
-              <WithdrawControl request={request} onWithdrawn={load} />
+              <RequestActions request={request} onWithdrawn={load} />
             </li>
           );
         })}

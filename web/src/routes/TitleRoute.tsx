@@ -18,6 +18,7 @@ import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
+import { PlayOnPlex } from "../components/PlayOnPlex";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
@@ -354,6 +355,17 @@ export function TitleRoute() {
 
           <div className="mt-6 max-w-xs">
             {title.plex ? (
+              /*
+                Play OUTRANKS "Available in your library" -- that span was the end of the road
+                for an owned title, telling the reader they had it and then leaving them to go
+                and find it themselves. This is the whole reason the Plex mirror exists.
+
+                Legitimately in the header, and it is worth saying why, because the route's
+                own rule is that a facet-driven element may never go here: this is not
+                facet-driven. `title.plex` is built from the local Plex mirror and arrives
+                with the row at t=0, exactly like `inLibrary`, so it cannot pop in late and
+                push the header around.
+              */
               <PlayOnPlex plex={title.plex} />
             ) : title.inLibrary ? (
               <span className="block rounded-lg border border-line px-3 py-2 text-center text-sm text-muted">
@@ -559,50 +571,3 @@ function ArrLinkRow({ link }: { link: NonNullable<TitleDetailView["arrLink"]> })
 // owner now, and this page passes `fallback="label"` to keep the "No artwork" box it always
 // had. It also passes `eager`: this is the largest thing above the fold on the page, and
 // deferring it is the single case where lazy loading is visibly worse.
-
-/**
- * The action for a title Plex already holds: play it.
- *
- * It takes the primary slot the Request button occupies for everything else, and it
- * OUTRANKS "Available in your library" -- that span was the end of the road for an owned
- * title, telling the reader they had it and then leaving them to go find it themselves.
- * This is the whole reason the Plex mirror exists.
- *
- * Legitimately in the header, and it is worth saying why, because the route's own rule is
- * that a facet-driven element may never go here: this is not facet-driven. `title.plex` is
- * built from the local Plex mirror and arrives with the row at t=0, exactly like
- * `inLibrary`, so it cannot pop in late and push the header around.
- *
- * TWO LINKS, because they fail in opposite directions and neither is safe alone. The web
- * app works on any machine but lands the reader in a browser tab; `plex://` opens the real
- * client and does NOTHING AT ALL when no client is installed to claim the scheme -- no
- * error, no navigation, a dead button. So the web link is the one wearing the weight, and
- * the app link sits under it as an offer.
- *
- * `hasFile` is deliberately not consulted. Plex holding a scanned item IS the stronger
- * statement -- the arr's `hasFile` can be true for a file Plex has not seen yet, and it can
- * be false for something imported outside the arr entirely.
- */
-function PlayOnPlex({ plex }: { plex: NonNullable<Title["plex"]> }) {
-  return (
-    <div className="space-y-1.5">
-      <a
-        href={plex.web}
-        target="_blank"
-        rel="noreferrer"
-        className="block w-full rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium
-                   text-black transition-opacity hover:opacity-90 active:opacity-75"
-      >
-        Play on Plex
-      </a>
-      {/*
-        No `target`/`rel`: this never navigates the page, it hands the URL to whatever
-        registered the `plex:` scheme. Opening it in a tab would leave an empty one behind
-        on the machines where it works.
-      */}
-      <a href={plex.app} className="block text-center text-xs text-muted hover:text-ink">
-        Open in the Plex app
-      </a>
-    </div>
-  );
-}

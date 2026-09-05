@@ -4,11 +4,23 @@
  * The two that matter are ordering (a log is ordered by when it was ASKED, not by when the
  * worker last touched the row) and attribution (the browser never decides who may see a
  * name -- it reads whether the server sent one).
+ *
+ * The two that `/requests` added are its own ordering, where the interesting half is that a
+ * "New" marker outlives the server clearing the flag it came from, and whether the page has
+ * anything left worth refetching for.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { MediaRequest } from "./api";
-import { attributionVisible, byRequester, logOrder, requesters, seasonLine } from "./request-log";
+import {
+  attributionVisible,
+  byRequester,
+  hasWorkInFlight,
+  logOrder,
+  newsFirst,
+  requesters,
+  seasonLine,
+} from "./request-log";
 
 function row(over: Partial<MediaRequest> & { id: number; created_at: string }): MediaRequest {
   return {
@@ -137,5 +149,72 @@ describe("the season line", () => {
 
   test("chosen seasons read as a range", () => {
     expect(seasonLine({ seasons: "1,2,3" })).toBe("Seasons 1-3");
+  });
+});
+
+describe("ordering your own requests", () => {
+  const arrived = row({ id: 1, created_at: "2026-09-01T09:00:00.000Z", isNew: true });
+  const older = row({ id: 2, created_at: "2026-09-02T09:00:00.000Z", isNew: false });
+
+  test("news goes to the top and the server's order is kept underneath", () => {
+    expect(newsFirst([older, arrived], new Set()).map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  /*
+    THE REGRESSION POLLING WOULD OTHERWISE INTRODUCE.
+
+    Opening the page marks everything seen, so every later poll comes back with `isNew`
+    false. Without the visit's own memory the markers a reader is looking at would disappear
+    a few seconds after they arrived, and the arrivals would drop back into the list.
+  */
+  test("a marker survives the server clearing the flag under it", () => {
+    const cleared = { ...arrived, isNew: false };
+    const kept = newsFirst([older, cleared], new Set([cleared.tconst]));
+    expect(kept.map((r) => r.id)).toEqual([1, 2]);
+    expect(kept[0]?.isNew).toBe(true);
+  });
+
+  test("it marks a copy rather than the caller's row", () => {
+    const cleared = { ...arrived, isNew: false };
+    newsFirst([cleared], new Set([cleared.tconst]));
+    expect(cleared.isNew).toBe(false);
+  });
+});
+
+describe("whether the page has anything to watch", () => {
+  /*
+    This is what decides `/requests` refetches at all, so both answers are load-bearing in
+    opposite directions: false and the bar freezes, true forever and the page polls a list
+    that will never change again.
+  */
+  test("a request still moving keeps the page polling", () => {
+    for (const requestVerdict of ["queued", "searching", "downloading"] as const) {
+      expect(hasWorkInFlight([{ requestVerdict }])).toBe(true);
+    }
+  });
+
+  test("arrived and dead-ended rows are finished, however many of them there are", () => {
+    for (const requestVerdict of [
+      "imported",
+      "needs_manual_import",
+      "nothing_accepted",
+      "no_releases",
+      "failed",
+    ] as const) {
+      expect(hasWorkInFlight([{ requestVerdict }])).toBe(false);
+    }
+  });
+
+  /** A verdict the server could not form is not a reason to keep asking forever. */
+  test("a row with no verdict is not work", () => {
+    expect(hasWorkInFlight([{ requestVerdict: null }])).toBe(false);
+  });
+
+  test("one moving row among finished ones is enough", () => {
+    expect(hasWorkInFlight([{ requestVerdict: "imported" }, { requestVerdict: "downloading" }])).toBe(true);
+  });
+
+  test("an empty list has nothing to watch", () => {
+    expect(hasWorkInFlight([])).toBe(false);
   });
 });

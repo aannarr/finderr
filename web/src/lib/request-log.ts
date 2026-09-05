@@ -6,6 +6,7 @@
  * about DATA, and a test for them should not have to render anything.
  */
 
+import { VERDICT_COPY } from "../../../src/lib/request-diagnostics";
 import type { MediaRequest } from "./api";
 import { summariseSeasons } from "./season-select";
 
@@ -25,6 +26,24 @@ export function seasonLine(request: Pick<MediaRequest, "seasons">): string | nul
     .map((s) => Number.parseInt(s, 10))
     .filter((n) => Number.isFinite(n));
   return numbers.length > 0 ? summariseSeasons(numbers) : null;
+}
+
+/**
+ * Is anything in this list still moving?
+ *
+ * The question `/requests` asks before it refetches: a page of arrived and dead-ended rows
+ * reads exactly the same in eight seconds, so polling it is chatter -- and a page with a bar
+ * on it that does NOT refetch is a bar frozen at whatever percentage it loaded with.
+ *
+ * Asked of the TONE rather than of the verdict, because `working` is already the single owner
+ * of "keep waiting" (`VERDICT_COPY`). Listing the verdicts here would be a second copy of that
+ * rule, free to disagree the next time one is added.
+ *
+ * A row with no verdict at all counts as NOT working: the server sends `null` for a request it
+ * cannot say anything about, and treating an unknown as in-flight is how a page polls forever.
+ */
+export function hasWorkInFlight(rows: readonly Pick<MediaRequest, "requestVerdict">[]): boolean {
+  return rows.some((r) => r.requestVerdict !== null && VERDICT_COPY[r.requestVerdict].tone === "working");
 }
 
 /**
@@ -49,6 +68,29 @@ export function seasonLine(request: Pick<MediaRequest, "seasons">): string | nul
  */
 export function logOrder<T extends Pick<MediaRequest, "id" | "created_at">>(rows: readonly T[]): T[] {
   return [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+}
+
+/**
+ * `/requests`, ordered: newly-arrived first, then everything else by most recent activity.
+ *
+ * The server already sorts by `updated_at`, so this only lifts the news to the top -- which
+ * is the one thing a reader who followed the ready badge came for. A stable partition rather
+ * than a full comparator: within each group the server's order is kept.
+ *
+ * > [!IMPORTANT] `news` is the VISIT's memory of what was new, and it overrides the server
+ * > `isNew` is derived per read from `available_seen_at`, and opening the page clears that
+ * > column -- so the second poll comes back with every flag false, and the markers the reader
+ * > is looking at would vanish under them, taking the ordering with them. The caller
+ * > accumulates the set across the visit and never prunes it: something that was news while
+ * > you were on this page stays marked until you leave. Which is what the marker means.
+ *
+ * Beside `logOrder` rather than in the route because they are the same kind of thing -- the
+ * two orderings the two request lists use -- and keeping them apart is how a page ends up
+ * re-deriving the other one's rule slightly differently.
+ */
+export function newsFirst(requests: readonly MediaRequest[], news: ReadonlySet<string>): MediaRequest[] {
+  const marked = requests.map((r) => (news.has(r.tconst) ? { ...r, isNew: true } : r));
+  return [...marked.filter((r) => r.isNew), ...marked.filter((r) => !r.isNew)];
 }
 
 /**

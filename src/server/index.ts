@@ -31,7 +31,7 @@ import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
-import { PlexClient, plexLinks, syncPlex } from "../lib/plex";
+import { PlexClient, type PlexLinks, plexLinks, syncPlex } from "../lib/plex";
 import { createPluginFetch, DEFAULT_OUTBOUND_POLICY, HostPacer, outboundTimings } from "../lib/plugin-fetch";
 import { loadPlugins } from "../lib/plugins";
 import { ProwlarrClient } from "../lib/prowlarr";
@@ -975,14 +975,12 @@ function decorate<T extends TitleRow>(rows: T[]) {
   const lib = store.libraryMap();
   const reqs = store.requestMap();
   const diagnostics = store.requestDiagnosticMap();
-  const plex = store.plexMap();
-  const machineId = store.plexMachineIdentifier() ?? "";
+  const playLink = plexLinker();
   return rows.map((r) => {
     const l = lib.get(r.tconst);
     const q = reqs.get(r.tconst);
     const d = diagnostics.get(r.tconst) ?? null;
     const art = store.getArtwork(r.tconst);
-    const ratingKey = plex.get(r.tconst);
     return {
       ...r,
       inLibrary: !!l,
@@ -1010,9 +1008,30 @@ function decorate<T extends TitleRow>(rows: T[]) {
       posterUrl: art !== undefined && art.url === null ? null : `/img/t/${r.tconst}`,
       studio: art?.studio ?? null,
       studioLogo: logos.urlForTitle(r.kind, art?.studio),
-      plex: ratingKey ? plexLinks(machineId, ratingKey) : null,
+      plex: playLink(r.tconst),
     };
   });
+}
+
+/**
+ * Where to PLAY each title, from the Plex mirror -- as a lookup resolved once per response.
+ *
+ * A CLOSURE over the two store reads rather than a per-row query: `plexMap()` walks the whole
+ * mirror and the machine identifier is a second read, so doing either inside the row loop
+ * would turn one pair of queries into two per card.
+ *
+ * It exists because a SECOND surface now answers "has this arrived": the request list on
+ * `/requests`, beside the decorated title cards. The `ratingKey ? links : null` rule is the
+ * part worth having one owner for -- a half-addressed deeplink does not fail, it opens the
+ * server's home screen and looks like it worked (see `plexLinks`).
+ */
+function plexLinker(): (tconst: string) => PlexLinks | null {
+  const mirror = store.plexMap();
+  const machineId = store.plexMachineIdentifier() ?? "";
+  return (tconst) => {
+    const ratingKey = mirror.get(tconst);
+    return ratingKey ? plexLinks(machineId, ratingKey) : null;
+  };
 }
 
 /**
@@ -2224,6 +2243,7 @@ const appRoutes = {
       */
       const names =
         role === "admin" ? new Map(authStore.listUsers().map((u) => [u.id, u.displayName])) : null;
+      const playLink = plexLinker();
       return json({
         /*
           The verdict and the bar ride along, in the same `RequestStateView` shape
@@ -2247,6 +2267,19 @@ const appRoutes = {
             second reader of one fact is a second chance to get it wrong.
           */
           isNew: r.status === "available" && r.available_seen_at === null && r.requested_by === me,
+          /*
+            WHERE TO WATCH THE THING YOU ASKED FOR, on the page you came to to find out.
+
+            The same field a decorated title card carries, from the same mirror and the same
+            resolver -- a request row that says "Available" and offers nothing to click is the
+            dead end this product refuses everywhere else.
+
+            NOT implied by the `imported` verdict: that is the arr saying it filed the file,
+            while this is Plex saying it has scanned one. Only the second of those is a link
+            that will play something, which is exactly why the mirror is separate from the
+            library table. Null until Plex has seen it, whatever the verdict says.
+          */
+          plex: playLink(r.tconst),
         })),
         queue: worker.stats(),
         /*

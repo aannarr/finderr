@@ -26,6 +26,19 @@ export interface AppActions {
   /** How many requests are still in flight, for the header badge. */
   pendingCount: number;
   /**
+   * A counter bumped once per completed `/api/requests` poll -- THE SHELL'S CLOCK, shared.
+   *
+   * `RootLayout` already asks that route every few seconds for the queue and ready badges, so
+   * a route that also needs to notice a download moving subscribes to this rather than
+   * starting a timer of its own. Two timers would mean two cadences, two things to stop on
+   * unmount, and two moments a reader could be looking at at once.
+   *
+   * It carries no data on purpose: the header's poll asks for the WHOLE log and `/requests`
+   * asks for `?mine=1`, which are different rows. This says only "the server has been asked
+   * again, and it is worth asking for your half too".
+   */
+  requestsTick: number;
+  /**
    * Is the signed-in reader an admin?
    *
    * Here rather than fetched per component: `RootLayout` already holds `me` for the header

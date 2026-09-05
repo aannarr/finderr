@@ -18,6 +18,7 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 // is about a VALUE import, which is a different and genuinely costly thing.
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
+import type { PlexLinks } from "../../../src/lib/plex";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
 import type { Term, TermDimension } from "../../../src/lib/terms";
@@ -74,6 +75,15 @@ export interface UpcomingInfo {
  */
 export type { RequestStateView as RequestState } from "../../../src/lib/request-diagnostics";
 
+/**
+ * The two addresses that play one title, RE-EXPORTED from the module that builds them.
+ *
+ * Same rule as `RequestState` above: `plexLinks` on the server produces exactly this shape,
+ * and both a title card and a request row now carry one, so a hand-written `{ web, app }`
+ * here would be a third copy of a pair only one function is allowed to construct.
+ */
+export type { PlexLinks };
+
 export interface Title extends RequestStateView {
   tconst: string;
   title: string;
@@ -128,7 +138,7 @@ export interface Title extends RequestStateView {
    * NOT implied by `hasFile`: the arr can have imported a file Plex has not scanned yet,
    * and only the Plex mirror knows the difference.
    */
-  plex: { web: string; app: string } | null;
+  plex: PlexLinks | null;
 }
 
 export interface Facets {
@@ -221,6 +231,16 @@ export interface MediaRequest extends RequestStateView {
    * False on somebody else's request and false on your own once you have opened the list.
    */
   isNew?: boolean;
+  /**
+   * Where to PLAY this, when Plex holds it -- the same pair a `Title` carries, from the
+   * same mirror and the same server-side resolver.
+   *
+   * NOT implied by the `imported` verdict. That is the arr saying it filed the file; this is
+   * Plex saying it has scanned one, and only the second is a link that plays anything. So a
+   * just-arrived request can read "Available" with `plex: null` for the minute or two before
+   * the next Plex sync, and offering a link there would be offering a dead one.
+   */
+  plex: PlexLinks | null;
 }
 
 /** One selectable quality profile, as an arr reports it. */

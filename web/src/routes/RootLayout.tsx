@@ -102,6 +102,14 @@ export function RootLayout() {
    * badge costs no extra request.
    */
   const [unseenCount, setUnseenCount] = useState(0);
+  /**
+   * How many times the poll below has come back, handed to every route through `useApp`.
+   *
+   * `/requests` rides it instead of running a timer of its own -- see `AppActions`. A
+   * COUNTER rather than a timestamp because it is only ever compared to its own previous
+   * value, and a number that only goes up cannot be mistaken for a moment in time.
+   */
+  const [requestsTick, setRequestsTick] = useState(0);
   const searchBox = useRef<HTMLInputElement>(null);
   /**
    * Who is signed in, read once.
@@ -231,6 +239,10 @@ export function RootLayout() {
    * timer notices it within thirty seconds of the arr importing the file -- so the idle
    * eight-second cadence is already far faster than the thing it is watching, and giving
    * that badge its own timer would be a second poll of the same endpoint.
+   *
+   * It is also THE app's clock for anything else that has to notice a request moving:
+   * `requestsTick` goes out on the context and `/requests` refetches its own rows on it, for
+   * the same reason -- one timer, one cadence, one moment everybody is describing.
    */
   useEffect(() => {
     let stop = false;
@@ -242,6 +254,10 @@ export function RootLayout() {
         const { queue, unseen } = await getRequests();
         setPendingCount(queue.pending);
         setUnseenCount(unseen);
+        // Only on a SUCCESSFUL answer. The tick is a subscriber's cue that the server has
+        // just been asked, so bumping it after a failed request would tell `/requests` to
+        // refetch at exactly the moment the network is down.
+        setRequestsTick((n) => n + 1);
         timer = setTimeout(tick, queue.pending > 0 ? 1500 : 8000);
       } catch {
         timer = setTimeout(tick, 8000);
@@ -296,7 +312,7 @@ export function RootLayout() {
   );
 
   return (
-    <AppProvider value={{ request, pendingCount, isAdmin: me?.role === "admin" }}>
+    <AppProvider value={{ request, pendingCount, requestsTick, isAdmin: me?.role === "admin" }}>
       {/*
         The development-login banner.
 
