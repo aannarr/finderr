@@ -57,9 +57,12 @@ describe("resolveTuning", () => {
   });
 
   test("gives up once too little of the index would survive to be worth the read", () => {
-    // Measured crossover: 79% retention still pays, 54% does not. The threshold sits between.
+    // The knee is a CLIFF, not a slope, and both sides of it are measured on real hardware:
+    // 79% retention (1500 MB budget) prefaulted in 1,106 ms, 69% (1308 MB) took 12,046 ms.
+    // The threshold has to fall between them, so both of these are load-bearing.
+    expect(resolveTuning({ budget: budget(1500), indexBytes: 1868 * MB }).prefault).toBe(true);
+    expect(resolveTuning({ budget: budget(1308), indexBytes: 1868 * MB }).prefault).toBe(false);
     expect(resolveTuning({ budget: budget(1024), indexBytes: 1868 * MB }).prefault).toBe(false);
-    expect(resolveTuning({ budget: budget(1400), indexBytes: 1868 * MB }).prefault).toBe(true);
   });
 
   test("the boundary is on RETENTION, so a smaller index prefaults at a smaller budget", () => {
@@ -69,12 +72,15 @@ describe("resolveTuning", () => {
     expect(resolveTuning({ budget: budget(500), indexBytes: 1868 * MB }).prefault).toBe(false);
   });
 
-  test("a forced prefault is honoured, and says it costs a read rather than that it is wrong", () => {
-    // It is not harmful -- it measured no slower than skipping it, just no faster. The note has
-    // to say that honestly, because "WARNING" invites somebody to go fix a non-problem.
+  test("a forced prefault is honoured, and WARNS that below the knee it actively hurts", () => {
+    // This assertion was the opposite way round for one revision, on the belief that prefaulting
+    // below the knee merely wastes a background read. The rungs refuted it: 20,124 ms against
+    // 12,198 ms at a 1024 MB budget, because the read evicts pages the queries already faulted
+    // in. So the note must warn rather than reassure.
     const t = resolveTuning({ budget: budget(512), indexBytes: 1868 * MB, prefaultOverride: true });
     expect(t.prefault).toBe(true);
-    expect(t.notes.join(" ")).toContain("sequential read");
+    expect(t.notes.join(" ")).toContain("WARNING");
+    expect(t.notes.join(" ")).toContain("SLOWER");
   });
 
   test("prefault can be forced off on a machine where it would have fitted", () => {

@@ -230,16 +230,40 @@ export interface StorageTuning {
  * | 1500 MB | 125% | **79%** | **480 ms** | 7,858 ms |
  * | 1024 MB | 182% | **54%** | 7,865 ms | 7,573 ms |
  *
- * So the threshold is on RETENTION, not on fit, and it sits between 54% and 79%. **0.7 is chosen
- * inside that band and deliberately toward the low end**, because the two errors are wildly
- * asymmetric: prefaulting when it will not pay wastes one background sequential read that no
- * user waits on, while NOT prefaulting when it would have paid costs 16x on every first query a
- * real person makes. Err toward reading.
+ * ## Where the knee actually is, and why it is not where the first draft put it
+ *
+ * Rungs were then run between those two points. The transition is not a slope, it is a **cliff
+ * between 79% and 69% retention**, and it reproduced under two different pragma configurations
+ * measured hours apart:
+ *
+ * | retention | budget | first-touch (256 MB pager cache) | first-touch (derived pager cache) |
+ * |---|---|---|---|
+ * | **79%** | 1500 MB | **342 ms** | **1,106 ms** |
+ * | **69%** | 1308 MB | **11,087 ms** | **12,046 ms** |
+ * | 64% | 1214 MB | 14,305 ms | 16,656 ms |
+ * | 54% | 1024 MB | -- | 20,124 ms |
+ * | 33% | 640 MB | -- | 23,780 ms |
+ *
+ * **0.75, because 0.70 was on the WRONG SIDE of that cliff.** An earlier revision of this file
+ * shipped 0.7 with the reasoning that the errors were asymmetric -- that prefaulting needlessly
+ * merely wastes a background read nobody waits on. **That reasoning was wrong, and the rungs
+ * refuted it.** Below the knee the prefault is not wasteful, it is actively HARMFUL:
+ *
+ * | budget | prefault ON | prefault OFF | prefaulting costs |
+ * |---|---|---|---|
+ * | 1024 MB | 20,124 ms | 12,198 ms | **1.65x** |
+ * | 640 MB | 23,780 ms | 14,191 ms | **1.68x** |
+ *
+ * The mechanism is the one thing the "wasted read" story missed: under a cap that cannot hold the
+ * file, the sequential read does not merely fail to help, it **evicts the pages the queries have
+ * already faulted in** and keeps doing so for the whole read. So the errors are roughly symmetric
+ * after all -- 16x for skipping it above the knee, 1.65x for doing it below -- and the threshold
+ * belongs at the top of the measured band rather than the bottom.
  *
  * Retention is approximated as `budget / index` -- what fraction of the file the budget can hold
  * at all. That is what the cgroup measured at every rung, to within the process's own ~25 MB.
  */
-const PREFAULT_MIN_RETENTION = 0.7;
+const PREFAULT_MIN_RETENTION = 0.75;
 
 /** Clamp bounds for the pager cache. Below 8 MB SQLite thrashes; above 256 MB nothing improved. */
 const CACHE_MIN_MB = 8;
@@ -325,10 +349,11 @@ export function resolveTuning(opts: {
     notes.push(`prefault ${prefault} (FINDERR_INDEX_PREFAULT)`);
     if (prefault && !worthIt) {
       notes.push(
-        `  NOTE: prefault forced ON with a ${budget.mb} MB budget against a ${indexMb} MB index, ` +
+        `  WARNING: prefault forced ON with a ${budget.mb} MB budget against a ${indexMb} MB index, ` +
           `so about ${pct(retention)} of it can stay resident -- below the ${pct(PREFAULT_MIN_RETENTION)} ` +
-          "where reading it stopped paying for itself. It costs one full sequential read per boot " +
-          "and per index swap, and measured no faster than not doing it. Harmless, just not free.",
+          "where it stops paying for itself. Below that line it measured 1.65x SLOWER than not " +
+          "prefaulting at all, because the read evicts the pages the queries have already faulted " +
+          "in. This is not merely a wasted read; expect it to hurt.",
       );
     }
   } else if (worthIt) {
