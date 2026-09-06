@@ -1147,4 +1147,82 @@ describe("an index built BEFORE the origin stage", () => {
       engine.close();
     }
   });
+
+  test("the list-floor census cannot be taken, and says so rather than reporting zeroes", () => {
+    const engine = engineOn(CORPUS, { withOrigin: false });
+    try {
+      // `null`, never an empty map. An empty map is the finding "no language reaches a single
+      // ranked film", and `auditListLanguages` would read it as every list being unfounded.
+      expect(engine.rankedNonEnglishCounts("movie")).toBeNull();
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+/**
+ * The census `LIST_LANGUAGES` is audited against -- the same set arithmetic a language list
+ * does, asked of every code at once.
+ *
+ * It lives here rather than beside `list-audit.ts` because the thing under test is the QUERY,
+ * and this file already owns a faithful `title_lang`. The comparison it feeds is pure and is
+ * tested against fixed counts in `list-audit.test.ts`.
+ */
+describe("counting the ranked non-English films of every language", () => {
+  test("counts a language once per title, and only for the kind asked about", () => {
+    const engine = engineOn(CORPUS);
+    try {
+      const counts = engine.rankedNonEnglishCounts("movie");
+      expect(counts).not.toBeNull();
+      // `tt-multi` is hi/en/pa and rides in on its `en`, so it counts for NEITHER `hi` nor
+      // `pa` -- which is why `pa` is absent entirely rather than present at zero. That is the
+      // whole "not also in English" rule the group blurb on /lists promises.
+      expect([...(counts as Map<string, number>)].sort()).toEqual([
+        ["hi", 1],
+        ["sv", 1],
+        ["ta", 1],
+      ]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("UNKNOWN_LANG is stripped here, so no audit ever reads the sentinel as a language", () => {
+    const engine = engineOn(CORPUS);
+    try {
+      // `tt-unknown` carries the empty string and is 186,109 films on the real index -- easily
+      // over any floor, and it is a storage device rather than a language. Left in, it would
+      // be reported forever as a language missing its list.
+      expect(engine.rankedNonEnglishCounts("movie")?.has(UNKNOWN_LANG)).toBe(false);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a kind nothing is filed under is an empty census rather than a refusal", () => {
+    const engine = engineOn(CORPUS);
+    try {
+      // The other half of the `null` rule above: this file CAN answer, and the answer is that
+      // there are no ranked non-English series in it.
+      expect(engine.rankedNonEnglishCounts("tvSeries")).toEqual(new Map());
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("it reads the same rows on a file from before either widening", () => {
+    // The `not exists` pair rather than `title_lang.non_english`, which is why this works at
+    // all on a two-column `title_lang`. A second query for older files would be a second copy
+    // of the membership rule -- exactly the drift the audit exists to catch.
+    const engine = engineOn(CORPUS, { withLangRank: false });
+    try {
+      expect([...(engine.rankedNonEnglishCounts("movie") as Map<string, number>)].sort()).toEqual([
+        ["hi", 1],
+        ["sv", 1],
+        ["ta", 1],
+      ]);
+    } finally {
+      engine.close();
+    }
+  });
 });

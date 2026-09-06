@@ -1638,6 +1638,41 @@ export class SearchEngine {
     });
   }
 
+  /**
+   * How many ranked non-English titles of `kind` each language reaches -- the population
+   * `LIST_LANGUAGES` is drawn from, counted rather than remembered.
+   *
+   * `null` for an index that cannot answer, and `null` and an empty map are different answers
+   * for the reason `searchPeople` keeps them apart: an empty map would say "no language has a
+   * single ranked film", which is a finding, and this says "do not read one from this file".
+   *
+   * `UNKNOWN_LANG` is stripped HERE rather than by the caller, where `browseIndex` strips it
+   * from `hiddenByLanguage` for the same reason: the empty string is a storage device that
+   * keeps the language filter to one predicate, and 186,109 films filed under it would be
+   * reported as a language missing its list.
+   *
+   * > [!NOTE] The `not exists` pair rather than the `non_english` column, deliberately
+   * > `title_lang.non_english` is the same predicate denormalised and it is 13x faster
+   * > (69 ms against 938 on the real 1.27M-title index, M1 Max, 2026-09-07, identical answers
+   * > for all 146 codes). It is also a v3 column, so using it would mean a second query for
+   * > older files -- two copies of the one rule this whole audit exists to stop drifting.
+   * > A second of scan in a job that runs beside a two-second canary buys nothing worth that.
+   */
+  rankedNonEnglishCounts(kind: string): Map<string, number> | null {
+    if (!this.hasOrigin || !this.hasRank) return null;
+    const rows = this.db
+      .query(
+        `select l.lang lang, count(*) films
+           from title_lang l join title t on t.rowid_ = l.title_rowid
+          where t.kind = ? and t.rank is not null
+            and not exists (select 1 from title_lang e
+                             where e.title_rowid = l.title_rowid and e.lang = ?)
+          group by l.lang`,
+      )
+      .all(kind, ENGLISH_LANG) as { lang: string; films: number }[];
+    return new Map(rows.filter((r) => r.lang !== UNKNOWN_LANG).map((r) => [r.lang, r.films]));
+  }
+
   private tableExists(name: string): boolean {
     return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
   }

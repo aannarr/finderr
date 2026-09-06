@@ -29,7 +29,7 @@
  * > as a degraded run. Both are the same rule: say which check did not happen.
  */
 
-const NO_INDEX = 2;
+import { NO_INDEX } from "./canary";
 
 interface Step {
   name: string;
@@ -47,6 +47,14 @@ const STEPS: Step[] = [
     name: "canary",
     argv: ["bun", "run", "canary"],
     tolerated: { [NO_INDEX]: "no index on this machine -- search was NOT MEASURED" },
+  },
+  {
+    // The other check that needs a corpus rather than a fixture, and it is here for the same
+    // reason the canary is: `LIST_LANGUAGES` states a rule about the index that no unit test
+    // can evaluate, because every assertion in `lists.test.ts` derives from the array itself.
+    name: "lists:audit",
+    argv: ["bun", "run", "lists:audit"],
+    tolerated: { [NO_INDEX]: "no index on this machine -- the list floor was NOT MEASURED" },
   },
 ];
 

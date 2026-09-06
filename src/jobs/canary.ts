@@ -40,7 +40,13 @@
 import { runCanary } from "../lib/canary";
 import { loadConfig, paths } from "../lib/config";
 
-const NO_INDEX = 2;
+/**
+ * "I could not measure", as an exit code, which is a different answer from "I measured and it
+ * is bad". Exported because it is a CONTRACT between three files rather than this job's
+ * private number: `gate.ts` tolerates it, `audit-lists.ts` returns it, and a copy in each
+ * would be three spellings of one convention.
+ */
+export const NO_INDEX = 2;
 
 /**
  * THE DEVELOPER GATE DEMANDS 100%, and that is a different question from the promote gate.

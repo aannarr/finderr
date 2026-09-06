@@ -901,6 +901,25 @@ Five of its cases can only be answered by the fuzzy tier, so on a checkout with 
 score stays honest about what it measured, and the output says which capability is missing
 and how to get it.
 
+A second check needs the same thing. The language lists on `/lists` follow one mechanical
+rule -- a language gets a list when the index holds at least 250 ranked films in it that
+are not also in English -- and no unit test can evaluate that, because a unit test has no
+corpus. So the array of languages and the corpus drifted apart twice, both times found by
+somebody noticing rather than by anything failing:
+
+```bash
+bun run lists:audit                       # the index this machine has
+bun run lists:audit path/to/titles.db     # some other one
+```
+
+It reports both directions: a language over the floor with no list, and a list whose
+language has fallen under it. Against an index built before the language crosswalk widened,
+the second direction is reported as not measured rather than as a failure -- on such a file
+a listed language can fall short for the file's reasons rather than the array's.
+
+`bun run gate` runs the four green commands, then the canary, then this. The last two
+tolerate having no index to read, and say so loudly instead of passing quietly.
+
 The build also pulls a fifth file that is not IMDb's: an id crosswalk, `tconst` to TMDB
 and TheTVDB id, queried in bulk out of Wikidata through
 [QLever](https://qlever.cs.uni-freiburg.de/). It covers 95% of films and 92% of series at

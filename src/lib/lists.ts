@@ -139,6 +139,17 @@ export interface ListLanguage {
 }
 
 /**
+ * The kind a language list ranks, spelled ONCE.
+ *
+ * `LIST_LANGUAGES` decides membership by counting ranked non-English FILMS, and `list-audit.ts`
+ * has to count exactly the rows a list would draw or its verdict is about a different set. Two
+ * copies of the word would drift the day a language list stops being films-only, and the audit
+ * would go on passing while measuring the wrong thing -- which is the silence this whole check
+ * was written to end.
+ */
+export const LANGUAGE_LIST_KIND = "movie";
+
+/**
  * The languages worth a list, and the one rule that decides which those are.
  *
  * CLOSED and editorial, exactly like `LIST_GENRES`, and now editorial in the way that array
@@ -148,6 +159,12 @@ export interface ListLanguage {
  * floor**, audited both ways against a real 1,276,669-title build and the widened crosswalk --
  * forty-five codes clear it, all forty-five are here, and no code here falls short of it. The
  * one exception this array ever carried was Chinese, and the note below is where it was spent.
+ *
+ * **That claim is CHECKED rather than remembered**, and it has to be, because the corpus moves
+ * under it: `sh` sat over the floor and out of this array from the day it grew past twelve, and
+ * the crosswalk widening carried three more over in one commit. `bun run lists:audit` compares
+ * both directions against a real index and `bun run gate` runs it -- see `./list-audit.ts` for
+ * why no unit test can, and for the one direction an older index cannot answer.
  *
  * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why this array is
  * > dozens long rather than twelve
@@ -374,7 +391,7 @@ export function computedLists(year: number): ComputedList[] {
     ...LIST_LANGUAGES.map((language) => ({
       id: `${LIST_PREFIX.language}${language.code}`,
       title: `Best films in ${language.name}`,
-      filters: { kind: "movie", lang: language.code },
+      filters: { kind: LANGUAGE_LIST_KIND, lang: language.code },
     })),
   ];
 }
