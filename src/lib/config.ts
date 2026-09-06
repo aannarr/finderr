@@ -362,6 +362,33 @@ export interface Config {
      */
     machineIdentifier?: string;
     /**
+     * May anybody with access to `machineIdentifier` sign in, with no invite at all?
+     *
+     * OFF, and it stays off until an operator says otherwise: it RELAXES the invite-only
+     * rule, which is the one product decision this file is not entitled to make for
+     * somebody else's deployment. On, gate two stops being a second filter and becomes
+     * sufficient on its own -- an account the Plex server is shared with gets a `user` row
+     * and a session the first time it signs in, and nobody mints anything.
+     *
+     * > [!CAUTION] It is REFUSED without `machineIdentifier`, at boot, by `validate`
+     * > Without a server to check against there is no household to belong to, so the
+     * > feature would degrade to "any Plex account on earth may sign in" -- an open door
+     * > wearing a login screen. `plexOpenSignupActive` owns that condition and both readers
+     * > ask it, so the boot check and the sign-in route cannot drift apart.
+     *
+     * > [!IMPORTANT] Turning this on WIDENS who reaches a process holding the arr keys
+     * > finderr's accepted-risk ruling of 2026-09-03 -- it holds full-authority Radarr and
+     * > Sonarr credentials, and a narrower one cannot be minted -- was accepted on the
+     * > basis that its audience is a handful of invited humans. This flag is what ends
+     * > that, so setting it re-opens the exposure question:
+     * > `.rclaude/project/cards/narrow-finderr-s-internet-exposure-cloudflare-access-or-a-pr.md`.
+     *
+     * Un-sharing on Plex is the revocation mechanism, and it takes effect at the NEXT
+     * sign-in: the finderr row outlives the share, and re-checking access per request
+     * would put a plex.tv call on the render path. Disable the row to revoke now.
+     */
+    openSignup: boolean;
+    /**
      * The server itself, e.g. `http://plex:32400`. Unset means no Plex mirror and
      * therefore no play links -- everything else works exactly as before.
      */
@@ -910,6 +937,9 @@ const DEFAULTS: Config = {
   plex: {
     enabled: true,
     productName: "finderr",
+    // OFF. Invite-only is the shipped rule, and a checkout that does not know which Plex
+    // server it belongs to must not open a door -- see the field.
+    openSignup: false,
   },
   auth: {
     // localhost, because a checkout of this repo is somebody else's deployment. Set
@@ -1097,6 +1127,7 @@ function envOverrides(): Record<string, unknown> {
       enabled: envBool("FINDERR_PLEX_ENABLED"),
       productName: envStr("FINDERR_PLEX_PRODUCT_NAME"),
       machineIdentifier: envStr("FINDERR_PLEX_MACHINE_ID"),
+      openSignup: envBool("FINDERR_PLEX_OPEN_SIGNUP"),
       url: envStr("FINDERR_PLEX_URL"),
       token: envStr("FINDERR_PLEX_TOKEN"),
     },
@@ -1213,6 +1244,15 @@ function validate(c: Config): void {
   // broken" rather than as "logging is off" -- that is what `enabled` is for.
   if (c.searchLog.keepRows < 1) problems.push("searchLog.keepRows must be >= 1");
 
+  // Asked for, but not live: `plexOpenSignupActive` is false, and a flag that silently does
+  // nothing is how an operator ends up believing a door is open. Refused at boot rather
+  // than at the sign-in nobody is watching -- the failure it prevents is the opposite one,
+  // where the flag DOES fire and lets in every Plex account on earth.
+  if (c.plex.openSignup && !plexOpenSignupActive(c.plex))
+    problems.push(
+      "plex.openSignup needs plex.machineIdentifier -- FINDERR_PLEX_OPEN_SIGNUP without FINDERR_PLEX_MACHINE_ID would admit any Plex account",
+    );
+
   if (c.auth.sessionDays <= 0) problems.push("auth.sessionDays must be > 0");
   if (c.auth.inviteHours <= 0) problems.push("auth.inviteHours must be > 0");
   // Short enough to brute-force is worse than absent, because absent is visible in the
@@ -1247,6 +1287,19 @@ function validate(c: Config): void {
  * the origins means moving the app is one config change rather than two, and the two can
  * never disagree.
  */
+/**
+ * Is the invite-free Plex sign-in actually live?
+ *
+ * THE ONE OWNER of that question, asked by `validate` at boot and by
+ * `/api/auth/plex/finish` at every sign-in. Two things must be true, and the second is not
+ * a formality: without a machine identifier there is no server to belong to, so a flag on
+ * its own would admit anybody who can make a Plex account in a minute. Written as an AND
+ * rather than as a check beside the flag so that no caller can forget the second half.
+ */
+export function plexOpenSignupActive(plex: Config["plex"]): boolean {
+  return plex.openSignup && !!plex.machineIdentifier;
+}
+
 export function cookieIsSecure(c: Config = loadConfig()): boolean {
   if (c.auth.cookieSecure !== undefined) return c.auth.cookieSecure;
   return c.auth.origins.every((o) => o.startsWith("https://"));

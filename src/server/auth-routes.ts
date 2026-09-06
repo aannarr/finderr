@@ -38,7 +38,7 @@ import {
 } from "../lib/auth";
 import type { AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
-import { cookieIsSecure } from "../lib/config";
+import { cookieIsSecure, plexOpenSignupActive } from "../lib/config";
 import { FirstRun } from "../lib/first-run";
 import {
   createPin,
@@ -710,26 +710,35 @@ export class AuthService {
             return this.signIn(existing.id, req);
           }
 
-          // Gate one. No invite, no account -- there is no "any Plex account may sign in".
-          if (!pending.inviteHash) {
-            this.deps.log(`auth: plex account ${account.id} is unknown and carried no invite`);
-            return json({ error: REFUSED }, { status: 403 });
-          }
-          const invite = this.deps.auth.claimInvite(pending.inviteHash);
-          if (!invite) {
-            this.deps.log("auth: plex sign-up against a dead invite");
+          /*
+            Gate one: a live invite, or -- only where the operator has opted in -- access to
+            our own Plex server standing on its own. `plexOpenSignupActive` is the single
+            owner of whether that third branch exists, and it is false unless a machine
+            identifier is configured, so the branch is unreachable without gate two above
+            having actually run. Default OFF: no flag, no third branch, no account.
+          */
+          const invite = pending.inviteHash ? this.deps.auth.claimInvite(pending.inviteHash) : null;
+          if (!invite && !plexOpenSignupActive(this.deps.cfg.plex)) {
+            const why = pending.inviteHash ? "its invite is dead" : "carried no invite";
+            this.deps.log(`auth: plex account ${account.id} has no account here and ${why}`);
             return json({ error: REFUSED }, { status: 403 });
           }
           const user = this.deps.auth.createUser({
-            displayName: invite.displayName ?? account.username ?? "finderr user",
-            role: invite.role,
+            displayName: invite?.displayName ?? account.username ?? "finderr user",
+            // An invite carries whatever role it was minted with; the open door never
+            // grants more than `user`, the same rule the Seerr import already follows.
+            role: invite?.role ?? "user",
             plexId: account.id,
             plexUsername: account.username,
           });
-          try {
-            this.deps.auth.attributeInvite(pending.inviteHash, user.id);
-          } catch (err) {
-            this.deps.log(`invite attribution failed (account is fine): ${(err as Error).message}`);
+          if (invite && pending.inviteHash) {
+            try {
+              this.deps.auth.attributeInvite(pending.inviteHash, user.id);
+            } catch (err) {
+              this.deps.log(`invite attribution failed (account is fine): ${(err as Error).message}`);
+            }
+          } else {
+            this.deps.log(`auth: plex server access alone created ${user.id} for account ${account.id}`);
           }
           return this.signIn(user.id, req);
         } catch (err) {

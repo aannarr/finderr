@@ -325,7 +325,9 @@ that needs the installed app over HTTPS -- Safari does not offer push to a tab, 
 says so rather than showing a button that cannot work.
 
 Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
-table. On a server with no accounts the first visitor creates the admin — a window that
+table. One deployment-wide exception, off unless you turn it on: point finderr at your Plex
+server and [everyone it is shared with](#letting-everyone-your-plex-server-is-shared-with-in)
+can sign in without an invitation. On a server with no accounts the first visitor creates the admin — a window that
 shuts permanently once anybody has, and never reopens — and the first boot also prints an
 invite link, which keeps working afterwards. Admins mint invites, manage users and roles,
 and can reset anyone's access. Everybody gets an account page to
@@ -476,6 +478,40 @@ cannot bootstrap from a shell.
 
 `/api/health` tells you where you stand: `auth.users: 0` means nobody has an account yet,
 so both doors above are still open.
+
+#### Letting everyone your Plex server is shared with in
+
+Invitations do not scale to a household that already exists somewhere else. If you share a
+Plex server with twenty people, you can let finderr take that as the membership list:
+
+```yaml
+environment:
+  FINDERR_PLEX_MACHINE_ID: <your server's machineIdentifier>
+  FINDERR_PLEX_OPEN_SIGNUP: 1
+```
+
+Anybody whose Plex account can see that server then signs in with "Continue with Plex" and
+gets an ordinary user account on the spot. No invitation, nothing for you to mint, and
+never more than the `user` role — an admin is still something you have to make on purpose.
+
+The machine id is not optional here and finderr refuses to start without it, because a
+Plex account on its own proves only that somebody spent a minute making one. It is the
+`machineIdentifier` of your server; the quickest way to read it is
+`curl -s -H "X-Plex-Token: $PLEX_TOKEN" http://<plex>:32400/identity`. Setting it also
+turns on the second gate for everybody else, so an already-invited user who was later
+un-shared stops being able to sign in — that is the gate working.
+
+Un-sharing on Plex is how you take access away, and it applies at their next sign-in: the
+finderr account outlives the share, so disable the user on `/admin` if you need it gone
+now. Re-checking with plex.tv on every page load would put a network call on the render
+path, which is a trade this app does not make anywhere.
+
+> [!CAUTION]
+> This changes who can reach a process holding your Radarr and Sonarr API keys — from
+> people you invited one at a time to everybody on your Plex server, including anybody they
+> hand a Plex login to. It is a good trade for a household; read
+> [Putting it on the internet](#putting-it-on-the-internet) again before making it on a
+> public hostname.
 
 #### Running without any login at all
 
@@ -642,6 +678,8 @@ rebuild.
 | `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability, and a series' keywords, cast, trailer, "more like this" and official site |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
+| `FINDERR_PLEX_MACHINE_ID` | | Your Plex server's `machineIdentifier`. Set it and a Plex sign-in additionally requires that the account can see that server — a second gate on top of the invitation, never instead of it. It does not feed the Play links, which read the id from the server itself |
+| `FINDERR_PLEX_OPEN_SIGNUP` | `false` | Let anybody your Plex server is shared with sign in with no invitation, as a `user`. Refused at boot without the id above, since without a server to belong to it would admit every Plex account there is. See [Letting everyone your Plex server is shared with in](#letting-everyone-your-plex-server-is-shared-with-in) |
 | `FINDERR_AUTH_RP_ID` | `localhost` | The bare domain passkeys are bound to. Permanent, see above |
 | `FINDERR_AUTH_RP_NAME` | `finderr` | What the OS prompt shows |
 | `FINDERR_AUTH_ORIGINS` | `http://localhost:7979,http://localhost:7980` | Comma-separated. Every origin that may complete a sign-in |
