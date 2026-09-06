@@ -14,8 +14,9 @@
  *   what its top prize has recently gone to. Ids only, so the strip is a hint at the list
  *   rather than a copy of it, and no title card machinery is involved -- see `ListPoster`
  *   for why that matters.
- * - COMPUTED -- the generated genre and decade rows, text with a completion count. Thirty
- *   poster strips is the page this docstring rejects, and correctly.
+ * - COMPUTED -- the generated genre, decade and language rows, text with a completion count.
+ *   Thirty poster strips is the page this docstring rejects, and correctly. The language
+ *   group is the one that draws only what the server has counted -- see `requiresMembers`.
  * - PEOPLE -- a list of PEOPLE rather than titles, ranked over the membership of the
  *   all-time lists above. Drawn with `PeopleLeaderboard`, the same component the award
  *   people pages use: the ranking is the parameter and the page is not.
@@ -90,33 +91,47 @@ export function ListsRoute() {
         </Section>
       )}
 
-      {groups.map((group) => (
-        <Section key={group.heading} heading={group.heading} blurb={group.blurb}>
-          <CardGrid>
-            {group.lists.map((list) => {
-              const done = completions[list.id];
-              return (
-                <ListCard
-                  key={list.id}
-                  title={list.title}
-                  subtitle={list.subtitle}
-                  to="/browse"
-                  search={searchOf(list)}
-                >
-                  {done && (
-                    <Completion
-                      owned={done.owned}
-                      total={done.size}
-                      noun={completionNoun(list.filters.kind)}
-                      className="mt-1.5 text-xs text-muted"
-                    />
-                  )}
-                </ListCard>
-              );
-            })}
-          </CardGrid>
-        </Section>
-      ))}
+      {groups.map((group) => {
+        /*
+          A group that has to PROVE its rows draws only the ones the server counted.
+
+          Which group that is, and why, is `ListGroup.requiresMembers` -- the rule lives in
+          the catalogue with every other membership rule, and this is the one line that
+          spends it. An empty result skips the whole section rather than leaving a heading
+          and a blurb over nothing, which is the rule `CURATED` above already follows.
+        */
+        const lists = group.requiresMembers
+          ? group.lists.filter((list) => completions[list.id])
+          : group.lists;
+        if (lists.length === 0) return null;
+        return (
+          <Section key={group.heading} heading={group.heading} blurb={group.blurb}>
+            <CardGrid>
+              {lists.map((list) => {
+                const done = completions[list.id];
+                return (
+                  <ListCard
+                    key={list.id}
+                    title={list.title}
+                    subtitle={list.subtitle}
+                    to="/browse"
+                    search={searchOf(list)}
+                  >
+                    {done && (
+                      <Completion
+                        owned={done.owned}
+                        total={done.size}
+                        noun={completionNoun(list.filters.kind)}
+                        className="mt-1.5 text-xs text-muted"
+                      />
+                    )}
+                  </ListCard>
+                );
+              })}
+            </CardGrid>
+          </Section>
+        );
+      })}
 
       {/*
         The caveat is stated ONCE, here, rather than on each of the three boards: they count

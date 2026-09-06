@@ -152,6 +152,25 @@ function posterStrip(
  * to argue with if this ever needs to shrink: fewer posters and a shorter board are the
  * levers, in that order. A second round trip is not one of them.
  *
+ * > [!IMPORTANT] THE TWELVE LANGUAGE LISTS ARE THE EXPENSIVE HALF OF THIS LOOP, and their
+ * > cost is what decided how many of them there are
+ * > **81.0 ms for the twelve, measured 2026-09-06** on a copy of the real 1,288,159-row index
+ * > with `ix_lang_code` in place, per-language figures in `LIST_LANGUAGES`. That is against
+ * > 36 ms for the other twenty-one lists put together, and the reason is structural rather
+ * > than fixable here: a genre or decade list is a covering seek that stops after 250 rows,
+ * > while a language list scans DOWN the rank order until 250 films in that language have
+ * > accumulated, so a language with a thin catalogue is the expensive one. Swedish would be
+ * > 45.5 ms on its own and Finnish 72.4.
+ * >
+ * > The twelve were chosen against that ladder, so the lever if this ever needs to shrink is
+ * > **fewer languages**, and the lever if it needs to GROW is not more of them: it is
+ * > denormalising `rank` into `title_lang` the way `title_genre` already carries `votes` and
+ * > `year`, which turns every one of these into the same covering seek the genre lists get.
+ * > That is `finderr-language-lists-the-thin-tail`, not this function.
+ * >
+ * > On the wire they are cheap: twelve more `{id,size,owned}` objects is ~470 bytes on a
+ * > ~5.3KB body.
+ *
  * **The all-time membership is REUSED, not re-queried.** The boards rank over the same ids
  * the completion counts are computed from, and those are already in hand in this loop --
  * asking the index for them a second time would be the one avoidable query here.

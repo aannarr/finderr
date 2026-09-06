@@ -17,7 +17,13 @@
 
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { completionNoun, kindNoun, listForFilters, RANK_EXPLAINER } from "../../../src/lib/lists";
+import {
+  completionNoun,
+  kindNoun,
+  listForFilters,
+  listLanguageName,
+  RANK_EXPLAINER,
+} from "../../../src/lib/lists";
 import { ClearChip } from "../components/Chip";
 import { Completion } from "../components/Completion";
 import { useKeyAction } from "../components/Kbd";
@@ -49,6 +55,10 @@ const PAGE = 60;
  */
 function describe(f: SearchParams): string {
   const parts = [f.sort === "rank" ? "best" : undefined, f.genre, kindNoun(f.kind)];
+  // "in Korean" rather than "Korean", for the reason `computedLists` names: we hold the
+  // film's language and not where it was made, and the preposition is what keeps the
+  // heading to the claim the filter actually made.
+  if (f.lang) parts.push(`in ${listLanguageName(f.lang) ?? f.lang}`);
   if (f.year) parts.push(`from ${f.year}`);
   else if (f.decade) parts.push(`from the ${f.decade}s`);
   return parts.filter(Boolean).join(" ");
@@ -238,7 +248,7 @@ export function BrowseRoute() {
             state, which you never reach unless the filters found nothing.
           */}
           <ClearChip count={activeFilters} onClick={clearFilters} shortcut={clearKey} />
-          {(["genre", "kind", "decade", "year"] as const).map((k) => {
+          {(["genre", "kind", "decade", "year", "lang"] as const).map((k) => {
             const v = params[k];
             if (v === undefined || v === "") return null;
             const next = { ...params };
@@ -253,7 +263,7 @@ export function BrowseRoute() {
                 // facet bar has, so the two surfaces do not disagree.
                 title={`Remove ${k} filter`}
               >
-                {k === "decade" ? `${v}s` : v} ✕
+                {k === "decade" ? `${v}s` : k === "lang" ? (listLanguageName(String(v)) ?? v) : v} ✕
               </Link>
             );
           })}

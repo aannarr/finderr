@@ -16,12 +16,15 @@ import {
   CURATED,
   completionNoun,
   computedLists,
+  isAllTimeList,
   kindNoun,
   LIST_GENRES,
+  LIST_LANGUAGES,
   LIST_SIZE,
   listDecades,
   listForFilters,
   listGroups,
+  listLanguageName,
   RANK_EXPLAINER,
 } from "./lists";
 
@@ -73,6 +76,63 @@ describe("computedLists", () => {
       expect(genres).not.toContain(unwanted);
     }
   });
+
+  test("there is a language list per catalogued language, and none is English", () => {
+    const langs = lists.map((l) => l.filters.lang).filter(Boolean);
+    expect(langs).toEqual(LIST_LANGUAGES.map((l) => l.code));
+    // Every one of these rows means "and not also in English". A list FOR English would be
+    // the one row where that rule reads as a contradiction, and `top-250` is already the
+    // list an English-speaking reader is looking for.
+    expect(langs).not.toContain("en");
+  });
+
+  test("a language list names the language, never a nationality", () => {
+    // We hold P364, the film's original LANGUAGE. Where it was made, who paid for it and
+    // whether it played in a cinema are all things this index cannot answer, so a row
+    // saying "Best Korean films" would claim more than the filter did.
+    const korean = lists.find((l) => l.filters.lang === "ko");
+    expect(korean?.title).toBe("Best films in Korean");
+    expect(korean?.id).toBe("lang-ko");
+  });
+
+  test("no language list trips the all-time predicate", () => {
+    // `isAllTimeList` is a `startsWith("top-250")` test whose second reader decides which
+    // titles the people boards on `/lists` rank over -- so an id tripping it would quietly
+    // change what "most-credited director" means. It is one naming decision, made here.
+    for (const list of lists) {
+      if (list.filters.lang) expect(isAllTimeList(list)).toBe(false);
+    }
+  });
+});
+
+describe("LIST_LANGUAGES", () => {
+  test("every code is a bare ISO 639-1 code, which is all `title_lang` stores", () => {
+    // `parseOriginCsv` keeps only two-letter codes, so a three-letter entry here would be a
+    // list that can never match a row -- and it would still cost its query every time
+    // `/lists` was drawn.
+    for (const language of LIST_LANGUAGES) expect(language.code).toMatch(/^[a-z]{2}$/);
+  });
+
+  test("codes are unique, and so are the names", () => {
+    expect(new Set(LIST_LANGUAGES.map((l) => l.code)).size).toBe(LIST_LANGUAGES.length);
+    expect(new Set(LIST_LANGUAGES.map((l) => l.name)).size).toBe(LIST_LANGUAGES.length);
+  });
+
+  test("every name is spelled, never derived from the runtime's CLDR table", () => {
+    for (const language of LIST_LANGUAGES) expect(language.name.length).toBeGreaterThan(0);
+    // Pinned rather than asserted generically: these are titles on a page, and the reason
+    // they are stored is that `Intl.DisplayNames` answers from whatever ICU the runtime
+    // shipped -- so the server and the browser could disagree about a row's name.
+    expect(listLanguageName("ko")).toBe("Korean");
+    expect(listLanguageName("pt")).toBe("Portuguese");
+  });
+
+  test("a code with no list has no name, rather than an invented one", () => {
+    // `/browse?lang=xx` is a legitimately empty page, and its heading prints the raw code.
+    // Naming a language we offer no list of would claim knowledge we did not check.
+    expect(listLanguageName("xx")).toBeUndefined();
+    expect(listLanguageName(undefined)).toBeUndefined();
+  });
 });
 
 describe("listForFilters", () => {
@@ -81,7 +141,17 @@ describe("listForFilters", () => {
     // "Best Horror" rather than at an anonymous grid.
     expect(listForFilters(YEAR, { kind: "movie", genre: "Horror" })?.id).toBe("genre-horror");
     expect(listForFilters(YEAR, { kind: "movie", decade: 2020 })?.id).toBe("decade-2020");
+    expect(listForFilters(YEAR, { kind: "movie", lang: "ko" })?.id).toBe("lang-ko");
     expect(listForFilters(YEAR, { kind: "movie" })?.id).toBe("top-250");
+  });
+
+  test("a language is compared, so a language browse is not the Top 250", () => {
+    // The one that would be silent: with `lang` left out of the comparison,
+    // `/browse?lang=ko&kind=movie&sort=rank` resolves to `finderr Top 250` and prints THAT
+    // list's completion under a Korean heading -- a right-looking number for another set.
+    expect(listForFilters(YEAR, { kind: "movie", lang: "ko" })?.id).not.toBe("top-250");
+    // And a language we offer no list of is not a list at all.
+    expect(listForFilters(YEAR, { kind: "movie", lang: "xx" })).toBeUndefined();
   });
 
   test("a filter the catalogue does not carry is NOT that list", () => {
@@ -108,6 +178,25 @@ describe("listGroups", () => {
 
   test("an empty group is dropped rather than drawn as a bare heading", () => {
     for (const group of listGroups(YEAR)) expect(group.lists.length).toBeGreaterThan(0);
+  });
+
+  test("the language group exists, because a list with no group renders nowhere", () => {
+    // The silent failure this catches: `listGroups` matches ids by PREFIX and drops any
+    // group that came out empty, so a family added to `computedLists` alone would pass every
+    // other test here, ride the completion payload, cost its query, and draw on no page.
+    const language = listGroups(YEAR).find((g) => g.lists.some((l) => l.filters.lang));
+    expect(language).toBeDefined();
+    expect(language?.lists).toHaveLength(LIST_LANGUAGES.length);
+  });
+
+  test("only the language group has to prove its rows", () => {
+    // Genre and decade are carried by every index this product has ever built, so drawing
+    // them before the completion lands is what keeps `/lists` complete on first paint.
+    // Language arrived in a build stage that indexes in the field predate, so its rows have
+    // to be substantiated -- see `ListGroup.requiresMembers`.
+    for (const group of listGroups(YEAR)) {
+      expect(group.requiresMembers ?? false).toBe(group.lists.some((l) => l.filters.lang !== undefined));
+    }
   });
 });
 

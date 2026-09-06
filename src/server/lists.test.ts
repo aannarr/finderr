@@ -78,6 +78,24 @@ describe("completion counts", () => {
     expect(ids).toContain("top-250");
   });
 
+  test("a language list is counted like any other, and omitted the same way", () => {
+    // The route hands `members` the list's whole filter object, so a language list is one
+    // more ranked query -- there is no second code path for it. What differs is that an
+    // index built before the origin stage returns nothing for EVERY one of them, which is
+    // the signal `/lists` reads to draw no language rows at all.
+    const languages = computedLists(YEAR)
+      .filter((l) => l.filters.lang)
+      .map((l) => l.id);
+    expect(languages.length).toBeGreaterThan(0);
+
+    const counted = completionPayload(deps({ ownedCount: () => 7 })).completions.map((c) => c.id);
+    for (const id of languages) expect(counted).toContain(id);
+
+    const originless = completionPayload(deps({ members: members(250, languages) })).completions;
+    for (const id of languages) expect(originless.map((c) => c.id)).not.toContain(id);
+    expect(originless.map((c) => c.id)).toContain("top-250");
+  });
+
   test("an index with nothing ranked yields an empty payload rather than a wall of zeroes", () => {
     expect(completionPayload(deps({ members: () => [] }))).toEqual({
       completions: [],

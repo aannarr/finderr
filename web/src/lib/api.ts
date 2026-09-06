@@ -291,6 +291,13 @@ export interface Filters {
   decade?: number;
   year?: number;
   kind?: string;
+  /**
+   * The language a list is OF -- see `BrowseFilters.lang` for what it means to the query.
+   *
+   * A filter like the four above, and not to be confused with the deployment's language
+   * PREFERENCE, which never reaches the client as anything but the `anyLanguage` switch.
+   */
+  lang?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -270,8 +270,13 @@ export const INDEX_STAGES = {
    * does not: an index built before this stage has NO `title_lang` rows at all, so a
    * configured language preference would filter every title away. `hasOrigin` is what stops
    * that at query time and this stamp is what gets it fixed at the next boot.
+   *
+   * **v2 adds `ix_lang_code`**, which the language lists need to be affordable -- see
+   * `INDEXES.origin`. The data is unchanged, so the bump buys nothing but the index; it is
+   * still a bump, because an index built at v1 would draw those lists at nearly twice the
+   * cost and nothing on screen would say so.
    */
-  origin: () => JSON.stringify({ v: 1 }),
+  origin: () => JSON.stringify({ v: 2 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

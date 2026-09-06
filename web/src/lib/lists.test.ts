@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { CURATED, computedLists, type ListFilters } from "../../../src/lib/lists";
-import { validateSearch } from "./search-params";
+import { filtersOf, validateSearch } from "./search-params";
 
 const YEAR = 2026;
 
@@ -26,6 +26,7 @@ describe("computedLists in the URL", () => {
       expect(parsed.kind).toBe(list.filters.kind);
       expect(parsed.genre).toBe(list.filters.genre);
       expect(parsed.decade).toBe(list.filters.decade);
+      expect(parsed.lang).toBe(list.filters.lang);
     }
   });
 
@@ -39,7 +40,46 @@ describe("computedLists in the URL", () => {
       expect(parsed.decade).toBe(list.filters.decade);
       expect(parsed.genre).toBe(list.filters.genre);
       expect(parsed.kind).toBe(list.filters.kind);
+      expect(parsed.lang).toBe(list.filters.lang);
     }
+  });
+
+  test("every list's filters reach the API -- `filtersOf` is a PICK list", () => {
+    /*
+      The failure `filtersOf` was rewritten to make impossible, in the other direction. It
+      picks known keys by name, so a filter added to the catalogue and not to that function
+      is silently dropped on the way to `/api/browse`: the page draws "Best films in Korean"
+      over the unfiltered top 250, and every assertion above still passes because the URL was
+      fine. Only comparing the two objects catches it.
+    */
+    for (const list of computedLists(YEAR)) {
+      expect(filtersOf(validateSearch({ ...list.filters, sort: "rank" }))).toEqual({ ...list.filters });
+    }
+  });
+});
+
+describe("a language in the URL", () => {
+  test("a bare two-letter code survives, lower-cased", () => {
+    // `?lang=KO` and `?lang=ko` are one page and one cache entry, the same normalisation
+    // `country` does in the other direction.
+    expect(validateSearch({ lang: "ko" }).lang).toBe("ko");
+    expect(validateSearch({ lang: "KO" }).lang).toBe("ko");
+    expect(validateSearch({ lang: " ko " }).lang).toBe("ko");
+  });
+
+  test("anything that is not a language code is dropped, like `decade=banana`", () => {
+    // Hand-typed and stale URLs are expected input here, and this value reaches SQL as a
+    // parameter. Nothing throws; the key is simply absent.
+    for (const junk of ["banana", "kor", "k", "", "  ", "k0", "en;--"]) {
+      expect(validateSearch({ lang: junk }).lang).toBeUndefined();
+    }
+  });
+
+  test("a well-formed code with no list of its own still filters", () => {
+    // The validator checks SHAPE, never the catalogue: which languages have a row on
+    // `/lists` is an editorial decision, and a browse is free to filter on any of them.
+    expect(validateSearch({ lang: "sv" }).lang).toBe("sv");
+    expect(filtersOf(validateSearch({ lang: "sv" }))).toEqual({ lang: "sv" });
   });
 });
 

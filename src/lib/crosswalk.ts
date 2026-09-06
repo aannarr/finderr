@@ -475,6 +475,19 @@ export function loadPersonCrosswalk(db: Database, rows: PersonCrosswalkRow[]): n
  */
 export const UNKNOWN_LANG = "";
 
+/**
+ * English, spelled once, because two rules in this product are stated relative to it.
+ *
+ * A NAMED LANGUAGE LIST is "in this language and not also in English" -- see
+ * `computedLists`. That rule needs the code as a value rather than as a literal typed into
+ * a WHERE clause and again into a catalogue comment, which is how the two would come to
+ * disagree about what "foreign" means.
+ *
+ * It is not a policy in itself: which languages get a list is editorial and lives in
+ * `LIST_LANGUAGES`. This is only the code those lists are foreign TO.
+ */
+export const ENGLISH_LANG = "en";
+
 export const ORIGIN_SCHEMA = `
 -- One row per (title, original language). EXPLODED rather than a comma column on title,
 -- for the same reason title_genre is: a language preference is a set membership test, and

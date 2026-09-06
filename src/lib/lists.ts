@@ -122,6 +122,93 @@ export const LIST_GENRES = [
   "Thriller",
 ] as const;
 
+/**
+ * A language worth a list of its own: the code we filter on, and what to call it.
+ *
+ * The NAME is stored rather than derived from `Intl.DisplayNames`, and that is the same
+ * editorial call `LIST_GENRES` makes. A list title is a title -- it is pinned by a test, it
+ * must read the same on a server and in a browser, and `DisplayNames` answers from whatever
+ * CLDR table the runtime happens to ship. Deriving it would put the name of a row on this
+ * page at the mercy of an ICU upgrade.
+ */
+export interface ListLanguage {
+  /** ISO 639-1, as `title_lang` stores it. */
+  code: string;
+  /** English name, for the row and the browse heading. */
+  name: string;
+}
+
+/**
+ * The languages worth a list, and what each one costs to draw.
+ *
+ * CLOSED and editorial, exactly like `LIST_GENRES` -- but unlike genres there is a second,
+ * measured constraint, because every list here is one more ranked query inside the single
+ * `/api/lists/completion` request. Measured on a copy of the real 1,288,159-row index on
+ * 2026-09-06 with `ix_lang_code` in place, milliseconds to resolve a full 250-title
+ * membership: Hindi 3.2, French 3.7, Japanese 3.9, Tamil 4.9, Malayalam 6.4, Telugu 6.6,
+ * Spanish 6.8, Italian 6.9, Russian 6.9, German 7.1, Bengali 8.4, Korean 10.8, Portuguese
+ * 11.8. **Twelve of them, totalling 81.0 ms**, which is what `completionPayload` records
+ * against its own budget.
+ *
+ * The cost is set by how deep into the rank order a language's 250th film sits, so a language
+ * with a thin catalogue is the EXPENSIVE one: Swedish is 45.5 ms, Chinese 62.9, Danish 70.1,
+ * Finnish 72.4. Those are the languages this list leaves out, not because nobody wants them
+ * but because one of them costs as much as six of these. `finderr-language-lists-the-thin-tail`
+ * is where that is fixed properly, by denormalising `rank` into `title_lang` the way
+ * `title_genre` already carries `votes` and `year`.
+ *
+ * **Chinese is the omission worth explaining, because its number is misleading.** `zh` reaches
+ * only 298 ranked non-English films, not because the corpus lacks Chinese cinema but because
+ * P364 records most of it under codes with no two-letter ISO 639-1 form, and `parseOriginCsv`
+ * keeps only two-letter codes. Drawing a "Best films in Chinese" from a set we know is
+ * undercounted by an order of magnitude would be a list that quietly misrepresents itself.
+ */
+export const LIST_LANGUAGES: readonly ListLanguage[] = [
+  { code: "bn", name: "Bengali" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "hi", name: "Hindi" },
+  { code: "it", name: "Italian" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "ml", name: "Malayalam" },
+  { code: "pt", name: "Portuguese" },
+  { code: "ru", name: "Russian" },
+  { code: "es", name: "Spanish" },
+  { code: "ta", name: "Tamil" },
+];
+
+/**
+ * What a language list is called, for a code that has one.
+ *
+ * `undefined` for anything else, and the caller prints the raw code -- a browse can be
+ * bookmarked with any two letters, and inventing a name for a language we do not offer a
+ * list of would claim more than we know. ONE owner, so the row on `/lists` and the heading
+ * on `/browse` cannot spell the same list two ways.
+ */
+export function listLanguageName(code: string | undefined): string | undefined {
+  return LIST_LANGUAGES.find((l) => l.code === code)?.name;
+}
+
+/**
+ * The id prefix each generated family of lists carries, spelled ONCE.
+ *
+ * `computedLists` builds the ids and `listGroups` matches them, so the two were already two
+ * copies of `"genre-"` and `"decade-"`. A third family made that a pattern rather than a
+ * coincidence, and a family whose prefix does not match its group renders NOWHERE while
+ * still costing its query -- silently, because `listGroups` drops an empty group.
+ *
+ * > [!CAUTION] No prefix here may start with `top-250`
+ * > `isAllTimeList` is a `startsWith` test with two readers, and the second one decides what
+ * > the people boards on `/lists` rank over. An id that trips it would quietly change what
+ * > "most-credited director" means.
+ */
+const LIST_PREFIX = {
+  genre: "genre-",
+  decade: "decade-",
+  language: "lang-",
+} as const;
+
 /** How many decades back to offer, from the current one. */
 const DECADES_BACK = 7;
 
@@ -158,14 +245,31 @@ export function computedLists(year: number): ComputedList[] {
       filters: { kind: "tvSeries" },
     },
     ...LIST_GENRES.map((genre) => ({
-      id: `genre-${genre.toLowerCase()}`,
+      id: `${LIST_PREFIX.genre}${genre.toLowerCase()}`,
       title: `Best ${genre}`,
       filters: { kind: "movie", genre },
     })),
     ...listDecades(year).map((decade) => ({
-      id: `decade-${decade}`,
+      id: `${LIST_PREFIX.decade}${decade}`,
       title: `Best of the ${decade}s`,
       filters: { kind: "movie", decade },
+    })),
+    /*
+      "Best films IN Korean" rather than "Best Korean films", and the preposition is the
+      honest half of the sentence.
+
+      What we hold is the film's original LANGUAGE, from Wikidata's P364. We do not hold
+      where it was made, who paid for it, or whether it ever played in a cinema -- so a row
+      claiming national cinema would be claiming a fact this index does not carry. Naming the
+      language names exactly what the filter did.
+
+      The English exclusion that makes these lists mean something is stated once, on the
+      group, rather than thirteen times in thirteen subtitles -- see `listGroups`.
+    */
+    ...LIST_LANGUAGES.map((language) => ({
+      id: `${LIST_PREFIX.language}${language.code}`,
+      title: `Best films in ${language.name}`,
+      filters: { kind: "movie", lang: language.code },
     })),
   ];
 }
@@ -178,8 +282,10 @@ export function computedLists(year: number): ComputedList[] {
  * is the reverse of `computedLists`, and it lives beside it for that reason: one file knows
  * what a list's filters are, in both directions.
  *
- * Compared on the FOUR filter keys rather than by deep equality, so a URL carrying an extra
- * param still resolves to its list, and a URL missing one does not.
+ * Compared on the FIVE filter keys rather than by deep equality, so a URL carrying an extra
+ * param still resolves to its list, and a URL missing one does not. Every key a list can
+ * carry has to be here: one left out would make `/browse?lang=ko&kind=movie&sort=rank`
+ * resolve to `finderr Top 250` and print that list's completion under a language heading.
  */
 export function listForFilters(year: number, filters: BrowseFilters): ComputedList | undefined {
   return computedLists(year).find(
@@ -187,7 +293,8 @@ export function listForFilters(year: number, filters: BrowseFilters): ComputedLi
       l.filters.kind === filters.kind &&
       l.filters.genre === filters.genre &&
       l.filters.decade === filters.decade &&
-      l.filters.year === filters.year,
+      l.filters.year === filters.year &&
+      l.filters.lang === filters.lang,
   );
 }
 
@@ -203,11 +310,28 @@ export function isAllTimeList(list: ComputedList): boolean {
   return list.id.startsWith("top-250");
 }
 
-/** The three groups `/lists` draws, so the route holds no membership rules of its own. */
+/** The four groups `/lists` draws, so the route holds no membership rules of its own. */
 export interface ListGroup {
   heading: string;
   blurb?: string;
   lists: ComputedList[];
+  /**
+   * Draw a row only once the server has confirmed the list has members.
+   *
+   * OFF for genre and decade, and that asymmetry is deliberate rather than an oversight.
+   * Genre and decade are properties every index this product has ever built carries, so
+   * those rows are always substantiable and drawing them before the completion payload lands
+   * is what keeps `/lists` complete on first paint. LANGUAGE arrived in a build stage that
+   * indexes in the field predate: on one of those `title_lang` does not exist, the membership
+   * query returns nothing, and a row drawn anyway would be a link to a page reading "Nothing
+   * matches that" under the heading "Best films in Korean".
+   *
+   * The signal is the completion the page already fetches -- a list with no members is
+   * omitted from it (see `completionPayload`) -- so this costs no extra request and no
+   * capability flag. Degrading to NOTHING rather than to an empty product is the rule the
+   * card that built these lists set, and this is where it is enforced.
+   */
+  requiresMembers?: boolean;
 }
 
 export function listGroups(year: number): ListGroup[] {
@@ -219,8 +343,20 @@ export function listGroups(year: number): ListGroup[] {
       blurb: "Every title in the index, weighted by its rating and how many people voted.",
       lists: all.filter(isAllTimeList),
     },
-    { heading: "By genre", lists: of("genre-") },
-    { heading: "By decade", lists: of("decade-") },
+    { heading: "By genre", lists: of(LIST_PREFIX.genre) },
+    { heading: "By decade", lists: of(LIST_PREFIX.decade) },
+    {
+      heading: "By language",
+      // The English exclusion, stated ONCE for the whole group. It is the rule that makes
+      // every row here mean what its name says, and a reader who does not know it would
+      // reasonably wonder why a film they think of as Japanese is missing.
+      blurb:
+        "Films in one language and not also in English, so a mostly-English film with a few " +
+        "subtitled scenes is not in them. Original language as Wikidata records it -- where a " +
+        "film was made is a different question, and not one this index can answer.",
+      lists: of(LIST_PREFIX.language),
+      requiresMembers: true,
+    },
   ].filter((g) => g.lists.length > 0);
 }
 

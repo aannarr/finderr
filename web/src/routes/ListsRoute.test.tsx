@@ -117,6 +117,39 @@ describe("the whole page", () => {
     expect(block?.textContent).not.toContain("Best Action");
   });
 
+  /*
+    THE LANGUAGE GROUP DEGRADES TO NOTHING, and these two are the pair that says so.
+
+    On an index built before the origin stage `title_lang` does not exist, the membership
+    query returns nothing, and the completion payload omits every language list. A row drawn
+    anyway would be a link to a page reading "Nothing matches that" under the heading "Best
+    films in Korean" -- degrading to an empty PRODUCT, which is the one thing the card that
+    built these lists ruled out.
+  */
+  test("no language row, and no heading over them, until the server has counted one", async () => {
+    stubFetch(EMPTY);
+    render(await routed());
+
+    await waitFor(() => expect(paths).toEqual(["/api/lists/completion"]));
+    expect(screen.queryByText("Best films in Korean")).toBeNull();
+    expect(screen.queryByText("By language")).toBeNull();
+    // The groups that need no proof are untouched -- they are carried by every index this
+    // product has ever built, and drawing them at once is what keeps this page complete.
+    expect(screen.getByText("Best Action")).toBeDefined();
+    expect(screen.getByText("finderr Top 250")).toBeDefined();
+  });
+
+  test("a counted language draws its row, and an uncounted sibling still does not", async () => {
+    stubFetch({ ...EMPTY, completions: [{ id: "lang-ko", size: 250, owned: 12 }] });
+    render(await routed());
+
+    await waitFor(() => expect(screen.getByText("Best films in Korean")).toBeDefined());
+    expect(screen.getByText("By language")).toBeDefined();
+    // Per ROW rather than per group: an index can hold Korean and nothing in Bengali, and
+    // the row it cannot substantiate is the one that goes.
+    expect(screen.queryByText("Best films in Bengali")).toBeNull();
+  });
+
   test("a poster is drawn INSIDE the award's own link, and never as a link of its own", async () => {
     // Nested links are not a thing a browser can render, and the strip is decoration for a
     // row that already says where it goes -- so it is hidden from the accessibility tree

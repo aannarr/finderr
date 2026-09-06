@@ -119,6 +119,15 @@ mkdirSync(p.root, { recursive: true });
 
 const log = (...args: unknown[]) => console.log(`[finderr]`, ...args);
 
+/**
+ * A bare ISO 639-1 code, which is the whole validation `?lang=` admits of.
+ *
+ * The set of REAL codes is not checked here and deliberately: which languages the index
+ * holds is a property of the file, and a code nothing matches is an empty page rather than
+ * an error. This only keeps anything that is not shaped like a language code out of SQL.
+ */
+const LANG_CODE = /^[a-z]{2}$/;
+
 // MUST run before the first `new Database()` anywhere in this process. On macOS,
 // Apple's SQLite refuses to load extensions, so Bun has to be pointed at a different
 // libsqlite3 -- and that switch is process-global and one-shot. No-op on Linux.
@@ -1930,6 +1939,21 @@ const appRoutes = {
       decade: num("decade"),
       year: num("year"),
       kind: u.searchParams.get("kind") ?? undefined,
+      /*
+        The LIST's own language, which is the one language thing that does belong in a URL.
+
+        It names a page -- "Best films in Korean" -- the way `genre` does, so it is a FILTER
+        and travels with the address, while `languages` below stays a deployment preference
+        the client may only switch off. `browseSql` gives this one precedence: a reader who
+        named a language has already overridden the default.
+
+        Validated to a bare ISO 639-1 code rather than passed through, on the same terms as
+        `sort`: a stale or hand-typed value is dropped, exactly as `decade=banana` is. A
+        well-formed code we hold nothing for is a legitimately empty page, not an error.
+      */
+      lang: LANG_CODE.test(u.searchParams.get("lang") ?? "")
+        ? (u.searchParams.get("lang") as string)
+        : undefined,
       // An unknown `sort` falls back to the default rather than 400ing: it reaches SQL as
       // an ORDER BY, so it is validated against the closed union at the door, and a stale
       // bookmark asking for a sort we removed should still render the grid.
