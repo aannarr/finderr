@@ -17,8 +17,10 @@
  * everything asks is a page where nothing is asked.
  */
 
-import { type ReactNode, useState } from "react";
-import { LINK_BUTTON } from "../lib/ui";
+import { type ReactNode, useId, useState } from "react";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Switch } from "./ui/switch";
 
 /**
  * The in-flight state every control here shares: busy while saving, and the server's own words
@@ -94,10 +96,10 @@ export function QuotaField(props: {
           run(() => props.save(n));
         }}
       >
-        <label htmlFor={props.id} className="text-sm">
+        <label htmlFor={props.id} className="text-sm font-medium">
           {props.label}
         </label>
-        <input
+        <Input
           id={props.id}
           name={props.id}
           type="number"
@@ -105,29 +107,41 @@ export function QuotaField(props: {
           step={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          className="w-20 rounded-lg border border-line bg-surface px-2 py-1 text-sm tabular-nums"
+          // `aria-invalid` is what turns the field itself red, so the message beside it is
+          // a second telling rather than the only one.
+          aria-invalid={invalid !== null || undefined}
+          className="w-24 tabular-nums"
         />
-        <button type="submit" disabled={busy} className={LINK_BUTTON}>
+        <Button type="submit" size="sm" disabled={busy}>
           {busy ? "Saving…" : "Save"}
-        </button>
+        </Button>
         {secondary && (
-          <button type="button" disabled={busy} onClick={() => run(secondary.run)} className={LINK_BUTTON}>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => run(secondary.run)}>
             {secondary.label}
-          </button>
+          </Button>
         )}
         {(invalid ?? error) && <span className="text-xs text-danger">{invalid ?? error}</span>}
       </form>
-      <p className="mt-1 text-xs text-muted">{props.children}</p>
+      <p className="mt-1.5 text-xs text-muted">{props.children}</p>
     </div>
   );
 }
 
 /**
- * A setting that is on or off, flipped by a button that says what pressing it would do.
+ * A setting that is on or off, flipped by a real switch.
  *
- * The button's words are a prop rather than "On"/"Off", because the two live instances mean
- * different things -- one is about a person, the other about every account made from now on --
- * and a switch whose label does not say who it affects is a switch somebody flips twice.
+ * > [!IMPORTANT] IT WAS A LINK READING "Turn off for this person", and the switch is not a restyle
+ * > A boolean drawn as a text link has to state the INVERSE of its own value to be useful --
+ * > the words on screen describe the state you are NOT in. That reads backwards, it cannot be
+ * > scanned down a column of settings, and there is nothing on the page saying which way the
+ * > setting currently points except by implication. A switch shows the STATE, which is the
+ * > thing a reader came for, and the action is the affordance rather than the label.
+ *
+ * **`action` survives as the ACCESSIBLE name and is still a prop**, because the two live
+ * instances mean different things -- one is about a person, the other about every account made
+ * from now on -- and a switch announced only as "Assistant" is a switch somebody flips on the
+ * wrong screen. A sighted reader gets that from the heading above it; a screen reader gets it
+ * from here.
  */
 export function ToggleSetting(props: {
   label: string;
@@ -139,22 +153,32 @@ export function ToggleSetting(props: {
   children: ReactNode;
 }) {
   const { busy, error, run } = useSaving();
+  // `useId` rather than a caller-supplied one: unlike `QuotaField` there is nothing here a
+  // caller needs to address, and two of these are on screen together on `/account`.
+  const id = useId();
 
   return (
-    <div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm">{props.label}</span>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => run(() => props.save(!props.on))}
-          className={LINK_BUTTON}
-        >
-          {busy ? "Saving…" : props.action(props.on)}
-        </button>
-        {error && <span className="text-xs text-danger">{error}</span>}
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <label htmlFor={id} className="text-sm font-medium">
+          {props.label}
+        </label>
+        <p className="mt-1.5 text-xs text-muted">{props.children}</p>
+        {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
-      <p className="mt-1 text-xs text-muted">{props.children}</p>
+      {/*
+        The switch sits at the END of the row rather than beside the label, so a card of
+        several settings has one column of controls to run an eye down -- which is the whole
+        reason a switch beats a sentence here.
+      */}
+      <Switch
+        id={id}
+        checked={props.on}
+        disabled={busy}
+        aria-label={props.action(props.on)}
+        onCheckedChange={(on) => run(() => props.save(on))}
+        className="mt-0.5 shrink-0"
+      />
     </div>
   );
 }

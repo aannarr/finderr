@@ -36,7 +36,11 @@ describe("the people list", () => {
     const html = await render([user()]);
     expect(html).toContain("Ada");
     expect(html).toContain("Member");
-    expect(html).toContain("last seen");
+    // "Last seen" is a COLUMN now rather than a phrase repeated on every row -- the date is
+    // in the cell under it. Both spellings answer "when were they here"; this is the one the
+    // table draws.
+    expect(html).toContain("Last seen");
+    expect(html).toContain("Sep 4, 2026");
     expect(html).toContain("3 this week");
   });
 
@@ -55,13 +59,26 @@ describe("the people list", () => {
   test("no row carries an action", async () => {
     const html = await render([user({ role: "admin" }), user({ id: "u2", disabled: true })]);
     expect(html).not.toContain("<button");
-    for (const verb of ["Make admin", "Demote", "Disable", "Reset access", "Remove"]) {
+    /*
+      The VERBS, spelled as the person page spells them. They were bare words until
+      2026-09-06, and `"Disable"` then matched the "Disabled" STATUS BADGE the redesign added
+      -- a row saying what is true about somebody, which is the opposite of a row offering to
+      do something to them. A guard that fires on the fact it is meant to permit is a guard
+      that gets deleted, so it names the whole control instead.
+    */
+    for (const verb of [
+      "Make administrator",
+      "Demote to member",
+      "Disable this account",
+      "Reset access",
+      "Remove this account",
+    ]) {
       expect(html).not.toContain(verb);
     }
   });
 
   test("a disabled account says so, because that is why they cannot get in", async () => {
-    expect(await render([user({ disabled: true })])).toContain("disabled");
+    expect(await render([user({ disabled: true })])).toContain("Disabled");
   });
 
   test("an administrator is named as one", async () => {

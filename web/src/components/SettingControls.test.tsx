@@ -113,15 +113,33 @@ describe("ToggleSetting", () => {
     </ToggleSetting>
   );
 
-  test("the button says what pressing it would do, not what the state is", () => {
+  /*
+    REWRITTEN 2026-09-06 WHEN THE TEXT LINK BECAME A REAL SWITCH, and every premise survived.
+
+    These four asserted a `<button>` whose LABEL was the inverse of the state -- "Turn off"
+    while the setting was on. The control is now a switch, so the state is what is drawn and
+    the action is the affordance; the four things worth defending are unchanged and are what
+    each test still says. Only the mechanism moved, which is exactly when a test is edited
+    rather than deleted.
+  */
+  const flip = () => fireEvent.click(screen.getByRole("switch"));
+
+  test("the switch shows the STATE, and still announces what flipping it would do", () => {
     render(toggle({ on: true }));
-    expect(screen.getByRole("button", { name: "Turn off" })).toBeDefined();
+    const sw = screen.getByRole("switch", { name: "Turn off" });
+    // The state is the thing a reader came for, and `aria-checked` is where a switch keeps it.
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("an off setting draws an off switch rather than an inverted label", () => {
+    render(toggle({ on: false }));
+    expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false");
   });
 
   test("pressing it sends the OPPOSITE of the current state", async () => {
     const sent: boolean[] = [];
     render(toggle({ on: true, save: async (on) => void sent.push(on) }));
-    press("Turn off");
+    flip();
     await waitFor(() => expect(sent).toEqual([false]));
   });
 
@@ -133,13 +151,18 @@ describe("ToggleSetting", () => {
         },
       }),
     );
-    press("Turn off");
+    flip();
     await waitFor(() => expect(screen.getByText("that is the last admin")).toBeDefined());
   });
 
-  test("it is disabled while saving", () => {
+  /*
+    A switch has no "Saving…" to read, so the in-flight state is the DISABLED attribute and
+    nothing else -- which makes this the one of the four that would silently stop meaning
+    anything if it were left asserting a label. Two flips racing one save is the bug.
+  */
+  test("it cannot be flipped again while the first save is in flight", () => {
     render(toggle({ save: pending }));
-    press("Turn off");
-    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
+    flip();
+    expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -150,10 +150,13 @@ describe("saving a site default", () => {
     });
     render(await routed());
 
+    // `switch` rather than `button` since 2026-09-06: the control is a real switch now, and
+    // its accessible name is still what flipping it would DO. The property under test is
+    // unchanged -- that the redraw comes from the server's answer and not from what was sent.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Turn off for new accounts" })).toBeDefined(),
+      expect(screen.getByRole("switch", { name: "Turn off for new accounts" })).toBeDefined(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Turn off for new accounts" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Turn off for new accounts" }));
 
     await waitFor(() =>
       expect(calls.filter((c) => c.method === "PATCH")).toEqual([
@@ -161,7 +164,7 @@ describe("saving a site default", () => {
       ]),
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Turn on for new accounts" })).toBeDefined(),
+      expect(screen.getByRole("switch", { name: "Turn on for new accounts" })).toBeDefined(),
     );
   });
 });

@@ -1,7 +1,7 @@
 /**
  * `/admin/users/:id` -- one person, whole, and everything an operator may do to them.
  *
- * Five blocks answering the questions an operator has about somebody: who are they, what may
+ * Six blocks answering the questions an operator has about somebody: who are they, what may
  * we do about them, what have we decided for them, how do they get in, and what have they
  * been doing. The READ half arrives from ONE call -- `GET /api/admin/users/:id`, the
  * admin-scoped twin of `/api/auth/me` -- so the page renders in one step rather than four,
@@ -16,13 +16,23 @@
  *
  * A refusal lands ON the control that provoked it, never at the top of the page: "that is the
  * last admin" is an answer to one button, and this page has seven.
+ *
+ * > [!NOTE] THE LAYOUT IS TWO COLUMNS AND THE SPLIT IS BY WHO ASKS, not by size
+ * > The wide column is what an operator came to CHANGE -- the actions and the two settings --
+ * > and the rail is what they came to CHECK: how this person gets in, and what they have been
+ * > doing. The single scrolling column this replaced put "Remove this account" and "they have
+ * > one passkey, on a device that will not survive being lost" nine hundred pixels apart, and
+ * > the second is the fact that should stop the first.
  */
 
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useState } from "react";
+import { useCallback, useState } from "react";
+import { AdminCard, Empty } from "../components/admin/AdminCard";
+import { UserAvatar, UserBadges } from "../components/admin/UserIdentity";
 import { ConfirmAction } from "../components/ConfirmAction";
 import { QuotaField, ToggleSetting } from "../components/SettingControls";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
+import { Separator } from "../components/ui/separator";
 import {
   type AdminQuotaState,
   type AdminUserDetail,
@@ -65,111 +75,131 @@ interface Acting {
   remove: () => Promise<void>;
 }
 
-/** A titled block. Every section of this page is one, so the heading style has one owner. */
-function Block(props: { title: string; children: ReactNode }) {
+/**
+ * A row inside a card -- a passkey, a session.
+ *
+ * The FACT is on the left and its verb on the right, which is what makes a stack of them
+ * scannable: one column of names, one column of controls. They were one baseline before, so
+ * "Revoke" landed at a different x on every row depending on how long the device name was.
+ */
+function Row({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <section>
-      <h2 className="text-sm font-medium">{props.title}</h2>
-      {props.children}
-    </section>
+    <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-surface-2/40 px-3 py-2.5">
+      <div className="min-w-0 text-sm">{children}</div>
+      {action}
+    </li>
   );
 }
 
-/** The rows inside a block: a bordered list, or a sentence saying why there are none. */
-function Rows(props: { empty: string; children: ReactNode[] }) {
-  if (props.children.length === 0) return <p className="mt-2 text-sm text-muted">{props.empty}</p>;
-  return <ul className="mt-2 flex flex-col gap-2">{props.children}</ul>;
+function Rows({ empty, children }: { empty: string; children: React.ReactNode[] }) {
+  if (children.length === 0) return <Empty>{empty}</Empty>;
+  return <ul className="flex flex-col gap-2">{children}</ul>;
 }
 
-const ROW = "rounded-lg border border-line bg-surface px-3 py-2 text-sm";
-
+/**
+ * The header: who this is, at a size that answers "am I on the right person" from across the
+ * room.
+ *
+ * It carries the DISC as well as the name, and that is the whole reason the disc exists -- an
+ * operator arrives here from a list of thirteen and the next thing they do is destructive.
+ */
 function Identity({ user }: Pick<AdminUserDetail, "user">) {
   return (
-    <section>
-      <h1 className="text-xl font-semibold tracking-tight">
-        {user.displayName}
-        {user.disabled && <span className="ml-3 align-middle text-sm text-danger">disabled</span>}
-      </h1>
-      <p className="mt-1 text-sm text-muted">
-        {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")} ·
-        last seen {formatStamp(user.lastSeenAt, "never")}
-      </p>
-      {/*
-        Plex is a way IN as much as a way to watch, so it belongs in the identity line rather
-        than under access: an account with a broken passkey and a live Plex link is not
-        locked out, and an operator reading this needs to know that before resetting anything.
-      */}
-      <p className="mt-1 text-sm text-muted">
-        {user.plexConnected
-          ? `Plex connected as ${user.plexUsername ?? "an unnamed account"}.`
-          : "No Plex account connected."}
-      </p>
+    <section className="flex items-start gap-4">
+      <UserAvatar user={user} size="lg" />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <h1 className="truncate text-2xl font-semibold tracking-tight">{user.displayName}</h1>
+          <UserBadges user={user} />
+        </div>
+        <p className="mt-1 text-sm text-muted">
+          {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")}{" "}
+          · last seen {formatStamp(user.lastSeenAt, "never")}
+        </p>
+        {/*
+          Plex is a way IN as much as a way to watch, so it belongs in the identity line rather
+          than under access: an account with a broken passkey and a live Plex link is not
+          locked out, and an operator reading this needs to know that before resetting anything.
+        */}
+        <p className="mt-0.5 text-sm text-muted">
+          {user.plexConnected
+            ? `Plex connected as ${user.plexUsername ?? "an unnamed account"}.`
+            : "No Plex account connected."}
+        </p>
+      </div>
     </section>
   );
 }
 
 function Passkey({ credential, acting }: { credential: CredentialSummary; acting: Acting }) {
   return (
-    <li className={ROW}>
-      {credential.label ?? credential.deviceType ?? "passkey"}
-      <span className="text-muted">
-        {" "}
-        · added {formatStamp(credential.createdAt, "never")} · last used{" "}
+    <Row
+      action={
+        /*
+          NO "that is their last way in" GUARD, unlike the self-service route on the account
+          page. Somebody removing their own last passkey has locked themselves out by accident;
+          an admin revoking one is doing it BECAUSE the device is gone, and the way back in is
+          the invite "Reset access" mints.
+        */
+        <ConfirmAction
+          label="Revoke"
+          question="Revoke this passkey? That device can never sign in again."
+          confirmLabel="Yes, revoke"
+          busyLabel="Revoking…"
+          onConfirm={async () => {
+            await revokeUserCredential(acting.user.id, credential.id);
+            await acting.reload();
+          }}
+        />
+      }
+    >
+      <span className="block truncate text-ink">
+        {credential.label ?? credential.deviceType ?? "passkey"}
+      </span>
+      <span className="text-xs text-muted">
+        added {formatStamp(credential.createdAt, "never")} · last used{" "}
         {formatStamp(credential.lastUsedAt, "never")}
         {/*
           A passkey that is NOT backed up dies with its device, and that is the fact worth
           drawing: it is what turns "they have three passkeys" into "they have one that
           survives a lost phone". Said only when it is true, so the common case is quiet.
         */}
-        {!credential.backedUp && " · this device only"}
+        {!credential.backedUp && <span className="text-warn"> · this device only</span>}
       </span>
-      {/*
-        NO "that is their last way in" GUARD, unlike the self-service route on the account
-        page. Somebody removing their own last passkey has locked themselves out by accident;
-        an admin revoking one is doing it BECAUSE the device is gone, and the way back in is
-        the invite "Reset access" mints.
-      */}
-      <ConfirmAction
-        label="Revoke"
-        question="Revoke this passkey? That device can never sign in again."
-        confirmLabel="Yes, revoke"
-        busyLabel="Revoking…"
-        onConfirm={async () => {
-          await revokeUserCredential(acting.user.id, credential.id);
-          await acting.reload();
-        }}
-      />
-    </li>
+    </Row>
   );
 }
 
 function Session({ session, acting }: { session: SessionSummary; acting: Acting }) {
   return (
-    <li className={ROW}>
-      {device(session.userAgent)}
-      <span className="text-muted">
-        {" "}
-        · since {formatStamp(session.createdAt, "never")} · last seen{" "}
-        {formatStamp(session.lastSeenAt, "never")}
+    <Row
+      action={
+        <ConfirmAction
+          label="Sign out"
+          question="Sign this device out?"
+          confirmLabel="Yes, sign it out"
+          busyLabel="Signing out…"
+          onConfirm={async () => {
+            await revokeUserSession(acting.user.id, session.id);
+            await acting.reload();
+          }}
+        />
+      }
+    >
+      <span className="block truncate text-ink">
+        {device(session.userAgent)}
         {/* True only when an admin is reading their OWN page. The server decides which. */}
-        {session.current && " · this device"}
+        {session.current && <span className="text-accent"> · this device</span>}
       </span>
-      <ConfirmAction
-        label="Sign out"
-        question="Sign this device out?"
-        confirmLabel="Yes, sign it out"
-        busyLabel="Signing out…"
-        onConfirm={async () => {
-          await revokeUserSession(acting.user.id, session.id);
-          await acting.reload();
-        }}
-      />
-    </li>
+      <span className="text-xs text-muted">
+        since {formatStamp(session.createdAt, "never")} · last seen {formatStamp(session.lastSeenAt, "never")}
+      </span>
+    </Row>
   );
 }
 
 /**
- * The five things an operator may DO to somebody, each behind its own confirmation.
+ * The four things an operator may DO to somebody, each behind its own confirmation.
  *
  * Ordered by how far they go: change what they may do, shut them out, hand them a new way
  * in, and finally take the account away. Only the last is drawn in the danger colour -- a row
@@ -180,6 +210,13 @@ function Session({ session, acting }: { session: SessionSummary; acting: Acting 
  * verbatim on the control. This page deliberately does not try to predict them: it would need
  * a count of admins it was never sent, and a button that hides itself for the wrong reason is
  * worse than one that explains a refusal.
+ *
+ * > [!NOTE] They are NOT in a `⋯` menu, and that was considered
+ * > A dropdown is what this shape usually gets, and it is wrong here for one reason: a menu
+ * > renders nothing until it is opened, so the page cannot be READ -- by an operator scanning
+ * > it or by the test that pins every verb's resting state -- without driving it. Four
+ * > buttons an operator can see is worth more than four they have to go looking for, on the
+ * > one screen where knowing what is possible matters before choosing.
  */
 function Actions({ acting }: { acting: Acting }) {
   const { user, reload } = acting;
@@ -187,8 +224,11 @@ function Actions({ acting }: { acting: Acting }) {
   const admin = user.role === "admin";
 
   return (
-    <Block title="Actions">
-      <div className="mt-2 flex flex-col gap-2">
+    <AdminCard
+      title="Actions"
+      description="Every one of these asks before it happens. Removing an account cannot be undone."
+    >
+      <div className="flex flex-col gap-2.5">
         <ConfirmAction
           label={admin ? "Demote to member" : "Make administrator"}
           question={
@@ -236,6 +276,10 @@ function Actions({ acting }: { acting: Acting }) {
           }}
         />
 
+        {/* The one that destroys something is separated, so it is never the button under the
+            cursor after the one above it settles. */}
+        <Separator className="my-1" />
+
         <ConfirmAction
           label="Remove this account"
           question="Remove this account for good? What they asked for stays in the log, attributed to a removed account."
@@ -252,7 +296,7 @@ function Actions({ acting }: { acting: Acting }) {
         it before copying has to reset the account a second time.
       */}
       {invite && <ShowOnceSecret note="Their new invite link. It is not shown again." value={invite} />}
-    </Block>
+    </AdminCard>
   );
 }
 
@@ -265,10 +309,13 @@ function Actions({ acting }: { acting: Acting }) {
  */
 function Settings({ acting, quota }: { acting: Acting; quota: AdminQuotaState }) {
   return (
-    <Block title="Settings">
-      <QuotaSetting acting={acting} quota={quota} />
-      <AssistantSetting acting={acting} />
-    </Block>
+    <AdminCard title="Settings" description="What this one person is allowed, whatever the site says.">
+      <div className="flex flex-col gap-5">
+        <QuotaSetting acting={acting} quota={quota} />
+        <Separator />
+        <AssistantSetting acting={acting} />
+      </div>
+    </AdminCard>
   );
 }
 
@@ -296,27 +343,25 @@ function QuotaSetting({ acting, quota }: { acting: Acting; quota: AdminQuotaStat
   };
 
   return (
-    <div className="mt-2">
-      <QuotaField
-        id="quota"
-        label="Titles a day"
-        value={user.quotaPerDay ?? quota.siteLimitPerDay}
-        save={save}
-        secondary={
-          user.quotaPerDay === null
-            ? undefined
-            : {
-                label: `Follow the site default (${quota.siteLimitPerDay === 0 ? "unlimited" : quota.siteLimitPerDay})`,
-                run: () => save(null),
-              }
-        }
-      >
-        {user.quotaPerDay === null
-          ? `Following the site default${quota.siteLimitPerDay === 0 ? ", which is unlimited" : ""}.`
-          : `Their own allowance${user.quotaPerDay === 0 ? ", which is unlimited" : ""}, whatever the site does.`}{" "}
-        0 means no limit. Administrators are never limited.
-      </QuotaField>
-    </div>
+    <QuotaField
+      id="quota"
+      label="Titles a day"
+      value={user.quotaPerDay ?? quota.siteLimitPerDay}
+      save={save}
+      secondary={
+        user.quotaPerDay === null
+          ? undefined
+          : {
+              label: `Follow the site default (${quota.siteLimitPerDay === 0 ? "unlimited" : quota.siteLimitPerDay})`,
+              run: () => save(null),
+            }
+      }
+    >
+      {user.quotaPerDay === null
+        ? `Following the site default${quota.siteLimitPerDay === 0 ? ", which is unlimited" : ""}.`
+        : `Their own allowance${user.quotaPerDay === 0 ? ", which is unlimited" : ""}, whatever the site does.`}{" "}
+      0 means no limit. Administrators are never limited.
+    </QuotaField>
   );
 }
 
@@ -331,39 +376,40 @@ function AssistantSetting({ acting }: { acting: Acting }) {
   const { user, reload } = acting;
 
   return (
-    <div className="mt-4">
-      <ToggleSetting
-        label="Assistant"
-        on={user.assistantAllowed}
-        action={(on) => (on ? "Turn off for this person" : "Turn on for this person")}
-        save={async (assistantAllowed) => {
-          await patchUser(user.id, { assistantAllowed });
-          await reload();
-        }}
-      >
-        {user.assistantAllowed
-          ? "They can ask the assistant, which sends their question to a model outside this house."
-          : "Off. They see no assistant at all, as if this instance had none."}
-      </ToggleSetting>
-    </div>
+    <ToggleSetting
+      label="Assistant"
+      on={user.assistantAllowed}
+      action={(on) => (on ? "Turn off for this person" : "Turn on for this person")}
+      save={async (assistantAllowed) => {
+        await patchUser(user.id, { assistantAllowed });
+        await reload();
+      }}
+    >
+      {user.assistantAllowed
+        ? "They can ask the assistant, which sends their question to a model outside this house."
+        : "Off. They see no assistant at all, as if this instance had none."}
+    </ToggleSetting>
   );
 }
 
 function Request({ request }: { request: AttributedRequest }) {
   const seasons = seasonLine(request);
   return (
-    <li className={`${ROW} flex flex-wrap items-baseline gap-x-2 gap-y-1`}>
+    <Row
+      action={
+        <span className="text-xs text-muted tabular-nums" title={formatStamp(request.created_at)}>
+          {request.status} · {formatAge(request.created_at)}
+        </span>
+      }
+    >
       {/* The way back to the thing itself -- same rule as `/log`: a row that only reported a
           state would be a dead end. */}
-      <Link to="/title/$tconst" params={{ tconst: request.tconst }} className="hover:underline">
+      <Link to="/title/$tconst" params={{ tconst: request.tconst }} className="text-ink hover:underline">
         {request.title}
       </Link>
-      {request.year !== null && <span className="text-xs text-muted">{request.year}</span>}
-      {seasons && <span className="text-xs text-muted">{seasons}</span>}
-      <span className="ml-auto text-xs text-muted" title={formatStamp(request.created_at)}>
-        {request.status} · {formatAge(request.created_at)}
-      </span>
-    </li>
+      {request.year !== null && <span className="ml-2 text-xs text-muted">{request.year}</span>}
+      {seasons && <span className="ml-2 text-xs text-muted">{seasons}</span>}
+    </Row>
   );
 }
 
@@ -396,51 +442,73 @@ function quotaLine(quota: QuotaState): string {
  */
 export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; acting: Acting }) {
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       <Identity user={detail.user} />
 
-      <Actions acting={acting} />
-
-      <Settings acting={acting} quota={detail.quota} />
-
-      <Block title="Passkeys">
-        <Rows empty="No passkeys. They sign in another way, or not at all.">
-          {detail.credentials.map((c) => (
-            <Passkey key={c.id} credential={c} acting={acting} />
-          ))}
-        </Rows>
-      </Block>
-
-      <Block title="Signed in on">
-        <Rows empty="No open sessions.">
-          {detail.sessions.map((s) => (
-            <Session key={s.id} session={s} acting={acting} />
-          ))}
-        </Rows>
-      </Block>
-
-      <Block title="Requests">
-        <p className="mt-1 text-xs text-muted">{quotaLine(detail.quota)}</p>
-        <Rows empty="They have not asked for anything yet.">
-          {logOrder(detail.requests).map((r) => (
-            <Request key={r.tconst} request={r} />
-          ))}
-        </Rows>
-      </Block>
-
       {/*
-        The agent key is the one credential on this page that is not a browser, and an
-        operator wants to know it exists before wondering why requests arrive at 04:00.
-        Present or absent only -- the token itself is stored as a sha256 and does not exist
-        to be shown, to an admin least of all.
+        `lg` rather than `md`: the rail carries device names and request titles, and at the
+        md breakpoint both columns are narrow enough that everything in them truncates. One
+        column that reads beats two that do not.
       */}
-      <Block title="Agent key">
-        <p className="mt-2 text-sm text-muted">
-          {detail.agentKey
-            ? `A ${detail.agentKey.readOnly ? "read-only" : "read and write"} key exists, made ${formatStamp(detail.agentKey.createdAt, "never")}, last used ${formatStamp(detail.agentKey.lastUsedAt, "never")}.`
-            : "No agent key. Nothing is acting on this account's behalf."}
-        </p>
-      </Block>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] lg:items-start">
+        <div className="flex flex-col gap-4">
+          <Actions acting={acting} />
+          <Settings acting={acting} quota={detail.quota} />
+        </div>
+
+        <div className="flex flex-col gap-4">
+          <AdminCard title="How they get in">
+            <div className="flex flex-col gap-4">
+              <div>
+                <h3 className="mb-2 text-[0.7rem] font-medium uppercase tracking-wider text-muted">
+                  Passkeys
+                </h3>
+                <Rows empty="No passkeys. They sign in another way, or not at all.">
+                  {detail.credentials.map((c) => (
+                    <Passkey key={c.id} credential={c} acting={acting} />
+                  ))}
+                </Rows>
+              </div>
+
+              <div>
+                <h3 className="mb-2 text-[0.7rem] font-medium uppercase tracking-wider text-muted">
+                  Signed in on
+                </h3>
+                <Rows empty="No open sessions.">
+                  {detail.sessions.map((s) => (
+                    <Session key={s.id} session={s} acting={acting} />
+                  ))}
+                </Rows>
+              </div>
+
+              {/*
+                The agent key is the one credential on this page that is not a browser, and an
+                operator wants to know it exists before wondering why requests arrive at 04:00.
+                Present or absent only -- the token itself is stored as a sha256 and does not
+                exist to be shown, to an admin least of all.
+              */}
+              <div>
+                <h3 className="mb-2 text-[0.7rem] font-medium uppercase tracking-wider text-muted">
+                  Agent key
+                </h3>
+                <p className="text-sm text-muted">
+                  {detail.agentKey
+                    ? `A ${detail.agentKey.readOnly ? "read-only" : "read and write"} key exists, made ${formatStamp(detail.agentKey.createdAt, "never")}, last used ${formatStamp(detail.agentKey.lastUsedAt, "never")}.`
+                    : "No agent key. Nothing is acting on this account's behalf."}
+                </p>
+              </div>
+            </div>
+          </AdminCard>
+
+          <AdminCard title="Requests" description={quotaLine(detail.quota)}>
+            <Rows empty="They have not asked for anything yet.">
+              {logOrder(detail.requests).map((r) => (
+                <Request key={r.tconst} request={r} />
+              ))}
+            </Rows>
+          </AdminCard>
+        </div>
+      </div>
     </div>
   );
 }

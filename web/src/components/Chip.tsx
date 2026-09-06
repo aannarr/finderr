@@ -14,6 +14,36 @@ import type { KeyAction } from "./Kbd";
 export const CHIP_PILL = "rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted";
 
 /**
+ * What a chip is SAYING, when it is saying something other than "here is a word".
+ *
+ * The admin screens need a pill that carries a verdict -- an administrator, a shut-out
+ * account, an invitation about to expire -- and every one of those is the same pill wearing
+ * a different colour. So this is a PROP on the chip that already exists rather than a second
+ * badge component beside it; the registry's `badge` stays deliberately unadded for exactly
+ * this reason (see `components/ui/button.tsx`).
+ *
+ * `neutral` is the shape every existing caller already had, so nothing on the title page,
+ * the search bar or the season selector moves.
+ */
+export type ChipTone = "neutral" | "accent" | "danger" | "warn";
+
+const CHIP_TONES: Record<ChipTone, string> = {
+  neutral: "bg-surface-2 text-muted",
+  // Tinted rather than filled: a solid accent pill is the ACTIVE state `ToggleChip` owns,
+  // and a row of solid green "Administrator" badges would read as a row of live controls.
+  accent: "bg-accent/15 text-accent",
+  danger: "bg-danger/15 text-danger",
+  warn: "bg-warn/15 text-warn",
+};
+
+/** The pill's geometry, without a colour. Both callers below build on it. */
+const CHIP_SHAPE = "rounded-full px-2 py-0.5 text-xs";
+
+export function chipTone(tone: ChipTone): string {
+  return `${CHIP_SHAPE} ${CHIP_TONES[tone]}`;
+}
+
+/**
  * A chip with no destination.
  *
  * If it looks clickable it must land on results, so this one does not look clickable. It is
@@ -21,8 +51,8 @@ export const CHIP_PILL = "rounded-full bg-surface-2 px-2 py-0.5 text-xs text-mut
  * are already on -- and what every keyword chip was before term pages existed, when
  * `/browse` accepted genre, year, decade and kind and nothing else.
  */
-export function InertChip({ label }: { label: string }) {
-  return <span className={CHIP_PILL}>{label}</span>;
+export function InertChip({ label, tone = "neutral" }: { label: string; tone?: ChipTone }) {
+  return <span className={chipTone(tone)}>{label}</span>;
 }
 
 export interface ToggleChipProps {

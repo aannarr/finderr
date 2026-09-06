@@ -18,7 +18,7 @@
  */
 
 import { type ReactNode, useState } from "react";
-import { LINK_BUTTON } from "../lib/ui";
+import { Button } from "./ui/button";
 
 export function ConfirmAction({
   label,
@@ -79,30 +79,57 @@ export function ConfirmAction({
     }
   };
 
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      {asking ? (
-        <>
-          <span className="text-xs text-muted">{question}</span>
-          <button type="button" onClick={confirm} disabled={busy} className={LINK_BUTTON}>
-            {busy ? busyLabel : confirmLabel}
-          </button>
-          <button type="button" onClick={() => setAsking(false)} disabled={busy} className={LINK_BUTTON}>
-            {cancelLabel}
-          </button>
-        </>
-      ) : (
-        <>
-          <button
+  /*
+    THE QUESTION IS A PANEL, not a sentence wedged between two links.
+
+    It was three inline items on one baseline, which put "Remove this account for good?" in
+    the same visual weight as the word beside it and left the confirming verb looking exactly
+    like the cancel. Boxing the asked state is what makes a screenshot of it legible: the page
+    behind is unchanged, one region has changed, and the two answers are told apart by shape
+    rather than by reading them. `danger` tints the box as well as the verb, so the one action
+    that destroys something announces itself before it is read.
+  */
+  if (asking) {
+    return (
+      <div
+        className={`flex flex-col gap-2 rounded-lg border p-3 ${
+          danger ? "border-danger/40 bg-danger/5" : "border-line bg-surface-2/40"
+        }`}
+      >
+        <p className="text-sm text-ink">{question}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
             type="button"
-            onClick={() => setAsking(true)}
-            className={danger ? `${LINK_BUTTON} text-danger hover:text-danger` : LINK_BUTTON}
+            size="sm"
+            variant={danger ? "destructive" : "default"}
+            onClick={confirm}
+            disabled={busy}
           >
-            {label}
-          </button>
-          {children}
-        </>
-      )}
+            {busy ? busyLabel : confirmLabel}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(false)} disabled={busy}>
+            {cancelLabel}
+          </Button>
+          {error && <span className="text-xs text-danger">{error}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Button
+        type="button"
+        size="sm"
+        // OUTLINE for the ordinary verbs and DESTRUCTIVE for the one that destroys, rather
+        // than colouring all of them: a row of red is the same wall of identical controls
+        // the confirmation exists to break up.
+        variant={danger ? "destructive" : "outline"}
+        onClick={() => setAsking(true)}
+      >
+        {label}
+      </Button>
+      {children}
       {error && <span className="text-xs text-danger">{error}</span>}
     </div>
   );
