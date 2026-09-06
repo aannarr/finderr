@@ -1,19 +1,39 @@
 /**
- * `/admin` -- the shape of the household, in four numbers.
+ * `/admin` -- the shape of the household in four numbers, what an operator may set for
+ * everybody, and how the server itself is doing.
  *
- * Every number is a WAY IN rather than a readout: an operator who opens this page is on the
- * way to a person, an invitation or the log, so each tile is the link to the screen that
- * answers it. A dashboard whose figures cannot be clicked makes the reader find the same
- * page again by hand.
+ * Every tile is a WAY IN rather than a readout: an operator who opens this page is on the way
+ * to a person, an invitation or the log, so each figure is the link to the screen that answers
+ * it. A dashboard whose numbers cannot be clicked makes the reader find the same page again by
+ * hand.
  *
- * > [!NOTE] Server health belongs here and is deliberately absent
- * > Index rows, arr reachability and the rest of `/api/health` are
- * > `site-defaults-and-an-operator-dashboard-on-admin`, which depends on this card and fills
- * > the gap below the tiles. Half of it built here would be the half that has to be torn out.
+ * > [!IMPORTANT] Three fetches, three independent failures, and that is deliberate
+ * > The tiles, the settings and `/api/health` load separately and each block renders its own
+ * > error. One combined load would mean an unreachable Radarr -- which health reports on and
+ * > has nothing to do with the people list -- taking the whole page down. `useAsyncData` per
+ * > block is what keeps a partial answer a partial answer.
+ *
+ * The server half is a RENDERER over `/api/health` and must stay one. Everything it draws was
+ * already collected and already returned to an admin; it was reachable only by curling the
+ * endpoint with the system key, which is how a refused index swap could sit unnoticed for
+ * days. A fact worth showing that health does not carry belongs in `src/server/health.ts`.
  */
 
 import { Link, type LinkProps } from "@tanstack/react-router";
-import { type AdminInvite, type AdminUser, adminRequests, listInvites, listUsers } from "../lib/auth-api";
+import { ServerHealth } from "../components/ServerHealth";
+import { SiteDefaults } from "../components/SiteDefaults";
+import {
+  type AdminInvite,
+  type AdminUser,
+  adminRequests,
+  getSiteSettings,
+  listInvites,
+  listUsers,
+  patchSiteSettings,
+  type SiteSettings,
+} from "../lib/auth-api";
+import { getServerHealth } from "../lib/health-api";
+import { count } from "../lib/units";
 import { useAsyncData } from "../lib/use-async-data";
 
 interface Overview {
@@ -45,21 +65,38 @@ function Tile(props: { to: LinkProps["to"]; label: string; value: number; detail
 function peopleDetail(users: AdminUser[]): string {
   const admins = users.filter((u) => u.role === "admin").length;
   const disabled = users.filter((u) => u.disabled).length;
-  return [
-    `${admins} administrator${admins === 1 ? "" : "s"}`,
-    ...(disabled > 0 ? [`${disabled} disabled`] : []),
-  ].join(" · ");
+  return [count(admins, "administrator"), ...(disabled > 0 ? [`${disabled} disabled`] : [])].join(" · ");
 }
 
-export function AdminOverviewRoute() {
-  // `loadOverview` is module-level and therefore already stable -- no `useCallback` needed.
-  const { data, error } = useAsyncData(loadOverview);
+/**
+ * A block that loads its own data and renders its own failure.
+ *
+ * Three of them on this page and each can fail alone -- see the note at the top of the file.
+ * The wrapper exists so "Loading…" and the error line are worded identically in all three
+ * rather than three times over.
+ */
+function Section<T>(props: {
+  title?: string;
+  load: () => Promise<T>;
+  children: (data: T, reload: () => Promise<void>) => React.ReactNode;
+}) {
+  const { data, error, reload } = useAsyncData(props.load);
+  return (
+    <section className="flex flex-col gap-2">
+      {props.title && <h2 className="text-sm font-medium">{props.title}</h2>}
+      {error ? (
+        <p className="text-sm text-danger">{error}</p>
+      ) : data ? (
+        props.children(data, reload)
+      ) : (
+        <p className="text-sm text-muted">Loading…</p>
+      )}
+    </section>
+  );
+}
 
-  if (error) return <p className="text-sm text-danger">{error}</p>;
-  if (!data) return <p className="text-sm text-muted">Loading…</p>;
-
+function Tiles({ data }: { data: Overview }) {
   const outstanding = data.invites.filter((i) => !i.redeemedAt);
-
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <Tile to="/admin/users" label="People" value={data.users.length} detail={peopleDetail(data.users)} />
@@ -75,6 +112,33 @@ export function AdminOverviewRoute() {
         value={data.requests}
         detail="Who asked is shown to administrators only."
       />
+    </div>
+  );
+}
+
+export function AdminOverviewRoute() {
+  // All three loaders are module-level or stable, so none needs a `useCallback`.
+  return (
+    <div className="flex flex-col gap-8">
+      <Section load={loadOverview}>{(data) => <Tiles data={data} />}</Section>
+
+      <Section load={getSiteSettings}>
+        {(data, reload) => (
+          <SiteDefaults
+            settings={data.settings}
+            save={async (changes: Partial<SiteSettings>) => {
+              await patchSiteSettings(changes);
+              // Redraw from the SERVER's answer rather than from what was sent: a refused
+              // field must not leave the form showing a value nothing saved.
+              await reload();
+            }}
+          />
+        )}
+      </Section>
+
+      <Section title="Server" load={getServerHealth}>
+        {(health) => <ServerHealth health={health} />}
+      </Section>
     </div>
   );
 }

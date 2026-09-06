@@ -95,6 +95,24 @@ async function get<T>(path: string): Promise<T> {
 }
 
 /**
+ * A PATCH that raises the server's own refusal, so a caller can render it on the control.
+ *
+ * `fallback` is per-caller for the same reason `del`'s is: "that change was refused" and "that
+ * setting could not be saved" are different sentences, and the generic one is least useful at
+ * the moment it appears.
+ */
+async function patch<T>(path: string, body: unknown, fallback = "that change was refused"): Promise<T> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const parsed = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(parsed.error ?? fallback);
+  return parsed as T;
+}
+
+/**
  * A DELETE that raises the server's own refusal, so a caller can render it.
  *
  * `fallback` is what a reader is told when the server sent no message at all -- a proxy
@@ -356,7 +374,7 @@ export async function revokeInvite(id: string): Promise<void> {
  */
 export async function patchUser(
   id: string,
-  patch: {
+  changes: {
     role?: Role;
     disabled?: boolean;
     displayName?: string;
@@ -364,15 +382,7 @@ export async function patchUser(
     assistantAllowed?: boolean;
   },
 ): Promise<void> {
-  const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? "that change was refused");
-  }
+  await patch(`/api/admin/users/${encodeURIComponent(id)}`, changes);
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -476,4 +486,38 @@ export interface AdminUserDetail {
 
 export function getAdminUser(id: string): Promise<AdminUserDetail> {
   return get(`/api/admin/users/${encodeURIComponent(id)}`);
+}
+
+/**
+ * The settings that apply to EVERYBODY, as opposed to the per-person ones above.
+ *
+ * The EFFECTIVE values, and only those. The server resolves the operator's stored value
+ * against the deployment's environment before answering, so there is nothing here for a screen
+ * to arbitrate -- see `src/lib/site-settings.ts`, which owns that rule.
+ */
+export interface SiteSettings {
+  /**
+   * Titles per UTC day for somebody with no override of their own. Zero is unlimited.
+   *
+   * The same number `QuotaState.siteLimitPerDay` reports on a person's page, from the same
+   * source -- this is where it is edited.
+   */
+  requestQuotaPerDay: number;
+  /**
+   * What a NEW account's assistant switch starts at.
+   *
+   * A CREATION default rather than a fallback: existing accounts keep whatever they were given,
+   * because `app_user.assistant_allowed` has no "no opinion" state for a site value to fall
+   * through into. The form says so, because that is the surprising half.
+   */
+  assistantAllowedByDefault: boolean;
+}
+
+export function getSiteSettings(): Promise<{ settings: SiteSettings }> {
+  return get("/api/admin/settings");
+}
+
+/** An absent field is left alone, the same shape as `patchUser`. */
+export function patchSiteSettings(changes: Partial<SiteSettings>): Promise<{ settings: SiteSettings }> {
+  return patch("/api/admin/settings", changes, "that setting could not be saved");
 }

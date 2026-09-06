@@ -1498,7 +1498,9 @@ const appRoutes = {
             computing the page -- correct, and otherwise completely invisible.
           */
           shelves: frontPage.status(cfg.shelves.keepFresh),
-          plugins: plugins.list().map((p) => p.meta.id),
+          // Id AND declared hosts, both off `meta` in memory. See `HealthDeps.plugins` for
+          // why the per-plugin facet row count is not here.
+          plugins: plugins.list().map((p) => ({ id: p.meta.id, hosts: [...(p.meta.hosts ?? [])] })),
           facetRows: store.facetCacheCount(),
           facetImages: store.facetImageCount(),
           facetRowsPruned,

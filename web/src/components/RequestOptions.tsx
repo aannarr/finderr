@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { type ArrOptions, getArrOptions, type RequestOverrides } from "../lib/api";
 import { makeArrOptionsLoader, type OptionsState } from "../lib/arr-options-load";
+import { formatBytes } from "../lib/units";
 
 export interface RequestOptionsProps {
   /** Which arr will serve this title. Decides which lists are offered. */
@@ -152,17 +153,4 @@ export function RequestOptions({ service, value, onChange, load }: RequestOption
       </div>
     </details>
   );
-}
-
-/**
- * Free space, rounded hard.
- *
- * An arr reports bytes and an admin choosing a disk wants to know "is there room", not the
- * exact figure -- so one decimal at TB and none below is the whole requirement.
- */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "?";
-  const tb = bytes / 1e12;
-  if (tb >= 1) return `${tb.toFixed(1)} TB`;
-  return `${Math.round(bytes / 1e9)} GB`;
 }

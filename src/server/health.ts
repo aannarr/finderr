@@ -275,7 +275,23 @@ export interface HealthDeps {
    * stopped, which is a bigger problem than the shelves.
    */
   shelves: unknown;
-  plugins: string[];
+  /**
+   * The addons that are loaded, and what each one is allowed to talk to.
+   *
+   * `hosts` rather than only the id, because "what addons are running" and "what do they
+   * reach out to" are the same question for an operator deciding whether this container
+   * should be on the internet -- and core REFUSES a fetch to anything not on this list, so it
+   * is the whole outbound surface a plugin has. Both fields are read off `meta` in memory; no
+   * query, like everything else here.
+   *
+   * PER-PLUGIN FACET ROW COUNTS ARE DELIBERATELY ABSENT. `facet_contribution` carries
+   * `plugin_id`, but it is indexed on `entity_id` alone, so a `group by` is a full scan -- and
+   * this endpoint is the one Docker polls every 30 seconds. `facets.rows` is the total, which
+   * is the number that costs nothing. If the per-plugin split is ever wanted it belongs behind
+   * an opt-in flag beside `?coverage=1`, which is the shape this file already uses for exactly
+   * this trade.
+   */
+  plugins: { id: string; hosts: string[] }[];
   facetRows: number;
   facetImages: number;
   /**

@@ -57,7 +57,12 @@ function deps(onCoverage: () => void): HealthDeps {
     queue: { pending: 0 },
     artwork: { resolved: 2192 },
     shelves: { enabled: false, ready: false, tiers: { index: null, tmdb: null, arr: null }, rows: 0 },
-    plugins: ["servarr-metadata", "rotten-tomatoes"],
+    // A plugin WITH declared hosts and one with none. An addon that fetches nothing is the
+    // ordinary case for anything reading only our own database, and `[]` is what says so.
+    plugins: [
+      { id: "servarr-metadata", hosts: ["api.radarr.video", "skyhook.sonarr.tv"] },
+      { id: "rotten-tomatoes", hosts: [] },
+    ],
     facetRows: 4321,
     facetImages: 87,
     facetRowsPruned: 12,
