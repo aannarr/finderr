@@ -182,8 +182,10 @@ const WIKIDATA_SOURCE_URL = "https://query.wikidata.org/";
  * nominee would put a Palme d'Or on a person page that Wikidata never said won one.
  */
 export function wikidataNominations(rows: SparqlRow[], def: AwardDef): Nomination[] {
-  const category = def.singleCategory;
-  if (category === null) throw new Error(`${def.id} has no singleCategory to file wikidata rows under`);
+  // The stored KEY, never the label -- this is the value the ceremony page groups on and the
+  // one a reader's `prettyCategory` turns back into a heading.
+  const category = def.singleCategory?.key;
+  if (category === undefined) throw new Error(`${def.id} has no singleCategory to file wikidata rows under`);
 
   // Per edition, so `seq` is the row's position in ITS year rather than in the answer. That
   // keeps the key stable when an earlier year gains a co-winner, and it is what makes a tie

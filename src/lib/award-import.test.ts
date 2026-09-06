@@ -45,6 +45,18 @@ describe("the award registry", () => {
     }
   });
 
+  test("a single category's label is its key re-cased and nothing else", () => {
+    // The pair exists because title case cannot spell `Palme d'Or`, and it is safe to write
+    // twice only while the two stay the same WORDS: a label that reworded the category would
+    // make a ceremony heading and the row it heads look like two different prizes. Sundance is
+    // the reason this compares upper case rather than `prettyCategory` -- its `anchorLabel`
+    // reorders the words on purpose, and its `singleCategory.label` must not.
+    for (const a of AWARDS) {
+      if (a.singleCategory === null) continue;
+      expect(a.singleCategory.label.toUpperCase()).toBe(a.singleCategory.key);
+    }
+  });
+
   test("every wikidata query selects the three columns the importer reads", () => {
     // The contract between the queries and `wikidataNominations`. A query that renamed a
     // column would import zero rows and report success.

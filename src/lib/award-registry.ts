@@ -81,6 +81,29 @@ export interface AwardEdition {
   many: string;
 }
 
+/**
+ * The one category a winner-only award files every row under, and how it is spelled on screen.
+ *
+ * Two fields because the two jobs differ. `key` is the source's own shouted value and is what
+ * goes in the `category` column, where it is a GROUPING key like every other stored category.
+ * `label` is what a reader sees, and it cannot be derived from `key`: title-casing
+ * `PALME D'OR` gives `Palme D'or`, and the rule that would fix it -- capitalise after an
+ * apostrophe -- is the rule that turns `WOMEN'S PICTURE` into `Women'S Picture`. Nothing in
+ * either string separates the two cases, so the registry states the answer instead of guessing.
+ *
+ * `label` must be `key` RE-CASED and nothing else: same words, same order, same punctuation,
+ * so a heading can be matched to the stored category by eye. `award-import.test.ts` pins that,
+ * which is what keeps the pair from drifting into two different names for one prize.
+ *
+ * Distinct from `AwardDef.anchorLabel`, which names the PRIZE for a sentence rather than the
+ * category for a heading, and which is free to reword: Sundance's is
+ * `U.S. Dramatic Grand Jury Prize` so that "you own 12 of 40 … winners" reads like English.
+ */
+export interface AwardSingleCategory {
+  key: string;
+  label: string;
+}
+
 export interface AwardDef {
   /** The route segment and the `award` column's value. Kebab-case, stable forever. */
   id: string;
@@ -114,10 +137,10 @@ export interface AwardDef {
    *
    * `null` for the Oscars, whose rows carry twenty-eight canonical categories of their own.
    * A single-prize award still has to write SOMETHING into the column the ceremony page
-   * groups on, and this is that value -- shouted, like every other stored category, because
-   * the grouping key is uppercase and `prettyCategory` is what makes it readable.
+   * groups on, and `key` is that value -- shouted, like every other stored category. `label`
+   * is the same words as a reader sees them; see `AwardSingleCategory` for why both.
    */
-  singleCategory: string | null;
+  singleCategory: AwardSingleCategory | null;
   source: AwardSourceDef;
 }
 
@@ -197,7 +220,9 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "festival", many: "festivals" },
     anchorCategory: null,
     anchorLabel: "Palme d'Or",
-    singleCategory: "PALME D'OR",
+    // The whole reason `label` exists: French elision keeps the `d` lower and the `Or` upper,
+    // and no casing rule reaches that from `PALME D'OR`.
+    singleCategory: { key: "PALME D'OR", label: "Palme d'Or" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -222,7 +247,7 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "ceremony", many: "ceremonies" },
     anchorCategory: null,
     anchorLabel: "Outstanding Drama Series",
-    singleCategory: "OUTSTANDING DRAMA SERIES",
+    singleCategory: { key: "OUTSTANDING DRAMA SERIES", label: "Outstanding Drama Series" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -254,7 +279,7 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "festival", many: "festivals" },
     anchorCategory: null,
     anchorLabel: "Golden Lion",
-    singleCategory: "GOLDEN LION",
+    singleCategory: { key: "GOLDEN LION", label: "Golden Lion" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -285,7 +310,7 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "festival", many: "festivals" },
     anchorCategory: null,
     anchorLabel: "Golden Bear",
-    singleCategory: "GOLDEN BEAR",
+    singleCategory: { key: "GOLDEN BEAR", label: "Golden Bear" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -313,7 +338,10 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "festival", many: "festivals" },
     anchorCategory: null,
     anchorLabel: "U.S. Dramatic Grand Jury Prize",
-    singleCategory: "GRAND JURY PRIZE (U.S. DRAMATIC)",
+    // `label` is NOT `anchorLabel` here, and this is the entry that proves they are two
+    // different strings: the heading names the category as the source files it, the sentence
+    // names the prize.
+    singleCategory: { key: "GRAND JURY PRIZE (U.S. DRAMATIC)", label: "Grand Jury Prize (U.S. Dramatic)" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -343,7 +371,7 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "ceremony", many: "ceremonies" },
     anchorCategory: null,
     anchorLabel: "Best Film",
-    singleCategory: "BEST FILM",
+    singleCategory: { key: "BEST FILM", label: "Best Film" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -371,7 +399,7 @@ export const AWARDS: AwardDef[] = [
     edition: { key: "year", one: "ceremony", many: "ceremonies" },
     anchorCategory: null,
     anchorLabel: "Best Motion Picture, Drama",
-    singleCategory: "BEST MOTION PICTURE, DRAMA",
+    singleCategory: { key: "BEST MOTION PICTURE, DRAMA", label: "Best Motion Picture, Drama" },
     source: {
       kind: "wikidata",
       licence: "CC0-1.0",
@@ -418,4 +446,28 @@ export function oscarsDef(): AwardDef {
  */
 export function anchorNoun(def: AwardDef): string {
   return `${def.anchorLabel} winners`;
+}
+
+/**
+ * Every stored category key the registry spells for itself, built once from `AWARDS`.
+ *
+ * A flat map rather than a per-award lookup because the answer is a property of the CATEGORY,
+ * not of the page printing it: `PALME D'OR` is `Palme d'Or` on a ceremony heading, on a
+ * person's credit line and in a title pane alike. Four components print stored categories and
+ * only one of them has an `AwardDef` in scope, so a lookup that needed the award would fix
+ * one screen and leave three reading `Palme D'or`.
+ */
+const DECLARED_CATEGORY_LABELS = new Map(
+  AWARDS.flatMap((a) => (a.singleCategory ? [[a.singleCategory.key, a.singleCategory.label] as const] : [])),
+);
+
+/**
+ * How the registry spells a stored category, or `undefined` where it has no opinion.
+ *
+ * The Oscars' twenty-eight categories are the `undefined` case and always will be: they are
+ * the source's own shouted keys with no registry entry behind them, and title-casing gets
+ * every one of them right.
+ */
+export function declaredCategoryLabel(key: string): string | undefined {
+  return DECLARED_CATEGORY_LABELS.get(key);
 }
