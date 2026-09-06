@@ -283,8 +283,15 @@ export const INDEX_STAGES = {
    * were only twelve of them -- so without the bump the widened catalogue would ship against
    * a file that cannot afford it, green health and all. `hasLangRank` is what keeps that file
    * serving in the meantime.
+   *
+   * **v4 (2026-09-06) widens `LANGUAGE_CROSSWALK` past P218, so the CONTENT changes while the
+   * shape does not** -- `zh` goes from 833 titles to 5,468 and `el` from 8 to 1,361. No
+   * capability probe can see this one: a v3 index has a `title_lang` that is complete by its
+   * own lights and answers every query, it just answers some of them with a tenth of the
+   * catalogue. That is the more dangerous half of what this stamp is for, and it is why the
+   * recipe describes the configuration that produced a stage rather than the columns it left.
    */
-  origin: () => JSON.stringify({ v: 3 }),
+  origin: () => JSON.stringify({ v: 4 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.
