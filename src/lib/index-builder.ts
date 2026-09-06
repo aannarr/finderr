@@ -647,11 +647,78 @@ export const INDEXES = {
    * > seconds**, and the file grows by 16.6 MB of table and 28.7 MB of index on 1.79 GB. That
    * > is the price rather than an objection -- see `.claude/CLAUDE.md` on runtime beating
    * > build time -- and it buys 1,839 ms of render path per `/api/lists/completion`.
+   *
+   * > [!IMPORTANT] `ix_lang_rank` GAINED `year`, and `ix_lang_votes` is the FOURTH -- one
+   * > index per ORDER, the pair `ix_tg_rank`/`ix_tg_votes` already models one table over
+   * > A language list is one query; a language BROWSE is four, because the reader picks the
+   * > order and may cross it with a year or a decade. `title_lang` could serve none of those
+   * > until it carried `year` and `votes` (see `ORIGIN_SCHEMA`), so every one of them named a
+   * > column only `title` has -- which put `title` back in the query, took the covering count
+   * > away, and for a votes sort left no column here that could serve the ORDER at all.
+   * >
+   * > `year` is a TRAILING covered filter on both, not a key column, and that position is the
+   * > whole point: a decade is a RANGE, so leading with it would put the sort column behind an
+   * > unconstrained column -- the exact mistake `non_english` made above. Trailing, it is
+   * > tested while walking `rank desc` or `votes desc` and the walk still stops at `limit`.
+   * >
+   * > Measured on a copy of the real 1,276,669-title index, M1 Max, 2026-09-07, best of five
+   * > warm through `SearchEngine.browse`. Both files carry the statistics a REAL BUILD leaves
+   * > -- `pragma optimize`'s estimates, not a full `analyze` -- because that is what the
+   * > planner actually sees, and the two disagree enough to change a plan (see the note below):
+   * >
+   * > | browse | before | after |
+   * > |---|---|---|
+   * > | `?lang=en&kind=movie&decade=2010&sort=votes` | 349.7 ms | 4.4 |
+   * > | `?lang=en&kind=movie&decade=2010&sort=rank` | 280.9 | 3.2 |
+   * > | `?lang=en&kind=movie&decade=1990&sort=rank` | 244.6 | 3.1 |
+   * > | `?lang=fr&genre=Horror&kind=movie&sort=votes` | 32.9 | 9.2 |
+   * > | `?lang=en&kind=movie&sort=votes` | 28.1 | 0.9 |
+   * > | `?lang=fr&kind=movie&sort=votes` | 18.8 | 0.2 |
+   * > | `?lang=fr&kind=movie&decade=2010&sort=votes` | 17.7 | 2.5 |
+   * > | `?lang=en&kind=movie&year=1994&sort=rank` | 9.5 | 2.9 |
+   * > | `?lang=fr&kind=movie&decade=2010&sort=rank` | 8.9 | 0.7 |
+   * > | `?lang=fr&kind=movie&year=1994&sort=rank` | 7.1 | 0.8 |
+   * >
+   * > The genre row is in that table as a SIDE EFFECT rather than a target: nothing about a
+   * > genre browse's SQL changed, and the four-index shape simply gives the planner a better
+   * > choice for it. The genre case itself is still declined -- see `coveringCountTable`.
+   * >
+   * > The CONTROLS did not move, which is the half that says this is a widening rather than a
+   * > trade: the forty-five language lists total 11.0 ms before and 11.1 after, the unfiltered
+   * > `?lang=en&kind=movie&sort=rank` 1.8 and 1.8, `?lang=en&genre=Horror&kind=movie&sort=rank`
+   * > 16.2 and 16.4, and the deployment PREFERENCE the caution at the top of this block
+   * > protects 445.1 and 447.9. Every total was identical on both files.
+   * >
+   * > **`year` IN `ix_lang_votes` was priced separately and it pays**: without it a decade
+   * > browse sorted by votes splits into ten per-year seeks that each fall out of the index,
+   * > 9.4 ms against 4.4 for English and 8.8 against 2.5 for French, for 3.6 MB.
+   * >
+   * > > [!CAUTION] MEASURE AGAINST THE STATISTICS A BUILD LEAVES, or price a plan that never runs
+   * > > `buildIndex` ends on `pragma optimize`, which writes ESTIMATES rather than scanning:
+   * > > `ix_lang_rank` gets `1288966 572 401 1 1` where a full `analyze title_lang` computes
+   * > > `1288966 8006 3175 5 5` -- a 14x disagreement about how many rows one `lang` matches.
+   * > > It is not staleness and a rebuild does not fix it; `optimize` writes the same estimate
+   * > > on a file whose `title_lang` was created seconds earlier. Measured on SQLite 3.51.0,
+   * > > the version `bun:sqlite` bundles.
+   * > >
+   * > > It changes plans, so it changes numbers. Mutating a copy of the real index by hand
+   * > > DROPS the stat row for any index you drop and recreate, and the planner then has no
+   * > > estimate at all -- which made this exact change look like a 29 ms -> 52 ms REGRESSION
+   * > > on `?lang=fr&genre=Horror&kind=movie&sort=votes` before the file was rebuilt the way a
+   * > > build builds. Whether `optimize`'s estimate is the RIGHT thing for this index to ship
+   * > > with is a separate question and a separate card.
+   * >
+   * > WHAT IT COSTS THE BUILD, measured 2026-09-07 by writing `title_lang` and its indexes
+   * > both ways over the real 1,288,966 rows: **2.23 s to 3.72 s, so +1.5 seconds**, and
+   * > 95.9 MB to 133.8 MB, so **+37.9 MB** on a 1.79 GB file. Almost all of the time is the
+   * > fourth index (1.04 s) and `ix_lang_rank` getting wider (0.60 -> 0.99 s); the insert
+   * > itself does not move. Same trade as the widening above, one order over.
    */
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",
     "create index ix_lang_code on title_lang(lang, title_rowid)",
-    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english)",
+    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english, year)",
+    "create index ix_lang_votes on title_lang(lang, kind, votes desc, non_english, year)",
   ],
 } satisfies Record<string, readonly string[]>;
 

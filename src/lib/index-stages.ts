@@ -297,8 +297,18 @@ export const INDEX_STAGES = {
    * one of them correctly; what it cannot do is serve English in 2 ms rather than 78, because
    * its sort column sits behind a column that browse cannot constrain. Same argument as v2:
    * an index-only bump is still a bump when nothing on screen would say which shape drew it.
+   *
+   * **v6 (2026-09-07) denormalises `year` and `votes` onto `title_lang`**, widens
+   * `ix_lang_rank` with `year` and adds `ix_lang_votes` -- so a browse that CROSSES a named
+   * language with a year, a decade or a votes sort stops reaching back into `title`. Like v3
+   * this is a bump for both reasons: the output changes shape and the answers do not.
+   *
+   * It is also the version with the sharpest failure if the stamp is skipped, and that is why
+   * `hasLangYear` and `hasLangVotes` exist beside it: a v5 file has no such columns, so the
+   * widened predicate on it is a `no such column` rather than a slower plan. The stamp orders
+   * the rebuild; the probes keep the file serving until it lands.
    */
-  origin: () => JSON.stringify({ v: 5 }),
+  origin: () => JSON.stringify({ v: 6 }),
 
   /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it
