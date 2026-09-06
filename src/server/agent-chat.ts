@@ -29,7 +29,7 @@
 import type { Database } from "bun:sqlite";
 import { MemoryResumeStore } from "../lib/agent/connections";
 import { historyFor, isRememberable, toMessages } from "../lib/agent/conversation";
-import { type Mention, resolveMentions } from "../lib/agent/mentions";
+import { idsIn, type Mention, resolveMentions } from "../lib/agent/mentions";
 import { type RunEvent, type RunResult, run } from "../lib/agent/runner";
 import type { AgentContext } from "../lib/agent/schemas";
 import { makeContext } from "../lib/agent/schemas";
@@ -85,10 +85,17 @@ export interface ChatResponse {
   /**
    * Every TITLE the agent looked at, so the panel can draw a poster card instead of a name.
    *
-   * Collected from the tool EVIDENCE rather than parsed out of the prose -- `evidence.ids`
-   * already records every id each result carried, for the fabricated-join grader, and this
-   * is the same record read for a different purpose. Parsing ids out of the answer text
-   * would be a second owner of "what did it actually find", and the one that lies.
+   * MEMBERSHIP comes from the tool EVIDENCE and only from there -- `evidence.ids` already
+   * records every id each result carried, for the fabricated-join grader, and this is the
+   * same record read for a different purpose. A card is therefore never drawn for a title the
+   * tools did not actually return, however confidently the prose names it.
+   *
+   * ORDER is a separate question and the prose is the right authority on it, which is the one
+   * thing this comment used to get wrong by lumping the two together. See `surfaced`: a title
+   * the answer names is put first, and the ids come from the same extractor that builds
+   * `mentions`, so a model naming something that does not exist still gets no card and no
+   * link. Reading the prose to RANK evidence cannot invent anything; reading it to SELECT
+   * evidence could, and that is still not done.
    */
   titles: {
     tconst: string;
@@ -130,49 +137,85 @@ export interface ChatResponse {
  */
 const MAX_CARDS = 24;
 
-function surfaced(result: RunResult, engine: SearchEngine, store: Store) {
+export function surfaced(result: RunResult, engine: SearchEngine, store: Store, answer: string) {
   const titles: ChatResponse["titles"] = [];
   const episodes: ChatResponse["episodes"] = [];
   const seenT = new Set<string>();
   const seenE = new Set<string>();
 
+  // Every title id the tools returned, deduped, in the order the calls were made.
+  const evidenceIds: string[] = [];
   for (const call of result.toolCalls) {
     for (const id of call.evidence.ids) {
-      if (id.startsWith("tt") && !seenT.has(id) && titles.length < MAX_CARDS) {
+      if (id.startsWith("tt") && !seenT.has(id)) {
         seenT.add(id);
-        const row = engine.byTconst(id);
-        if (row) {
-          titles.push({
-            tconst: row.tconst,
-            title: row.title,
-            year: row.year,
-            kind: row.kind,
-            /*
-              THE SAME RULE `decorate()` APPLIES, and it is not "always a path".
-
-              `/img/t/<tconst>` is our own proxy, so the browser never sees an upstream URL.
-              But a title whose artwork has been RESOLVED TO NOTHING (`art.url === null`)
-              gets null rather than a path, because pointing an <img> at a proxy we know will
-              404 makes the card flash a broken image before falling back to initials.
-              `undefined` means we have not looked yet, which is not the same as knowing
-              there is none -- so it still gets the path and the proxy resolves it on demand.
-            */
-            poster: (() => {
-              const art = store.getArtwork(row.tconst);
-              return art !== undefined && art.url === null ? null : `/img/t/${row.tconst}`;
-            })(),
-          });
-        }
+        evidenceIds.push(id);
       }
     }
-    /*
-      Episodes come from the CALL ARGUMENTS plus the engine, not from the payload.
+  }
 
-      `evidence` deliberately records entity ids and relations, and an episode tconst is
-      neither -- it is not a browsable title and it forms no join. So the parent is read off
-      the list_episodes call that asked, and the rows are re-read from the index, which is
-      cheap (a covering-index lookup) and cannot disagree with what the tool returned.
-    */
+  /*
+    THE IDS THE ANSWER NAMES COME FIRST, and evidence order is only the tie-break.
+
+    Call order is not relevance, and a run that searches twice makes that obvious. Asked "is
+    there an Adrenochrome movie?" on 2026-09-06, the agent searched the misspelling, searched
+    it again loosely, then searched the correct spelling -- and the middle call returned five
+    unrelated films that took every visible card. The prose said *Adrenochrome (2017)* and
+    *Adrenochrome II*; the reader saw Ender's Game, Andrei Rublev, Antichrist, Under the Dome
+    and Andromeda, with the first named title sixth and the second off the bottom of the panel.
+    A superseded search is still evidence, so it is not dropped -- it is just not the answer.
+
+    `idsIn` is the same extractor `resolveMentions` uses, so the cards and the links in the
+    prose can never disagree about which ids the answer named. It is a regex over a string and
+    costs no query; ordering does not need the ids RESOLVED, because the loop below already
+    resolves each one against the index and drops what it cannot find.
+  */
+  const named = new Set(idsIn(answer));
+  const ordered = [
+    ...evidenceIds.filter((id) => named.has(id)),
+    ...evidenceIds.filter((id) => !named.has(id)),
+  ];
+
+  // The cap is applied AFTER the ordering, which is the half that matters: capping during
+  // collection is what buried a named title behind two dozen rows nobody asked about.
+  for (const id of ordered) {
+    if (titles.length >= MAX_CARDS) break;
+    const row = engine.byTconst(id);
+    if (!row) continue;
+    titles.push({
+      tconst: row.tconst,
+      title: row.title,
+      year: row.year,
+      kind: row.kind,
+      /*
+        THE SAME RULE `decorate()` APPLIES, and it is not "always a path".
+
+        `/img/t/<tconst>` is our own proxy, so the browser never sees an upstream URL.
+        But a title whose artwork has been RESOLVED TO NOTHING (`art.url === null`)
+        gets null rather than a path, because pointing an <img> at a proxy we know will
+        404 makes the card flash a broken image before falling back to initials.
+        `undefined` means we have not looked yet, which is not the same as knowing
+        there is none -- so it still gets the path and the proxy resolves it on demand.
+      */
+      poster: (() => {
+        const art = store.getArtwork(row.tconst);
+        return art !== undefined && art.url === null ? null : `/img/t/${row.tconst}`;
+      })(),
+    });
+  }
+
+  /*
+    Episodes come from the CALL ARGUMENTS plus the engine, not from the payload.
+
+    `evidence` deliberately records entity ids and relations, and an episode tconst is
+    neither -- it is not a browsable title and it forms no join. So the parent is read off
+    the list_episodes call that asked, and the rows are re-read from the index, which is
+    cheap (a covering-index lookup) and cannot disagree with what the tool returned.
+
+    Its own loop now, rather than sharing the title loop: the titles are no longer walked in
+    call order, and an episode list belongs to the call that asked for it.
+  */
+  for (const call of result.toolCalls) {
     if (call.name === "list_episodes" && typeof call.args.tconst === "string") {
       const parent = call.args.tconst;
       if (seenE.has(parent)) continue;
@@ -373,7 +416,7 @@ function streamResponse(
             status: r.status,
             ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
           })),
-          ...surfaced(result, deps.live.current, deps.store),
+          ...surfaced(result, deps.live.current, deps.store, result.answer),
           mentions: resolveMentions(deps.indexDb(), result.answer),
           usage: { costUsd: result.costUsd, ms: result.ms },
         }),
@@ -563,7 +606,7 @@ export function makeChatHandler(deps: ChatDeps) {
         status: r.status,
         ...(r.season !== undefined ? { season: r.season, episode: r.episode } : {}),
       })),
-      ...surfaced(result, deps.live.current, deps.store),
+      ...surfaced(result, deps.live.current, deps.store, result.answer),
       mentions: resolveMentions(deps.indexDb(), result.answer),
       usage: { costUsd: result.costUsd, ms: result.ms },
     };
