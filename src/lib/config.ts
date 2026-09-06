@@ -300,23 +300,36 @@ export interface Config {
    *
    * **Empty is the default and it is not a placeholder.** A checkout that does not opt in
    * behaves exactly as every version before this one, which is what makes it safe to ship
-   * to a running instance -- the same argument `tmdb.watchProviderCountries` makes.
+   * to a running instance -- the same argument the `tmdb` addon's `watchProviderRegions`
+   * setting makes.
    *
    * A title matches if ANY of its original languages is listed. Titles whose language
    * nobody knows are ADMITTED rather than hidden: coverage is 84% at the browse floor, so
    * excluding them would hide thousands of titles for a gap that is ours, and a preference
    * should fail toward showing too much. See `languageFilter`.
    *
-   * DELIBERATELY NOT `regions`, for the reason that key states about `watchProviderCountries`:
+   * DELIBERATELY NOT `regions`, for the reason `src/plugins/tmdb.ts` states about its own
+   * `watchProviderRegions` setting:
    * "which countries is this instance FOR" and "what do these people watch" are different
    * questions, and `regions` defaults to `["US"]` -- reusing it would silently switch on an
    * English-only filter for every existing deployment.
    */
   languages: string[];
 
+  /**
+   * The POSTER CACHE, and nothing else about TMDB.
+   *
+   * > [!IMPORTANT] The key, the image base and the watch-provider countries are NOT here
+   * > They are settings an operator changes at runtime, and this file cannot hold one of
+   * > those: a value saved on the admin page would win for the addon and lose to the
+   * > container's environment everywhere else. `src/lib/tmdb-settings.ts` owns the two that
+   * > core reads, `src/plugins/tmdb.ts` owns the one only the addon reads, and both resolve
+   * > from the same `kv` rows under `src/lib/addon-config.ts`'s single rule.
+   *
+   * What is left is what a deployment FIXES rather than tunes: where the poster cache lives
+   * and how big it may get.
+   */
   tmdb: {
-    apiKey?: string;
-    imageBase: string;
     /** Poster cache lives under dataDir/images. */
     cacheImages: boolean;
     /**
@@ -325,27 +338,6 @@ export interface Config {
      * ~30 KB, so the default holds tens of thousands.
      */
     cacheMaxBytes: number;
-    /**
-     * Trim the `watchProviders` facet to these countries. UNSET KEEPS EVERY COUNTRY.
-     *
-     * A well-distributed film carries ~112 of them at roughly 25 KB, and a reader ever
-     * sees exactly one: `pickWatchProviders` chooses in the BROWSER, because one cached
-     * answer serves every reader. So all but one country is dead weight in the cache --
-     * but only an operator knows which countries their readers are actually in.
-     *
-     * DELIBERATELY NOT `regions`, and that is the whole reason this key exists. `regions`
-     * answers a different question ("which countries is this instance FOR", for the
-     * upcoming sync) and DEFAULTS TO `["US"]`, so reusing it would have trimmed every
-     * existing deployment to US-only availability without anybody asking for it -- and a
-     * reader outside those countries would silently lose the "Where to watch" pane
-     * entirely, since `pickWatchProviders` has no fallback to "whatever country we do
-     * have". Unset here means today's behaviour exactly, which is what makes this safe to
-     * ship to a running instance.
-     *
-     * Trimming is not free either way: the cached rows are a faithful copy of one upstream
-     * document, so narrowing this and then wanting a country back costs a call per title.
-     */
-    watchProviderRegions?: string[];
   };
 
   plex: {
@@ -930,7 +922,6 @@ const DEFAULTS: Config = {
   // opts in; nobody wakes up to a filter they did not choose. Same shape as `requests.quotaPerDay`.
   languages: [],
   tmdb: {
-    imageBase: "https://image.tmdb.org/t/p",
     cacheImages: true,
     cacheMaxBytes: 2_000_000_000, // 2 GB -- tens of thousands of w342 posters
   },
@@ -1111,17 +1102,12 @@ function envOverrides(): Record<string, unknown> {
       ?.split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
+    // `FINDERR_TMDB_API_KEY`, `FINDERR_TMDB_IMAGE_BASE` and
+    // `FINDERR_TMDB_WATCH_PROVIDER_REGIONS` are read as addon-config SEEDS instead -- see the
+    // `tmdb` field above. Parsing them here as well would put a second reader back.
     tmdb: {
-      apiKey: envStr("FINDERR_TMDB_API_KEY"),
-      imageBase: envStr("FINDERR_TMDB_IMAGE_BASE"),
       cacheImages: envBool("FINDERR_TMDB_CACHE_IMAGES"),
       cacheMaxBytes: envInt("FINDERR_ARTWORK_CACHE_MAX_BYTES"),
-      // Same upper-casing as `regions`, and for the same reason: the codes are matched
-      // against TMDB's own ISO 3166-1 alpha-2 keys, which are upper case.
-      watchProviderRegions: envStr("FINDERR_TMDB_WATCH_PROVIDER_REGIONS")
-        ?.split(",")
-        .map((s) => s.trim().toUpperCase())
-        .filter(Boolean),
     },
     plex: {
       enabled: envBool("FINDERR_PLEX_ENABLED"),

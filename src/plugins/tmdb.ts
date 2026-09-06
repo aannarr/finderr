@@ -6,6 +6,10 @@
  * back through `c.config`, reaching into neither `process.env` nor core's own `loadConfig()`.
  * An addon written outside this repo can do exactly what this one does.
  *
+ * The one thing it does that a third-party addon would not: two of its three fields are
+ * declared by `src/lib/tmdb-settings.ts` and spread in, because core reads the same key and
+ * the same image base. See that file for why there is only one declaration of them.
+ *
  * It goes dark without a key -- `init` declares no facets when `apiKey` is unset, so a
  * checkout with no key loads a finderr that simply knows six fewer facts. Nothing else
  * changes, and that stays true however the key is configured.
@@ -34,40 +38,37 @@ import { AsyncCache } from "../lib/async-cache";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { FacetProvider, PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
 import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
+import { TMDB_ADDON_ID, TMDB_DEFAULT_IMAGE_BASE, TMDB_SHARED_CONFIG } from "../lib/tmdb-settings";
 import { fetchDocument, type TmdbDocument } from "./tmdb/document";
-
-/**
- * Where a TMDB image path becomes a URL, when nobody has said otherwise.
- *
- * The same address `cfg.tmdb.imageBase` defaults to, and the same one the poster proxy's
- * allowlist knows. Restated here rather than imported because this addon is the worked
- * example of an addon that reaches NOTHING in core -- a third party could not import it.
- */
-const DEFAULT_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 /**
  * What an operator configures, declared rather than read out of `process.env`.
  *
  * Each field keeps the `FINDERR_TMDB_*` variable it already had as its `env` SEED, so an
  * existing deployment behaves identically until somebody saves a value -- see
- * `src/lib/addon-config.ts` for the rule. Core reads `FINDERR_TMDB_API_KEY` and
- * `FINDERR_TMDB_IMAGE_BASE` too, for the upcoming-titles sync and the poster proxy, and
- * those readers are NOT this declaration: they keep reading `cfg.tmdb`. So an operator who
- * overrides a value here changes what this addon does and nothing else.
+ * `src/lib/addon-config.ts` for the rule.
+ *
+ * THE FIRST TWO FIELDS ARE CORE'S, spread in from `src/lib/tmdb-settings.ts` rather than
+ * restated. The key and the image base are read by the upcoming-and-trending sync and by the
+ * poster proxy as well as by this addon, and one declaration is what makes an override on
+ * the admin page move all of them at once. `watchProviderRegions` is this addon's alone and
+ * is declared here, which is what an addon written outside this repo does with every field.
  */
 export const meta = {
-  id: "tmdb",
+  id: TMDB_ADDON_ID,
   entities: ["movie", "series"],
   hosts: [TMDB_HOST],
   config: [
-    {
-      key: "apiKey",
-      type: "secret",
-      required: true,
-      label: "API key",
-      description: "A TMDB v3 API key. Without it this addon answers nothing.",
-      env: "FINDERR_TMDB_API_KEY",
-    },
+    ...TMDB_SHARED_CONFIG,
+    /*
+      DELIBERATELY NOT core's `regions`, and that is the whole reason this setting exists.
+      `regions` answers a different question -- "which countries is this instance FOR", for
+      the upcoming sync -- and DEFAULTS TO ["US"], so reusing it would trim every existing
+      deployment to US-only availability without anybody asking, and a reader outside those
+      countries would silently lose the "Where to watch" pane entirely (`pickWatchProviders`
+      has no fallback to "whatever country we do have"). Unset means today's behaviour
+      exactly, which is what makes it safe to ship to a running instance.
+    */
     {
       key: "watchProviderRegions",
       type: "string",
@@ -75,14 +76,6 @@ export const meta = {
       description:
         "Comma-separated ISO 3166-1 alpha-2 codes. Empty keeps every country, which is ~25 KB a title.",
       env: "FINDERR_TMDB_WATCH_PROVIDER_REGIONS",
-    },
-    {
-      key: "imageBase",
-      type: "string",
-      label: "Image base URL",
-      description: "Where a headshot path becomes a URL. Change it only for a TMDB mirror.",
-      env: "FINDERR_TMDB_IMAGE_BASE",
-      default: DEFAULT_IMAGE_BASE,
     },
   ],
 } as const satisfies PluginMeta;
@@ -132,7 +125,7 @@ const FRESHNESS = {
  */
 export function init(c: PluginContext): PluginExports {
   const apiKey = c.config.string("apiKey");
-  const imageBase = c.config.string("imageBase") ?? DEFAULT_IMAGE_BASE;
+  const imageBase = c.config.string("imageBase") ?? TMDB_DEFAULT_IMAGE_BASE;
   const watchProviderRegions = regionList(c.config.string("watchProviderRegions"));
   if (!apiKey) {
     c.log(

@@ -83,6 +83,7 @@ import {
 } from "../lib/terms";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
+import { TmdbSettingsStore } from "../lib/tmdb-settings";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
 import { addonConfigRoutes } from "./addon-config-routes";
@@ -223,7 +224,19 @@ const sonarr = cfg.sonarr ? new SonarrClient(cfg.sonarr) : undefined;
   verdict, nothing else. See `src/lib/prowlarr.ts`.
 */
 const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
-const images = new ImageCache(cfg);
+
+/*
+  Addon configuration, and the one TMDB key this instance uses.
+
+  BEFORE the poster proxy and long before the plugin loader, because three things read it:
+  the `tmdb` addon through `c.config`, `refreshTmdbLists` below, and `ImageCache`. One store,
+  one `kv` row per setting, one precedence rule -- see `src/lib/tmdb-settings.ts` for why the
+  key stopped being a `cfg` field.
+*/
+const addonConfig = new AddonConfigStore(store);
+const tmdbSettings = new TmdbSettingsStore(addonConfig);
+
+const images = new ImageCache(cfg, tmdbSettings);
 const artwork = new ArtworkService(cfg, store, { radarr, sonarr }, log);
 // Cast headshots, season posters and episode stills, served from our own origin. Reuses
 // the artwork service for the bytes -- a face is not a different kind of JPEG.
@@ -422,8 +435,8 @@ const logos = await loadLogoIndex(undefined, log);
 
 // Facet providers. A plugin supplies facts core does not know how to fetch; the resolver
 // keeps them in SQLite so no handler ever waits on one. Two ways in, one loader: files in
-// the plugins directory, and installed packages named in `pluginModules`.
-const addonConfig = new AddonConfigStore(store);
+// the plugins directory, and installed packages named in `pluginModules`. `addonConfig` is
+// built up with the state clients, because the poster proxy reads it too.
 /*
   The one log sink an addon's own words reach, and therefore the one that redacts.
 
@@ -791,21 +804,24 @@ function backfillPersonImages(): void {
   "a shelf is not published until its titles are warm" needs in order to hold.
 
   No key means no shelves, quietly, the same way the `tmdb` plugin goes dark: three rows
-  fewer and nothing else changes.
+  fewer and nothing else changes. LITERALLY the same key -- both read the one setting
+  `src/lib/tmdb-settings.ts` owns, read fresh here so a key saved on the admin page reaches
+  the next six-hourly run rather than the next restart.
 
   THE TWO SYNCS FAIL INDEPENDENTLY, in their own try blocks, for the reason
   `replaceUpcoming` is scoped per source: trending being unreachable must not also stop
   the upcoming rows that were one await away from landing.
 */
 async function refreshTmdbLists(): Promise<void> {
-  if (!cfg.tmdb.apiKey) return;
+  const { apiKey } = tmdbSettings.read();
+  if (!apiKey) return;
   const api = new TmdbApi(
     createPluginFetch({
       pluginId: "upcoming-sync",
       hosts: [TMDB_HOST],
       pacer: new HostPacer(DEFAULT_OUTBOUND_POLICY.minIntervalMsPerHost),
     }),
-    cfg.tmdb.apiKey,
+    apiKey,
   );
   const deps = { store, hasRow: indexHasRow, log };
   try {

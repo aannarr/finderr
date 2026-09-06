@@ -11,6 +11,7 @@
 import { mkdirSync } from "node:fs";
 import type { Config } from "./../lib/config";
 import { paths } from "./../lib/config";
+import type { TmdbSettingsReader } from "./../lib/tmdb-settings";
 import { cacheHeaders, IMMUTABLE_PUBLIC } from "./cache-policy";
 
 const ALLOWED_SIZES = new Set(["w92", "w154", "w185", "w342", "w500", "w780", "original"]);
@@ -22,7 +23,15 @@ export class ImageCache {
   private dir: string;
   private inFlight = new Map<string, Promise<Response>>();
 
-  constructor(private cfg: Config) {
+  /**
+   * `tmdb` is the RUNTIME half: where the upstream lives is a setting an operator can change
+   * on the admin page, so it is read per miss rather than captured here. `cfg` keeps the two
+   * halves a deployment fixes -- the cache directory and whether to write to it at all.
+   */
+  constructor(
+    private cfg: Config,
+    private tmdb: TmdbSettingsReader,
+  ) {
     this.dir = paths(cfg).images;
     mkdirSync(this.dir, { recursive: true });
   }
@@ -66,7 +75,7 @@ export class ImageCache {
   }
 
   private async fetchAndStore(size: string, file: string, local: string): Promise<Response> {
-    const upstream = `${this.cfg.tmdb.imageBase}/${size}/${file}`;
+    const upstream = `${this.tmdb.read().imageBase}/${size}/${file}`;
     let res: Response;
     try {
       res = await fetch(upstream, { signal: AbortSignal.timeout(15_000) });

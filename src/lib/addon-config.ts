@@ -3,10 +3,11 @@
  * one rule that decides which of the two sources wins.
  *
  * > [!IMPORTANT] ENV IS THE SEED, THE DATABASE IS THE TRUTH, AND THAT RULE HAS ONE OWNER
- * > `AddonConfigStore.values()` below is the only thing in the tree that resolves an addon's
- * > setting: a key PRESENT in `kv` wins outright, an env var named by the declaration seeds
- * > it while nobody has ever set it, and the declaration's own `default` is the floor.
- * > Nothing else may spell `dbValue ?? something` for an addon setting -- ask this.
+ * > `AddonConfigStore.resolve()` below is the only thing in the tree that resolves one of
+ * > these settings -- `values()`, `reader()`, `report()`, `secrets()` and `sharedValue()` are
+ * > all views of it: a key PRESENT in `kv` wins outright, an env var named by the declaration
+ * > seeds it while nobody has ever set it, and the declaration's own `default` is the floor.
+ * > Nothing else may spell `dbValue ?? something` for one of these -- ask this.
  *
  * That is deliberately the same rule `./site-settings.ts` established for the operator's own
  * settings, down to the consequence: once a value is saved, editing the env var stops doing
@@ -196,6 +197,20 @@ export class AddonConfigStore {
     const out: AddonConfigValues = {};
     for (const field of this.declarationOf(pluginId)) out[field.key] = this.resolve(pluginId, field).value;
     return out;
+  }
+
+  /**
+   * One field resolved by the same rule, for a setting CORE owns and an addon SHARES.
+   *
+   * Everything else on this class resolves what an addon DECLARED, which is right for a
+   * setting only that addon uses. The TMDB key is not one of those: the upcoming-and-trending
+   * sync and the poster proxy read the same value, so core hands its own declaration in and
+   * gets the same answer from the same row `c.config` reads. It asks nothing of the plugin
+   * registry, which is the point -- deleting an addon file must not stop a core feature. See
+   * `./tmdb-settings.ts`, the one caller and the one owner of those declarations.
+   */
+  sharedValue(pluginId: string, field: AddonConfigField): AddonConfigValue | undefined {
+    return this.resolve(pluginId, field).value;
   }
 
   /** The reader handed to a plugin as `c.config`. */
