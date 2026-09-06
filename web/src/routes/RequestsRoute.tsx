@@ -77,7 +77,7 @@ export function WithdrawControl({
   if (!isWithdrawable(request.status)) return null;
 
   return (
-    <div className="mt-1">
+    <div>
       <ConfirmAction
         label="Withdraw"
         question="Withdraw this request?"
@@ -138,7 +138,7 @@ export function RetryControl({ request, onRetried }: { request: MediaRequest; on
   };
 
   return (
-    <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <button type="button" onClick={() => void retry()} disabled={busy} className={LINK_BUTTON}>
         {busy ? "Asking again…" : "Try again"}
       </button>
@@ -150,8 +150,12 @@ export function RetryControl({ request, onRetried }: { request: MediaRequest; on
 /**
  * What a reader may DO about one request: play it if Plex holds it, ask again if it stopped,
  * withdraw it if it has not arrived. They are not alternatives -- a series can be
- * half-playable and still downloading -- so this stacks whichever the row has earned rather
+ * half-playable and still downloading -- so this draws whichever the row has earned rather
  * than choosing between them.
+ *
+ * A FRAGMENT AND NOT A ROW. The caller owns the layout, because every control here can
+ * legitimately be absent and a wrapper drawn here would leave an empty box on a row that
+ * earned nothing -- which is also what lets a test assert the empty case as an empty string.
  *
  * Exported for its test, and it exists as a component for the same reason `WithdrawControl`
  * does: the rule worth pinning is which affordance a given row earns, and asserting that
@@ -344,7 +348,13 @@ function RequestRow({ request, onChanged }: { request: MediaRequest; onChanged: 
       <Poster
         title={request}
         size="w154"
-        className="aspect-2/3 w-14 shrink-0 overflow-hidden rounded-md bg-surface-2"
+        /*
+          `self-start` is not cosmetic: a flex child defaults to `stretch`, so the frame grew
+          to the height of the row beside it and `aspect-2/3` lost -- a browser drew Inception
+          at 56x138 and Breaking Bad, whose row is taller for its season lines, at 56x190. Both
+          were the same poster cropped to two different shapes on one screen.
+        */
+        className="aspect-2/3 w-14 shrink-0 self-start overflow-hidden rounded-md bg-surface-2"
         link
         alt={request.title}
       />
@@ -383,12 +393,19 @@ function RequestRow({ request, onChanged }: { request: MediaRequest; onChanged: 
         <SeasonProgressRows progress={request.seasonProgress} />
 
         {/*
+          ONE ROW OF VERBS, because two of them stacking is what a browser showed: "Try again"
+          on its own line above "Withdraw" reads as two decisions rather than one choice
+          between them. The container is here rather than in `RequestActions` so that a row
+          which earns no control at all draws nothing rather than an empty box.
+
           Reloading the whole list rather than splicing the row out locally: the poll
           that feeds this page is the server's, and a withdraw also frees a quota row
           and can change what the arr is doing. One read gives the true state of all of
           it, and the same read is what the tick above asks for.
         */}
-        <RequestActions request={request} onWithdrawn={onChanged} />
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <RequestActions request={request} onWithdrawn={onChanged} />
+        </div>
       </div>
     </li>
   );
