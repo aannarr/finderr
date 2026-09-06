@@ -18,49 +18,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type DumpRows, dumpDir, indexConfig } from "../test/index-dumps";
 import type { Config } from "./config";
-import { EXPECTED_HEADERS } from "./dumps";
 import { buildIndex, SCHEMA } from "./index-builder";
 import { currentStages, stagesOf, staleStagesOf } from "./index-stages";
 import { EPISODE_PAGE, type EpisodeRow, queryEpisodes, SearchEngine } from "./search";
 
 const root = mkdtempSync(join(tmpdir(), "finderr-episode-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-
-/** Config with only the fields the builder reads. Spelled out, because `as Config` is silent. */
-function configWith(over: Partial<Config["index"]> = {}): Config {
-  return {
-    index: {
-      fuzzyMinVotes: 100,
-      titleTypes: ["movie", "tvSeries", "tvMiniSeries", "tvMovie"],
-      includeAdult: false,
-      castMinVotes: 1000,
-      castCategories: [],
-      episodeSeriesMinVotes: 1000,
-      rankPriorVotes: 25_000,
-      refreshCron: "",
-      refreshOnBoot: false,
-      ...over,
-    },
-  } as Config;
-}
-
-/**
- * One dump directory. Rows are given WITHOUT the header -- the header comes from
- * EXPECTED_HEADERS, so a fixture cannot drift from what the guard demands.
- */
-function dumpDir(dumps: { ratings: string[][]; basics: string[][]; episodes?: string[][] }): string {
-  const dir = join(root, crypto.randomUUID());
-  mkdirSync(dir, { recursive: true });
-  const write = (name: keyof typeof EXPECTED_HEADERS, rows: string[][]) => {
-    const text = [EXPECTED_HEADERS[name], ...rows.map((r) => r.join("\t"))].join("\n");
-    Bun.write(join(dir, `${name}.tsv.gz`), Bun.gzipSync(Buffer.from(`${text}\n`)));
-  };
-  write("title.ratings", dumps.ratings);
-  write("title.basics", dumps.basics);
-  if (dumps.episodes) write("title.episode", dumps.episodes);
-  return dir;
-}
 
 /** basics row: tconst, type, primary, original, isAdult, start, end, runtime, genres */
 const basics = (tconst: string, kind: string, title: string, year: string, isAdult = "0") => [
@@ -132,9 +97,9 @@ async function build(
   over: Partial<Config["index"]> = {},
   dumps: Partial<typeof BASE> = {},
 ): Promise<Database> {
-  const dir = dumpDir({ ...BASE, ...dumps });
+  const dir = dumpDir(root, { ...BASE, ...dumps } as DumpRows);
   const dest = join(root, `${crypto.randomUUID()}.db`);
-  await buildIndex(configWith(over), dir, dest, () => {});
+  await buildIndex(indexConfig(over), dir, dest, () => {});
   return new Database(dest, { readonly: true });
 }
 
@@ -256,13 +221,13 @@ describe("the stage is additive and optional", () => {
   });
 
   test("a reordered title.episode column is refused rather than ingested", async () => {
-    const dir = dumpDir(BASE);
+    const dir = dumpDir(root, BASE);
     // parentTconst and tconst swapped -- every row would attribute an episode to itself
     // and no row count would catch it.
     const bad = ["parentTconst\ttconst\tseasonNumber\tepisodeNumber", `${SERIES}\ttt-e101\t1\t1`];
     await Bun.write(join(dir, "title.episode.tsv.gz"), Bun.gzipSync(Buffer.from(`${bad.join("\n")}\n`)));
     await expect(
-      buildIndex(configWith(), dir, join(root, `${crypto.randomUUID()}.db`), () => {}),
+      buildIndex(indexConfig(), dir, join(root, `${crypto.randomUUID()}.db`), () => {}),
     ).rejects.toThrow(/schema drift in title\.episode/);
   });
 });
@@ -273,30 +238,30 @@ describe("the stage stamp", () => {
     const stamp = JSON.parse(
       (db.query("select value from meta where key = 'stages'").get() as { value: string }).value,
     ) as Record<string, string>;
-    expect(stamp.episodes).toBe(currentStages(configWith()).episodes);
+    expect(stamp.episodes).toBe(currentStages(indexConfig()).episodes);
   });
 
   test("a build with NO dump still stamps it -- the stage ran and the answer was 'none'", async () => {
     // Stamping only successes would have a dumpless deployment rebuild its whole index on
     // every boot, forever, to re-discover the same absence.
-    const dir = dumpDir({ ...BASE, episodes: undefined });
+    const dir = dumpDir(root, { ...BASE, episodes: undefined });
     const dest = join(root, `${crypto.randomUUID()}.db`);
-    await buildIndex(configWith(), dir, dest, () => {});
-    expect(stagesOf(dest).episodes).toBe(currentStages(configWith()).episodes);
+    await buildIndex(indexConfig(), dir, dest, () => {});
+    expect(stagesOf(dest).episodes).toBe(currentStages(indexConfig()).episodes);
   });
 
   test("moving episodeSeriesMinVotes makes the live index stale, so boot orders a rebuild", async () => {
     const dataDir = join(root, crypto.randomUUID());
     mkdirSync(dataDir, { recursive: true });
-    const dir = dumpDir(BASE);
+    const dir = dumpDir(root, BASE);
     const live = join(dataDir, "titles.db");
-    await buildIndex(configWith(), dir, join(dataDir, "titles.new.db"), () => {});
+    await buildIndex(indexConfig(), dir, join(dataDir, "titles.new.db"), () => {});
     renameSync(join(dataDir, "titles.new.db"), live);
 
-    expect(staleStagesOf(live, configWith()).map((s) => s.stage)).not.toContain("episodes");
+    expect(staleStagesOf(live, indexConfig()).map((s) => s.stage)).not.toContain("episodes");
     // The failure this catches: a lowered floor silently swallowed until a dump happens to
     // drift, whose symptom is a mid-sized show with no episode list and nothing to say why.
-    const widened = staleStagesOf(live, configWith({ episodeSeriesMinVotes: 100 }));
+    const widened = staleStagesOf(live, indexConfig({ episodeSeriesMinVotes: 100 }));
     expect(widened.map((s) => s.stage)).toContain("episodes");
   });
 });

@@ -16,8 +16,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type DumpRows, dumpDir, indexConfig } from "../test/index-dumps";
 import type { Config } from "./config";
-import { EXPECTED_HEADERS } from "./dumps";
 import { buildIndex } from "./index-builder";
 import { INDEX_STAGES, unreleasedCastCutoffYear } from "./index-stages";
 import { anticipationWeight } from "./query-parser";
@@ -25,49 +25,18 @@ import { anticipationWeight } from "./query-parser";
 const root = mkdtempSync(join(tmpdir(), "finderr-cast-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-/** Config with only the fields the builder reads. */
-function configWith(over: Partial<Config["index"]> = {}): Config {
-  return {
-    index: {
-      fuzzyMinVotes: 100,
-      titleTypes: ["movie", "tvSeries"],
-      includeAdult: false,
-      castMinVotes: 1000,
-      castCategories: ["actor", "actress", "director", "writer"],
-      // Required by the rank layer. It is spelled out here because the `as Config` below
-      // means TypeScript will NOT tell you when a new field is missing -- this fixture went
-      // red on the day `rankPriorVotes` landed and the compiler stayed silent.
-      rankPriorVotes: 25_000,
-      refreshCron: "",
-      refreshOnBoot: false,
-      ...over,
-    },
-  } as Config;
-}
-
 /**
- * One dump directory. Rows are given WITHOUT the header -- the header comes from
- * EXPECTED_HEADERS, so a fixture cannot drift from what the guard demands.
+ * The shared builder config, bent to what THIS file is about: two title types, and the four
+ * cast categories every test here counts against. The field list itself lives in
+ * `../test/index-dumps.ts` -- `as Config` is silent about a missing field, so one copy of it
+ * is the whole point.
  */
-function dumpDir(dumps: {
-  ratings: string[][];
-  basics: string[][];
-  principals?: string[][];
-  names?: string[][];
-}): string {
-  const dir = join(root, crypto.randomUUID());
-  mkdirSync(dir, { recursive: true });
-
-  const write = (name: keyof typeof EXPECTED_HEADERS, rows: string[][]) => {
-    const text = [EXPECTED_HEADERS[name], ...rows.map((r) => r.join("\t"))].join("\n");
-    Bun.write(join(dir, `${name}.tsv.gz`), Bun.gzipSync(Buffer.from(`${text}\n`)));
-  };
-
-  write("title.ratings", dumps.ratings);
-  write("title.basics", dumps.basics);
-  if (dumps.principals) write("title.principals", dumps.principals);
-  if (dumps.names) write("name.basics", dumps.names);
-  return dir;
+function configWith(over: Partial<Config["index"]> = {}): Config {
+  return indexConfig({
+    titleTypes: ["movie", "tvSeries"],
+    castCategories: ["actor", "actress", "director", "writer"],
+    ...over,
+  });
 }
 
 /** basics row: tconst, type, primary, original, isAdult, start, end, runtime, genres */
@@ -115,7 +84,7 @@ const BASE = {
 };
 
 async function build(over: Partial<Config["index"]> = {}, dumps = {}): Promise<Database> {
-  const dir = dumpDir({ ...BASE, ...dumps } as Parameters<typeof dumpDir>[0]);
+  const dir = dumpDir(root, { ...BASE, ...dumps } as DumpRows);
   const dest = join(root, `${crypto.randomUUID()}.db`);
   await buildIndex(configWith(over), dir, dest, () => {});
   return new Database(dest, { readonly: true });
@@ -302,7 +271,7 @@ describe("the cast cadence", () => {
    * what `castStage` reads to decide between rescanning and carrying forward.
    */
   async function buildInto(dataDir: string, over: Partial<Config["index"]>, dumps: object) {
-    const dir = dumpDir({ ...BASE, ...dumps } as Parameters<typeof dumpDir>[0]);
+    const dir = dumpDir(root, { ...BASE, ...dumps } as DumpRows);
     const cfg = { ...configWith(over), dataDir } as Config;
     mkdirSync(dataDir, { recursive: true });
     await buildIndex(cfg, dir, join(dataDir, "titles.new.db"), () => {});
@@ -397,7 +366,7 @@ describe("the cast cadence", () => {
       principals: undefined,
       names: undefined,
     };
-    const dir = dumpDir(shifted as Parameters<typeof dumpDir>[0]);
+    const dir = dumpDir(root, shifted as DumpRows);
     const cfg = { ...configWith({}), dataDir } as Config;
     await buildIndex(cfg, dir, join(dataDir, "titles.new.db"), () => {});
     rmSync(join(dataDir, "titles.db"), { force: true });
@@ -425,10 +394,10 @@ describe("the cast cadence", () => {
     const dataDir = join(root, crypto.randomUUID());
     await buildInto(dataDir, { castMinVotes: 0 }, CREDITS);
     // OBSCURE drops out by title type: rebuild keeping only the popular one.
-    const dir = dumpDir({
+    const dir = dumpDir(root, {
       ratings: BASE.ratings,
       basics: [basics(POPULAR, "Inception", "2010")],
-    } as Parameters<typeof dumpDir>[0]);
+    });
     const cfg = { ...configWith({ castMinVotes: 0 }), dataDir } as Config;
     await buildIndex(cfg, dir, join(dataDir, "titles.new.db"), () => {});
     const db = new Database(join(dataDir, "titles.new.db"), { readonly: true });
@@ -445,7 +414,7 @@ describe("the cast cadence", () => {
 
 describe("schema drift", () => {
   test("a reordered principals column is refused rather than ingested", async () => {
-    const dir = dumpDir({ ...BASE, ...CREDITS });
+    const dir = dumpDir(root, { ...BASE, ...CREDITS });
     // Rewrite the header with two columns swapped -- exactly the failure the guard is
     // for, and the one no row count would ever catch.
     const bad = ["tconst\tordering\tcategory\tnconst\tjob\tcharacters", "tt0001\t1\tactor\tnm0001\t\\N\t\\N"];
