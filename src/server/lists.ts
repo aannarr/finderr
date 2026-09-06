@@ -168,8 +168,9 @@ function posterStrip(
  * > The structure that made them expensive is gone rather than tuned. A language list used to
  * > scan DOWN the rank order until 250 films of the language had accumulated, so the thinnest
  * > catalogue was the dearest -- Finnish alone cost more than the twelve lists that shipped.
- * > `title_lang` now carries `kind`, `rank` and `non_english` and `ix_lang_rank` reads 250
- * > rows in output order, so every language costs the same 0.25 ms. That is what let the
+ * > `title_lang` now carries the list columns denormalised (`ORIGIN_SCHEMA` is the owner of
+ * > which) and `ix_lang_rank` reads 250 rows in output order, so every language costs the
+ * > same 0.25 ms. That is what let the
  * > catalogue go from twelve languages to forty-one AND get sixty times cheaper.
  * >
  * > End to end the whole payload goes **1,719.3 ms to 50.2 ms** on the same machine and the

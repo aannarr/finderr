@@ -176,6 +176,14 @@ export interface ListLanguage {
  * > is ALSO in English, which is 19.6% at the worst of them (Ukrainian, 115 of 587 ranked
  * > films). A list added later costs one more of the same ~0.24 ms, which is the whole point
  * > of the change above -- the cost stopped depending on the language. See `INDEXES.origin`.
+ * >
+ * > **RE-MEASURED AGAIN 2026-09-07 when `title_lang` gained `year` and `votes`**, because that
+ * > widened `ix_lang_rank` with a fifth column and every list here reads it. Also free: the
+ * > forty-five lists total **11.0 ms before and 11.1 after** on a copy of the real
+ * > 1,276,669-title build, M1 Max, best of five warm through `rankedMembers` -- inside the
+ * > run-to-run spread, and no language leaving the 0.21-0.32 ms band. The columns were added
+ * > for a language BROWSE crossed with a year, a decade or a votes sort, which is a different
+ * > query; this line is the control that says they cost the lists nothing.
  *
  * > [!NOTE] Chinese, Greek and Tagalog are here since 2026-09-06, and the corpus is what
  * > changed rather than the rule
