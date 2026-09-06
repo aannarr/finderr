@@ -161,15 +161,17 @@ export const CANARY_CASES: CanaryCase[] = [
   //
   // Reported by aannarr on 2026-09-06 against the live deployment. `adrenochrome` is ONE edit
   // from the query (`editdist3` says 100) and is in the vocabulary -- and spellfix1 at its
-  // default `scope = 4` did not return it among 300 candidates, because the shortlist is a
-  // scan of words sharing the first four PHONETIC characters and the inserted `n` moves the
-  // hash from `ADRMACRMA` to `AMDRMACRMA`. A letter added near the front of a word leaves the
-  // bucket entirely, so no amount of ranking could have recovered it.
+  // default scope (three hash characters in the vendored source) did not return it among 300
+  // candidates, because the shortlist is a scan of words sharing that PHONETIC prefix and the
+  // inserted `n` moves the hash from `ADRMACRMA` to `AMDRMACRMA`. A letter added near the
+  // front of a word leaves the bucket entirely, so no amount of ranking could have recovered
+  // it. The trigram shortlist (`./vocab-trigrams.ts`) is what answers it now; an index built
+  // before that table falls back to the wide `scope = 1` retry.
   {
     query: "andrenochrome",
     want: "Adrenochrome",
     fuzzyOnly: true,
-    note: "1 edit away, but a different phonetic bucket -- needs the widened second pass",
+    note: "1 edit away, but a different phonetic bucket -- needs the trigram shortlist (or the legacy wide retry)",
   },
   {
     query: "the godfater",

@@ -59,6 +59,14 @@ import {
 } from "./query-parser";
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_MISSING, SPELLFIX_TABLE } from "./spellfix";
+import {
+  rarestTrigrams,
+  TRIGRAM_DF_TABLE,
+  TRIGRAM_TABLE,
+  trigramMatchExpr,
+  trigramShortlistSql,
+  trigramsOf,
+} from "./vocab-trigrams";
 
 /**
  * Which escalation answered a query, as a value list rather than a bare union.
@@ -187,18 +195,25 @@ const FUZZY_WINDOW = 300;
 const FUZZY_MAX_DISTANCE = 300;
 
 /**
- * The scope for the SECOND pass, taken only when the first finds nothing within the floor.
+ * The scope for the SECOND pass on an index WITHOUT the trigram tables, taken only when the
+ * first finds nothing within the floor.
  *
- * spellfix1 shortlists on a prefix of the phonetic hash -- `scope` characters of it, 4 by
- * default -- so a letter inserted near the FRONT of a word moves it out of the bucket and no
- * amount of `top` will reach it. `andrenochrome` hashes to `AMDRMACRMA` against
- * `adrenochrome`'s `ADRMACRMA`: one edit apart, different at character 2, absent from all 300
- * candidates at scope 4 and rank 1 at scope 1.
+ * spellfix1 shortlists on a prefix of the phonetic hash -- `scope` characters of it, THREE
+ * by default in the vendored source (`x.iScope = 3`; the upstream docs say four and the
+ * comments here used to repeat that) -- so a letter inserted near the FRONT of a word moves
+ * it out of the bucket and no amount of `top` will reach it. `andrenochrome` hashes to
+ * `AMDRMACRMA` against `adrenochrome`'s `ADRMACRMA`: one edit apart, different at character
+ * 2, absent from all 300 candidates at the default scope and rank 1 at scope 1.
  *
- * It is a fallback and never the default because it is 20-50x the work: measured 2026-09-06 on
- * the real 257,764-word vocabulary, scope 4 costs 2-11 ms and scope 1 costs 81-266 ms. The
- * first pass keeps every query that already worked on the fast path, and only a query that
- * would otherwise have returned junk ever pays.
+ * > [!IMPORTANT] This is the LEGACY shape, kept only for an index built before `vocab_tri`
+ * > Measured 2026-09-06 on the real vocabulary with 2,000 generated typos: scope 1 costs
+ * > 99-119 ms on an M1 Max and still finds only 71% of front-of-word single typos (a typo in
+ * > the first LETTER changes the first hash character too), and because it fires only when
+ * > the first pass returned nothing within the floor, the two passes together find 74.2% of
+ * > what the floor allows. The trigram shortlist (`./vocab-trigrams.ts`) replaces it: unioned
+ * > with the phonetic pass on every fuzzy query, it finds 96%+ for about 7 ms. An index
+ * > without those tables keeps this fallback until its next rebuild, which the `vocab` stage
+ * > stamp orders at the next boot.
  */
 const FUZZY_WIDE_SCOPE = 1;
 
@@ -332,6 +347,19 @@ export class SearchEngine {
     detail: "prepareFuzzy() was never called on this engine",
   };
   private vocabWords = 0;
+
+  /**
+   * Whether this index carries the trigram shortlist beside the phonetic one.
+   *
+   * Decided in `prepareFuzzy` with the rest of the fuzzy tier, not in the constructor: the
+   * tables are only worth anything once the extension is loaded, because the distance they
+   * are ranked on is the extension's own function. An index built before them keeps the
+   * legacy two-pass shape (see `FUZZY_WIDE_SCOPE`) until its next rebuild.
+   */
+  private hasTrigrams = false;
+
+  /** `TRIGRAM_DF_TABLE` seek, prepared once; asked ~11 times per fuzzy query. */
+  private trigramDf!: ReturnType<Database["prepare"]>;
 
   /**
    * Trigram sets for CANDIDATE titles, memoized across queries.
@@ -656,6 +684,18 @@ export class SearchEngine {
     ).c;
     this.fuzzyAbsence = null;
 
+    // Both tables or neither: they are one stage's output, and a shortlist ranked against a
+    // frequency table that is not there would choose its trigrams blind.
+    this.hasTrigrams = this.tableExists(TRIGRAM_TABLE) && this.tableExists(TRIGRAM_DF_TABLE);
+    if (this.hasTrigrams) {
+      this.trigramDf = this.db.prepare(`select n from ${TRIGRAM_DF_TABLE} where tri = ?`);
+    } else {
+      log(
+        `fuzzy: no '${TRIGRAM_TABLE}' in this index -- phonetic shortlist only, with the wide retry. ` +
+          "The next rebuild adds the trigram shortlist.",
+      );
+    }
+
     // The vocabulary was built at whatever floor was configured AT BUILD TIME. If the
     // running config has moved since, fuzzy coverage is not what config says it is --
     // and the only symptom would be one obscure title becoming unfindable, which nobody
@@ -671,7 +711,8 @@ export class SearchEngine {
     }
 
     log(
-      `fuzzy: spellfix1 ready, ${this.vocabWords.toLocaleString()} words ` +
+      `fuzzy: spellfix1 ready, ${this.vocabWords.toLocaleString()} words, ` +
+        `${this.hasTrigrams ? "phonetic + trigram shortlists" : "phonetic shortlist only"} ` +
         `in ${((Bun.nanoseconds() - t0) / 1e6).toFixed(0)}ms`,
     );
   }
@@ -1007,19 +1048,23 @@ export class SearchEngine {
     const nq = normalizeStripped(p.text);
     if (nq.length === 0) return [];
 
-    // Pass one at spellfix1's default scope. This is the fast path and it answers almost
-    // every typo -- 2 to 11 ms against the real vocabulary, measured 2026-09-06.
-    let rows = this.spellfixRows(nq, limit, null);
-    let near = rows.filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
+    // The phonetic shortlist at spellfix1's default scope: 2 to 11 ms against the real
+    // vocabulary, measured 2026-09-06, and blind to a typo in the first three hash characters.
+    let near = this.spellfixRows(nq, limit, null).filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
 
-    // Pass two, ONLY when the first found nothing close. See FUZZY_WIDE_SCOPE.
-    if (near.length === 0) {
-      rows = this.spellfixRows(nq, limit, FUZZY_WIDE_SCOPE);
-      near = rows.filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
+    if (this.hasTrigrams) {
+      // The trigram shortlist, UNIONED rather than chained -- `./vocab-trigrams.ts` has the
+      // measurement that decided that. Both report the same distance, so one floor serves.
+      near = near.concat(this.trigramRows(nq, limit).filter((r) => r.distance <= FUZZY_MAX_DISTANCE));
+    } else if (near.length === 0) {
+      // An index built before the trigram tables: the legacy wide retry, see FUZZY_WIDE_SCOPE.
+      near = this.spellfixRows(nq, limit, FUZZY_WIDE_SCOPE).filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
     }
 
-    // One title can appear twice (primary and original form); keep first occurrence,
-    // which is the closer match since spellfix1 returns in distance order.
+    // One title can appear several times -- primary and original form, and from both
+    // shortlists. Keep the closest occurrence; `rank()` re-scores everything anyway, so the
+    // order here only decides which duplicate survives.
+    near.sort((a, b) => a.distance - b.distance);
     const seen = new Set<number>();
     const out: number[] = [];
     for (const r of near) {
@@ -1028,6 +1073,34 @@ export class SearchEngine {
       out.push(r.rowid);
     }
     return out;
+  }
+
+  /**
+   * The trigram shortlist, ranked on the SAME distance the phonetic one reports.
+   *
+   * `spellfix1_editdist` is the extension's own `editdist1`, the function behind the
+   * `distance` column of a MATCH -- so `FUZZY_MAX_DISTANCE` means one thing on both paths and
+   * the floor's calibration carries over untouched. The word comes back through the spellfix1
+   * table by rowid rather than from its shadow table, so nothing here depends on the
+   * extension's storage layout.
+   *
+   * Eight rarest trigrams, dropping any the vocabulary never contains: the frequency table
+   * is the whole of the cost control, and `./vocab-trigrams.ts` carries the numbers.
+   */
+  private trigramRows(nq: string, limit: number): { rowid: number; distance: number }[] {
+    const grams = rarestTrigrams(trigramsOf(nq), (g) => {
+      const row = this.trigramDf.get(g) as { n: number } | null;
+      return row?.n ?? 0;
+    });
+    if (grams.length === 0) return [];
+    return this.db
+      .query(
+        `select m.rowid_ as rowid, spellfix1_editdist(?3, v.word) as distance
+           from (${trigramShortlistSql()}) s
+           join ${SPELLFIX_TABLE} v on v.rowid = s.id
+           join ${SPELLFIX_MAP_TABLE} m on m.id = s.id`,
+      )
+      .all(trigramMatchExpr(grams), limit, nq) as { rowid: number; distance: number }[];
   }
 
   /**

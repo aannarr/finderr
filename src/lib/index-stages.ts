@@ -277,6 +277,22 @@ export const INDEX_STAGES = {
    * cost and nothing on screen would say so.
    */
   origin: () => JSON.stringify({ v: 2 }),
+
+  /**
+   * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it
+   * (`vocab_tri` + `vocab_tri_df`, see `./vocab-trigrams.ts`).
+   *
+   * It had no stamp at all before `v: 2`, which is exactly the crosswalk shape: an index
+   * built by yesterday's image would keep serving typos through the phonetic shortlist and
+   * its 100 ms wide retry, correct and quietly worse, until a dump happened to drift.
+   *
+   * **The floor is in the recipe because it decides which words exist.** Moving
+   * `fuzzyMinVotes` used to earn one boot-time WARNING from `prepareFuzzy` and never a
+   * rebuild, so the config could say one thing and the file another indefinitely; now it is
+   * a build reason like every other recipe change. The warning stays, because it names the
+   * two numbers.
+   */
+  vocab: (cfg) => JSON.stringify({ v: 2, minVotes: cfg.index.fuzzyMinVotes }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

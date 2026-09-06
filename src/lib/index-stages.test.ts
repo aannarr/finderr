@@ -83,6 +83,20 @@ describe("index stages", () => {
     }
   });
 
+  test("moving the fuzzy vote floor is a build reason, not only a boot-time warning", () => {
+    const dir = tempDir();
+    try {
+      const path = join(dir, "titles.db");
+      const before = loadConfig();
+      indexAt(path, (db) => stampStages(db, before));
+
+      const after = withIndex({ fuzzyMinVotes: before.index.fuzzyMinVotes + 50 });
+      expect(staleStagesOf(path, after).map((s) => s.stage)).toEqual(["vocab"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("reordering a config list is the SAME recipe -- an unsorted stamp would rebuild nightly", () => {
     const a = withIndex({ castCategories: ["actor", "director", "writer"] });
     const b = withIndex({ castCategories: ["writer", "actor", "director", "actor"] });

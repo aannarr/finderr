@@ -19,7 +19,13 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { loadConfig, paths } from "../lib/config";
 import { buildVocabulary } from "../lib/index-builder";
-import { prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "../lib/spellfix";
+import {
+  loadSpellfix,
+  prepareSqlite,
+  SPELLFIX_MAP_TABLE,
+  SPELLFIX_MISSING,
+  SPELLFIX_TABLE,
+} from "../lib/spellfix";
 
 const log = (m: string) => console.log(`[vocab] ${m}`);
 
@@ -36,6 +42,15 @@ prepareSqlite(log);
 
 const db = new Database(target, { readwrite: true });
 try {
+  // The extension must be loaded BEFORE the drop, not only before the build: `vocab` is a
+  // spellfix1 virtual table, and SQLite refuses to drop a virtual table whose module it
+  // does not have -- `no such module: spellfix1`. Measured 2026-09-06 on a real index: this
+  // job died on its own first statement on exactly the index it exists to upgrade, and
+  // `buildVocabulary` loading the extension itself did not help because that ran second.
+  if (!loadSpellfix(db, log).ok) {
+    console.error(`[vocab] ${SPELLFIX_MISSING}`);
+    process.exit(1);
+  }
   // Rebuilding must be idempotent -- this job exists to be re-run.
   db.run(`drop table if exists ${SPELLFIX_TABLE}`);
   db.run(`drop table if exists ${SPELLFIX_MAP_TABLE}`);
