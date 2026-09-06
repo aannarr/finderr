@@ -28,11 +28,24 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 /** `paths` are the route patterns the node links to, e.g. `["/title/$tconst"]`. */
 export async function renderInRouter(node: ReactNode, paths: readonly string[]): Promise<string> {
+  return renderToStaticMarkup(await inRouter(node, paths));
+}
+
+/**
+ * The same throwaway router, handed back as an ELEMENT instead of as markup.
+ *
+ * For the one case the static idiom cannot serve: a component that both contains a `<Link>`
+ * and has behaviour worth driving, so it needs a live tree for `./interact.ts` to render. The
+ * ceremony is identical either way -- build the tree, load it, or the router renders nothing --
+ * and a second copy of it in a test file is a copy that goes on working while this one is
+ * fixed.
+ */
+export async function inRouter(node: ReactNode, paths: readonly string[]): Promise<ReactElement> {
   const rootRoute = createRootRoute({ component: () => node });
   const router = createRouter({
     routeTree: rootRoute.addChildren(
@@ -42,5 +55,5 @@ export async function renderInRouter(node: ReactNode, paths: readonly string[]):
   });
   await router.load();
   // biome-ignore lint/suspicious/noExplicitAny: this tree is not the app's registered router
-  return renderToStaticMarkup(<RouterProvider router={router as any} />);
+  return <RouterProvider router={router as any} />;
 }

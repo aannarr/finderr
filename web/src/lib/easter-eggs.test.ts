@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   markWipeShown,
   noteOrdinaryNavigation,
@@ -30,9 +30,35 @@ function fakeStorage(): Storage {
   } as Storage;
 }
 
+/**
+ * A fresh, EMPTY store before every test, without taking the DOM away from the rest of the run.
+ *
+ * > [!CAUTION] REPLACING `globalThis.window` HERE BREAKS EVERY LATER FILE IN THE SUITE
+ * > `web/src/test/dom.ts` is a preload, so happy-dom's `window` is registered once for the
+ * > whole run and Bun shares globals across files. This block used to assign
+ * > `globalThis.window = { localStorage }`, which threw that away permanently -- every test
+ * > file loaded AFTER this one lost `window.document`, and Testing Library's `waitFor` then
+ * > dies with "Expected container to be an Element but got undefined". It was invisible for
+ * > as long as nothing later needed a DOM, and the first file that did (the `/admin` overview
+ * > route) failed in the suite while passing alone.
+ * >
+ * > So: swap only `localStorage`, and put back exactly what was there. The comment this
+ * > replaced said Bun's test environment has no window -- true when it was written, and the
+ * > preload is what stopped it being true.
+ */
+let realStorage: Storage | undefined;
 beforeEach(() => {
-  // @ts-expect-error -- bun's test environment has no window until one is put here.
-  globalThis.window = { localStorage: fakeStorage() };
+  realStorage = globalThis.window?.localStorage;
+  Object.defineProperty(globalThis.window, "localStorage", {
+    value: fakeStorage(),
+    configurable: true,
+  });
+});
+afterEach(() => {
+  Object.defineProperty(globalThis.window, "localStorage", {
+    value: realStorage,
+    configurable: true,
+  });
 });
 
 const ANDOR = "tt9253284";

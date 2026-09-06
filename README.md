@@ -650,7 +650,7 @@ rebuild.
 | `FINDERR_SEARCH_RATE_PER_MINUTE` | `120` | Per IP, on `/api/search` |
 | `FINDERR_AGENT_CHEAP_RATE_PER_MINUTE` | `120` | Per **agent key**, on everything a local SQLite seek answers. In addition to the per-IP limits, never instead of them |
 | `FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE` | `20` | Per **agent key**, on `/api/search`, `GET /api/title/:tconst` and the request POSTs — the operations that cost real CPU, a blocking provider wait, or a download. Also the cap on how many blocking title reads one key can have in flight |
-| `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | Titles one ordinary user may request per UTC day; `0` is unlimited. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, the episode and season grains do not count because they write no `request` row, and a user over the limit gets `429` naming their reset time |
+| `FINDERR_REQUEST_QUOTA_PER_DAY` | `0` | **The SEED for the site quota, not the value.** Titles one ordinary user may request per UTC day; `0` is unlimited. An admin sets this on `/admin` and it is then stored, after which this variable stops having any effect -- see [Site defaults](#site-defaults). Until somebody saves one, this is what applies. Counted in **titles**, so a series is one however many seasons are picked, and re-requesting something already queued costs nothing. Admins are exempt, the episode and season grains do not count because they write no `request` row, and a user over the limit gets `429` naming their reset time |
 | `FINDERR_SEARCH_LOG` | `true` | Keep what people search for, so the ranking can be tuned against real queries instead of invented ones. A row is **the query, a timestamp and a result count** — no session, no user, no address — and a click report adds which title was opened and at what rank. Set it to `false` and nothing is buffered and nothing is written; the tables stay. Read it with `bun run search:report` |
 | `FINDERR_SEARCH_LOG_KEEP_ROWS` | `50000` | Rows kept per table, oldest deleted first. A disk bound rather than a retention policy: there is no identity in this data to expire |
 | `FINDERR_PUSH_ENABLED` | `true` | Offer web push notifications when a request arrives. Costs nothing until somebody turns them on: the VAPID key pair is generated on the first ask and stored in the app database. Setting it to `false` stops finderr talking to Google's, Apple's and Mozilla's push services on your users' behalf, and keeps existing subscriptions rather than deleting them |
@@ -689,7 +689,35 @@ With the admin key (or an admin session) it reports index rows and build time, t
 in-place swap and its canary score, library, Plex and upcoming mirror counts, the award
 import (row count and the commit it was parsed from), addon coverage of the front page,
 per-provider and per-host timings saying where a cold title's second actually went, user
-and session counts, and memory.
+and session counts, and memory. **Most of it is drawn on `/admin`**, so a shell and the
+system key are no longer the only way to read it — see [Site defaults](#site-defaults).
+
+### Site defaults
+
+Two things apply to everybody and are set on `/admin` rather than in the environment: the
+**daily request quota** and whether a **new account gets the assistant**. Both start from
+what the deployment configured, and once an admin saves one, the environment stops deciding
+it — a value you can change from a web page cannot also be one a container restart silently
+overrules. That is the whole trade, and there is exactly one place in the code that resolves
+it (`src/lib/site-settings.ts`), so nothing can disagree about which source wins.
+
+The quota is a *fallback*: a person with no allowance of their own is bound by it, and one
+with an allowance set on `/admin/users/:id` is not. Zero means unlimited, wherever it appears,
+and administrators are never limited.
+
+The assistant default is *not* a fallback and the difference matters. It decides what the
+**next account created** starts at and touches nobody who is already here — an account's
+assistant switch is a plain yes or no with no "follow the site" state to fall back into.
+Turning it off stops new invitees from getting the assistant; changing somebody who already
+has it is done on their own page.
+
+The same screen draws what `/api/health` knows: index rows and build date, the last in-place
+swap **with its canary score**, whether the page-cache prefault ran and how much of it the
+container's memory cap kept, which arrs are configured, the library and Plex mirror counts,
+which addons are loaded and what each is allowed to fetch, and the **twenty slowest requests**
+with the arguments that made them slow. Each of those has a reading worth acting on — a
+`REFUSED` swap means searches still work and the library is quietly a day old — and the page
+says so in words rather than leaving a number to be judged.
 
 ### Letting the arrs tell you
 
@@ -1101,8 +1129,9 @@ Every line here is a real limitation. It is not a roadmap.
 
 - No approval workflow. Requests are attributed to whoever made them and admins can see who
   asked for what, but nothing holds a request for review: every one goes straight to the
-  arr. There is a daily per-user quota (`FINDERR_REQUEST_QUOTA_PER_DAY`) and it is off by
-  default, so out of the box nothing limits how much anybody asks for.
+  arr. There is a daily quota -- set for everybody on `/admin`, overridden per person on
+  `/admin/users/:id` -- and it is off by default, so out of the box nothing limits how much
+  anybody asks for.
 - Notifications go to the person who asked, and nowhere else. Web push tells them on their
   own devices when their own request arrives; there is no Discord, ntfy, Telegram or
   outbound webhook, and no way to announce an arrival to a room. (The webhook finderr does
