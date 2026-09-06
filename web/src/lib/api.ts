@@ -12,6 +12,7 @@
 // bundle and the browser pays nothing for it.
 import type { ArrLink } from "../../../src/lib/arr-links";
 import type { AwardMark } from "../../../src/lib/award-marks";
+import { AWARDS } from "../../../src/lib/award-registry";
 import type { CollectionSummary } from "../../../src/lib/collections";
 import type { EpisodeState } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
@@ -879,11 +880,13 @@ export interface PersonAwards {
   }[];
 }
 
-// Keyed by AWARD and by `award/edition`: three awards on one cache key would serve the
+// Keyed by AWARD and by `award/edition`: several awards on one cache key would serve the
 // Palme d'Or's editions under the Oscars' heading the moment somebody used the top nav.
-// Four timelines and twenty editions is a few hundred KB at most, and stepping back to an
-// award you already looked at is then free.
-const timelineCache = new Cache<AwardsTimeline>(4);
+// One timeline per award and twenty editions is a few hundred KB at most, and stepping back
+// to an award you already looked at is then free. Sized FROM the registry rather than to a
+// literal, because a literal 4 was right for four awards and silently became an eviction on
+// every other nav hop when the eighth landed.
+const timelineCache = new Cache<AwardsTimeline>(AWARDS.length);
 const ceremonyCache = new Cache<CeremonyPage>(20);
 
 /** The timeline we already hold. Synchronous, for the same reason `cachedDiscover` is. */

@@ -5,9 +5,9 @@
  * query. That is not an optimisation bolted onto a query -- the award tables live in the app
  * database and the cards come out of the title index, so there is no join available between
  * the two connections and a per-card read would be a per-card round trip. The set is what
- * makes the Map the obvious answer: three awards, roughly two hundred anchor winners between
- * them, against ~12k nominations in total. Holding the winners costs a rounding error and
- * every lookup after that is free.
+ * makes the Map the obvious answer: eight awards, a few hundred anchor winners between them,
+ * against ~12k nominations in total. Holding the winners costs a rounding error and every
+ * lookup after that is free.
  *
  * ANCHOR WINNERS ONLY. A nomination chip would land on thousands of titles and stop meaning
  * anything; a win of the award's top prize is the signal, and which prize that is per award is
