@@ -240,6 +240,79 @@ describe("every fixed overlay carries the top inset", () => {
 });
 
 /**
+ * A POSTER THAT IS A DIRECT FLEX CHILD PINS ITSELF TO THE TOP OF ITS ROW.
+ *
+ * A flex item defaults to `align-items: stretch`, and that is the CROSS axis -- so a poster
+ * frame sitting in a `flex` row beside a taller text column grows to that column's height and
+ * its own `aspect-2/3` loses. `shrink-0` is no defence; it governs the main axis. Chrome drew
+ * one component at 56x138 and at 56x190 on a single screen before the first `self-start`
+ * landed, and every static check in both suites passed over it.
+ *
+ * NOTHING THAT RENDERS CAN SEE THIS. happy-dom computes no layout, so a DOM test that
+ * measured the frame would be comparing zero against zero. What is pinnable is the class
+ * contract -- weaker than the defect deserves, and worth having anyway, because the class is
+ * exactly what a later tidying edit deletes as noise. Same trade as the safe-area block
+ * above, for the same reason.
+ *
+ * The list is BY HAND and that is the known cost: a fifth flex-row poster added next month is
+ * how this regresses. `Poster`'s own `className` doc carries the ruling on why the class is
+ * not forced inside the component instead.
+ */
+describe("posters that are direct flex children start at the top of the row", () => {
+  /**
+   * The one `className="..."` literal in `src` that draws an `aspect-2/3` frame `width` wide.
+   *
+   * `null` when it is not exactly one, which is deliberate: two matches mean the width has
+   * stopped identifying the site, and asserting against an arbitrary one of them would be a
+   * green test measuring the wrong poster.
+   */
+  const posterFrame = (src: string, width: string): string | null => {
+    const frames = [...src.matchAll(/className="([^"]*)"/g)]
+      .map((m) => m[1])
+      .filter((c) => c.includes("aspect-2/3") && c.split(" ").includes(width));
+    return frames.length === 1 ? frames[0] : null;
+  };
+
+  const sites = [
+    { file: "routes/RequestsRoute.tsx", width: "w-14", beside: "a title that may carry season lines" },
+    { file: "routes/AwardsRoute.tsx", width: "w-16", beside: "the anchor's label and nominee lines" },
+    { file: "routes/CeremonyRoute.tsx", width: "w-28", beside: "a synopsis of unbounded length" },
+    // Prophylactic rather than a repair: every sibling in this strip is an identical `w-10`
+    // poster today, so nothing is taller and nothing stretches. Pinned so the arming is not
+    // undone by somebody who checks the rendered page, sees no difference, and removes it.
+    { file: "routes/ListsRoute.tsx", width: "w-10", beside: "identical posters, for now" },
+  ];
+
+  for (const { file, width, beside } of sites) {
+    test(`${file} (${width}, beside ${beside})`, async () => {
+      const src = await Bun.file(new URL(`./${file}`, import.meta.url)).text();
+      const frame = posterFrame(src, width);
+      expect(frame).not.toBeNull();
+      expect(frame).toContain("self-start");
+    });
+  }
+
+  /**
+   * The ceremony page's OTHER poster is correct with no class of its own, and the thing that
+   * makes it correct lives one file away.
+   *
+   * Its 32px frame is a direct child of `NominationRow`, whose `li` sets `items-start` for the
+   * whole row -- the winner mark, the poster and the trailing action all want the top. That is
+   * the better owner for a row aligning three unrelated children, so the poster stays bare.
+   * Drop the class from the row and the poster starts stretching with nothing in its own call
+   * site to explain why, which is why the row's half is pinned here too.
+   */
+  test("or the row itself decides, as `NominationRow` does", async () => {
+    const src = await Bun.file(new URL("./components/Awards.tsx", import.meta.url)).text();
+    // The row's own class list rather than the file, so a failure prints eight words instead
+    // of the whole module and the reader can see what the row says now.
+    const row = src.match(/<li className="([^"]*)">/)?.[1] ?? null;
+    expect(row).not.toBeNull();
+    expect(row?.split(" ")).toContain("items-start");
+  });
+});
+
+/**
  * THE DRAWER'S MOTION, WHICH THREE FILES HAVE TO AGREE ON.
  *
  * The enter keyframe and the exit transition are CSS; the timer that keeps the panel mounted
