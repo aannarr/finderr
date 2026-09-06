@@ -50,10 +50,9 @@ import {
 } from "../lib/plex-auth";
 import { clientKey, RateLimiter } from "../lib/rate-limit";
 import {
+  type AdminQuotaState,
   isQuotaValue,
-  quotaApplies,
-  quotaLimitFor,
-  utcDayReset,
+  quotaStateFor,
   utcDayStart,
   utcDayStartDaysAgo,
 } from "../lib/request-quota";
@@ -1135,7 +1134,6 @@ export class AuthService {
             // `user.quotaPerDay` travels separately on `publicUser`, so the page can tell
             // "5 because we said so" from "5 because the site says so" without inferring it.
             const site = this.deps.settings.read();
-            const limitPerDay = quotaLimitFor(target.quotaPerDay, site.requestQuotaPerDay);
             return json({
               user: publicUser(target),
               ...this.accessFor(target.id, p.session?.idHash ?? null),
@@ -1150,24 +1148,28 @@ export class AuthService {
                 .map((r) =>
                   attributedRequest(r, p.role, (uid) => (uid === target.id ? target.displayName : null)),
                 ),
+              /*
+                Built by `quotaStateFor`, which owns the limit resolution, the day boundary
+                and the "does it bind them" exemption -- the same builder `/api/requests`
+                answers a reader's own header with. A screen that worked any of those out
+                from `limitPerDay` and a role would be a second owner of the rule that
+                decides whether a request is refused.
+              */
               quota: {
-                limitPerDay,
-                usedToday: this.deps.store.countRequestsSince(target.id, utcDayStart()),
-                resetsAt: utcDayReset(),
-                /*
-                  Whether the limit BINDS this person, answered by the rule rather than by the
-                  page. An admin is exempt and a limit of 0 is unlimited, and a screen that
-                  worked that out from `limitPerDay` and `role` for itself would be a second
-                  owner of the rule that decides whether a request is refused.
-                */
-                applies: quotaApplies(target.role, limitPerDay),
+                ...quotaStateFor({
+                  role: target.role,
+                  override: target.quotaPerDay,
+                  siteDefault: site.requestQuotaPerDay,
+                  usedToday: () => this.deps.store.countRequestsSince(target.id, utcDayStart()),
+                }),
                 /*
                   What the SITE would give them, so the editor can offer "follow the site
                   default (N)" as a real choice rather than as a blank field. The override
-                  itself is `user.quotaPerDay` -- null there means this value applies.
+                  itself is `user.quotaPerDay` -- null there means this value applies. Admin-only,
+                  which is why it is added here rather than living on `QuotaState`.
                 */
                 siteLimitPerDay: site.requestQuotaPerDay,
-              },
+              } satisfies AdminQuotaState,
               /*
                 PRESENT OR ABSENT, never the key. Only the sha256 is stored, so there is no
                 token to send even to an admin -- what this answers is "does this person have

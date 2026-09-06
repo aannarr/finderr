@@ -24,6 +24,7 @@ import { ConfirmAction } from "../components/ConfirmAction";
 import { QuotaField, ToggleSetting } from "../components/SettingControls";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
 import {
+  type AdminQuotaState,
   type AdminUserDetail,
   type AttributedRequest,
   type CredentialSummary,
@@ -262,7 +263,7 @@ function Actions({ acting }: { acting: Acting }) {
  * is undone by pressing the same button again, and a quota is a number you retype. The
  * confirmations are for the block above.
  */
-function Settings({ acting, quota }: { acting: Acting; quota: QuotaState }) {
+function Settings({ acting, quota }: { acting: Acting; quota: AdminQuotaState }) {
   return (
     <Block title="Settings">
       <QuotaSetting acting={acting} quota={quota} />
@@ -287,7 +288,7 @@ function Settings({ acting, quota }: { acting: Acting; quota: QuotaState }) {
  * what makes this one about a PERSON: the draft starts at their effective limit, and clearing
  * the override is offered only while they have one.
  */
-function QuotaSetting({ acting, quota }: { acting: Acting; quota: QuotaState }) {
+function QuotaSetting({ acting, quota }: { acting: Acting; quota: AdminQuotaState }) {
   const { user, reload } = acting;
   const save = async (quotaPerDay: number | null) => {
     await patchUser(user.id, { quotaPerDay });
@@ -373,6 +374,12 @@ function Request({ request }: { request: AttributedRequest }) {
  * belong to the request rule (`src/lib/request-quota.ts`) and not to a screen. Which of the
  * two exemptions fired is deliberately not spelled out here: it would be this page
  * re-deriving the rule it was just handed the answer to.
+ *
+ * A SIBLING OF `quotaSummary`, not a duplicate of it. That one is what a reader is told about
+ * THEMSELVES above their own downloads, so it is a compact chip and says nothing at all when
+ * no limit applies. This is one administrator reading about somebody else, where "no daily
+ * limit applies to this account" is exactly the fact they came for. Both read `QuotaState`, so
+ * the two sentences can never describe different allowances.
  */
 function quotaLine(quota: QuotaState): string {
   const used = `${count(quota.usedToday, "title")} today`;

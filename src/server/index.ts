@@ -24,7 +24,14 @@ import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry"
 import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
-import { type EpisodeState, missingEpisodeIdsIn, seasonsWithMissing, todayUtc } from "../lib/episodes";
+import {
+  type EpisodeState,
+  missingEpisodeIdsIn,
+  type SeasonProgress,
+  seasonProgress,
+  seasonsWithMissing,
+  todayUtc,
+} from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
@@ -39,7 +46,7 @@ import { ProwlarrClient } from "../lib/prowlarr";
 import { RateLimiter } from "../lib/rate-limit";
 import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
-import { quotaLimitFor, quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
+import { quotaLimitFor, quotaStateFor, quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
 import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, languageFilter, type TitleRow } from "../lib/search";
 import {
@@ -50,11 +57,11 @@ import {
   SearchLog,
   type SearchLogger,
 } from "../lib/search-log";
-import { parseSeasonsInput } from "../lib/seasons";
+import { decodeSeasons, parseSeasonsInput } from "../lib/seasons";
 import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
-import { Store, syncLibrary } from "../lib/store";
+import { type EpisodeEntry, Store, syncLibrary } from "../lib/store";
 import {
   isTermDimension,
   TERM_DIMENSIONS,
@@ -1057,7 +1064,7 @@ function decorate<T extends TitleRow>(rows: T[]) {
       */
       requestError: q?.error ?? null,
       service: serviceFor(r.kind),
-      posterUrl: art !== undefined && art.url === null ? null : `/img/t/${r.tconst}`,
+      posterUrl: posterPath(r.tconst, art),
       studio: art?.studio ?? null,
       studioLogo: logos.urlForTitle(r.kind, art?.studio),
       plex: playLink(r.tconst),
@@ -1071,6 +1078,23 @@ function decorate<T extends TitleRow>(rows: T[]) {
       award: awardMarks.get(r.tconst),
     };
   });
+}
+
+/**
+ * Where the browser fetches a title's poster, or null when there is genuinely none.
+ *
+ * ALWAYS our own proxy path and never the upstream URL, for the reason `decorate` states at
+ * length. What is worth having one owner for is the THREE-WAY distinction the ternary hides:
+ * an artwork row we have never written (`undefined`) still gets a path, because the route
+ * resolves it through the arrs on first fetch; a row we HAVE written whose `url` is null is a
+ * title somebody looked up and found no art for, and pointing at the proxy there is a request
+ * guaranteed to 404. Getting that backwards costs one doomed round trip per card.
+ *
+ * A second surface wanted it -- the request list, which draws a poster per row since R4 -- and
+ * a retyped ternary is exactly the shape that drifts: the wrong half of it still renders.
+ */
+function posterPath(tconst: string, art: { url: string | null } | undefined): string | null {
+  return art !== undefined && art.url === null ? null : `/img/t/${tconst}`;
 }
 
 /**
@@ -1095,6 +1119,53 @@ function plexLinker(): (tconst: string) => PlexLinks | null {
 }
 
 /**
+ * Per-season progress for each request in one response -- a lookup resolved once, like
+ * `plexLinker`.
+ *
+ * ONE query for the whole page, and that bound is the reason this is a closure rather than a
+ * call per row: `RootLayout` polls `/api/requests` every eight seconds for the queue badge,
+ * so a `store.episodeMap` per series row would be two hundred statements every eight seconds
+ * for as long as any tab is open. `store.episodesForSeries` says the same thing about its own
+ * `in` clause.
+ *
+ * FILMS COST NOTHING. They are filtered out before the query, by the same `serviceFor` that
+ * decides which arr a request goes to -- so a library of films asks the episode table nothing
+ * at all, and the answer for one is the empty list rather than a null every caller must guard.
+ *
+ * `todayUtc()` is read ONCE per response rather than per row: every season on the page is then
+ * described as of the same instant, and a list rendered across a UTC midnight cannot report
+ * two different days.
+ */
+function seasonProgressLinker(
+  requests: readonly { tconst: string; kind: string; seasons: string | null }[],
+): (request: { tconst: string; kind: string; seasons: string | null }) => SeasonProgress[] {
+  const series = requests.filter((r) => serviceFor(r.kind) === "sonarr").map((r) => r.tconst);
+  const episodes = store.episodesForSeries(series);
+  const today = todayUtc();
+
+  return (request) => {
+    const rows = episodes.get(request.tconst);
+    if (!rows) return [];
+    // `decodeSeasons` and not a second `split(",")`: the stored spelling has one owner, and
+    // it already answers null for "the reader never chose", which is exactly the narrowing
+    // `seasonProgress` wants to skip.
+    return seasonProgress(rows.map(episodeStateOf), today, decodeSeasons(request.seasons));
+  };
+}
+
+/** One mirrored episode row as the wire shape every rule in `../lib/episodes.ts` reads. */
+function episodeStateOf(e: EpisodeEntry): EpisodeState {
+  return {
+    season: e.season,
+    episode: e.episode,
+    arrEpisodeId: e.arr_episode_id,
+    hasFile: e.has_file === 1,
+    monitored: e.monitored === 1,
+    airDate: e.air_date,
+  };
+}
+
+/**
  * Our Sonarr's per-episode state for one series.
  *
  * Read straight out of the mirror, so this is local SQLite like every other render-path
@@ -1102,14 +1173,7 @@ function plexLinker(): (tconst: string) => PlexLinks | null {
  * in `src/lib/episodes.ts`.
  */
 function episodeStateFor(tconst: string): EpisodeState[] {
-  return [...store.episodeMap(tconst).values()].map((e) => ({
-    season: e.season,
-    episode: e.episode,
-    arrEpisodeId: e.arr_episode_id,
-    hasFile: e.has_file === 1,
-    monitored: e.monitored === 1,
-    airDate: e.air_date,
-  }));
+  return [...store.episodeMap(tconst).values()].map(episodeStateOf);
 }
 
 /**
@@ -2417,7 +2481,8 @@ const appRoutes = {
     GET: (req: Request) => {
       const principal = auth.principal(req);
       const role = principal?.role ?? null;
-      const me = principal?.user?.id ?? null;
+      const reader = principal?.user ?? null;
+      const me = reader?.id ?? null;
       const diagnostics = store.requestDiagnosticMap();
       /*
         `?mine=1` NARROWS THE SAME ROUTE, rather than adding a second one.
@@ -2444,6 +2509,7 @@ const appRoutes = {
       const names =
         role === "admin" ? new Map(authStore.listUsers().map((u) => [u.id, u.displayName])) : null;
       const playLink = plexLinker();
+      const seasonsOf = seasonProgressLinker(rows);
       return json({
         /*
           The verdict and the bar ride along, in the same `RequestStateView` shape
@@ -2480,6 +2546,30 @@ const appRoutes = {
             library table. Null until Plex has seen it, whatever the verdict says.
           */
           plex: playLink(r.tconst),
+          /*
+            THE POSTER, so a list of requests is a list of THINGS rather than a list of rows.
+
+            This route's own decoration and NOT `decorate()`: that function attaches library
+            state, studio logos, award marks and a facet-ready shape to an index row, and a
+            request row is not an index row -- it has no `kind`-derived vocabulary, no votes
+            and no rank. What the two genuinely share is the poster rule, and that is
+            `posterPath`, which they both call.
+          */
+          posterUrl: posterPath(r.tconst, store.getArtwork(r.tconst)),
+          /*
+            WHICH SEASON IS MOVING, for a series asked for by season.
+
+            Empty for a film, and empty for a series Sonarr does not mirror yet -- see
+            `seasonProgress`, which reports no row rather than a zero for a season with
+            nothing aired. The bar above this row is the whole ask; this is the same ask
+            broken down, and it is the one thing `request_diagnostic` cannot carry because it
+            is keyed on `tconst` alone.
+
+            Named apart from the row's own `seasons`, which is the comma-joined list of what
+            was ASKED for. One is the question and one is the answer, and collapsing them into
+            a single key would have silently overwritten the request's own selection.
+          */
+          seasonProgress: seasonsOf(r),
         })),
         queue: worker.stats(),
         /*
@@ -2490,6 +2580,28 @@ const appRoutes = {
           they can never disagree about a moment.
         */
         unseen: me ? store.countUnseenAvailable(me) : 0,
+        /*
+          WHERE THE READER STANDS AGAINST THE DAILY LIMIT -- "3 of 5 today, resets at 00:00 UTC".
+
+          The setting existed and no screen had ever rendered it, so the only way to discover a
+          quota was to hit it. It rides HERE and on no route of its own for the reason `unseen`
+          above does: this is the endpoint `/requests` already polls, so the header cannot show
+          a count and an allowance that describe two different moments.
+
+          `null` for an anonymous caller, who has no standing rather than a standing of zero.
+          The EFFECTIVE limit is resolved by `quotaStateFor` from this person's override and
+          the site default -- a header printing the site's number at somebody who has been
+          given their own would be confidently wrong, which is worse than printing none.
+        */
+        quota:
+          reader && role
+            ? quotaStateFor({
+                role,
+                override: reader.quotaPerDay,
+                siteDefault: siteSettings.read().requestQuotaPerDay,
+                usedToday: () => store.countRequestsSince(reader.id, utcDayStart()),
+              })
+            : null,
       });
     },
 

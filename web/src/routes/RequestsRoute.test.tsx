@@ -1,20 +1,21 @@
 /**
- * The controls on a request row: Withdraw, and the Play links an arrived one earns.
+ * The controls on a request row: Withdraw, the Play links an arrived one earns, and the Try
+ * again a dead-ended one earns.
  *
- * `react-dom/server` like every other component test here, so what is asserted is the
- * MARKUP: which affordances exist before anybody clicks anything. That is exactly the
- * property worth pinning -- one click must not withdraw -- and it needs no DOM to check,
- * because "the destructive verb is not on the page yet" is a fact about the initial render.
- *
- * The state change behind the first click is React's own and is not re-tested here, for the
- * same reason `SeasonRequestDialog.test.tsx` does not drive `showModal()`.
+ * TWO IDIOMS, and which one each block uses is the rule in `web/src/test/interact.ts`.
+ * `react-dom/server` for what a row DRAWS -- which affordances exist before anybody clicks
+ * anything, which is exactly the property worth pinning for Withdraw ("one click must not
+ * withdraw") and needs no DOM. The harness for what Retry DOES, because "renders a button
+ * and calls nothing" is the failure that shipped here three times: the endpoint has existed
+ * since requests did and this page had never called it.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { isWithdrawable } from "../../../src/lib/request-withdrawal";
 import type { MediaRequest } from "../lib/api";
-import { RequestActions, WithdrawControl } from "./RequestsRoute";
+import { fireEvent, render, screen } from "../test/interact";
+import { RequestActions, RetryControl, WithdrawControl } from "./RequestsRoute";
 
 const request = (over: Partial<MediaRequest> = {}): MediaRequest => ({
   id: 1,
@@ -33,15 +34,18 @@ const request = (over: Partial<MediaRequest> = {}): MediaRequest => ({
   requestEtaAt: null,
   requestEvidence: null,
   plex: null,
+  posterUrl: "/img/t/tt1375666",
+  seasonProgress: [],
   ...over,
 });
 
-const render = (over: Partial<MediaRequest> = {}) =>
+/** Named for its subject rather than `render`, which is now the DOM harness's. */
+const withdrawal = (over: Partial<MediaRequest> = {}) =>
   renderToStaticMarkup(<WithdrawControl request={request(over)} onWithdrawn={() => {}} />);
 
 describe("the withdraw control", () => {
   test("offers Withdraw on a request that has not arrived", () => {
-    expect(render()).toContain("Withdraw");
+    expect(withdrawal()).toContain("Withdraw");
   });
 
   /*
@@ -52,13 +56,13 @@ describe("the withdraw control", () => {
     which is precisely the regression a later restyle would introduce without noticing.
   */
   test("the confirming button is not on the page until the reader asks for it", () => {
-    const html = render();
+    const html = withdrawal();
     expect(html).not.toContain("Yes, withdraw");
     expect(html).not.toContain("Keep it");
   });
 
   test("a request that already arrived offers no control at all", () => {
-    expect(render({ status: "available", requestVerdict: "imported" })).toBe("");
+    expect(withdrawal({ status: "available", requestVerdict: "imported" })).toBe("");
   });
 
   test("every other state a request can reach is withdrawable", () => {
@@ -72,7 +76,7 @@ describe("the withdraw control", () => {
       "manual_import",
     ]) {
       expect(isWithdrawable(status)).toBe(true);
-      expect(render({ status })).toContain("Withdraw");
+      expect(withdrawal({ status })).toContain("Withdraw");
     }
   });
 });
@@ -119,5 +123,124 @@ describe("what an arrived request offers", () => {
     const html = actions({ plex: PLEX });
     expect(html).toContain(PLEX.web);
     expect(html).toContain("Withdraw");
+  });
+});
+
+describe("which rows may be asked for again", () => {
+  const retry = (over: Partial<MediaRequest> = {}) =>
+    renderToStaticMarkup(<RetryControl request={request(over)} onRetried={() => {}} />);
+
+  /*
+    THE TONE AND NEVER A LIST OF VERDICTS. Both dead ends earn the control for the same
+    reason -- nothing further will happen on its own -- and a verdict added to `VERDICT_COPY`
+    with a `dead_end` tone lands here without this file or the component being edited.
+  */
+  test("a dead end offers a way to ask again", () => {
+    for (const verdict of ["no_releases", "nothing_accepted", "failed", "needs_manual_import"] as const) {
+      expect(retry({ requestVerdict: verdict })).toContain("Try again");
+    }
+  });
+
+  /*
+    A retry re-queues the request, which on something already downloading would cancel a
+    download in progress and start the search over. The control is absent rather than
+    disabled: there is nothing here for a reader to want.
+  */
+  test("nothing still moving, and nothing that arrived, offers it", () => {
+    for (const verdict of ["queued", "searching", "downloading", "imported"] as const) {
+      expect(retry({ requestVerdict: verdict })).toBe("");
+    }
+  });
+
+  test("a row with no verdict at all offers nothing", () => {
+    expect(retry({ requestVerdict: null })).toBe("");
+  });
+});
+
+/**
+ * THE DEFECT THIS PINS: a Retry button that renders and calls nothing.
+ *
+ * `POST /api/requests/:tconst/retry` has existed since requests did, and until this card
+ * NOTHING on this page reached it. That is precisely the "draws correctly, does nothing"
+ * shape `web/src/test/interact.ts` was added for -- a static render of the button proves
+ * only that the word is on the screen.
+ */
+describe("asking again, driven", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  /** Stand in for the network, and record what the component asked it for. */
+  function stubFetch(answer: () => Promise<Response>) {
+    const calls: string[] = [];
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+      return answer();
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  test("pressing it POSTs the retry and tells the page to reload", async () => {
+    const calls = stubFetch(async () => new Response("{}", { status: 200 }));
+    let reloaded = 0;
+
+    render(
+      <RetryControl
+        request={request({ requestVerdict: "no_releases", status: "no_release" })}
+        onRetried={() => {
+          reloaded += 1;
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("button", { name: "Try again" });
+
+    expect(calls).toEqual(["POST /api/requests/tt1375666/retry"]);
+    expect(reloaded).toBe(1);
+  });
+
+  /*
+    A refused retry leaves the row exactly as it was and says why, rather than reloading a
+    list that has not changed. The reader can press it again, which is why the verb comes back.
+  */
+  test("a refusal is shown and the page is not reloaded", async () => {
+    stubFetch(async () => new Response("nope", { status: 500 }));
+    let reloaded = 0;
+
+    render(
+      <RetryControl
+        request={request({ requestVerdict: "failed", status: "failed" })}
+        onRetried={() => {
+          reloaded += 1;
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("retry failed: 500")).toBeDefined();
+    expect(reloaded).toBe(0);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+  });
+
+  test("while it is in flight the button reads present-tense and does not answer twice", async () => {
+    // Held open on purpose: the busy state exists only between the click and the promise
+    // settling, so the test has to own when that happens.
+    const inFlight = Promise.withResolvers<Response>();
+    const calls = stubFetch(() => inFlight.promise);
+
+    render(
+      <RetryControl request={request({ requestVerdict: "failed", status: "failed" })} onRetried={() => {}} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    const busy = screen.getByRole("button", { name: "Asking again…" });
+    expect(busy.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(busy);
+    expect(calls).toHaveLength(1);
+
+    inFlight.resolve(new Response("{}", { status: 200 }));
+    // Settled before the test ends, so the last render happens while React is still watching.
+    await screen.findByRole("button", { name: "Try again" });
   });
 });

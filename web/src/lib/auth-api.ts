@@ -9,6 +9,16 @@
 
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
+/**
+ * The quota shapes are the SERVER's and are imported rather than mirrored -- the same
+ * arrangement `RequestStateView` has in `web/src/lib/api.ts`. `src/lib/request-quota.ts` is
+ * pure (no SQLite, no fetch, no clock it was not handed), so importing it costs the sign-in
+ * bundle nothing but the type.
+ */
+import type { AdminQuotaState, QuotaState } from "../../../src/lib/request-quota";
+
+export type { AdminQuotaState, QuotaState };
+
 export type Role = "admin" | "user";
 
 export interface PublicUser {
@@ -445,28 +455,6 @@ export function adminRequests(): Promise<{ requests: AttributedRequest[] }> {
   return get("/api/admin/requests");
 }
 
-/** Where one person stands against the daily request limit. See `src/lib/request-quota.ts`. */
-export interface QuotaState {
-  /**
-   * Titles per UTC day that actually bind THIS person: their own override where they have
-   * one, else the site's. Zero or less is unlimited. Resolved by `quotaLimitFor`.
-   */
-  limitPerDay: number;
-  /**
-   * What the site would give them, so an editor can offer "follow the site default (N)" as
-   * a real choice. Equal to `limitPerDay` exactly when `user.quotaPerDay` is null.
-   */
-  siteLimitPerDay: number;
-  usedToday: number;
-  /** ISO instant of the next UTC midnight. */
-  resetsAt: string;
-  /**
-   * Does the limit BIND this person? The server answers it, because the exemptions -- an
-   * admin, and a limit of zero -- are the request rule's to own and not a screen's to infer.
-   */
-  applies: boolean;
-}
-
 /**
  * One person, whole: the admin-scoped twin of `getMe`, plus what only an admin may read.
  *
@@ -479,7 +467,7 @@ export interface AdminUserDetail {
   credentials: CredentialSummary[];
   sessions: SessionSummary[];
   requests: AttributedRequest[];
-  quota: QuotaState;
+  quota: AdminQuotaState;
   /** Present or absent -- never the key itself, which exists only in the snippet shown once. */
   agentKey: AgentKeySummary | null;
 }

@@ -130,6 +130,106 @@ export function isQuotaValue(raw: unknown): raw is number {
   return typeof raw === "number" && Number.isInteger(raw) && raw >= 0;
 }
 
+/**
+ * Where one person stands against the daily limit, as a screen would say it.
+ *
+ * ONE shape, and the browser imports it rather than mirroring it -- the same arrangement
+ * `RequestStateView` has, for the same reason: a hand-kept copy of a server shape is the
+ * definition of two things that drift. `web/src/lib/auth-api.ts` re-exports it.
+ *
+ * `applies` is here rather than left to the reader because the two exemptions -- an admin,
+ * and a limit of zero -- belong to `quotaApplies` above. A header that worked them out from
+ * `limitPerDay` and a role it holds an opinion about would be a second owner of the rule that
+ * decides whether a request is refused, and it would be the copy nobody updates.
+ */
+export interface QuotaState {
+  /** Titles per UTC day binding THIS person: their override where they have one, else the site's. */
+  limitPerDay: number;
+  /** Titles they have already asked for since the last UTC midnight. */
+  usedToday: number;
+  /** ISO instant of the next UTC midnight. */
+  resetsAt: string;
+  /** Does the limit BIND this person at all? See `quotaApplies`. */
+  applies: boolean;
+}
+
+/**
+ * The same standing, plus what the SITE would give them.
+ *
+ * Admin-only, and separate from `QuotaState` for that reason rather than for tidiness: the
+ * site default is an operator's setting, and an editor needs it to offer "follow the site
+ * default (N)" as a real choice. Nobody else's screen has a use for it, so nobody else's
+ * response carries it.
+ */
+export interface AdminQuotaState extends QuotaState {
+  siteLimitPerDay: number;
+}
+
+/**
+ * Build one person's standing from the two things that decide it.
+ *
+ * THREE ROUTES ANSWER THIS QUESTION and they must not answer it differently: the admin's view
+ * of somebody, the agent manifest's account of its own budget, and the `/requests` header.
+ * Each of them used to resolve the limit, count the day and stamp the reset by hand, which is
+ * three copies of a four-line join -- and the reset is the one most likely to be spelled
+ * slightly differently, because it is the field nothing on screen checks.
+ *
+ * `usedToday` is a thunk for the reason `quotaVerdict` takes one: it is a database query, and
+ * injecting it is what lets every branch here be tested without a Store.
+ *
+ * It is called UNCONDITIONALLY, unlike in `quotaVerdict` where an exempt caller skips it. The
+ * count is a fact a screen reports rather than a step in a refusal -- an admin's own page says
+ * "4 today" beside "no limit", and an exempt reader who was handed a zero would be shown a
+ * number that is simply false. One indexed `count(*)` is the price of that being true.
+ */
+export function quotaStateFor(input: {
+  role: Role;
+  /** This person's own override, or null to follow the site's. */
+  override: number | null;
+  siteDefault: number;
+  usedToday: () => number;
+  now?: Date;
+}): QuotaState {
+  const limitPerDay = quotaLimitFor(input.override, input.siteDefault);
+  return {
+    limitPerDay,
+    usedToday: input.usedToday(),
+    resetsAt: utcDayReset(input.now),
+    applies: quotaApplies(input.role, limitPerDay),
+  };
+}
+
+/**
+ * YOUR OWN standing, as compactly as it can be said: `3 of 5 today · resets in 6 h`.
+ *
+ * There are three wordings of this fact in the product and they are three audiences rather
+ * than three copies. `quotaVerdict`'s message is an API answer, so it names the absolute reset
+ * instant a caller needs to schedule a retry. `quotaLine` on `/admin/users/:id` is one
+ * administrator reading about somebody ELSE, so it is a full sentence and says something even
+ * when no limit applies. This one sits above your own downloads, where "in 6 h" is what a
+ * person can act on and an ISO string is noise. What all three share -- the limit, the count,
+ * the reset and whether it binds -- is `QuotaState`, so they can never describe different
+ * allowances however differently they are worded.
+ *
+ * NULL WHEN THE LIMIT DOES NOT BIND, which is the whole reason `applies` travels: a header
+ * reading "0 of 0 today" at an admin is worse than one saying nothing, and "unlimited" is a
+ * fact about the configuration that nobody reading their own requests needs.
+ *
+ * `remaining` is injected as the relative-time formatter rather than imported, because this
+ * module is pure by contract and `formatRemaining` lives with the request verdicts. The
+ * caller passing it is the browser, which holds the clock this is relative to.
+ */
+export function quotaSummary(
+  quota: QuotaState,
+  now: number,
+  remaining: (ms: number) => string | null,
+): string | null {
+  if (!quota.applies) return null;
+  const resets = remaining(Date.parse(quota.resetsAt) - now);
+  const spent = `${quota.usedToday} of ${quota.limitPerDay} today`;
+  return resets ? `${spent} · resets in ${resets}` : spent;
+}
+
 export function quotaVerdict(input: {
   role: Role;
   /** Titles per UTC day. Zero or less is UNLIMITED. */
