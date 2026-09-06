@@ -1990,7 +1990,8 @@ function browseSql(
     A named language on a file carrying the denormalised columns stops being a predicate
     applied to `title` and becomes the table the query DRIVES FROM: `ix_lang_rank(lang, kind,
     rank desc, non_english)` fixes two equality columns and reads the third in output order,
-    so 250 rows are 250 rows read. See `langListJoin` for the three cases it declines.
+    so 250 rows are 250 rows read. `langListJoin` decides it on ONE question -- whether the
+    language predicate is selective -- and English is the case where the answer is no.
   */
   const langJoin = langListJoin(f, langRank, sort);
   /*
@@ -2209,30 +2210,61 @@ function browseSql(
 /**
  * The join a NAMED language takes when the file can serve it from `title_lang`, or `""`.
  *
- * ONE case declines it, and it is not a capability: **no `lang` at all**. A deployment
- * PREFERENCE is a list of codes covering 81% of the corpus (`UNKNOWN_LANG` is in it), so
- * driving from `title_lang` would read most of the table -- which is the 1,014 ms shape
- * `INDEXES.origin` documents at length. A preference stays a correlated `exists`, and that is
- * measured rather than conservative.
+ * ONE QUESTION DECIDES IT: is the language predicate SELECTIVE? Driving from `title_lang`
+ * means reading its rows for that language and reaching into `title` for each one, which is
+ * the right trade when the language narrows the corpus and the wrong one when it does not.
  *
- * > [!IMPORTANT] `?lang=en` used to decline it too, and reordering ONE index is what let it stop
- * > English is the one language with no `not exists` half -- a title carrying an `en` row is
- * > not foreign, including its own `en` row -- so its rows sit on BOTH sides of `non_english`.
- * > Under the original `ix_lang_rank(lang, kind, non_english, rank desc)` that put `rank` after
- * > a column English does not constrain, so the seek read two ranges and sorted them back
- * > together, and declining the join was correct. `INDEXES.origin` now spells the index
- * > `(lang, kind, rank desc, non_english)`, which puts the sort column before the one that is
- * > sometimes free, so BOTH shapes are an ordered walk. The measurements are on that index.
+ * - **No `lang` at all.** A deployment PREFERENCE is a list of codes covering 81% of the
+ *   corpus (`UNKNOWN_LANG` is in it), so driving from `title_lang` would read most of the
+ *   table -- the 1,014 ms shape `INDEXES.origin` documents at length. Declined outright.
+ * - **A named foreign language.** One code matching a few thousand of 345,498 ranked films,
+ *   and `non_english = 1` narrows it further. Taken for ANY filter set: that is the shape the
+ *   forty-four language lists ship on, measured at ~0.24 ms each.
+ * - **`?lang=en`.** 58,500 ranked movies -- an order of magnitude more than any other single
+ *   language, and with no `non_english` half to narrow it, because a title carrying an `en`
+ *   row is not foreign including its own `en` row. So English takes the join only where
+ *   `langIndexServesAlone` says the index answers the WHOLE query, order and count included.
+ *
+ * > [!IMPORTANT] English could not take the join AT ALL until `ix_lang_rank` was reordered
+ * > It shipped as `(lang, kind, non_english, rank desc)`, which puts the sort column behind a
+ * > column English does not constrain -- so the seek read two ranges and sorted them back
+ * > together, and declining was right whatever the filters were. `INDEXES.origin` now spells
+ * > it `(lang, kind, rank desc, non_english)` and the walk is ordered for both shapes.
  * >
- * > An index built before the reorder still answers correctly and pays the sort: 78 ms on the
- * > browse below rather than 2 ms, against 199 ms for the `exists` path it replaced. So this
- * > needs no capability of its own -- `langRank` already gates the join, the reorder makes it
- * > faster, and `INDEX_STAGES.origin` rebuilds a stale file through the ordinary mechanism.
+ * > An index built before the reorder still answers correctly and pays that sort: 78 ms on
+ * > `?lang=en&kind=movie&sort=rank` rather than 2 ms, against the 199 ms of the `exists` path
+ * > it replaced. So this needs no capability of its own -- `langRank` already gates the join,
+ * > the reorder only makes it faster, and `INDEX_STAGES.origin` rebuilds a stale file through
+ * > the ordinary mechanism.
  */
 function langListJoin(f: BrowseFilters, langRank: boolean, sort: BrowseSort): string {
   if (!langRank || f.lang === undefined) return "";
-  if (sort !== "rank" || f.genre !== undefined) return "";
+  if (f.lang === ENGLISH_LANG && !langIndexServesAlone(f, sort)) return "";
   return "join title_lang l on l.title_rowid = t.rowid_";
+}
+
+/**
+ * Can `ix_lang_rank` answer this browse by itself -- the order AND the count?
+ *
+ * `title_lang` carries `lang`, `kind`, `rank` and `non_english` and nothing else, so a genre,
+ * a year or a decade forces `title` or `title_genre` back into the query: the rows take a
+ * reach-through per candidate and, worse, `coveringCountTable` stops being able to count from
+ * the index at all. A votes sort does the same to the ORDER, since no column here can serve
+ * it. Each of those is affordable once the language has already narrowed the corpus to a few
+ * thousand rows, which is why only English asks this question -- see `langListJoin`.
+ *
+ * Measured 2026-09-06 on a copy of the real 1,288,159-row index, M1 Max, English movies, with
+ * the join FORCED on to price each clause: **200.2 ms against 16.2 with a genre, 79.2 against
+ * 10.0 with a year, 156.2 against 29.0 on a votes sort.** The pure shape goes the other way by
+ * two orders of magnitude, 195.8 ms to 1.8. So this is a measured boundary rather than
+ * caution, and every filter set on the far side of it keeps exactly the query it had before.
+ *
+ * A vote FLOOR would belong in this list and cannot appear: `browseVoteFloor` returns 0 for a
+ * ranked sort, so no filter set that reaches here carries one.
+ */
+function langIndexServesAlone(f: BrowseFilters, sort: BrowseSort): boolean {
+  if (sort !== "rank") return false;
+  return f.genre === undefined && f.year === undefined && f.decade === undefined && f.years === undefined;
 }
 
 /**
