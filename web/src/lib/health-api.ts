@@ -31,15 +31,18 @@ export interface IndexReload {
 }
 
 /**
- * Whether the page-cache prefault ran, what it kept, and what it was asked for.
+ * Where the page-cache prefault got to, what it kept, and what it was asked for.
  *
- * `last: null` minutes after a restart reads as "it did not run". `last.residentMb` far below
- * `readMb` reads as "it ran and the memory cap took most of it back" -- a different problem
- * with a different fix, which is why both numbers are drawn rather than one.
+ * `state` says which of six situations this is -- `src/server/live-index.ts` owns the
+ * vocabulary and the reasons. `ok: false` is `failed` or `partial`: it RAN and did not
+ * deliver the file. `last.residentMb` far below `readMb` is a different problem again -- it
+ * ran and the memory cap took most of it back -- which is why both numbers are drawn.
  */
 export interface IndexWarm {
-  prefault: boolean;
-  last: { readMb: number; ms: number; residentMb: number | null } | null;
+  /** Mirrors `WarmState`. Widened to `string` would lose the exhaustive render; keep it in step. */
+  state: "off" | "pending" | "running" | "done" | "partial" | "failed";
+  ok: boolean;
+  last: { readMb: number; ms: number; residentMb: number | null; error?: string } | null;
   tuning: {
     budgetMb: number;
     budgetSource: string;

@@ -45,7 +45,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
 import { join } from "node:path";
 import { AuthStore } from "../lib/auth-store";
@@ -55,6 +55,7 @@ import { SCHEMA } from "../lib/index-builder";
 import { utcDayStart } from "../lib/request-quota";
 import { Store } from "../lib/store";
 import { NO_AUTH_USER } from "../server/auth-routes";
+import { boot, handlerTotals, materialiseTree, quantile } from "./bench-server";
 
 /** One rung of the ladder: how deep the request list is when it is measured. */
 interface Depth {
@@ -83,6 +84,9 @@ const LADDER: readonly Depth[] = [
 type Shape = "mine" | "badge";
 
 const SHAPES: readonly Shape[] = ["mine", "badge"];
+
+/** The `Timings` bucket both shapes land in -- `withTiming` keys on the route pattern. */
+const ROUTE = "GET /api/requests";
 
 interface Args {
   scratch: string;
@@ -202,131 +206,6 @@ function seedDataDir(dir: string, depth: Depth, owner: string): Seeded {
   }
   store.close();
   return { readerId: reader.id, tconsts, seriesIds };
-}
-
-// --- the servers -----------------------------------------------------------
-
-interface Instance {
-  url: string;
-  stop(): Promise<void>;
-}
-
-/**
- * The admin bearer token both servers are given, so the harness can read their own instruments.
- *
- * `/api/health` serves `timings` only to an admin, and the obvious way to be one -- making the
- * no-auth account an admin -- would change what is being measured: an admin reader sends
- * `/api/requests` down the `authStore.listUsers()` branch and gets attribution back. The system
- * API key is an admin principal that the SESSION is not, so the samples stay an ordinary
- * reader's while the instrument stays readable. A constant rather than a secret: this process
- * mints it, hands it to two children on 127.0.0.1, and kills them. It is padded to clear the
- * 24-character floor `validate()` puts on any admin key, which the server refuses to boot under.
- */
-const BENCH_ADMIN_KEY = "bench-admin-key-for-localhost-only";
-
-/**
- * What the SERVER thinks it spent, out of its own `Timings`, cumulatively.
- *
- * `withTiming` wraps the whole route table and keys on the route PATTERN, so `?mine=1` and the
- * badge poll land in one bucket -- which is why this returns the running totals and the caller
- * diffs them around each shape rather than reading a per-shape number that does not exist.
- *
- * It exists because the client's wall clock includes reading the body, and the body is 31%
- * bigger after the change. Without this the harness could not tell "the handler got slower"
- * from "there is more to download", and those want different answers.
- */
-async function handlerTotals(url: string): Promise<{ n: number; totalMs: number }> {
-  const res = await fetch(`${url}/api/health`, { headers: { Authorization: `Bearer ${BENCH_ADMIN_KEY}` } });
-  const body = (await res.json()) as {
-    timings?: { requests?: Record<string, { n: number; totalMs: number }> };
-  };
-  const entry = body.timings?.requests?.["GET /api/requests"];
-  if (!entry) throw new Error(`${url}/api/health served no timings -- the admin key was not accepted`);
-  return { n: entry.n, totalMs: entry.totalMs };
-}
-
-/**
- * A tree at `ref`, extracted with `git archive` and lent this checkout's dependencies.
- *
- * `git archive` rather than `git worktree add`, deliberately: a worktree is git state in the
- * shared checkout that somebody then has to remove, and this needs nothing but the bytes. The
- * two symlinks are what make the extracted tree runnable without a second `bun install` --
- * both are read-only to the child.
- */
-async function materialiseTree(ref: string, dest: string, here: string): Promise<string> {
-  rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  const archive = Bun.spawn(["git", "archive", ref], { cwd: here, stdout: "pipe", stderr: "pipe" });
-  const untar = Bun.spawn(["tar", "-x", "-C", dest], { stdin: archive.stdout, stderr: "pipe" });
-  if ((await untar.exited) !== 0 || (await archive.exited) !== 0) {
-    throw new Error(`could not extract ${ref}: ${await new Response(archive.stderr).text()}`);
-  }
-  // `vendor/` is tracked and arrives in the archive; `node_modules` never is. Lending only
-  // what the extract did not bring keeps this true whichever way that goes in future.
-  for (const shared of ["node_modules", "vendor"]) {
-    if (existsSync(join(here, shared)) && !existsSync(join(dest, shared))) {
-      symlinkSync(join(here, shared), join(dest, shared));
-    }
-  }
-  return dest;
-}
-
-/**
- * Boot one finderr and wait until it answers.
- *
- * `/api/health` is the readiness probe because it is the one route that answers an
- * unauthenticated caller, which is exactly what the `--red auth` arm is.
- *
- * > [!IMPORTANT] SIGTERM and then WAIT, never a hard kill
- * > A SIGKILL mid-WAL-checkpoint overwrote page 1 of the real `finderr.db` twice. The database
- * > here is scratch and could be thrown away, but the shutdown path is not worth having two
- * > spellings of, and a bench that teaches the wrong one is worse than no bench.
- */
-async function boot(tree: string, dataDir: string, port: number, noAuth: boolean): Promise<Instance> {
-  const child = Bun.spawn(["bun", join(tree, "src/server/index.ts")], {
-    cwd: tree,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      FINDERR_DATA_DIR: dataDir,
-      FINDERR_PORT: String(port),
-      FINDERR_HOST: "127.0.0.1",
-      FINDERR_NO_AUTH: noAuth ? "1" : "",
-      FINDERR_ADMIN_API_KEY: BENCH_ADMIN_KEY,
-      // Nothing upstream, so no reconcile pass can add network time to a sample.
-      FINDERR_RADARR_URL: "",
-      FINDERR_SONARR_URL: "",
-      FINDERR_PROWLARR_URL: "",
-      FINDERR_PLEX_URL: "",
-    },
-  });
-
-  const url = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(
-        `server at ${tree} exited ${child.exitCode}: ${await new Response(child.stderr).text()}`,
-      );
-    }
-    try {
-      if ((await fetch(`${url}/api/health`)).ok) {
-        return {
-          url,
-          stop: async () => {
-            child.kill("SIGTERM");
-            await child.exited;
-          },
-        };
-      }
-    } catch {
-      // Not listening yet. The deadline above is the only thing that gives up.
-    }
-    await Bun.sleep(150);
-  }
-  child.kill("SIGTERM");
-  throw new Error(`server at ${tree} never became ready on ${port}`);
 }
 
 // --- the samplers ----------------------------------------------------------
@@ -455,11 +334,6 @@ interface Rung {
   parts: Record<string, number>;
 }
 
-function quantile(times: readonly number[], q: number): number {
-  const sorted = [...times].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] ?? 0;
-}
-
 function report(rows: readonly Row[], attribution: ReadonlyMap<number, Record<string, number>>): void {
   const kb = (s: Sampled): string => `${(s.body.length / 1024).toFixed(0)}K`;
   const or = (v: number | null, digits = 2): string => (v === null ? "-" : v.toFixed(digits));
@@ -522,8 +396,17 @@ async function runRung(args: Args, depth: Depth, here: string, beforeTree: strin
   const owner = args.red === "mine" ? "somebody_else" : NO_AUTH_USER;
   const seeded = seedDataDir(dataDir, depth, owner);
 
-  const after = await boot(here, dataDir, args.port, args.red !== "auth");
-  const before = beforeTree === null ? null : await boot(beforeTree, dataDir, args.port + 1, true);
+  // `--red auth` is exactly this flag being off: the route answers a fast 401 instead.
+  const after = await boot({
+    tree: here,
+    dataDir,
+    port: args.port,
+    env: { FINDERR_NO_AUTH: args.red === "auth" ? "" : "1" },
+  });
+  const before =
+    beforeTree === null
+      ? null
+      : await boot({ tree: beforeTree, dataDir, port: args.port + 1, env: { FINDERR_NO_AUTH: "1" } });
   try {
     const rows: Row[] = [];
     for (const shape of SHAPES) {
@@ -562,9 +445,9 @@ async function runRung(args: Args, depth: Depth, here: string, beforeTree: strin
  */
 async function timed(url: string, shape: Shape, runs: number, expectRows: number): Promise<Sampled> {
   await sample(url, shape, 5, expectRows);
-  const opened = await handlerTotals(url);
+  const opened = await handlerTotals(url, ROUTE);
   const samples = await sample(url, shape, runs, expectRows);
-  const closed = await handlerTotals(url);
+  const closed = await handlerTotals(url, ROUTE);
   // The MEAN and not a percentile: `Timings` rounds each reported figure to whole
   // milliseconds, which is uselessly coarse at this scale, but its running total is summed
   // before rounding -- so over a few hundred calls the mean has real resolution.

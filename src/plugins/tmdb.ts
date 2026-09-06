@@ -1,9 +1,14 @@
 /**
  * TMDB: streaming availability, and the five facts a series cannot get anywhere else.
  *
- * The only plugin in the tree that needs an API key, and the only one that goes dark
- * without one -- `init` registers nothing when `tmdb.apiKey` is unset, so a checkout with
- * no key loads a finderr that simply knows six fewer facts. Nothing else changes.
+ * The only plugin in the tree that needs an API key, and therefore the worked example for
+ * per-addon configuration: it declares what it needs in `meta.config` and reads the values
+ * back through `c.config`, reaching into neither `process.env` nor core's own `loadConfig()`.
+ * An addon written outside this repo can do exactly what this one does.
+ *
+ * It goes dark without a key -- `init` declares no facets when `apiKey` is unset, so a
+ * checkout with no key loads a finderr that simply knows six fewer facts. Nothing else
+ * changes, and that stays true however the key is configured.
  *
  * Six facets, chosen because nothing keyless can serve them:
  *
@@ -20,20 +25,66 @@
  *
  * THE KEY IS A SECRET AND TMDB TAKES IT AS A QUERY PARAMETER. It is never logged, never
  * put in an error and never written into a fixture; `src/lib/tmdb-api.ts` is the only module
- * that holds it and `getJson` redacts the query string from anything it reports.
+ * that holds it and `getJson` redacts the query string from anything it reports. Declaring
+ * it `type: "secret"` adds the two guarantees an addon author cannot make for themselves:
+ * the admin API never reads it back, and anything a log line would print it in is redacted.
  */
 
 import { AsyncCache } from "../lib/async-cache";
-import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { FacetProvider, PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
 import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
 import { fetchDocument, type TmdbDocument } from "./tmdb/document";
 
+/**
+ * Where a TMDB image path becomes a URL, when nobody has said otherwise.
+ *
+ * The same address `cfg.tmdb.imageBase` defaults to, and the same one the poster proxy's
+ * allowlist knows. Restated here rather than imported because this addon is the worked
+ * example of an addon that reaches NOTHING in core -- a third party could not import it.
+ */
+const DEFAULT_IMAGE_BASE = "https://image.tmdb.org/t/p";
+
+/**
+ * What an operator configures, declared rather than read out of `process.env`.
+ *
+ * Each field keeps the `FINDERR_TMDB_*` variable it already had as its `env` SEED, so an
+ * existing deployment behaves identically until somebody saves a value -- see
+ * `src/lib/addon-config.ts` for the rule. Core reads `FINDERR_TMDB_API_KEY` and
+ * `FINDERR_TMDB_IMAGE_BASE` too, for the upcoming-titles sync and the poster proxy, and
+ * those readers are NOT this declaration: they keep reading `cfg.tmdb`. So an operator who
+ * overrides a value here changes what this addon does and nothing else.
+ */
 export const meta = {
   id: "tmdb",
   entities: ["movie", "series"],
   hosts: [TMDB_HOST],
+  config: [
+    {
+      key: "apiKey",
+      type: "secret",
+      required: true,
+      label: "API key",
+      description: "A TMDB v3 API key. Without it this addon answers nothing.",
+      env: "FINDERR_TMDB_API_KEY",
+    },
+    {
+      key: "watchProviderRegions",
+      type: "string",
+      label: "Watch provider countries",
+      description:
+        "Comma-separated ISO 3166-1 alpha-2 codes. Empty keeps every country, which is ~25 KB a title.",
+      env: "FINDERR_TMDB_WATCH_PROVIDER_REGIONS",
+    },
+    {
+      key: "imageBase",
+      type: "string",
+      label: "Image base URL",
+      description: "Where a headshot path becomes a URL. Change it only for a TMDB mirror.",
+      env: "FINDERR_TMDB_IMAGE_BASE",
+      default: DEFAULT_IMAGE_BASE,
+    },
+  ],
 } as const satisfies PluginMeta;
 
 /**
@@ -80,7 +131,9 @@ const FRESHNESS = {
  * existed. There is no `meta.provides` to disagree with, which is the point of the shape.
  */
 export function init(c: PluginContext): PluginExports {
-  const { apiKey, imageBase, watchProviderRegions } = loadConfig().tmdb;
+  const apiKey = c.config.string("apiKey");
+  const imageBase = c.config.string("imageBase") ?? DEFAULT_IMAGE_BASE;
+  const watchProviderRegions = regionList(c.config.string("watchProviderRegions"));
   if (!apiKey) {
     c.log(
       "no TMDB API key configured -- watchProviders, and a series' keywords, cast, trailer, " +
@@ -149,6 +202,25 @@ export function init(c: PluginContext): PluginExports {
  * and everything else in the table is by definition series-only.
  */
 type SeriesOnlyFacet = Exclude<keyof typeof FRESHNESS, "watchProviders">;
+
+/**
+ * The countries setting as `parseWatchProviders` wants it: a list, upper-cased.
+ *
+ * A config field is a SCALAR, the same trade site settings make -- every one of them has to
+ * render as one control -- so the comma-splitting `loadConfig` used to do lives here now.
+ * Upper-cased because the codes are matched against TMDB's own ISO 3166-1 alpha-2 keys,
+ * which are upper case, and `th` would silently match nothing.
+ */
+function regionList(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const codes = raw
+    .split(",")
+    .map((code) => code.trim().toUpperCase())
+    .filter(Boolean);
+  // Undefined and empty mean the same thing to `parseWatchProviders` -- keep every country --
+  // and one spelling of that is one fewer thing for a reader of this file to check.
+  return codes.length > 0 ? codes : undefined;
+}
 
 /** Core's entity kinds, in TMDB's vocabulary. `episode` never reaches here -- see `meta`. */
 function mediaTypeOf(entity: FacetEntity): TmdbMediaType {

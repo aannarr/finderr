@@ -15,6 +15,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
+import { AddonConfigStore, redactingLog } from "../lib/addon-config";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { attributedRequest, isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
@@ -59,6 +60,14 @@ import {
   type SearchLogger,
 } from "../lib/search-log";
 import { decodeSeasons, parseSeasonsInput } from "../lib/seasons";
+import {
+  applyShelfPreference,
+  parseShelfChoices,
+  type ShelfChoice,
+  type ShelfChoiceView,
+  ShelfPreferenceStore,
+  shelfCatalogue,
+} from "../lib/shelf-preferences";
 import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
@@ -76,6 +85,7 @@ import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
+import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
@@ -238,6 +248,15 @@ const authStore = new AuthStore(store.db, () => siteSettings.read().assistantAll
   path is not reachable from any route below that touches it. See `src/lib/watchlist.ts`.
 */
 const watchlistStore = new WatchlistStore(store.db);
+
+/*
+  Each reader's own order for the front page, on the same connection and for the same reason.
+
+  It stores an ORDER AND A FILTER and nothing else -- it cannot add a shelf or change what is
+  on one -- which is what keeps `/api/discover` a held page plus one indexed read. See
+  `src/lib/shelf-preferences.ts`.
+*/
+const shelfPrefs = new ShelfPreferenceStore(store.db);
 
 /*
   Web push, and it is constructed BEFORE the request worker on purpose.
@@ -404,13 +423,25 @@ const logos = await loadLogoIndex(undefined, log);
 // Facet providers. A plugin supplies facts core does not know how to fetch; the resolver
 // keeps them in SQLite so no handler ever waits on one. Two ways in, one loader: files in
 // the plugins directory, and installed packages named in `pluginModules`.
+const addonConfig = new AddonConfigStore(store);
+/*
+  The one log sink an addon's own words reach, and therefore the one that redacts.
+
+  Two paths carry text an addon wrote: its `c.log` calls, and the `err.message` FacetResolver
+  prints when a provider throws. Both are wrapped here, so a plugin that puts its own API key
+  into an error message -- which nothing can stop it doing -- cannot put it in the container
+  log. The rest of the server's log stays unwrapped deliberately: it never carries plugin
+  text, and one narrow wrapper is easier to keep honest than a global one.
+*/
+const pluginLog = redactingLog(log, () => addonConfig.secrets());
 const plugins = await loadPlugins({
   dir: cfg.pluginsDir || undefined,
   modules: cfg.pluginModules,
   kv: store,
-  log,
+  config: addonConfig,
+  log: pluginLog,
 });
-const facets = new FacetResolver({ store, registry: plugins, log });
+const facets = new FacetResolver({ store, registry: plugins, log: pluginLog });
 log(`plugins: ${plugins.list().length} loaded`);
 
 /*
@@ -617,8 +648,41 @@ function currentShelves(): DiscoveryShelf[] {
 }
 
 /**
+ * The arrangement this request's reader has saved, or none for anybody without an account.
+ *
+ * An anonymous caller costs ZERO reads here, which is the ordinary case for the sign-in page
+ * and for the container's own probes.
+ */
+function preferenceOf(req: Request): ShelfChoice[] {
+  const me = readerId(req);
+  return me ? shelfPrefs.read(me) : [];
+}
+
+/**
+ * What the preference routes all answer with: the whole catalogue, in this reader's order.
+ *
+ * ONE PAYLOAD FOR ALL THREE VERBS -- read it, save it, reset it -- so a client never has to
+ * guess how the server resolved what it sent. It is built from `currentShelves()` rather than
+ * from the stored rows, which is what makes a retired shelf disappear from the screen and a
+ * newly shipped one appear on it without either being a special case.
+ */
+function preferencePayload(userId: string | null): {
+  customised: boolean;
+  shelves: ShelfChoiceView[];
+} {
+  const pref = userId ? shelfPrefs.read(userId) : [];
+  return { customised: pref.length > 0, shelves: shelfCatalogue(currentShelves(), pref) };
+}
+
+/**
  * Warm everything reachable in ONE CLICK from a cold front page, so nothing on screen
  * is ever fetched while somebody waits.
+ *
+ * IT WARMS THE SHIPPED PAGE, AND THAT COVERS EVERY READER'S. A preference can only reorder
+ * and hide, never add -- `orderShelves` picks from the list it is handed -- so the union of
+ * what readers actually see is a SUBSET of `currentShelves()`, and warming the superset warms
+ * all of it. `shelf-preferences.test.ts` pins that property, because the day a preference can
+ * SELECT a shelf rather than order one, somebody gets a cold shelf and nothing here says so.
  *
  * Two halves, in the order the eye needs them. Artwork is materialised completely --
  * resolve AND pull the bytes -- and pinned so eviction can never take it, because a
@@ -843,6 +907,18 @@ const HTML_HEADERS = {
 } as const;
 
 const bad = (msg: string, status = 400) => json({ error: msg }, { status });
+
+/**
+ * Whose request this is, or null for a caller with no account behind them.
+ *
+ * A PRINCIPAL IS NOT ALWAYS A PERSON: the admin API key is one, and it has no `user`. Every
+ * per-reader route wants the person and not the principal, so the two optional hops are
+ * spelled once here rather than at each of them -- seven copies of the same chain is seven
+ * chances to drop a `?.` and hand one reader another's list.
+ */
+function readerId(req: Request): string | null {
+  return auth.principal(req)?.user?.id ?? null;
+}
 
 /** The width an image route was asked for. One reader, so both routes accept the same thing. */
 function sizeOf(req: Request): string {
@@ -1393,6 +1469,11 @@ function titleTerms(tconst: string, country: string | undefined): Term[] {
  * cache would only ever be reporting on itself. It costs one indexed SQLite lookup per
  * shelf title on top of the shelf queries, which is why it lives on `/api/health` and
  * on no path a user is waiting on.
+ *
+ * IT REPORTS THE SHIPPED PAGE, not any one reader's, and that is the whole page rather than a
+ * sample of it: a preference can only reorder and hide, so every reader's page is a subset of
+ * this one. Reporting per reader would also be a coverage figure that named who had arranged
+ * what, which is not a thing to publish about a private choice. See `warmShelves`.
  */
 const shelfCoverage = () => facetCoverage(currentShelves(), (row) => facets.isWarm(entityFor(row)));
 
@@ -2398,7 +2479,7 @@ const appRoutes = {
      * they just put on it.
      */
     GET: (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Nobody signed in keeps nothing. Not an error -- an empty list is the true answer.
       if (!me) return json({ titles: [] });
       const rows = watchlistStore.list(me).flatMap((e) => live.current.byTconst(e.tconst) ?? []);
@@ -2419,7 +2500,7 @@ const appRoutes = {
      * reason.
      */
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       if (!me) return bad("sign in to keep a watchlist", 401);
 
       let body: { tconst?: unknown };
@@ -2446,30 +2527,12 @@ const appRoutes = {
    */
   "/api/watchlist/:tconst": {
     DELETE: (req: Bun.BunRequest<"/api/watchlist/:tconst">) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       if (!me) return bad("sign in to keep a watchlist", 401);
       return json({ removed: watchlistStore.remove(me, req.params.tconst) });
     },
   },
 
-  /**
-   * The discovery shelves, decorated with local library and request state.
-   *
-   * `discoveryShelves()` owns which titles are on the front page; this handler only
-   * turns index rows into cards. The warm loop reads the same function, which is what
-   * makes "every shelf title is already warm" true by construction.
-   *
-   * > [!IMPORTANT] NOT storable by the browser, and it used to be `private, max-age=600`
-   * > A ten-minute window here outlives every reason the page is rebuilt: the arr tier
-   * > refreshes every 60 seconds and `POST /api/requests` primes it immediately, so the
-   * > browser could answer the asker's own refetch out of its cache with a body assembled
-   * > before they clicked. The window was buying nothing either -- the client holds this
-   * > page in memory for the session and persists it to IndexedDB for the next one (see
-   * > `web/src/lib/api.ts`), so a repeat visit was already free, and a RELOAD is exactly
-   * > the moment the reader is asking to be told again.
-   * >
-   * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
-   */
   /**
    * The assistant. One turn in, one answer out.
    *
@@ -2483,8 +2546,113 @@ const appRoutes = {
     POST: (req: Request) => chat(req, auth.principal(req)),
   },
 
-  "/api/discover": () =>
-    json({ shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) }),
+  /*
+    ---------------------------------------------------------------------------
+    Your own front page: the order you arranged, and the shelves you hid.
+
+    An ORDER AND A FILTER over the page finderr already assembled -- never a per-reader
+    assembly. `src/lib/shelf-preferences.ts` owns what a preference means and why it is
+    shaped that way; these three routes are storage plus the one read the render path makes.
+    ---------------------------------------------------------------------------
+  */
+
+  "/api/shelves/preference": {
+    /**
+     * Every shelf this reader could arrange, in their order, hidden ones marked.
+     *
+     * THE FULL CATALOGUE AND NOT JUST THE VISIBLE ONES: `/api/discover` has already dropped
+     * what they hid, so a settings screen built on that answer could hide a shelf and never
+     * offer it back. It is the same one-endpoint-rather-than-two call `/api/watchlist` makes.
+     *
+     * It reads the SHELVES THAT DREW TODAY, so a shelf that came back empty is not on it --
+     * which is honest rather than lossy: you cannot arrange a row that does not render, and
+     * a preference that no longer names it degrades by the same rule as a retired one.
+     *
+     * Nobody signed in has arranged nothing. Not an error -- the shipped page is the true
+     * answer, and it is what an anonymous caller is about to be served anyway.
+     */
+    GET: (req: Request) => json(preferencePayload(readerId(req))),
+
+    /**
+     * Save an arrangement: the shelves in the order you want them, each marked hidden or not.
+     *
+     * PUT rather than POST because the body IS the whole preference -- sending it twice
+     * leaves the same page, and there is no partial edit to merge. Answers with the same
+     * payload as the GET, so a client never has to guess how the server resolved what it
+     * sent (a retired id is dropped, a shelf the reader never mentioned reappears).
+     *
+     * UNKNOWN SHELF IDS ARE ACCEPTED, deliberately, unlike the tconst check on
+     * `POST /api/watchlist`. The genre shelves rotate with the nightly index build, so an id
+     * that is real when the browser reads it can be gone by the time it saves -- refusing
+     * here would turn a routine rotation into a failed save. They are ignored on the way out
+     * instead, which is the rule the whole feature already follows.
+     */
+    PUT: async (req: Request) => {
+      const me = readerId(req);
+      if (!me) return bad("sign in to arrange your front page", 401);
+
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return bad("body must be JSON");
+      }
+      const parsed = parseShelfChoices(body);
+      if ("error" in parsed) return bad(parsed.error);
+
+      shelfPrefs.replace(me, parsed.choices);
+      return json(preferencePayload(me));
+    },
+
+    /**
+     * Put the front page back to the shipped default.
+     *
+     * The way out, and the reason the feature is safe to experiment with. Resetting something
+     * you never arranged answers the default page rather than a 404: the state asked for is
+     * already true, which is the same answer `DELETE /api/watchlist/:tconst` gives.
+     */
+    DELETE: (req: Request) => {
+      const me = readerId(req);
+      if (!me) return bad("sign in to arrange your front page", 401);
+      shelfPrefs.clear(me);
+      return json(preferencePayload(me));
+    },
+  },
+
+  /**
+   * The discovery shelves, decorated with local library and request state.
+   *
+   * `discoveryShelves()` owns which titles are on the front page; this handler only
+   * turns index rows into cards. The warm loop reads the same function, which is what
+   * makes "every shelf title is already warm" true by construction.
+   *
+   * WHAT PERSONALISATION COSTS HERE: one indexed read of `shelf_pref` for a signed-in
+   * reader, zero for anybody else, and a reorder of an array that is already in memory. A
+   * reader who has never arranged their page is handed `currentShelves()` unchanged --
+   * `applyShelfPreference` returns the same shelves in the same order for an empty
+   * preference, which `shelf-preferences.test.ts` pins.
+   *
+   * > [!IMPORTANT] NOT storable by the browser, and it used to be `private, max-age=600`
+   * > A ten-minute window here outlives every reason the page is rebuilt: the arr tier
+   * > refreshes every 60 seconds and `POST /api/requests` primes it immediately, so the
+   * > browser could answer the asker's own refetch out of its cache with a body assembled
+   * > before they clicked. The window was buying nothing either -- the client holds this
+   * > page in memory for the session and persists it to IndexedDB for the next one (see
+   * > `web/src/lib/api.ts`), so a repeat visit was already free, and a RELOAD is exactly
+   * > the moment the reader is asking to be told again.
+   * >
+   * > It is also PER-READER now, which the missing store directive already covered: a
+   * > shared cache must never hand one reader the page another arranged.
+   * >
+   * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
+   */
+  "/api/discover": (req: Request) =>
+    json({
+      shelves: applyShelfPreference(currentShelves(), preferenceOf(req)).map(({ rows, ...shelf }) => ({
+        ...shelf,
+        titles: decorate(rows),
+      })),
+    }),
 
   "/api/requests": {
     /**
@@ -2951,7 +3119,7 @@ const appRoutes = {
    */
   "/api/requests/seen": {
     POST: (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Nobody signed in owns nothing, so there is nothing to mark. Not an error: the
       // desired state -- "no unread arrivals for you" -- is already true.
       if (!me) return json({ seen: 0 });
@@ -2992,7 +3160,7 @@ const appRoutes = {
 
   "/api/push/subscribe": {
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // A subscription belongs to a PERSON, because what it delivers is news about their
       // own requests. There is nothing an anonymous caller could be told.
       if (!me) return bad("sign in to enable notifications", 401);
@@ -3039,7 +3207,7 @@ const appRoutes = {
 
   "/api/push/unsubscribe": {
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Already true for an anonymous caller: they have no subscriptions to remove.
       if (!me) return json({ removed: false });
 
@@ -3216,7 +3384,16 @@ const appRoutes = {
  * DESCRIBES this table. "A route added later appears in the manifest by having been added"
  * is only true while there is exactly one table and one place that owns it.
  */
-const allRoutes = { ...appRoutes, ...auth.routes() };
+const allRoutes = {
+  ...appRoutes,
+  ...auth.routes(),
+  ...addonConfigRoutes({
+    registry: plugins,
+    config: addonConfig,
+    asAdmin: (req, fn) => auth.asAdmin(req, fn),
+    log: pluginLog,
+  }),
+};
 
 /**
  * The table, read at CALL time rather than closed over.
