@@ -635,8 +635,8 @@ function facetProviders(
       log(`plugin ${pluginId}: '${facet}' is not a facet core declares -- dropped`);
       continue;
     }
-    // `availability` comes from the local library mirror and is already live. A plugin
-    // supplying it could only ever make it wrong.
+    // WHY a facet is core-owned is written beside the facet, not here -- see `coreOnly` and
+    // the `availability` entry in `facets.ts`. This is the enforcement, and it reads the flag.
     if (FACETS[facet].coreOnly) {
       log(`plugin ${pluginId}: '${facet}' is core-owned and cannot be provided -- dropped`);
       continue;
