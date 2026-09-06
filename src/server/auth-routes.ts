@@ -50,12 +50,14 @@ import {
 } from "../lib/plex-auth";
 import { clientKey, RateLimiter } from "../lib/rate-limit";
 import {
+  isQuotaValue,
   quotaApplies,
   quotaLimitFor,
   utcDayReset,
   utcDayStart,
   utcDayStartDaysAgo,
 } from "../lib/request-quota";
+import { parseSiteSettingsPatch, type SiteSettingsStore } from "../lib/site-settings";
 import type { Store } from "../lib/store";
 import { AuthError, PasskeyService } from "../lib/webauthn";
 import { AGENT_KEY_PATH, type AgentBucket, bootstrapSnippet } from "./agent-api";
@@ -116,15 +118,14 @@ function str(v: unknown): string | null {
  * the role does not change. Here they mean opposite things -- silently reading a malformed
  * value as "absent" would leave an admin looking at a form they believe they just cleared.
  *
- * Zero is a LEGITIMATE value, not an empty one: it is "no limit for this person", which the
- * quota rule reads the same way it reads a site-wide zero. A negative or fractional limit is
- * refused rather than clamped -- both are a client bug, and a limit of 2.5 titles is not a
- * decision anybody meant to make.
+ * What COUNTS as a value is `isQuotaValue`'s to say, not this function's -- the site default
+ * on `/api/admin/settings` is held to the same rule and the two fields sit on the same screen.
+ * What is left here is the third state, which only this field has.
  */
 function quotaOverride(raw: unknown): number | null | undefined | Response {
   if (raw === undefined) return undefined;
   if (raw === null) return null;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+  if (!isQuotaValue(raw)) {
     return json({ error: "quotaPerDay must be a whole number of 0 or more, or null" }, { status: 400 });
   }
   return raw;
@@ -149,6 +150,12 @@ export interface AuthServiceDeps {
   auth: AuthStore;
   store: Store;
   cfg: Config;
+  /**
+   * The site defaults an operator may change, which is where the request quota's fallback
+   * now lives -- `cfg.requests.quotaPerDay` is its SEED and no longer its value. See
+   * `src/lib/site-settings.ts` for the one rule deciding which of the two wins.
+   */
+  settings: SiteSettingsStore;
   log: (msg: string) => void;
   /** Injected in tests so no ceremony and no Plex call ever leaves the machine. */
   fetchImpl?: FetchLike;
@@ -1004,6 +1011,34 @@ export class AuthService {
 
       // --- admin -------------------------------------------------------------
 
+      /**
+       * The settings that apply to EVERYBODY, as opposed to the per-person ones on
+       * `/api/admin/users/:id`.
+       *
+       * GET answers with the effective values -- what the server would actually use right
+       * now -- and never with the env-derived seed beside them. One number on screen, and it
+       * is the one that binds: a page showing both would put an operator in the position of
+       * working out which of two values wins, which is the question `site-settings.ts`
+       * exists to have exactly one answer to.
+       *
+       * PATCH takes the fields being changed and leaves the rest alone, the same shape as
+       * the user PATCH above and for the same reason: a whole-object PUT from a stale page
+       * silently reverts whatever changed since it loaded.
+       */
+      "/api/admin/settings": {
+        GET: (req) => this.asAdmin(req, () => json({ settings: this.deps.settings.read() })),
+        PATCH: async (req) =>
+          this.asAdmin(req, async () => {
+            const parsed = parseSiteSettingsPatch(await body(req));
+            if ("error" in parsed) return json({ error: parsed.error }, { status: 400 });
+            const settings = this.deps.settings.write(parsed.patch);
+            // Worth a log line: these change what every account may do, and unlike a per-user
+            // edit there is no page you can open afterwards to see who did it.
+            this.deps.log(`site settings updated -- ${JSON.stringify(parsed.patch)}`);
+            return json({ settings });
+          }),
+      },
+
       "/api/admin/invites": {
         GET: (req) =>
           this.asAdmin(req, () =>
@@ -1099,7 +1134,8 @@ export class AuthService {
             // What actually binds THEM: their override where they have one, else the site's.
             // `user.quotaPerDay` travels separately on `publicUser`, so the page can tell
             // "5 because we said so" from "5 because the site says so" without inferring it.
-            const limitPerDay = quotaLimitFor(target.quotaPerDay, this.deps.cfg.requests.quotaPerDay);
+            const site = this.deps.settings.read();
+            const limitPerDay = quotaLimitFor(target.quotaPerDay, site.requestQuotaPerDay);
             return json({
               user: publicUser(target),
               ...this.accessFor(target.id, p.session?.idHash ?? null),
@@ -1130,7 +1166,7 @@ export class AuthService {
                   default (N)" as a real choice rather than as a blank field. The override
                   itself is `user.quotaPerDay` -- null there means this value applies.
                 */
-                siteLimitPerDay: this.deps.cfg.requests.quotaPerDay,
+                siteLimitPerDay: site.requestQuotaPerDay,
               },
               /*
                 PRESENT OR ABSENT, never the key. Only the sha256 is stored, so there is no

@@ -101,9 +101,10 @@ export function quotaApplies(role: Role, limit: number): boolean {
  *
  * One owner for the fallback, and it exists because there are four readers -- the request
  * route, the assistant's request tool, the admin user page and the agent manifest -- and a
- * `??` spelled in each of them is four places to edit when the site value moves. It is about
- * to move: `site-defaults-and-an-operator-dashboard-on-admin` re-points `siteDefault` at a
- * stored setting, and the whole of that change should be at this function's callers.
+ * `??` spelled in each of them is four places to edit when the site value moves. It DID move:
+ * `siteDefault` is now `SiteSettings.requestQuotaPerDay`, an operator-set value seeded from
+ * `FINDERR_REQUEST_QUOTA_PER_DAY`, and the whole of that change was at this function's
+ * callers -- which is what the one owner bought.
  *
  * NULL AND ZERO ARE DIFFERENT ANSWERS. Null is "I have no opinion, use the site's"; zero is
  * an explicit "unlimited for this person" that survives the operator later capping everybody
@@ -111,6 +112,22 @@ export function quotaApplies(role: Role, limit: number): boolean {
  */
 export function quotaLimitFor(override: number | null, siteDefault: number): number {
   return override ?? siteDefault;
+}
+
+/**
+ * Is this a daily title limit somebody is allowed to type? A whole number, zero or more.
+ *
+ * TWO CALLERS AND THEY MUST NOT DISAGREE: the per-user override on `PATCH
+ * /api/admin/users/:id`, and the site default on `PATCH /api/admin/settings`. An operator who
+ * may enter 2.5 in one field and not the other is reading two different products, and the two
+ * fields sit four lines apart on the same screen.
+ *
+ * Zero is LEGITIMATE and not empty -- it is "no limit", which `quotaApplies` above reads the
+ * same way whichever of the two it came from. Negative and fractional are refused rather than
+ * clamped: both are a client bug, and a limit of 2.5 titles is not a decision anybody meant.
+ */
+export function isQuotaValue(raw: unknown): raw is number {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0;
 }
 
 export function quotaVerdict(input: {

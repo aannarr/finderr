@@ -37,6 +37,7 @@ import { aiGate, assistantOffered, chargeRefusal, chargeRun, localDay } from "..
 import type { Principal, User } from "../lib/auth";
 import type { Config } from "../lib/config";
 import type { SearchEngine } from "../lib/search";
+import type { SiteSettingsReader } from "../lib/site-settings";
 import type { Store } from "../lib/store";
 import { makeAgentActions } from "./agent-actions";
 import { json } from "./json-response";
@@ -45,6 +46,12 @@ import type { RequestWorker } from "./request-worker";
 
 export interface ChatDeps {
   cfg: Config;
+  /**
+   * The site defaults, read fresh per run: the assistant's request tool is held to the same
+   * daily quota as the Request button, and an operator changing it on `/admin` must bind a
+   * conversation that starts a second later.
+   */
+  settings: SiteSettingsReader;
   store: Store;
   live: LiveIndex;
   /**
@@ -286,7 +293,7 @@ function streamResponse(
         live: deps.live,
         principal: args.principal,
         has: deps.has,
-        siteQuotaPerDay: deps.cfg.requests.quotaPerDay,
+        siteQuotaPerDay: deps.settings.read().requestQuotaPerDay,
       });
       const ctx: AgentContext = {
         ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),
@@ -478,7 +485,7 @@ export function makeChatHandler(deps: ChatDeps) {
       live: deps.live,
       principal,
       has: deps.has,
-      siteQuotaPerDay: deps.cfg.requests.quotaPerDay,
+      siteQuotaPerDay: deps.settings.read().requestQuotaPerDay,
     });
     const ctx: AgentContext = {
       ...makeContext(deps.indexDb(), deps.live.current, deps.cfg.languages),

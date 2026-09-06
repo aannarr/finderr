@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config";
 import {
+  isQuotaValue,
   quotaApplies,
   quotaLimitFor,
   quotaVerdict,
@@ -19,6 +20,7 @@ import {
   utcDayStart,
   utcDayStartDaysAgo,
 } from "./request-quota";
+import { siteSettingsSeed } from "./site-settings";
 
 /** A thunk that records whether it was called, so "never counted" is an assertion. */
 function counter(value: number): (() => number) & { calls: number } {
@@ -45,8 +47,15 @@ describe("FINDERR_REQUEST_QUOTA_PER_DAY", () => {
     expect(loadConfig().requests.quotaPerDay).toBe(0);
   });
 
-  test("the request route actually reads it", () => {
-    expect(serverSource).toContain("cfg.requests.quotaPerDay");
+  /**
+   * The env key is now a SEED rather than the value, so the reader it must have moved: the
+   * request route reads the stored site setting, and `siteSettingsSeed` is what makes the env
+   * var decide that setting until an operator saves one. Both halves are asserted, because
+   * either one missing is the same lie -- a quota somebody sets that nothing consumes.
+   */
+  test("the request route reads the site setting the env key seeds", () => {
+    expect(serverSource).toContain("siteSettings.read().requestQuotaPerDay");
+    expect(siteSettingsSeed(loadConfig()).requestQuotaPerDay).toBe(loadConfig().requests.quotaPerDay);
   });
 
   test("the count it is compared against comes from the request log", () => {
@@ -152,6 +161,29 @@ describe("quotaLimitFor", () => {
     // assumed: an override of 0 exempts a member from a site-wide limit of 5.
     expect(quotaApplies("user", quotaLimitFor(0, 5))).toBe(false);
     expect(quotaApplies("user", quotaLimitFor(null, 5))).toBe(true);
+  });
+});
+
+/**
+ * What an operator is allowed to TYPE, which two fields on the admin surface share.
+ *
+ * The per-user override and the site default are edited four lines apart on the same screen,
+ * so a rule that lived in one of the two route handlers would eventually accept a fraction in
+ * whichever handler nobody re-read.
+ */
+describe("isQuotaValue", () => {
+  test("a whole number of zero or more, zero included", () => {
+    expect(isQuotaValue(0)).toBe(true);
+    expect(isQuotaValue(5)).toBe(true);
+  });
+
+  test("a fraction, a negative and a non-number are all refused", () => {
+    expect(isQuotaValue(2.5)).toBe(false);
+    expect(isQuotaValue(-1)).toBe(false);
+    expect(isQuotaValue("5")).toBe(false);
+    expect(isQuotaValue(null)).toBe(false);
+    expect(isQuotaValue(undefined)).toBe(false);
+    expect(isQuotaValue(Number.NaN)).toBe(false);
   });
 });
 
