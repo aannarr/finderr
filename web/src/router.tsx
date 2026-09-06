@@ -22,13 +22,14 @@ import {
   WIPE_CLASS,
   WIPE_VARIANTS,
 } from "./lib/easter-eggs";
-import { validateSearch } from "./lib/search-params";
+import { validatePeopleSearch, validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
 import { AdminInvitesRoute } from "./routes/AdminInvitesRoute";
 import { AdminLayout } from "./routes/AdminLayout";
 import { AdminOverviewRoute } from "./routes/AdminOverviewRoute";
 import { AdminUserRoute } from "./routes/AdminUserRoute";
 import { AdminUsersRoute } from "./routes/AdminUsersRoute";
+import { AwardPeopleRoute } from "./routes/AwardPeopleRoute";
 import { AwardsRoute } from "./routes/AwardsRoute";
 import { BrowseRoute } from "./routes/BrowseRoute";
 import { CeremonyRoute } from "./routes/CeremonyRoute";
@@ -249,6 +250,22 @@ const awardsRoute = createRoute({
 });
 
 /**
+ * `/awards/oscars/people` -- who the nomination table describes, ranked three ways.
+ *
+ * A STATIC segment declared BEFORE `/awards/$award/$ceremony` and matched ahead of it whatever
+ * the declaration order -- TanStack scores a literal segment above a param. `people` is not a
+ * number, so the edition route would 404 on it either way; the ordering matters because the
+ * next static sibling might not be so lucky, and `router.test.tsx` asserts the resolution
+ * rather than trusting this paragraph.
+ */
+const awardPeopleRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/awards/$award/people",
+  validateSearch: validatePeopleSearch,
+  component: AwardPeopleRoute,
+});
+
+/**
  * `/awards/oscars/96`, `/awards/palme-dor/1994` -- one edition.
  *
  * The parameter is the EDITION KEY and never a display label. The Academy numbers its
@@ -286,6 +303,7 @@ const routeTree = rootRoute.addChildren([
   collectionRoute,
   termRoute,
   awardsRoute,
+  awardPeopleRoute,
   ceremonyRoute,
   listsRoute,
   requestsRoute,

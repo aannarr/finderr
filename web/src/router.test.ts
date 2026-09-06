@@ -7,9 +7,10 @@
  * component renders in isolation either way, and the failure only shows up as a blank page in
  * a browser nobody is running.
  *
- * Admin only, because admin is the only NESTED part of the tree -- one layout with four
- * children, one of them an index and one carrying a parameter. Every other route is a direct
- * child of the root and has nothing to get wrong.
+ * Admin was the only case for a while, because it is the only NESTED part of the tree -- one
+ * layout with four children, one of them an index and one carrying a parameter. The awards
+ * routes joined it once a STATIC segment landed beside a parameter at the same depth, which is
+ * the other shape a tree declared in code can rank wrongly with nothing else noticing.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -54,5 +55,24 @@ describe("the admin routes", () => {
 
   test("/admin/invites is the layout plus the invitations page", () => {
     expect(matchedRoutes("/admin/invites")).toEqual(["/admin", "/admin/invites"]);
+  });
+});
+
+describe("the award routes", () => {
+  /**
+   * `people` sits exactly where an edition key goes, and the wrong ranking is invisible.
+   *
+   * `/awards/$award/$ceremony` would happily match `people`, parse it as NaN and draw "we hold
+   * nothing under that number" -- a real page reported as a broken URL, with nothing in the
+   * type system or the build to notice. So the resolution is asserted rather than trusted to
+   * a scoring rule in somebody else's library.
+   */
+  test("/awards/oscars/people is the leaderboards, not an edition called 'people'", () => {
+    expect(matchedRoutes("/awards/oscars/people")).toEqual(["/awards/$award/people"]);
+  });
+
+  test("and the static segment did not swallow the editions beside it", () => {
+    expect(matchedRoutes("/awards/oscars/96")).toEqual(["/awards/$award/$ceremony"]);
+    expect(matchedRoutes("/awards/oscars")).toEqual(["/awards/$award"]);
   });
 });

@@ -70,7 +70,7 @@ import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
 import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
-import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
+import { type AwardsDeps, ceremonyPayload, peoplePayload, timelinePayload } from "./awards";
 import {
   cacheHeaders,
   IMMUTABLE_PUBLIC,
@@ -2137,6 +2137,30 @@ const appRoutes = {
       // right trade. Per-session because the counts are about THIS instance's library.
       { cache: perSession(600) },
     );
+  },
+
+  /**
+   * Which PEOPLE one award's nominations describe, ranked three ways.
+   *
+   * A STATIC segment sitting beside `/:ceremony`, which the router resolves first -- so
+   * `people` can never be read as an edition key. That ordering is asserted in
+   * `award-route-params.test.ts` rather than assumed, because the failure would be a 404 on a
+   * page that exists.
+   *
+   * `?class=Acting` narrows every board to one of the source's own coarse classes. A class
+   * the award does not use is a 404 rather than three empty boards: "we do not group people
+   * that way" and "nobody in that group" are different answers, and only the first is a URL
+   * somebody should be able to bookmark.
+   */
+  "/api/awards/:award/people": (req: Bun.BunRequest<"/api/awards/:award/people">) => {
+    const def = awardById(req.params.award);
+    if (!def) return bad("unknown award", 404);
+    const page = peoplePayload(awardsDeps(def), new URL(req.url).searchParams.get("class"));
+    if (!page) return bad("unknown class", 404);
+    // Same window and the same reasoning as the timeline: the rows move once a year, and
+    // nothing on this page is about the library, so there is not even an ownership count to
+    // go stale. Per-session because every award payload is.
+    return json(page, { cache: perSession(600) });
   },
 
   /**

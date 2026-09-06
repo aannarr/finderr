@@ -16,7 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import { AWARDS, awardById } from "../lib/award-registry";
 
-/** The two patterns `index.ts` registers, answering with which one matched. */
+/** The three patterns `index.ts` registers, answering with which one matched. */
 function serveAwardRoutes() {
   return Bun.serve({
     port: 0,
@@ -25,6 +25,11 @@ function serveAwardRoutes() {
         const def = awardById(req.params.award);
         if (!def) return Response.json({ error: "unknown award" }, { status: 404 });
         return Response.json({ handler: "timeline", award: def.id });
+      },
+      "/api/awards/:award/people": (req: Bun.BunRequest<"/api/awards/:award/people">) => {
+        const def = awardById(req.params.award);
+        if (!def) return Response.json({ error: "unknown award" }, { status: 404 });
+        return Response.json({ handler: "people", award: def.id });
       },
       "/api/awards/:award/:ceremony": (req: Bun.BunRequest<"/api/awards/:award/:ceremony">) => {
         const def = awardById(req.params.award);
@@ -64,6 +69,29 @@ describe("the award routes", () => {
     try {
       const res = await fetch(`${server.url}api/awards/golden-globes`);
       expect(res.status).toBe(404);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  /**
+   * The collision the leaderboards introduced: `people` sits where an edition key goes.
+   *
+   * A router that ranked the param above the literal would send `/api/awards/oscars/people` to
+   * the edition handler, which would parse `people` as NaN and answer 404 -- a page that
+   * exists, reported as one that does not, with nothing in the type system to notice. Asserted
+   * for every award, because the next static sibling may not be a word `parseInt` rejects.
+   */
+  test("the static `people` segment beats the edition parameter beside it", async () => {
+    const server = serveAwardRoutes();
+    try {
+      for (const def of AWARDS) {
+        const res = await fetch(`${server.url}api/awards/${def.id}/people`);
+        expect(await res.json()).toEqual({ handler: "people", award: def.id });
+      }
+      // And it did not swallow the editions it sits beside.
+      const ceremony = await fetch(`${server.url}api/awards/oscars/96`);
+      expect(await ceremony.json()).toEqual({ handler: "edition", award: "oscars", ceremony: "96" });
     } finally {
       server.stop(true);
     }

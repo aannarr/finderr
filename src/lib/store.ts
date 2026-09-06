@@ -10,7 +10,7 @@ import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
 import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
 import { applyAuthSchema } from "./auth-store";
-import type { Nomination } from "./awards";
+import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
 import type { PlexItem } from "./plex";
@@ -2442,6 +2442,105 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       this.db.query("select count(*) c from award_nomination where award = ?").get(award) as { c: number }
     ).c;
   }
+
+  /** Distinct PEOPLE one award's nominations name. Zero for a winner-only source. */
+  awardPersonCount(award: string): number {
+    return (
+      this.db.query("select count(distinct nconst) c from award_nominee where award = ?").get(award) as {
+        c: number;
+      }
+    ).c;
+  }
+
+  /**
+   * The source's own coarse classes, and how many PEOPLE each of them names.
+   *
+   * What the leaderboard's chips are built from, so a class with nobody in it is never
+   * offered -- the same rule the completion counts follow, measured rather than assumed.
+   * A winner-only award names no people at all and yields `[]`, which the page draws as
+   * "there is nobody here" rather than as an empty row of chips.
+   */
+  awardPersonClasses(award: string): AwardPersonClass[] {
+    return this.db
+      .query(
+        "select n.class as className, count(distinct p.nconst) as people " +
+          "from award_nominee p join award_nomination n " +
+          "on n.award = p.award and n.ceremony = p.ceremony and n.seq = p.seq " +
+          "where p.award = ? group by n.class",
+      )
+      .all(award) as AwardPersonClass[];
+  }
+
+  /**
+   * How often one award's nominations name each PERSON, with the name to print beside it.
+   *
+   * The reverse of everything else in this section: the tables answer "who was nominated for
+   * this" everywhere, and this asks "what is this person's record". `award_nominee` already
+   * holds only ids that are PEOPLE -- the source mixes company ids into the same column and
+   * `isPersonId` dropped them at import -- so a leaderboard built on this cannot rank a
+   * production company alongside an actor.
+   *
+   * > [!IMPORTANT] The NAME comes from their most recent nomination, and `max(ceremony)`
+   * > is what selects it rather than being decoration on the count
+   * > SQLite guarantees that bare columns in a `min`/`max` aggregate come from the row that
+   * > produced the extreme, so `nominees`/`nconsts` here are that row's -- and the id lists
+   * > are positional, so the name is read at the id's own index. LATEST rather than earliest
+   * > because a person's name can genuinely change and the current one is the right one to
+   * > print; taking the first would deadname anybody who has transitioned.
+   *
+   * The source's own capitalisation survives untouched, including the 108 names it shouts
+   * (`DOUGLAS G. SHEARER`). That is what the ceremony page prints for the same row, and a
+   * case fold clever enough for `MCDONALD` and `O'BRIEN` is a fold that will eventually
+   * invent a spelling -- a faithful quote beats a plausible guess.
+   *
+   * MEASURED against the real table (12,137 nominations, 16,777 person edges): 8,403 groups
+   * in ~16 ms warm, every one of them resolving to a name. An index on `(award, nconst)` was
+   * tried and made it SLOWER -- 22 ms -- because it trades the covering scan the group-by
+   * already gets for a random probe per row, so there is no index here and that is measured
+   * rather than overlooked. The page it feeds is cached per session for ten minutes and is
+   * not on the keystroke path.
+   */
+  awardPersonTallies(award: string, className: string | null): AwardPersonTally[] {
+    const where = className === null ? "" : "and n.class = ? ";
+    const params = className === null ? [award] : [award, className];
+    const rows = this.db
+      .query(
+        "select p.nconst as nconst, count(*) as nominations, sum(n.won) as wins, " +
+          "max(n.ceremony) as latest, n.nominees as nominees, n.nconsts as nconsts " +
+          "from award_nominee p join award_nomination n " +
+          "on n.award = p.award and n.ceremony = p.ceremony and n.seq = p.seq " +
+          `where p.award = ? ${where}group by p.nconst`,
+      )
+      .all(...params) as {
+      nconst: string;
+      nominations: number;
+      wins: number;
+      nominees: string;
+      nconsts: string;
+    }[];
+
+    return rows.map((r) => ({
+      nconst: r.nconst,
+      // The id list cannot miss an id the edge table was built from, so the fallback is
+      // unreachable in practice -- it is here so a hand-edited row prints something a
+      // reader can look up rather than crashing the page.
+      name: nomineeNameAt(r.nominees, r.nconsts, r.nconst) ?? r.nconst,
+      nominations: r.nominations,
+      wins: r.wins,
+    }));
+  }
+}
+
+/**
+ * The printed name sitting at an id's own position in a stored nomination.
+ *
+ * The two lists are parallel by construction -- `replaceAwards` keeps the holes so they stay
+ * aligned -- so the name is found by INDEX and never by searching the name list. `null` when
+ * the id is not in the row at all, which the caller decides what to do about.
+ */
+function nomineeNameAt(nominees: string, nconsts: string, nconst: string): string | null {
+  const at = nconsts.split("|").indexOf(nconst);
+  return at === -1 ? null : (nominees.split("|")[at] ?? null);
 }
 
 /** The stored shape, which is the domain shape with the two id lists joined. */

@@ -17,13 +17,17 @@
 
 import { type AwardDef, anchorNoun } from "../lib/award-registry";
 import {
+  type AwardPersonClass,
   type AwardSourceMeta,
+  awardPeopleBoards,
   type CategoryGroup,
   type CeremonySummary,
   ceremonyTimeline,
   groupByCategory,
   type Nomination,
+  orderPersonClasses,
 } from "../lib/awards";
+import type { PersonLeaderboard } from "../lib/people-leaderboard";
 import type { TitleRow } from "../lib/search";
 import type { Store } from "../lib/store";
 
@@ -77,7 +81,21 @@ export function awardIdentity(def: AwardDef): AwardIdentity {
 export interface TimelinePayload {
   award: AwardIdentity;
   source: AwardSourceMeta | null;
-  totals: { ceremonies: number; nominations: number; wins: number };
+  totals: {
+    ceremonies: number;
+    nominations: number;
+    wins: number;
+    /**
+     * Distinct people the nominations name, and therefore whether the leaderboards exist.
+     *
+     * On this payload because the timeline is what LINKS to them, and a link to a page with
+     * nothing on it is the dead end this product refuses to draw: a Wikidata award records
+     * who won and names no people at all, so it must not offer a people page. Counted rather
+     * than inferred from `nominations === wins` -- that equality says the source is
+     * winner-only, which is a different fact and only accidentally the same answer.
+     */
+    people: number;
+  };
   /**
    * The completion count for the anchor prize -- "you own 61 of 98 Best Picture winners".
    *
@@ -122,6 +140,7 @@ export function timelinePayload({ store, engine, decorate, def, source }: Awards
       ceremonies: ceremonies.length,
       nominations: ceremonies.reduce((n, c) => n + c.nominations, 0),
       wins: ceremonies.reduce((n, c) => n + c.wins, 0),
+      people: store.awardPersonCount(def.id),
     },
     anchor: {
       noun: anchorNoun(def),
@@ -133,6 +152,50 @@ export function timelinePayload({ store, engine, decorate, def, source }: Awards
     },
     ceremonies,
     titles: byTconst(decorated),
+  };
+}
+
+export interface AwardPeoplePayload {
+  award: AwardIdentity;
+  source: AwardSourceMeta | null;
+  /** Every class this award's people appear in, so a chip is only offered where it leads. */
+  classes: AwardPersonClass[];
+  /** The class the boards are narrowed to, or `null` for all of them. Echoed so the page
+   *  draws the chip that is actually in force rather than the one it asked for. */
+  className: string | null;
+  boards: PersonLeaderboard[];
+}
+
+/**
+ * Which people an award's nominations describe, ranked three ways.
+ *
+ * NO `titles` map and no index lookup, unlike every other payload here: a board names people
+ * and no films, so there is nothing to decorate and nothing to ask the live index about. It
+ * reads the nomination tables and the registry, which is the whole of it.
+ *
+ * There is also no headshot. `person_image` is filled as a side effect of somebody opening a
+ * title, so coverage grows with use and is never complete -- a column of twenty-five faces
+ * that are mostly initials reads as a broken page rather than as an honest one, and the names
+ * are what a leaderboard is for.
+ *
+ * `null` for a class this award does not use, which the caller answers with a 404 exactly as
+ * it does for an edition we do not hold. The check lives here rather than in the handler so
+ * the classes are read ONCE and the expensive tally is never computed for a URL that is about
+ * to be refused.
+ */
+export function peoplePayload(
+  { store, def, source }: AwardsDeps,
+  className: string | null,
+): AwardPeoplePayload | null {
+  const classes = orderPersonClasses(store.awardPersonClasses(def.id));
+  if (className !== null && !classes.some((c) => c.className === className)) return null;
+
+  return {
+    award: awardIdentity(def),
+    source,
+    classes,
+    className,
+    boards: awardPeopleBoards(store.awardPersonTallies(def.id, className), def),
   };
 }
 

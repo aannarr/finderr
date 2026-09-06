@@ -18,6 +18,7 @@
  */
 
 import type { AwardDef } from "./award-registry";
+import { type PersonLeaderboard, rankPeople } from "./people-leaderboard";
 
 export interface AwardSourceMeta {
   /** Repo commit the rows were parsed from, or `null` when there is no commit to name. */
@@ -259,6 +260,27 @@ export interface CeremonySummary {
   filmsOwned: number;
 }
 
+/**
+ * One person's whole record with one award, as a count rather than a list of rows.
+ *
+ * The reverse of `PersonAwards` below: that answers "what did this person do", for a page
+ * that already knows who they are. This answers "who does this table describe", which is the
+ * question the leaderboards ask and nothing asked before them.
+ */
+export interface AwardPersonTally {
+  nconst: string;
+  /** As the source printed it at their most recent nomination -- see `awardPersonTallies`. */
+  name: string;
+  nominations: number;
+  wins: number;
+}
+
+/** One of the source's coarse classes, and how many people its nominations name. */
+export interface AwardPersonClass {
+  className: string;
+  people: number;
+}
+
 /** Every nomination in one category of one ceremony, winner first. */
 export interface CategoryGroup {
   category: string;
@@ -324,12 +346,22 @@ export interface TitleAwardEntry {
  */
 const CLASS_ORDER = ["Production", "Directing", "Acting", "Writing", "Music", "Title", "Special", "SciTech"];
 
+/**
+ * Where a class sits in the house order. A class the source invented later sorts last.
+ *
+ * Extracted because two surfaces read the same order -- the ceremony page groups its
+ * categories by it, and the people boards offer their class chips in it -- and a second copy
+ * would drift the first time `oscar_data` grew a ninth class.
+ */
+export function classRank(className: string): number {
+  const i = CLASS_ORDER.indexOf(className);
+  return i === -1 ? CLASS_ORDER.length : i;
+}
+
 export function orderCategories(groups: CategoryGroup[], anchorCategory: string | null): CategoryGroup[] {
   const rank = (g: CategoryGroup) => {
     if (anchorCategory !== null && g.category === anchorCategory) return -1;
-    const cls = g.nominations[0]?.className ?? "";
-    const i = CLASS_ORDER.indexOf(cls);
-    return i === -1 ? CLASS_ORDER.length : i;
+    return classRank(g.nominations[0]?.className ?? "");
   };
   return [...groups].sort((a, b) => rank(a) - rank(b) || a.category.localeCompare(b.category));
 }
@@ -459,6 +491,80 @@ export function titleAwards(reader: AwardReader, tconst: string, award: string):
       detail: r.detail,
     })),
   };
+}
+
+// --- the people boards -----------------------------------------------------
+//
+// PURE over rows, unlike the assembly above: these take the tallies rather than an
+// `AwardReader`, because one query answers all three boards and the fetch is the caller's.
+// It also means the ranking rules are tested against four hand-written people instead of
+// against a database, which is the same trade `groupByCategory` already takes.
+
+/** The classes an award's people are nominated in, in the house order. */
+export function orderPersonClasses(classes: readonly AwardPersonClass[]): AwardPersonClass[] {
+  return [...classes].sort(
+    (a, b) => classRank(a.className) - classRank(b.className) || a.className.localeCompare(b.className),
+  );
+}
+
+/** "won 5", "never won" -- the second fact on a row ranked by nominations. */
+function winsNote(wins: number): string {
+  if (wins === 0) return "never won";
+  return `won ${wins}`;
+}
+
+/**
+ * Which PEOPLE an award's nominations describe, as three ranked lists over ONE tally.
+ *
+ * Three orderings of the same rows rather than three queries: they are three questions about
+ * one set, and asking the database each of them would be the same scan run three times.
+ * Ranking itself is `rankPeople`, so the tie-break rule has one owner and this function only
+ * decides what each board MEANS.
+ *
+ * A board with nobody on it is dropped rather than drawn empty. That is what makes this
+ * honest for a winner-only award: every one of its rows is a win, so "most nominated, never
+ * won" has no members and the page simply does not offer it, instead of heading a blank list.
+ */
+export function awardPeopleBoards(tallies: readonly AwardPersonTally[], def: AwardDef): PersonLeaderboard[] {
+  const nominations = { one: "nomination", many: "nominations" };
+
+  return [
+    {
+      id: "most-nominated",
+      title: "Most nominated",
+      blurb: null,
+      unit: nominations,
+      entries: rankPeople(tallies, { value: (p) => p.nominations, note: (p) => winsNote(p.wins) }),
+    },
+    {
+      id: "never-won",
+      title: "Most nominated, never won",
+      /*
+        The caveat the card asked for, and it is on the board rather than in a footnote
+        because this is the list people screenshot. Written from the award's own title so it
+        stays true of whichever award is being drawn -- the claim is about the table's
+        BOUNDARY, not about the Academy.
+      */
+      blurb: `${def.title} only. This table holds no other prize, so somebody who has won everything else in their field still reads as never having won.`,
+      unit: nominations,
+      // No `note`: every row on this board has the same zero, and "never won" repeated
+      // twenty-five times under a heading that already says it is noise.
+      entries: rankPeople(
+        tallies.filter((p) => p.wins === 0),
+        { value: (p) => p.nominations },
+      ),
+    },
+    {
+      id: "most-wins",
+      title: "Most wins",
+      blurb: null,
+      unit: { one: "win", many: "wins" },
+      entries: rankPeople(tallies, {
+        value: (p) => p.wins,
+        note: (p) => `${p.nominations} ${p.nominations === 1 ? "nomination" : "nominations"}`,
+      }),
+    },
+  ].filter((board) => board.entries.length > 0);
 }
 
 /** One person's award record. `null` when they have none, for the same reason. */

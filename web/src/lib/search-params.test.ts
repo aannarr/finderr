@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { collectionTokenOf, decadeOf, filtersOf, toggleFilter, validateSearch } from "./search-params";
+import {
+  collectionTokenOf,
+  decadeOf,
+  filtersOf,
+  toggleFilter,
+  validatePeopleSearch,
+  validateSearch,
+} from "./search-params";
 
 describe("collectionTokenOf", () => {
   test("reads a franchise name, quoted or bare", () => {
@@ -207,5 +214,26 @@ describe("toggleFilter", () => {
     const before = { q: "fargo", genre: "Drama" };
     toggleFilter(before, { genre: "Drama" });
     expect(before).toEqual({ q: "fargo", genre: "Drama" });
+  });
+});
+
+describe("validatePeopleSearch", () => {
+  test("a class survives, trimmed", () => {
+    expect(validatePeopleSearch({ class: " Acting " })).toEqual({ class: "Acting" });
+  });
+
+  /** An absent key rather than an empty string, so `/awards/oscars/people?class=` is one URL. */
+  test("nothing, empty and whitespace all mean every class", () => {
+    for (const raw of [{}, { class: "" }, { class: "   " }, { class: 7 }]) {
+      expect(validatePeopleSearch(raw)).toEqual({});
+    }
+  });
+
+  /**
+   * A class nobody uses is the SERVER's 404 to give, not this function's -- the bundle holds
+   * no copy of the source's class vocabulary and must not grow one.
+   */
+  test("a class this award does not use is passed through rather than dropped here", () => {
+    expect(validatePeopleSearch({ class: "Choreography" })).toEqual({ class: "Choreography" });
   });
 });

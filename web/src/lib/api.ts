@@ -18,6 +18,7 @@ import type { EpisodeState } from "../../../src/lib/episodes";
 // is about a VALUE import, which is a different and genuinely costly thing.
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
+import type { PersonLeaderboard } from "../../../src/lib/people-leaderboard";
 import type { PlexLinks } from "../../../src/lib/plex";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
@@ -785,7 +786,8 @@ export interface CeremonySummary {
 export interface AwardsTimeline {
   award: AwardIdentity;
   source: AwardSource | null;
-  totals: { ceremonies: number; nominations: number; wins: number };
+  /** `people` is 0 for a winner-only award, and is what decides whether the boards exist. */
+  totals: { ceremonies: number; nominations: number; wins: number; people: number };
   /** "you own 61 of 98 Best Picture winners" -- the noun is the server's, so it is said once. */
   anchor: { noun: string; owned: number; total: number };
   ceremonies: CeremonySummary[];
@@ -911,6 +913,56 @@ export async function getCeremony(award: string, ceremony: number): Promise<Cere
     const data = (await res.json()) as CeremonyPage;
     ceremonyCache.set(key, data);
     for (const t of Object.values(data.titles)) titleCache.set(t.tconst, t);
+    return data;
+  });
+}
+
+/**
+ * Which people one award's nominations describe, ranked three ways.
+ *
+ * `PersonLeaderboard` is imported rather than restated: the board shape is what a SECOND
+ * ranking source is meant to reuse, so a copy here would be the first place the two drift.
+ * `AwardIdentity` above is restated because it mirrors a server-side projection of the
+ * registry, which is a different thing from a shared shape.
+ */
+export interface AwardPeople {
+  award: AwardIdentity;
+  source: AwardSource | null;
+  /** Only classes this award actually names people in, so no chip leads to an empty page. */
+  classes: { className: string; people: number }[];
+  /** Which class is in force, as the SERVER understood it. Null means all of them. */
+  className: string | null;
+  boards: PersonLeaderboard[];
+}
+
+// Keyed by `award/class` so switching a chip does not serve the previous class's boards
+// under the new one's heading -- the same collision `ceremonyKey` exists to avoid. Eight
+// entries covers one award's every class plus the unfiltered board.
+const awardPeopleCache = new Cache<AwardPeople>(8);
+
+/** One owner of the cache key, so the reader and the writer cannot disagree. */
+function awardPeopleKey(award: string, className: string | null): string {
+  return `${award}/${className ?? ""}`;
+}
+
+export function cachedAwardPeople(award: string, className: string | null): AwardPeople | undefined {
+  return awardPeopleCache.get(awardPeopleKey(award, className));
+}
+
+export async function getAwardPeople(award: string, className: string | null): Promise<AwardPeople> {
+  const key = awardPeopleKey(award, className);
+  const hit = awardPeopleCache.fresh(key);
+  if (hit) return hit;
+  return dedupe(`award-people:${key}`, async () => {
+    const query = className === null ? "" : `?class=${encodeURIComponent(className)}`;
+    const res = await fetch(`/api/awards/${encodeURIComponent(award)}/people${query}`);
+    if (!res.ok) {
+      throw new Error(res.status === 404 ? "unknown award or class" : `award people failed: ${res.status}`);
+    }
+    const data = (await res.json()) as AwardPeople;
+    awardPeopleCache.set(key, data);
+    // No `titleCache` seeding, unlike the two payloads above: a board names people and no
+    // films, so there is nothing here a title page would want.
     return data;
   });
 }

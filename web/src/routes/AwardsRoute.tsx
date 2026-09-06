@@ -141,6 +141,24 @@ export function AwardsRoute() {
               <Completion owned={page.anchor.owned} total={page.anchor.total} noun={page.anchor.noun} />
             </>
           )}
+          {/*
+            The way in to the leaderboards, drawn only for an award whose rows name people at
+            all. A winner-only Wikidata list names none, so the link would be a door onto an
+            empty room -- the same dead-end rule the anchor poster follows one row down.
+          */}
+          {page.totals.people > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              <Link
+                to="/awards/$award/people"
+                params={{ award: page.award.id }}
+                search={{}}
+                className="underline-offset-2 hover:text-ink hover:underline"
+              >
+                Most nominated people →
+              </Link>
+            </>
+          )}
         </p>
       </header>
 

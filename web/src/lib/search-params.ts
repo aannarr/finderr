@@ -115,6 +115,30 @@ export function validateSearch(raw: Record<string, unknown>): SearchParams {
 }
 
 /**
+ * Which of the source's coarse classes a people leaderboard is narrowed to.
+ *
+ * Its own params type rather than a ninth key on `SearchParams`, because that interface is
+ * the BROWSE GRID's state and every route sharing it can already read every key -- which is
+ * how `sort` came to carry two routes' meanings in one name.
+ */
+export interface PeopleParams {
+  /** `Acting`, `Directing`, ... Absent means every class at once. */
+  class?: string;
+}
+
+/**
+ * Validate the people leaderboard's one param.
+ *
+ * Nothing here checks the class against the award: the SERVER owns which classes an award
+ * uses and answers 404 for one it does not, so a second copy of that vocabulary in the bundle
+ * would be a list somebody has to keep in step with an import.
+ */
+export function validatePeopleSearch(raw: Record<string, unknown>): PeopleParams {
+  const className = nonEmpty(raw.class);
+  return className ? { class: className } : {};
+}
+
+/**
  * `collection:"lord of the rings"` -> `lord of the rings`, or null for an ordinary query.
  *
  * A NAVIGATION token, not a filter, and that is why it is parsed here rather than in the

@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { type AwardDef, awardById, OSCARS, oscarsDef } from "./award-registry";
 import {
   AWARDS_HEADER,
+  type AwardPersonTally,
   AwardsSchemaDriftError,
+  awardPeopleBoards,
   ceremonyTimeline,
   groupByCategory,
   isPersonId,
   isTitleId,
   type Nomination,
+  orderPersonClasses,
   parseAwards,
   personAwards,
   titleAwards,
@@ -408,5 +411,100 @@ describe("titleAwards and personAwards", () => {
   test("a person entry names the film with our id where we have one", () => {
     const p = personAwards(reader(rows), "nm1", OSCARS);
     expect(p?.entries[0]?.films).toEqual([{ title: "Anora", tconst: "tt1" }]);
+  });
+});
+
+describe("awardPeopleBoards", () => {
+  const tally = (nconst: string, name: string, nominations: number, wins: number): AwardPersonTally => ({
+    nconst,
+    name,
+    nominations,
+    wins,
+  });
+
+  const people = [
+    tally("nm1", "Walter Winner", 12, 4),
+    tally("nm2", "Nina Nominee", 15, 0),
+    tally("nm3", "Sam Some", 3, 1),
+  ];
+
+  const boardsOf = (t: AwardPersonTally[] = people) =>
+    Object.fromEntries(awardPeopleBoards(t, oscarsDef()).map((b) => [b.id, b]));
+
+  test("three boards, each answering a different question about the same people", () => {
+    const boards = boardsOf();
+    expect(Object.keys(boards)).toEqual(["most-nominated", "never-won", "most-wins"]);
+    expect(boards["most-nominated"]?.entries.map((e) => e.name)).toEqual([
+      "Nina Nominee",
+      "Walter Winner",
+      "Sam Some",
+    ]);
+    // Ranked on WINS, which is a different order over the identical rows -- the point of
+    // reading one tally three ways rather than asking the database three questions.
+    expect(boards["most-wins"]?.entries.map((e) => e.name)).toEqual(["Walter Winner", "Sam Some"]);
+  });
+
+  test("the never-won board holds only the people who never won", () => {
+    expect(boardsOf()["never-won"]?.entries.map((e) => e.name)).toEqual(["Nina Nominee"]);
+  });
+
+  /**
+   * The caveat the card asked for, on the board rather than in a footnote: this is the list
+   * people screenshot, and a table that knows about ONE prize makes somebody who has won
+   * everything else read as a loser.
+   */
+  test("the never-won board says out loud which table it is drawn from", () => {
+    const board = boardsOf()["never-won"];
+    expect(board?.blurb).toContain("The Academy Awards");
+    // And the other two carry no disclaimer, so the one that matters is not diluted.
+    expect(boardsOf()["most-nominated"]?.blurb).toBeNull();
+  });
+
+  test("the second number on a row is phrased by the board it is on", () => {
+    const boards = boardsOf();
+    const nominated = boards["most-nominated"]?.entries ?? [];
+    expect(nominated.find((e) => e.name === "Nina Nominee")?.note).toBe("never won");
+    expect(nominated.find((e) => e.name === "Walter Winner")?.note).toBe("won 4");
+    expect(boards["most-wins"]?.entries[0]?.note).toBe("12 nominations");
+    // Every row on the never-won board carries the same zero, so repeating it is noise.
+    expect(boards["never-won"]?.entries[0]?.note).toBeNull();
+  });
+
+  test("one nomination is not '1 nominations'", () => {
+    expect(boardsOf([tally("nm1", "Once", 1, 1)])["most-wins"]?.entries[0]?.note).toBe("1 nomination");
+  });
+
+  /**
+   * The winner-only shape, which both Wikidata awards have: every row is a win, so nobody
+   * has ever failed to win one. A blank heading over an empty list would read as a bug.
+   */
+  test("a board nobody qualifies for is dropped rather than drawn empty", () => {
+    const boards = boardsOf([tally("nm1", "Only Winner", 2, 2)]);
+    expect(Object.keys(boards)).toEqual(["most-nominated", "most-wins"]);
+  });
+
+  test("no people at all is no boards, not three empty ones", () => {
+    expect(awardPeopleBoards([], oscarsDef())).toEqual([]);
+  });
+});
+
+describe("orderPersonClasses", () => {
+  test("the house order, which is the one the ceremony page already groups by", () => {
+    const ordered = orderPersonClasses([
+      { className: "Acting", people: 4 },
+      { className: "Production", people: 1 },
+      { className: "Directing", people: 9 },
+    ]);
+    // Deliberately NOT by headcount: the chips sit above boards read in this order, and a
+    // row that reshuffles as the import grows is a row nobody can learn.
+    expect(ordered.map((c) => c.className)).toEqual(["Production", "Directing", "Acting"]);
+  });
+
+  test("a class the source invents later sorts last rather than vanishing", () => {
+    const ordered = orderPersonClasses([
+      { className: "Streaming", people: 2 },
+      { className: "Acting", people: 1 },
+    ]);
+    expect(ordered.map((c) => c.className)).toEqual(["Acting", "Streaming"]);
   });
 });

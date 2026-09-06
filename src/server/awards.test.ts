@@ -17,7 +17,7 @@ import type { Nomination } from "../lib/awards";
 import { loadConfig } from "../lib/config";
 import type { TitleRow } from "../lib/search";
 import { Store } from "../lib/store";
-import { type AwardsDeps, ceremonyPayload, timelinePayload } from "./awards";
+import { type AwardsDeps, ceremonyPayload, peoplePayload, timelinePayload } from "./awards";
 
 let dir: string;
 let store: Store;
@@ -120,7 +120,9 @@ describe("timelinePayload", () => {
 
   test("totals are over every ceremony, not the page", () => {
     const p = timelinePayload(deps(indexOf("tt1")));
-    expect(p.totals).toEqual({ ceremonies: 2, nominations: 3, wins: 3 });
+    // `people: 0` because these fixtures name films and nobody -- which is exactly the
+    // state that must stop the timeline offering a link to an empty leaderboard.
+    expect(p.totals).toEqual({ ceremonies: 2, nominations: 3, wins: 3, people: 0 });
   });
 
   test("an empty store is an empty timeline rather than a throw", () => {
@@ -296,5 +298,83 @@ describe("ceremonyPayload", () => {
     expect(p?.films).toBe(2);
     expect(p?.filmsOwned).toBe(1);
     expect(p?.nominations).toBe(4);
+  });
+});
+
+/**
+ * The payload behind `/api/awards/:award/people`.
+ *
+ * The engine is deliberately EMPTY in every case here, because a board names people and no
+ * films: a payload that reached the index at all would be doing something this page has no
+ * use for, and an empty lookup is the cheapest way to hold that still.
+ */
+describe("peoplePayload", () => {
+  beforeEach(() => {
+    store.replaceAwards("oscars", [
+      nom({
+        seq: 0,
+        className: "Acting",
+        category: "ACTOR IN A LEADING ROLE",
+        nominees: ["Winner Person"],
+        nconsts: ["nm1"],
+        won: true,
+      }),
+      nom({ seq: 1, className: "Acting", nominees: ["Winner Person"], nconsts: ["nm1"] }),
+      nom({ seq: 2, className: "Directing", nominees: ["Never Person"], nconsts: ["nm2"] }),
+      // A studio, which the import already stripped of its company id.
+      nom({ seq: 3, className: "Production", nominees: ["A Studio"], nconsts: [null] }),
+    ]);
+  });
+
+  test("three boards over the whole award, and the classes to narrow them by", () => {
+    const p = peoplePayload(deps(indexOf()), null);
+    expect(p?.className).toBeNull();
+    expect(p?.boards.map((b) => b.id)).toEqual(["most-nominated", "never-won", "most-wins"]);
+    expect(p?.boards[0]?.entries.map((e) => e.name)).toEqual(["Winner Person", "Never Person"]);
+    // `Production` is absent: its only nomination names a studio, and a studio is not a
+    // person, so a chip for it would lead to an empty board.
+    expect(p?.classes).toEqual([
+      { className: "Directing", people: 1 },
+      { className: "Acting", people: 1 },
+    ]);
+  });
+
+  test("a class narrows every board and is echoed back", () => {
+    const p = peoplePayload(deps(indexOf()), "Directing");
+    expect(p?.className).toBe("Directing");
+    expect(p?.boards.map((b) => b.id)).toEqual(["most-nominated", "never-won"]);
+    expect(p?.boards[0]?.entries.map((e) => e.name)).toEqual(["Never Person"]);
+  });
+
+  /**
+   * "We do not group people that way" and "nobody in that group" are different answers, and
+   * only the first is a URL nobody should be able to bookmark.
+   */
+  test("a class this award does not use is null, which the handler answers with a 404", () => {
+    expect(peoplePayload(deps(indexOf()), "Choreography")).toBeNull();
+  });
+
+  test("no index lookup happens at all, because no board names a film", () => {
+    let calls = 0;
+    peoplePayload(
+      deps({
+        byTconst: () => {
+          calls++;
+          return null;
+        },
+      }),
+      null,
+    );
+    expect(calls).toBe(0);
+  });
+
+  test("an award with no people is a payload with no boards rather than a throw", () => {
+    const palme = awardById("palme-dor") as AwardDef;
+    store.replaceAwards(palme.id, [
+      nom({ award: palme.id, ceremony: 1994, films: ["Pulp Fiction"], filmIds: ["tt9"], won: true }),
+    ]);
+    const p = peoplePayload(deps(indexOf(), palme), null);
+    expect(p?.boards).toEqual([]);
+    expect(p?.classes).toEqual([]);
   });
 });

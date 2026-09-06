@@ -239,3 +239,106 @@ describe("the timeline over a real store", () => {
     expect(titleAwards(store, "tt404", OSCARS)).toBeNull();
   });
 });
+
+/**
+ * Reading the SAME rows down the nconst column instead of across it.
+ *
+ * Only a real database can get these wrong: the name is recovered from the stored parallel
+ * strings by position, and the aggregate leans on SQLite's `max()` bare-column rule to pick
+ * WHICH row's strings to read. Both are properties of the query rather than of any policy,
+ * which is why they are tested here and the board policy is tested with no database at all.
+ */
+describe("the people tallies", () => {
+  test("counts a person's nominations and wins across ceremonies", () => {
+    store.replaceAwards("oscars", [
+      nom({ ceremony: 97, seq: 0, nominees: ["Nina"], nconsts: ["nm1"], won: true }),
+      nom({ ceremony: 98, seq: 0, nominees: ["Nina"], nconsts: ["nm1"] }),
+      nom({ ceremony: 98, seq: 1, nominees: ["Otto"], nconsts: ["nm2"] }),
+    ]);
+    expect(store.awardPersonTallies("oscars", null)).toEqual([
+      { nconst: "nm1", name: "Nina", nominations: 2, wins: 1 },
+      { nconst: "nm2", name: "Otto", nominations: 1, wins: 0 },
+    ]);
+  });
+
+  /**
+   * The card's first rule: a studio is not a person. The import already dropped `co...` ids
+   * to null, so the edge table never held one -- this is the assertion that a leaderboard
+   * built on it cannot rank Metro-Goldwyn-Mayer alongside an actor.
+   */
+  test("a company named in the same column is not a person on the board", () => {
+    store.replaceAwards("oscars", [
+      nom({ nominees: ["Metro-Goldwyn-Mayer", "Douglas Shearer"], nconsts: [null, "nm2"], won: true }),
+    ]);
+    expect(store.awardPersonTallies("oscars", null)).toEqual([
+      { nconst: "nm2", name: "Douglas Shearer", nominations: 1, wins: 1 },
+    ]);
+  });
+
+  /**
+   * The name is read at the ID's own position, never by taking the first one.
+   *
+   * A row naming three people is the ordinary case, and a query that took `nominees` whole --
+   * or its head -- would print the wrong human beside a correct count.
+   */
+  test("the name comes from the id's position in the row, not from the head of the list", () => {
+    store.replaceAwards("oscars", [
+      nom({ nominees: ["First", "Second", "Third"], nconsts: ["nm1", "nm2", "nm3"] }),
+    ]);
+    const byId = new Map(store.awardPersonTallies("oscars", null).map((t) => [t.nconst, t.name]));
+    expect(byId.get("nm3")).toBe("Third");
+  });
+
+  /**
+   * LATEST rather than earliest, and it is a decision rather than an accident: a person's
+   * name can genuinely change, and printing the first one the source ever carried would
+   * deadname anybody who has transitioned.
+   */
+  test("the printed name is the one from their most recent nomination", () => {
+    store.replaceAwards("oscars", [
+      nom({ ceremony: 60, seq: 0, nominees: ["Old Name"], nconsts: ["nm1"] }),
+      nom({ ceremony: 95, seq: 0, nominees: ["New Name"], nconsts: ["nm1"] }),
+    ]);
+    expect(store.awardPersonTallies("oscars", null)[0]?.name).toBe("New Name");
+  });
+
+  test("a class narrows the counts to that class's rows alone", () => {
+    store.replaceAwards("oscars", [
+      nom({ seq: 0, className: "Acting", nominees: ["Both"], nconsts: ["nm1"], won: true }),
+      nom({ seq: 1, className: "Directing", nominees: ["Both"], nconsts: ["nm1"] }),
+      nom({ seq: 2, className: "Directing", nominees: ["Only"], nconsts: ["nm2"] }),
+    ]);
+    expect(store.awardPersonTallies("oscars", "Acting")).toEqual([
+      { nconst: "nm1", name: "Both", nominations: 1, wins: 1 },
+    ]);
+    expect(store.awardPersonTallies("oscars", "Directing").map((t) => t.nconst)).toEqual(["nm1", "nm2"]);
+  });
+
+  test("the classes on offer are the ones this award names people in, counted by person", () => {
+    store.replaceAwards("oscars", [
+      nom({ seq: 0, className: "Acting", nominees: ["A", "B"], nconsts: ["nm1", "nm2"] }),
+      nom({ seq: 1, className: "Acting", nominees: ["A"], nconsts: ["nm1"] }),
+      // Names a film and nobody, so `Title` must not appear as a class with zero people.
+      nom({ seq: 2, className: "Title", films: ["Solo"], filmIds: ["tt1"] }),
+    ]);
+    expect(store.awardPersonClasses("oscars")).toEqual([{ className: "Acting", people: 2 }]);
+  });
+
+  test("a winner-only award names no people, which is what stops it offering a board", () => {
+    const palme = awardById("palme-dor") as AwardDef;
+    store.replaceAwards(palme.id, [
+      nom({ award: palme.id, ceremony: 1994, films: ["Pulp Fiction"], filmIds: ["tt1"], won: true }),
+    ]);
+    expect(store.awardPersonCount(palme.id)).toBe(0);
+    expect(store.awardPersonClasses(palme.id)).toEqual([]);
+    expect(store.awardPersonTallies(palme.id, null)).toEqual([]);
+  });
+
+  test("the person count is distinct people, not nominations", () => {
+    store.replaceAwards("oscars", [
+      nom({ seq: 0, nominees: ["Nina"], nconsts: ["nm1"] }),
+      nom({ seq: 1, nominees: ["Nina", "Otto"], nconsts: ["nm1", "nm2"] }),
+    ]);
+    expect(store.awardPersonCount("oscars")).toBe(2);
+  });
+});
