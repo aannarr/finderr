@@ -289,6 +289,25 @@ describe("healthPayload", () => {
   });
 
   /*
+    An addon can now hold a CREDENTIAL -- `meta.config` with a `type: "secret"` field -- and
+    this endpoint lists every addon that is loaded. It is also on the public path list, so a
+    field added to a plugin entry here is a field a probe on the internet can ask about.
+
+    Asserted as an exact key set rather than "does not contain the key I thought of", because
+    the failure this guards against is somebody widening the entry later for a good reason
+    and taking the whole declaration along with it.
+  */
+  test("a plugin entry says what is loaded and where it reaches, and nothing about its config", () => {
+    const out = healthPayload(
+      deps(() => {}),
+      { coverage: false, detailed: true },
+    );
+
+    const loaded = (out.plugins as { loaded: Record<string, unknown>[] }).loaded;
+    for (const entry of loaded) expect(Object.keys(entry).sort()).toEqual(["hosts", "id"]);
+  });
+
+  /*
     The cheaper hole the same guard closes. `?coverage=1` costs ~1.9s of shelf queries --
     400x a search -- so an anonymous caller could ask for it in a loop. The early return
     has to happen BEFORE the thunk is read, which is what this asserts.
