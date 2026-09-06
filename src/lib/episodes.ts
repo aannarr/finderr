@@ -20,6 +20,9 @@
  * aired yet", and that answer must come from the same document as `hasFile` or the two can
  * contradict each other on the same row.
  */
+
+import type { EpisodeEntry } from "./store";
+
 export interface EpisodeState {
   season: number;
   episode: number;
@@ -36,6 +39,25 @@ export interface EpisodeState {
   monitored: boolean;
   /** YYYY-MM-DD, or null when Sonarr has no date for it. */
   airDate: string | null;
+}
+
+/**
+ * One mirrored episode row as the wire shape every rule below reads.
+ *
+ * It lives here rather than beside its callers because it is the ONE crossing between the
+ * store's snake_case row and this module's contract, and a second spelling of that crossing is
+ * a second place to forget a field when `EpisodeState` gains one. `import type` only -- this
+ * module stays pure and takes no dependency on `Store` at runtime.
+ */
+export function episodeStateOf(e: EpisodeEntry): EpisodeState {
+  return {
+    season: e.season,
+    episode: e.episode,
+    arrEpisodeId: e.arr_episode_id,
+    hasFile: e.has_file === 1,
+    monitored: e.monitored === 1,
+    airDate: e.air_date,
+  };
 }
 
 /**
