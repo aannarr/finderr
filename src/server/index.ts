@@ -759,8 +759,9 @@ setInterval(() => void refreshTmdbLists().then(warmShelves), 6 * 60 * 60 * 1000)
  * ONCE at boot for any award with nothing stored, then daily for all of them. It is not on
  * the six-hourly loop above because the data genuinely changes once a year: the Academy
  * announces in March and `oscar_data` catches up within weeks, and Cannes is a week in May.
- * A daily check costs one 2.2 MB read of somebody's public repo and two small SPARQL
- * queries, which is polite; six-hourly would be four times that for no new fact.
+ * A daily check costs one 2.2 MB read of somebody's public repo and one small SPARQL query
+ * per Wikidata award, run one after another rather than at once, which is polite; six-hourly
+ * would be four times that for no new fact.
  *
  * Failures are logged per award and swallowed. A finderr with no nominations is a finderr
  * whose awards page is empty, which is the same shape as a keyless `tmdb` plugin going dark

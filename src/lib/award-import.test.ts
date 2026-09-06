@@ -12,7 +12,15 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadAward, wikidataNominations } from "./award-import";
-import { AWARDS, type AwardDef, anchorNoun, awardById, OSCARS, oscarsDef } from "./award-registry";
+import {
+  AWARDS,
+  type AwardDef,
+  anchorNoun,
+  awardById,
+  OSCARS,
+  oscarsDef,
+  winnerQuery,
+} from "./award-registry";
 import { AWARDS_HEADER } from "./awards";
 import type { SparqlRow } from "./wikidata";
 
@@ -38,14 +46,47 @@ describe("the award registry", () => {
   });
 
   test("every wikidata query selects the three columns the importer reads", () => {
-    // The contract between the hand-written queries and `wikidataNominations`. A query that
-    // renamed a column would import zero rows and report success.
+    // The contract between the queries and `wikidataNominations`. A query that renamed a
+    // column would import zero rows and report success.
     for (const a of AWARDS) {
       if (a.source.kind !== "wikidata") continue;
       for (const column of ["?year", "?imdb", "?label"]) {
         expect(a.source.query).toContain(column);
       }
     }
+  });
+
+  test("every wikidata query REQUIRES an edition, so no row lands on a timeline it guessed", () => {
+    // The honesty rule, as an assertion rather than as a paragraph seven entries have to
+    // remember. A `pq:P585` inside an OPTIONAL admits rows with no point in time, and
+    // `wikidataNominations` would then drop them silently -- a list quietly shorter than the
+    // count in its own comment. Requiring the qualifier is what keeps the two agreeing.
+    for (const a of AWARDS) {
+      if (a.source.kind !== "wikidata") continue;
+      expect(a.source.query).toContain("pq:P585");
+      expect(a.source.query).not.toContain("OPTIONAL");
+    }
+  });
+
+  test("every wikidata query keeps people out of a list of films", () => {
+    // P166 is stated on the PEOPLE who received a prize as often as on the works: measured
+    // 2026-09-06 the BAFTA carries 36 person rows against 30 film rows, and Venice 61 against
+    // 66, because the Golden Lion for Lifetime Achievement is filed under the same item.
+    // Without the filter every one of those opens the list.
+    for (const a of AWARDS) {
+      if (a.source.kind !== "wikidata") continue;
+      expect(a.source.query).toContain(`STRSTARTS(?imdb, "tt")`);
+    }
+  });
+
+  test("winnerQuery asks about the award item it was handed, and only excludes shorts on request", () => {
+    // The one seam where a copy-paste would ask the wrong award's question and still return
+    // rows -- a list of the wrong festival's winners under the right heading.
+    expect(winnerQuery("Q42")).toContain("ps:P166 wd:Q42");
+    expect(winnerQuery("Q42")).not.toContain("wd:Q24862");
+    expect(winnerQuery("Q42", { excludeShorts: true })).toContain(
+      "FILTER NOT EXISTS { ?work wdt:P31 wd:Q24862 }",
+    );
   });
 
   test("the completion noun is built from the anchor label, once", () => {
