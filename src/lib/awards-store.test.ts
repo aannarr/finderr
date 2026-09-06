@@ -11,8 +11,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nomination as nom } from "../test/nomination";
 import { type AwardDef, awardById, OSCARS, oscarsDef } from "./award-registry";
-import { ceremonyTimeline, type Nomination, personAwards, titleAwards } from "./awards";
+import { ceremonyTimeline, personAwards, titleAwards } from "./awards";
 import { loadConfig } from "./config";
 import { Store } from "./store";
 
@@ -30,26 +31,6 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   process.env.FINDERR_DATA_DIR = undefined;
 });
-
-function nom(over: Partial<Nomination>): Nomination {
-  return {
-    award: "oscars",
-    ceremony: 98,
-    seq: 0,
-    year: "2025",
-    className: "Title",
-    category: "BEST PICTURE",
-    rawCategory: "BEST PICTURE",
-    films: [],
-    filmIds: [],
-    nominees: [],
-    nconsts: [],
-    won: false,
-    detail: null,
-    note: null,
-    ...over,
-  };
-}
 
 describe("replaceAwards", () => {
   test("a parallel id list survives the round trip with its holes in place", () => {

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+// Aliased short, because seventy-odd call sites across four test files read better as `nom(`
+// than as the descriptive name the shared module has to carry.
+import { nomination as nom } from "../test/nomination";
 import { type AwardDef, awardById, OSCARS, oscarsDef } from "./award-registry";
 import {
   AWARDS_HEADER,
@@ -153,27 +156,6 @@ describe("id shapes", () => {
     expect(isTitleId("nm0000138")).toBe(false);
   });
 });
-
-/** A nomination with only the fields a given test cares about. */
-function nom(over: Partial<Nomination>): Nomination {
-  return {
-    award: "oscars",
-    ceremony: 98,
-    seq: 0,
-    year: "2025",
-    className: "Title",
-    category: "BEST PICTURE",
-    rawCategory: "BEST PICTURE",
-    films: [],
-    filmIds: [],
-    nominees: [],
-    nconsts: [],
-    won: false,
-    detail: null,
-    note: null,
-    ...over,
-  };
-}
 
 const ANCHOR = "BEST PICTURE";
 
