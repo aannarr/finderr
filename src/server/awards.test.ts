@@ -13,10 +13,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AwardDef, awardById, oscarsDef } from "../lib/award-registry";
-import type { Nomination } from "../lib/awards";
 import { loadConfig } from "../lib/config";
 import type { TitleRow } from "../lib/search";
 import { Store } from "../lib/store";
+import { nomination as nom } from "../test/nomination";
 import { type AwardsDeps, ceremonyPayload, peoplePayload, timelinePayload } from "./awards";
 
 let dir: string;
@@ -59,26 +59,6 @@ const decorate = ((rows: TitleRow[]) =>
 
 function deps(engine: AwardsDeps["engine"], def: AwardDef = oscarsDef()): AwardsDeps {
   return { store, engine, decorate, def, source: null };
-}
-
-function nom(over: Partial<Nomination>): Nomination {
-  return {
-    award: "oscars",
-    ceremony: 98,
-    seq: 0,
-    year: "2025",
-    className: "Title",
-    category: "BEST PICTURE",
-    rawCategory: "BEST PICTURE",
-    films: [],
-    filmIds: [],
-    nominees: [],
-    nconsts: [],
-    won: false,
-    detail: null,
-    note: null,
-    ...over,
-  };
 }
 
 describe("timelinePayload", () => {
