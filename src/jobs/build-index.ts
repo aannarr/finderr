@@ -128,11 +128,24 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // --- gate: canary. A structurally perfect dump can still wreck ranking.
-  const { runCanary } = await import("../lib/canary");
+  /*
+    --- gate: canary. A structurally perfect dump can still wreck ranking.
+
+    IT GATES ON ACCURACY ONLY, AND THE TIMING HALF IS A REPORT. `canary.ts` owns the argument
+    at length; the operational half of it is that this is the WORST MOMENT on the machine to
+    measure query latency -- the candidate was written seconds ago and has never been
+    prefaulted, and the process has just finished a build and a VACUUM. On 2026-09-06 the
+    single boolean threw away a 455-second build that scored 46/46 at 127 ms slowest when
+    somebody re-ran the suite against the same file by hand.
+
+    So a slow candidate is PROMOTED and SAID SO, loudly, on its own line. It also reaches
+    `/api/health` through `index.reload.canary.slow`, because a log line on an unattended
+    09:00 UTC refresh is a fact nobody reads.
+  */
+  const { runCanary, slowLine } = await import("../lib/canary");
   const canary = runCanary(p.dbNew, cfg);
   log(
-    `gate canary: ${canary.ok ? "PASS" : "FAIL"} -- ${canary.passed}/${canary.total} ` +
+    `gate canary: ${canary.accurate ? "PASS" : "FAIL"} -- ${canary.passed}/${canary.total} ` +
       `(${(canary.ratio * 100).toFixed(0)}%, floor ${(canary.floor * 100).toFixed(0)}%)`,
   );
   if (canary.degraded) log(`    ${canary.degraded}`);
@@ -140,8 +153,12 @@ async function main(): Promise<number> {
     for (const f of canary.failures.slice(0, 10))
       log(`    miss: "${f.query}" wanted ~${f.want}, got ${f.got}`);
   }
-  if (!canary.ok) {
-    log("ABORT: search quality regressed. The live index is untouched.");
+  // Named whether or not it is about to abort: on an abort it says the timing was NOT the
+  // reason, and on a pass it is the only place the breach is ever mentioned.
+  const slow = slowLine(canary.slow);
+  if (slow) log(`gate canary TIMING: ${slow} Not a promote failure -- see \`CanaryResult\`.`);
+  if (!canary.accurate) {
+    log("ABORT: search quality regressed -- the ACCURACY floor was not met. The live index is untouched.");
     state.close();
     return 3;
   }
