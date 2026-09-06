@@ -485,7 +485,7 @@ ask for:
 | `on` -- request lifecycle | `itemWillQueue`, `itemWasSent`, `itemDidBecomeAvailable`, `itemDidFail` | **notifications** -- Discord, WhatsApp, ntfy, webhooks, all as addons instead of four core features; quotas and profile rules as policy |
 | `on` -- search | `searchWillRun`, `searchDidRun`, `resultsWillRender`, `searchDidReturnNothing` | query rewriting, "did you mean", badge injection |
 | `on` -- entities | `willBuildPersonDetails`, `willBuildRelated`, `entityWillLink` | person bios, a real recommender, suppressing a link that would dead-end |
-| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | search tuning against real queries rather than invented ones |
+| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | nothing that is still unserved -- see below |
 | `on` -- system | `periodic`, `indexWasRebuilt`, `libraryDidSync` | anything cron-shaped, cache invalidation |
 | `shelves` | a built shelf | an addon putting its own row on the front page |
 | `routes`, `config` | a page, a settings screen | addon-authored pages and settings |
@@ -493,6 +493,15 @@ ask for:
 Facet names and event names are two vocabularies, which is why they would land in separate
 groups rather than one flat object. Astro's `astro:config:setup` prefixes are what merging
 them costs.
+
+The signals row is worth reading as an example of how a would-be hook earns its place,
+because it is the one that lost its user. Search tuning was the only consumer ever named
+for `on` -- signals, and it shipped in CORE instead: a click posts to `/api/search/click`
+and settles into `search_log` (`src/lib/search-log.ts`), carrying no identity. The second
+half of the argument for making it a hook -- "no addon installed, no logging" -- is served
+by `NO_SEARCH_LOG`, a null logger chosen once at boot, so the off switch exists without an
+extension surface behind it. A hook is worth building when a consumer cannot be served any
+other way; this one could be, and was.
 
 Two of these are the ones people actually hit first:
 
