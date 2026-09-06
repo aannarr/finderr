@@ -326,7 +326,13 @@ export interface FacetDeclaration<F extends FacetName = FacetName> {
    * of Inception is not going to change, and the `artwork` table already works this way.
    */
   immutable?: true;
-  /** Core owns this fact. A plugin declaring it is refused at load time. */
+  /**
+   * Core owns this fact. A plugin declaring it is refused at load time.
+   *
+   * It has exactly ONE user, `availability`, and the ruling that keeps it there -- with the
+   * options refused and the condition that re-opens it -- is written beside that entry
+   * rather than here. This is the mechanism; that is the decision.
+   */
   coreOnly?: true;
   /**
    * How strong one contribution is. The strongest SUPERSEDES the rest before they merge.
@@ -426,6 +432,30 @@ export const FACETS: FacetVocabulary = {
   // rebuilt and campaign pages come down. Re-resolving costs nothing anyway: the only
   // provider cuts this out of a document it is already fetching for `ratings`.
   links: { entities: ["movie", "series", "episode"], merge: "list" },
+  // THE ONLY `coreOnly` FACET, and it stays that way. Decided 2026-09-06; this comment is
+  // where that decision lives, and every other mention of it points here.
+  //
+  // The reason is the CONTRACT rather than distrust of plugins. The source is what is
+  // authoritative here: `availability` answers "does OUR library already hold this", and the
+  // library mirror is the only thing that knows. So the honest version of opening this facet
+  // up is "let the mirror BE a plugin and keep everyone else out" -- and the plugin surface
+  // has no way to say `this facet has exactly one legitimate provider`. `coreOnly` is the
+  // closest approximation the contract can currently express, so it stays until the contract
+  // can say the real thing. Two shapes were weighed and refused:
+  //
+  //   - DROP IT and let any plugin answer. Refused on consequence, not on principle: this
+  //     facet drives the Request button, so a wrong answer is a download that never starts
+  //     (the reader was told they already own it) or a duplicate grab against a real Radarr.
+  //     It is the highest-consequence facet we have and the worst one to open first.
+  //   - ALLOWLIST a plugin id against it in core. Refused because it buys nothing -- the
+  //     allowlist lives in core, so a third-party mirror still needs a core edit to be
+  //     trusted, which is exactly what `coreOnly` already costs.
+  //
+  // WHAT RE-OPENS IT: per-addon configuration landing, at which point the shape to build is a
+  // `trusted` flag the OPERATOR sets in config and a plugin can never set for itself. The
+  // motivating case is real -- somebody running Jellyfin instead of Plex wants a different
+  // library mirror, which is replacing an authoritative source rather than second-guessing
+  // one. See `finderr-plugin-system-with-lifecycle-hooks` on the board.
   availability: { entities: MOVIE_AND_SERIES, merge: "single", coreOnly: true },
 };
 
