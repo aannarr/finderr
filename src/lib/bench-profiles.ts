@@ -88,9 +88,10 @@ const SLIM_INDEXES: readonly string[] = [
   // this index is entirely key and carries no payload for a slim profile to drop.
   "create index ix_lang on title_lang(title_rowid, lang)",
   // UNCHANGED for the same reason as its sibling above: both columns are key, so there is no
-  // payload to narrow. It is 16.5 MB of pure key, and the language lists are 125.8 ms without
-  // it against 77.4 ms with -- which makes it a candidate for a future SIZE profile ("what if
-  // you dropped it entirely?"), not for this one.
+  // payload to narrow. It is 16.5 MB of pure key. Its caller is now `?lang=en` rather than the
+  // language lists -- see `INDEXES.origin`, where dropping it is measured at 194 ms -> 249 ms
+  // on that browse -- which makes it a candidate for a future SIZE profile ("what if you
+  // dropped it entirely?"), not for this one.
   "create index ix_lang_code on title_lang(lang, title_rowid)",
   // Was `(lang, kind, non_english, rank desc)`. Drops the two COVERED FILTER columns and
   // keeps `(lang, rank desc)` -- the same narrowing `ix_tg_rank` takes above, and the same
