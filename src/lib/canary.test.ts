@@ -60,7 +60,19 @@ test("the fuzzy-only cases are a measured minority, not every typo", () => {
     "matrics",
     "strager thigs",
     "brigerton",
+    "andrenochrome",
   ]);
+});
+
+test("a `want: null` case is not marked fuzzy-only, because FTS answers it too", () => {
+  // The two nonsense cases are the ONLY ones asserting that nothing comes back, and it would
+  // be easy to reach for `fuzzyOnly` on the grounds that they were written for a fuzzy bug.
+  // Measured instead: with no fuzzy tier, FTS finds nothing for either string and both pass
+  // trivially -- so marking them would skip a case that runs perfectly well, which is the same
+  // "quietly stops testing things" failure this file guards from the other direction.
+  for (const c of CANARY_CASES.filter((x) => x.want === null)) expect(c.fuzzyOnly).toBeUndefined();
+  // And the assertion is a real one somewhere: at least one case must make it.
+  expect(CANARY_CASES.some((c) => c.want === null)).toBe(true);
 });
 
 test("with no fuzzy tier, the unrunnable cases are skipped rather than scored", () => {

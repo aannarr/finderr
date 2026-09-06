@@ -17,27 +17,62 @@
  * > (`skipped`, `degraded`) instead of scored, so the number means what it says.
  */
 
+import { ioReadBytes } from "./bench-io";
 import type { Config } from "./config";
 import { type FuzzyAbsence, SearchEngine } from "./search";
 import { prepareSqlite } from "./spellfix";
 
 export interface CanaryCase {
   query: string;
-  /** Case-insensitive substring that must appear in the top hit's title or original title. */
-  want: string;
+  /**
+   * Case-insensitive substring that must appear in the top hit's title or original title.
+   *
+   * **`null` means the search must find NOTHING**, and that is a real assertion rather than an
+   * absent one. The fuzzy tier hands `rank()` up to 300 candidates and `rank()` scores them
+   * mostly on votes, so a query with no match anywhere in the corpus used to return a
+   * confident page of blockbusters -- `"andrenochrome"` returned Ender's Game, Andrei Rublev
+   * and Antichrist, none of them within three edits of anything the reader typed. A suite that
+   * can only say "the top hit must be X" cannot express the one thing that was wrong, so it
+   * stayed 42/42 green through the whole bug.
+   */
+  want: string | null;
   note?: string;
+  /**
+   * Ceiling for THIS query in ms, over `CASE_BUDGET_MS`.
+   *
+   * Accuracy and cost are one question here: a fix that finds the right title by widening the
+   * search until it scans the vocabulary is not a fix. Raising a budget is allowed and is
+   * meant to be a visible edit with a measured number beside it -- never a silent drift.
+   */
+  budgetMs?: number;
   /**
    * Only answerable by the fuzzy tier -- MEASURED, not assumed.
    *
    * Set on exactly the cases that miss when `spellfix1` is absent, checked against the real
-   * 1.27M-row index on 2026-09-05: with the extension 42/42, without it these five and only
-   * these five. Most typos are NOT here -- `seven samuri` and `lord of the rigns` are still
-   * found by FTS -- so an absent extension still leaves 37 cases doing real work. Re-measure
-   * before adding one; guessing which typos need the tier is how the suite quietly stops
-   * testing things.
+   * index -- five of them on 2026-09-05 and `andrenochrome` added on 2026-09-06, measured the
+   * same way: with the extension it resolves, and with the extension gone it returns nothing
+   * at all rather than the wrong thing. Most typos are NOT here -- `seven samuri` and `lord of
+   * the rigns` are still found by FTS -- so an absent extension still leaves the large
+   * majority of the suite doing real work. Re-measure before adding one; guessing which typos
+   * need the tier is how the suite quietly stops testing things.
+   *
+   * A `want: null` case is never marked here. FTS finds nothing for nonsense too, so those
+   * pass with or without the tier; `canary.test.ts` pins that.
    */
   fuzzyOnly?: true;
 }
+
+/**
+ * The default ceiling for one query, in ms.
+ *
+ * MEASURED, not chosen: on the real 1.28M-row index (M1 Max, 2026-09-06) the slowest of the
+ * original 42 was 176 ms and the median was single-digit. 400 leaves room for the two-stage
+ * fuzzy escalation, which only a query with no close match ever pays for, and still fails
+ * loudly on anything that starts scanning the vocabulary.
+ *
+ * A case needing more says so with `budgetMs` and a number somebody read off a machine.
+ */
+export const CASE_BUDGET_MS = 400;
 
 export const CANARY_CASES: CanaryCase[] = [
   // --- exact and near-exact
@@ -121,6 +156,37 @@ export const CANARY_CASES: CanaryCase[] = [
   { query: "Ondskan", want: "Evil" },
   { query: "Solsidan", want: "Solsidan" },
   { query: "Bron 2011", want: "Bridge" },
+
+  // --- a typo the PHONETIC SHORTLIST misses, and the junk it used to return instead
+  //
+  // Reported by aannarr on 2026-09-06 against the live deployment. `adrenochrome` is ONE edit
+  // from the query (`editdist3` says 100) and is in the vocabulary -- and spellfix1 at its
+  // default `scope = 4` did not return it among 300 candidates, because the shortlist is a
+  // scan of words sharing the first four PHONETIC characters and the inserted `n` moves the
+  // hash from `ADRMACRMA` to `AMDRMACRMA`. A letter added near the front of a word leaves the
+  // bucket entirely, so no amount of ranking could have recovered it.
+  {
+    query: "andrenochrome",
+    want: "Adrenochrome",
+    fuzzyOnly: true,
+    note: "1 edit away, but a different phonetic bucket -- needs the widened second pass",
+  },
+  {
+    query: "the godfater",
+    want: "Godfather",
+    note: "REGRESSION GUARD: scope=4 finds nothing within the distance floor here, yet the earlier tiers answer it correctly. The floor must not touch this.",
+  },
+
+  // --- nonsense must find NOTHING, and this is the assertion the suite could not make
+  //
+  // Both of these returned a confident first page before the floor existed, because the fuzzy
+  // tier handed `rank()` 300 unrelated candidates and `rank()` scores mostly on votes. Neither
+  // string is within three edits of anything in the corpus. Measured 2026-09-06.
+  // They are deliberately NOT `fuzzyOnly`: with no fuzzy tier FTS finds nothing and they pass
+  // trivially, so they are answerable either way and marking them would be the guess this
+  // field's own note warns about. They only have anything to CATCH when the tier is present.
+  { query: "xyzzyplughfoo", want: null, note: "returned Casablanca" },
+  { query: "qwertzuiopasdf", want: null, note: "returned Spirited Away" },
 ];
 
 export interface CanaryResult {
@@ -131,8 +197,27 @@ export interface CanaryResult {
   ratio: number;
   floor: number;
   failures: { query: string; want: string; got: string; tier: string }[];
+  /**
+   * Cases that answered correctly but took longer than their budget.
+   *
+   * SEPARATE FROM `failures` on purpose. They are two different verdicts with two different
+   * remedies -- a wrong hit is a ranking or candidate bug, a slow one is a cost bug -- and
+   * folding a timing breach into the accuracy ratio would let a 90% floor absorb it silently.
+   * Both block `ok`.
+   */
+  slow: { query: string; ms: number; budgetMs: number }[];
+  /** Every case that ran, slowest first. The table this suite is meant to be filled with. */
+  timings: { query: string; ms: number; tier: string }[];
+  /**
+   * Bytes this process pulled off the BLOCK DEVICE during the run, or null where unknowable.
+   *
+   * `ioReadBytes` is the owner of both the reading and the honesty: Linux only, and null
+   * rather than 0 on macOS, because a zero would read as "no I/O happened" when it means "we
+   * cannot see". Reused rather than reimplemented -- the same primitive every bench here uses.
+   */
+  readBytes: number | null;
   /** Cases that could not run at all. Empty whenever `degraded` is null. */
-  skipped: { query: string; want: string }[];
+  skipped: { query: string; want: string | null }[];
   /**
    * What was missing, and which cases went with it -- or null when the whole suite ran.
    *
@@ -166,7 +251,10 @@ function degradedLine(absence: FuzzyAbsence, skipped: readonly CanaryCase[]): st
  */
 export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
   const t0 = Bun.nanoseconds();
+  const io0 = ioReadBytes();
   const failures: CanaryResult["failures"] = [];
+  const slow: CanaryResult["slow"] = [];
+  const timings: CanaryResult["timings"] = [];
   let passed = 0;
 
   // Asked ONCE, before the loop: whether the fuzzy tier exists is a property of the engine,
@@ -176,15 +264,29 @@ export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
   const runnable = absence ? CANARY_CASES.filter((c) => !c.fuzzyOnly) : CANARY_CASES;
 
   for (const c of runnable) {
+    const t = Bun.nanoseconds();
     const res = engine.search(c.query, { limit: 5, facets: false });
+    const ms = (Bun.nanoseconds() - t) / 1e6;
+    timings.push({ query: c.query, ms, tier: res.tier });
+
     const top = res.hits[0];
     const hay = top ? `${top.title} ${top.orig ?? ""}`.toLowerCase() : "";
-    if (top && hay.includes(c.want.toLowerCase())) {
+    // `want: null` asks the opposite question -- did we correctly find NOTHING -- so the
+    // substring test cannot express it and must not be reached for those cases.
+    const hit =
+      c.want === null ? res.hits.length === 0 : top !== undefined && hay.includes(c.want.toLowerCase());
+
+    if (hit) {
       passed++;
+      // A case is only timed once it is CORRECT. Reporting a budget breach on a query that
+      // returned the wrong title would send a reader after the cost of an answer nobody
+      // wants; fix the answer, then measure it.
+      const budget = c.budgetMs ?? CASE_BUDGET_MS;
+      if (ms > budget) slow.push({ query: c.query, ms, budgetMs: budget });
     } else {
       failures.push({
         query: c.query,
-        want: c.want,
+        want: c.want ?? "(nothing)",
         got: top ? `${top.title} (${top.year})` : "(nothing)",
         tier: res.tier,
       });
@@ -195,13 +297,20 @@ export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
   // -- but a suite that scored 0/0 as 100% would be a gate that passes by having nothing to
   // measure, which is the exact failure mode this file exists to prevent.
   const ratio = runnable.length === 0 ? 0 : passed / runnable.length;
+  const io1 = ioReadBytes();
   return {
-    ok: runnable.length > 0 && ratio >= floor,
+    // A budget breach is not graded on a curve. The accuracy floor tolerates a share of
+    // misses because ranking is a judgement call; a query that got slower is a fact, and one
+    // of them is enough to fail the run.
+    ok: runnable.length > 0 && ratio >= floor && slow.length === 0,
     passed,
     total: runnable.length,
     ratio,
     floor,
     failures,
+    slow,
+    timings: timings.sort((a, b) => b.ms - a.ms),
+    readBytes: io0 !== null && io1 !== null ? io1 - io0 : null,
     skipped: skipped.map((c) => ({ query: c.query, want: c.want })),
     degraded: absence ? degradedLine(absence, skipped) : null,
     ms: (Bun.nanoseconds() - t0) / 1e6,
