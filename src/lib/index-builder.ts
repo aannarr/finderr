@@ -626,15 +626,15 @@ export const INDEXES = {
    * > simply never be used. The measurements are in `LIST_LANGUAGES`.
    * >
    * > **`non_english` SITS AFTER `rank desc`, and that ordering is what lets `?lang=en` in.**
-   * > It shipped as `(lang, kind, non_english, rank desc)`, which serves the forty-four
-   * > language lists perfectly and serves ENGLISH not at all: English is the one language with
+   * > It shipped as `(lang, kind, non_english, rank desc)`, which serves a foreign-language
+   * > list perfectly and serves ENGLISH not at all: English is the one language with
    * > no `not exists` half, so its rows are on both sides of `non_english` and the sort column
    * > sat behind a column the query could not constrain. Moving `non_english` behind `rank
    * > desc` makes it a COVERED FILTER applied while walking, which costs a foreign list only
    * > the rows it skips -- bounded by how much of that language is also in English, and that
-   * > is 19.6% at the worst of the forty-four (Ukrainian). Measured 2026-09-06 on a copy of the
+   * > is 19.6% at the worst of them (Ukrainian). Measured 2026-09-06 on a copy of the
    * > real 1,288,159-row index, M1 Max, with the column order the only thing that changed: the
-   * > forty-four lists total **11.2 ms before and 10.9 ms after** -- inside the run-to-run
+   * > forty-four lists of that day total **11.2 ms before and 10.9 ms after** -- inside the run-to-run
    * > spread, no language moving more than 0.05 ms -- while `/browse?lang=en&kind=movie&
    * > sort=rank` goes **198.9 ms to 2.0 ms**. See `langListJoin`.
    * >

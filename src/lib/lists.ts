@@ -143,8 +143,11 @@ export interface ListLanguage {
  *
  * CLOSED and editorial, exactly like `LIST_GENRES`, and now editorial in the way that array
  * is: **a language gets a list when it has at least `LIST_SIZE` ranked non-English films**,
- * so "you own 12 of 250" names a denominator that exists. Nothing else is weighed. There is
- * exactly one exception and it is stated below.
+ * so "you own 12 of 250" names a denominator that exists. Nothing else is weighed, and as of
+ * 2026-09-06 nothing is held out either: **this array is exactly the set of codes over the
+ * floor**, audited both ways against a real 1,276,669-title build and the widened crosswalk --
+ * forty-five codes clear it, all forty-five are here, and no code here falls short of it. The
+ * one exception this array ever carried was Chinese, and the note below is where it was spent.
  *
  * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why this array is
  * > dozens long rather than twelve
@@ -167,10 +170,12 @@ export interface ListLanguage {
  * >
  * > **RE-MEASURED 2026-09-06 when `ix_lang_rank` was reordered to admit `?lang=en`**, because
  * > that reorder turns `non_english` from a range column into a covered filter and every list
- * > here pays for the rows it skips. It is free: the whole array totals **11.2 ms before the
- * > reorder and 10.5 ms after**, inside the run-to-run spread, with no language moving more
- * > than 0.05 ms. The skip is bounded by how much of a language is ALSO in English, which is
- * > 19.6% at the worst of them (Ukrainian, 115 of 587 ranked films). See `INDEXES.origin`.
+ * > here pays for the rows it skips. It is free: the forty-four lists that existed that day
+ * > totalled **11.2 ms before the reorder and 10.5 ms after**, inside the run-to-run spread,
+ * > with no language moving more than 0.05 ms. The skip is bounded by how much of a language
+ * > is ALSO in English, which is 19.6% at the worst of them (Ukrainian, 115 of 587 ranked
+ * > films). A list added later costs one more of the same ~0.24 ms, which is the whole point
+ * > of the change above -- the cost stopped depending on the language. See `INDEXES.origin`.
  *
  * > [!NOTE] Chinese, Greek and Tagalog are here since 2026-09-06, and the corpus is what
  * > changed rather than the rule
@@ -186,6 +191,28 @@ export interface ListLanguage {
  * > `tl` is named Tagalog because that is the language ISO 639-1 assigns the code to. The
  * > `Filipino` item folds onto it, so the row is mostly Filipino cinema -- naming it Filipino
  * > would claim a code (`fil`) this index does not store.
+ *
+ * > [!NOTE] Serbo-Croatian is here since 2026-09-06 beside Croatian and Serbian, and the
+ * > OVERLAP is why rather than the floor
+ * > `sh` cleared `LIST_SIZE` on the day this array grew past twelve and was left out anyway,
+ * > because three rows over one dialect continuum reads like the same films under a third
+ * > heading. That is a question with an answer, so it was measured before it was shipped: of
+ * > the **417** ranked non-English films `sh` reaches, **85 are also reachable through `hr` or
+ * > `sr`** -- 20.4%, and only 9 of them through `sr`. Of the 250 that actually render, 57 sit
+ * > in either of the other two heads and **193 sit in no language list at all**: Yugoslav-era
+ * > cinema is filed under `sh` and nowhere else, so `Underground`, `Black Cat, White Cat`,
+ * > `Time of the Gypsies` and `When Father Was Away on Business` had no row anywhere before
+ * > this one. 193 films nothing else carries is a catalogue, not a relabelling.
+ * >
+ * > Measured 2026-09-06 over the widened crosswalk and the ranked films of a real
+ * > 1,276,669-title build, reproducing this file's rule -- the same set arithmetic
+ * > `originStage` and `rankedMembers` do between them, validated by reproducing the
+ * > pre-widening 415/358/530 from the older crosswalk. The widening moved `sh` by two films
+ * > (415 -> 417) and moved `hr` and `sr` not at all.
+ * >
+ * > Named Serbo-Croatian for the reason `tl` is named Tagalog: it is the language ISO 639-1
+ * > assigns `sh` to, and a code is named for what the standard says rather than for what a
+ * > reader might prefer.
  */
 export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "sq", name: "Albanian" },
@@ -223,6 +250,7 @@ export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "ro", name: "Romanian" },
   { code: "ru", name: "Russian" },
   { code: "sr", name: "Serbian" },
+  { code: "sh", name: "Serbo-Croatian" },
   { code: "si", name: "Sinhala" },
   { code: "es", name: "Spanish" },
   { code: "sv", name: "Swedish" },

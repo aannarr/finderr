@@ -2218,8 +2218,8 @@ function browseSql(
  *   corpus (`UNKNOWN_LANG` is in it), so driving from `title_lang` would read most of the
  *   table -- the 1,014 ms shape `INDEXES.origin` documents at length. Declined outright.
  * - **A named foreign language.** One code matching a few thousand of 345,498 ranked films,
- *   and `non_english = 1` narrows it further. Taken for ANY filter set: that is the shape the
- *   forty-four language lists ship on, measured at ~0.24 ms each.
+ *   and `non_english = 1` narrows it further. Taken for ANY filter set: that is the shape
+ *   every `LIST_LANGUAGES` row ships on, measured at ~0.24 ms each.
  * - **`?lang=en`.** 58,500 ranked movies -- an order of magnitude more than any other single
  *   language, and with no `non_english` half to narrow it, because a title carrying an `en`
  *   row is not foreign including its own `en` row. So English takes the join only where
