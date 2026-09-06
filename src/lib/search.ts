@@ -35,6 +35,8 @@ import { despace, normalize, normalizeStripped, similarity, trigrams } from "./n
 import {
   type Collaborator,
   type CollaboratorOptions,
+  type CreditTally,
+  creditTally,
   frequentCollaborators,
   nconstsByNameForTitle,
   nconstsForCredits,
@@ -1439,6 +1441,17 @@ export class SearchEngine {
    */
   searchPeople(query: string, opts: PersonSearchOptions = {}): PersonHit[] | null {
     return this.hasPeopleSearch ? searchPeople(this.db, query, opts) : null;
+  }
+
+  /**
+   * Who is credited on a set of titles, per person per category.
+   *
+   * Empty for an index built before the cast tables, on the same terms as
+   * `frequentCollaborators`: a board that cannot be built is a section the page omits, not
+   * an error. See `creditTally` for what it costs and what bounds it.
+   */
+  creditTally(tconsts: readonly string[]): CreditTally[] {
+    return this.hasPeople ? creditTally(this.db, tconsts) : [];
   }
 
   /** Who this person keeps working with. Empty for an index built before the cast tables. */

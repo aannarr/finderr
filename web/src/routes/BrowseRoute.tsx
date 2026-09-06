@@ -34,7 +34,7 @@ import {
 } from "../lib/api";
 import { formatLanguages } from "../lib/facet-panes";
 import { filtersOf, type SearchParams } from "../lib/search-params";
-import { useListCompletions } from "../lib/use-list-completions";
+import { useListsIndex } from "../lib/use-lists-index";
 
 const PAGE = 60;
 
@@ -187,7 +187,7 @@ export function BrowseRoute() {
     The completion is fetched for the WHOLE catalogue and one entry is read, which is the
     same request `/lists` already made -- so arriving here from there costs nothing.
   */
-  const completions = useListCompletions();
+  const { completions } = useListsIndex();
   const list = sort === "rank" ? listForFilters(new Date().getFullYear(), filtersOf(params)) : undefined;
   const completion = list ? completions[list.id] : undefined;
 

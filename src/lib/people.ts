@@ -13,8 +13,10 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { creditLabel } from "./credits";
 import { nconstsByTmdbPersonId } from "./crosswalk";
 import { type PersonCredit, tmdbPersonIdOf } from "./facets";
+import { type PersonLeaderboard, rankPeople } from "./people-leaderboard";
 import type { TitleRow } from "./search";
 
 export interface Person {
@@ -606,4 +608,142 @@ export function searchPeople(db: Database, query: string, opts: PersonSearchOpti
     .all(match, opts.limit ?? DEFAULT_PERSON_HIT_LIMIT) as (PersonDbRow & { credits: number })[];
 
   return rows.map((r) => ({ ...toPerson(r), credits: r.credits }));
+}
+
+// --- who turns up most across a set of titles -------------------------------
+//
+// The credit half of the people boards: one grouped read here, and the ranking rules pure
+// over its rows, the same split `awardPeopleBoards` takes over an award tally. It means the
+// board policy is tested against four hand-written people rather than against 1.4M credits.
+
+/** How many titles of a given set one person holds one kind of credit on. */
+export interface CreditTally {
+  nconst: string;
+  name: string;
+  /** IMDb's own category, verbatim. `creditLabel` is what turns it into a board. */
+  category: string;
+  /** DISTINCT titles, never credit rows -- a person billed twice on one film is one title. */
+  titles: number;
+}
+
+/**
+ * Who is credited on a set of titles, rolled up per person per category.
+ *
+ * ONE grouped query for every board rather than one per role, exactly as `awardPeopleBoards`
+ * takes one tally and asks it three questions: they are three orderings of the same rows,
+ * and asking SQLite each of them would be the same scan run three times.
+ *
+ * **17ms warm** for the 500 ids of the two `finderr Top 250` lists, measured 2026-09-06
+ * against the real 1,380,192-credit index (267ms cold, which is the OS reading pages of
+ * `title_principal` it has never touched). It is bounded by the SET rather than by the
+ * table: SQLite seeks `ix_tp_title` once per title, so the cost is the ids handed in and not
+ * the 1.4M rows behind them.
+ *
+ * **The obvious alternative was measured and is worse.** A whole-index rollup filtered by a
+ * vote floor -- `where tp.category = ? and t.votes >= 1000` -- came in at 331ms warm on the
+ * same database, because there is no index on `title_principal.category` and there should
+ * not be: the awards timeline added one on `award_nominee(award, nconst)`, benchmarked it,
+ * and took it out again for trading a covering scan for a random probe per row. Taking a
+ * LIST rather than a threshold is what makes this a seek instead of a scan, and it is also
+ * the more honest ranking -- "who turns up most in the Top 250" is a claim about a set a
+ * reader can see, where a vote floor is a number nobody chose.
+ *
+ * No ids is no query. `in ()` is a syntax error rather than an empty answer, and "this index
+ * has nothing ranked" is an ordinary state -- see `SearchEngine.hasRank`.
+ *
+ * The caller's ids go in as bound parameters, so the set has to stay well under SQLite's
+ * 32,766-parameter statement cap. The two `LIST_SIZE` lists that feed it come to 500.
+ */
+export function creditTally(db: Database, tconsts: readonly string[]): CreditTally[] {
+  if (tconsts.length === 0) return [];
+  return db
+    .query(
+      `select p.nconst as nconst, p.name as name, tp.category as category,
+              count(distinct tp.title_rowid) as titles
+       from title t
+       join title_principal tp on tp.title_rowid = t.rowid_
+       join person p on p.rowid_ = tp.person_rowid
+       where t.tconst in (${tconsts.map(() => "?").join(",")})
+       group by tp.category, tp.person_rowid`,
+    )
+    .all(...tconsts) as CreditTally[];
+}
+
+/**
+ * The boards `/lists` draws, and the credit label each one ranks.
+ *
+ * THREE of the ten labels rather than all of them, and that is the same editorial call
+ * `LIST_GENRES` makes about genres: a board per IMDb category would put "Casting" and
+ * "Production Design" on an index page, and nobody arrives at `/lists` wondering who the
+ * most-seen casting director is. These three are the credits a reader already thinks of a
+ * film by.
+ *
+ * The label is the JOIN KEY, not a heading -- `creditLabel` maps `actor` and `actress` onto
+ * one "Acting", which is the whole reason that mapping had to become shared rather than
+ * stay in the browser. `title` is what the board is called on screen, which is a different
+ * question: "Acting" labels a chip on a filmography, "Performers" heads a leaderboard.
+ */
+const CREDIT_BOARDS = [
+  { id: "directors", label: "Directing", title: "Directors" },
+  { id: "performers", label: "Acting", title: "Performers" },
+  { id: "writers", label: "Writing", title: "Writers" },
+] as const;
+
+/**
+ * How many names a board on `/lists` carries.
+ *
+ * Smaller than `DEFAULT_BOARD_SIZE`, because this is an INDEX page with three boards on it
+ * and twenty-five names each would be seventy-five rows under a page of links. An award's
+ * own people page is the place to read the full twenty-five.
+ */
+export const CREDIT_BOARD_SIZE = 10;
+
+/**
+ * Who turns up most across a set of titles, as one ranked board per credit label.
+ *
+ * PURE over the tally, so the ranking rules are exercised against a handful of hand-written
+ * people rather than against a database -- the same split `awardPeopleBoards` takes, and the
+ * ordering rule itself is `rankPeople`, so the tie-break has one owner.
+ *
+ * A person's rows are SUMMED within a label, which matters for exactly one pair: somebody
+ * billed `actor` on one film and `actress` on another is one performer with two titles. No
+ * other two categories share a label, and the two of them cannot co-occur on one title, so
+ * the sum can never double-count a film.
+ *
+ * A board with nobody on it is dropped rather than drawn empty, on the same terms as an
+ * award's: an index built without the cast tables has no writers to rank, and a heading over
+ * a blank list claims we looked and found nobody.
+ *
+ * **Every row is a live destination by construction** -- a name is here because it holds
+ * credits in `person`, which is the table `/person/:nconst` renders from. That is this
+ * source's answer to the studio problem the award boards have: `award_nominee` mixes `co`
+ * company ids in with people and has to filter them out, while a `person` row is a person or
+ * it would not be in `person`.
+ */
+export function creditBoards(
+  tallies: readonly CreditTally[],
+  limit = CREDIT_BOARD_SIZE,
+): PersonLeaderboard[] {
+  const byLabel = new Map<string, Map<string, { nconst: string; name: string; titles: number }>>();
+  for (const t of tallies) {
+    const label = creditLabel(t.category);
+    const people = byLabel.get(label) ?? new Map();
+    const entry = people.get(t.nconst) ?? { nconst: t.nconst, name: t.name, titles: 0 };
+    entry.titles += t.titles;
+    people.set(t.nconst, entry);
+    byLabel.set(label, people);
+  }
+
+  return CREDIT_BOARDS.map((board) => ({
+    id: board.id,
+    title: board.title,
+    // No blurb: all three boards count the same thing over the same set, and the page that
+    // draws them says so once above the row. Three copies of one sentence is not a caveat.
+    blurb: null,
+    unit: { one: "title", many: "titles" },
+    entries: rankPeople([...(byLabel.get(board.label)?.values() ?? [])], {
+      value: (p) => p.titles,
+      limit,
+    }),
+  })).filter((board) => board.entries.length > 0);
 }

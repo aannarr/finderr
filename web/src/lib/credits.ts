@@ -1,38 +1,14 @@
 /**
- * IMDb's credit vocabulary, in the words a reader would use.
+ * IMDb's credit vocabulary, as the BROWSER groups it.
  *
- * ONE owner of the mapping, because there are now two readers of it: the role chips on a
- * person page and the roles printed beside a frequent collaborator. A second copy would
- * drift on the first category the index learns to ingest.
+ * The mapping itself moved to `src/lib/credits.ts` when the server grew a reader of it --
+ * the people boards on `/lists` group credits by the same labels these chips print, and
+ * two copies of "an actor and an actress are one job" would drift. What is left here is
+ * the part that is genuinely about the browser's own shapes: `PersonPage.categories`.
  */
 
+import { creditLabel } from "../../../src/lib/credits";
 import type { PersonPage } from "./api";
-
-/**
- * IMDb's vocabulary is not what a person would say out loud.
- *
- * Every value in `index.castCategories` needs a line here, or a composer's page draws a
- * chip reading `production_designer`. An unmapped category falls through to its raw name
- * rather than disappearing -- a filter that quietly dropped credits would be the worse
- * failure, and a chip that reads like a database column is at least self-reporting.
- */
-const CATEGORY_LABEL: Record<string, string> = {
-  actor: "Acting",
-  actress: "Acting",
-  casting_director: "Casting",
-  cinematographer: "Cinematography",
-  composer: "Music",
-  director: "Directing",
-  editor: "Editing",
-  producer: "Production",
-  production_designer: "Production Design",
-  writer: "Writing",
-};
-
-/** What one IMDb category is called on screen; its raw name when we have no word for it. */
-export function creditLabel(category: string): string {
-  return CATEGORY_LABEL[category] ?? category;
-}
 
 /**
  * The distinct labels a set of categories reads as, in the order they were given.

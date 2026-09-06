@@ -135,7 +135,7 @@ describe("AwardMarkIndex", () => {
     ]);
   });
 
-  test("building it costs ONE read per award and none per title", () => {
+  test("building BOTH lookups costs ONE read per award and none per title", () => {
     const calls: string[] = [];
     new AwardMarkIndex(countingStore(calls), AWARDS);
     expect(calls).toEqual(AWARDS.map(() => "awardWinners"));
@@ -160,6 +160,66 @@ describe("AwardMarkIndex", () => {
     // `Title.award` is `AwardMark | null` on the wire, and `undefined` would drop the key
     // out of the JSON entirely -- a different answer to the same question.
     expect(new AwardMarkIndex(store).get("tt1517268")).toBeNull();
+  });
+
+  /**
+   * THE SECOND ACCEPTANCE: a poster strip per award costs no query either.
+   *
+   * `/lists` draws eight of them at once, on a page whose whole rule is that it makes one
+   * request. A `winnersFor` that read the store would have been the same defect the marks
+   * were designed against, one page over.
+   */
+  test("winnersFor issues no query, and answers empty for an award we hold nothing for", () => {
+    const calls: string[] = [];
+    const marks = new AwardMarkIndex(countingStore(calls), AWARDS);
+    calls.length = 0;
+
+    expect(marks.winnersFor("oscars").map((w) => w.tconst)).toEqual(["tt15398776"]);
+    expect(marks.winnersFor(PALME.id)).toEqual([]);
+    expect(marks.winnersFor("no-such-award")).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test("a film that won the same award twice appears ONCE, at its most recent win", () => {
+    // Breaking Bad took Outstanding Drama Series in two different years. A strip showing it
+    // twice is a bug wearing a duplicate.
+    store.replaceAwards("oscars", [
+      nom({ ceremony: 90, year: "2017", films: ["Repeat"], filmIds: ["tt-repeat"], won: true }),
+      nom({ ceremony: 95, year: "2022", films: ["Repeat"], filmIds: ["tt-repeat"], won: true }),
+    ]);
+    const wins = new AwardMarkIndex(store, [oscarsDef()]).winnersFor("oscars");
+
+    expect(wins).toHaveLength(1);
+    // `awardWinners` orders newest first, so the most recent win is the one kept.
+    expect(wins[0]).toEqual({
+      tconst: "tt-repeat",
+      title: "Repeat",
+      award: "oscars",
+      ceremony: 95,
+      year: "2022",
+    });
+  });
+
+  test("the same film under two awards is on BOTH strips, unlike the marks", () => {
+    // Parasite took Best Picture and the Palme d'Or. One CARD draws one chip, so the marks
+    // have to choose -- but the Palme d'Or's own list is exactly where a reader expects to
+    // see it, so the strips deliberately do not.
+    const parasite = { films: ["Parasite"], filmIds: ["tt6751668"], won: true };
+    store.replaceAwards("oscars", [nom({ ceremony: 92, year: "2019", ...parasite })]);
+    store.replaceAwards(PALME.id, [
+      nom({
+        award: PALME.id,
+        ceremony: 2019,
+        year: "2019",
+        category: PALME.singleCategory ?? "",
+        ...parasite,
+      }),
+    ]);
+    const marks = new AwardMarkIndex(store, [oscarsDef(), PALME]);
+
+    expect(marks.get("tt6751668")?.award).toBe("oscars");
+    expect(marks.winnersFor("oscars").map((w) => w.tconst)).toEqual(["tt6751668"]);
+    expect(marks.winnersFor(PALME.id).map((w) => w.tconst)).toEqual(["tt6751668"]);
   });
 
   test("refresh picks up an import, and nothing else does", () => {

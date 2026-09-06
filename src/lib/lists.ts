@@ -191,6 +191,18 @@ export function listForFilters(year: number, filters: BrowseFilters): ComputedLi
   );
 }
 
+/**
+ * Is this the ranked head of the whole index, rather than a slice of it?
+ *
+ * The `All time` group, in one predicate, because a third reader appeared: the people boards
+ * on `/lists` rank who turns up most across exactly these lists, and the completion payload
+ * already resolves their membership on the way past. Two places spelling `startsWith("top-250")`
+ * would drift the day a third all-time list is added.
+ */
+export function isAllTimeList(list: ComputedList): boolean {
+  return list.id.startsWith("top-250");
+}
+
 /** The three groups `/lists` draws, so the route holds no membership rules of its own. */
 export interface ListGroup {
   heading: string;
@@ -205,7 +217,7 @@ export function listGroups(year: number): ListGroup[] {
     {
       heading: "All time",
       blurb: "Every title in the index, weighted by its rating and how many people voted.",
-      lists: all.filter((l) => l.id.startsWith("top-250")),
+      lists: all.filter(isAllTimeList),
     },
     { heading: "By genre", lists: of("genre-") },
     { heading: "By decade", lists: of("decade-") },

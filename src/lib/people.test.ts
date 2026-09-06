@@ -19,6 +19,10 @@ import { applyRank, buildTitleSearchIndex, SCHEMA } from "./index-builder";
 import { despace, normalizeStripped } from "./normalize";
 import {
   buildPersonSearchIndex,
+  CREDIT_BOARD_SIZE,
+  type CreditTally,
+  creditBoards,
+  creditTally,
   frequentCollaborators,
   nconstsByNameForTitle,
   nconstsForCredits,
@@ -698,6 +702,118 @@ describe("adding people to the answer leaves the titles alone", () => {
   });
 });
 
+describe("creditTally", () => {
+  test("counts DISTINCT titles per person per category, over the ids given", () => {
+    const db = indexOf(TITLES, PEOPLE, CREDITS);
+    const rows = creditTally(db, ["tt-incep", "tt-dark"]);
+
+    // Nolan directed both and wrote one; those are two rows because they are two jobs, and
+    // it is `creditBoards` that decides whether either belongs on a board.
+    expect(
+      rows
+        .filter((r) => r.nconst === "nm-nolan")
+        .map((r) => [r.category, r.titles])
+        .sort(),
+    ).toEqual([
+      ["director", 2],
+      ["writer", 1],
+    ]);
+    // `tt-obscure` was not asked for, so DiCaprio's credit on it is not counted.
+    expect(rows.filter((r) => r.nconst === "nm-leo")).toEqual([
+      { nconst: "nm-leo", name: "Leonardo DiCaprio", category: "actor", titles: 1 },
+    ]);
+  });
+
+  test("a person billed twice on ONE title is one title, not two", () => {
+    // The bug this shape exists to prevent is the same one `Credit.categories` fixed on a
+    // person page: the underlying table has one row per credit, so a plain count would rank
+    // somebody by how many times a dump listed them.
+    const db = indexOf(TITLES, PEOPLE, [
+      { tconst: "tt-incep", nconst: "nm-leo", category: "actor", ordering: 1 },
+      { tconst: "tt-incep", nconst: "nm-leo", category: "actor", ordering: 2 },
+    ]);
+    expect(creditTally(db, ["tt-incep"])[0]?.titles).toBe(1);
+  });
+
+  test("no ids is no query and no rows", () => {
+    // `in ()` is a syntax error rather than an empty answer, and an index with nothing ranked
+    // is an ordinary state rather than a failure.
+    expect(creditTally(indexOf(TITLES, PEOPLE, CREDITS), [])).toEqual([]);
+  });
+});
+
+describe("creditBoards", () => {
+  const tally = (name: string, category: string, titles: number): CreditTally => ({
+    nconst: `nm-${name.toLowerCase().replace(/\W/g, "")}`,
+    name,
+    category,
+    titles,
+  });
+
+  test("actor and actress are ONE board, summed per person", () => {
+    // The whole reason the label map had to become shared: IMDb splits the two and we do not,
+    // so a board that ranked them apart would rank half a profession against the other half.
+    const boards = creditBoards([
+      tally("Tilda Swinton", "actress", 4),
+      tally("Tilda Swinton", "actor", 1),
+      tally("Bill Murray", "actor", 3),
+    ]);
+
+    expect(boards.map((b) => b.id)).toEqual(["performers"]);
+    expect(boards[0]?.entries.map((e) => [e.name, e.value])).toEqual([
+      ["Tilda Swinton", 5],
+      ["Bill Murray", 3],
+    ]);
+  });
+
+  test("the order is TOTAL -- same input in any order, same output", () => {
+    // A leaderboard is read, screenshotted and come back to. Ties are broken on name and then
+    // nconst by `rankPeople`, and a SQLite `group by` promises no order at all.
+    const tallies = [
+      tally("Chantal Akerman", "director", 3),
+      tally("Yasujiro Ozu", "director", 3),
+      tally("Abbas Kiarostami", "director", 3),
+      tally("Wong Kar-wai", "director", 5),
+    ];
+    const names = (rows: CreditTally[]) => creditBoards(rows)[0]?.entries.map((e) => e.name);
+
+    const expected = names(tallies);
+    expect(expected).toEqual(["Wong Kar-wai", "Abbas Kiarostami", "Chantal Akerman", "Yasujiro Ozu"]);
+    expect(names([...tallies].reverse())).toEqual(expected);
+    expect(names([tallies[2]!, tallies[0]!, tallies[3]!, tallies[1]!])).toEqual(expected);
+  });
+
+  test("only the three labels this page draws, and never an empty board", () => {
+    // A board per IMDb category would put "Casting" and "Production Design" on an index page.
+    // A label with nobody on it is dropped rather than headed over a blank list.
+    const boards = creditBoards([
+      tally("Ellen Lewis", "casting_director", 9),
+      tally("Roger Deakins", "cinematographer", 7),
+      tally("Greta Gerwig", "writer", 2),
+    ]);
+
+    expect(boards.map((b) => b.id)).toEqual(["writers"]);
+  });
+
+  test("capped at CREDIT_BOARD_SIZE, because three boards share one index page", () => {
+    const boards = creditBoards(
+      Array.from({ length: 40 }, (_, i) => tally(`Director ${i}`, "director", 40 - i)),
+    );
+    expect(boards[0]?.entries).toHaveLength(CREDIT_BOARD_SIZE);
+  });
+
+  test("boards keep the order they are declared in, whatever the tally order", () => {
+    // The page draws them side by side, so a section that reshuffled between visits would be
+    // the same defect the row order inside a board is guarded against.
+    const boards = creditBoards([
+      tally("Joan Didion", "writer", 1),
+      tally("Toshiro Mifune", "actor", 1),
+      tally("Akira Kurosawa", "director", 1),
+    ]);
+    expect(boards.map((b) => b.id)).toEqual(["directors", "performers", "writers"]);
+  });
+});
+
 describe("SearchEngine against an index without cast tables", () => {
   /** The pre-cast schema: everything `SCHEMA` had before `person`/`title_principal`. */
   const OLD_SCHEMA = SCHEMA.slice(0, SCHEMA.indexOf("-- People,"));
@@ -736,6 +852,8 @@ describe("SearchEngine against an index without cast tables", () => {
     // Empty rather than null: the person page draws no collaborator pane, exactly as it
     // does for somebody who simply has no repeat collaborator.
     expect(engine.frequentCollaborators("nm-leo")).toEqual([]);
+    // Same rule: `/lists` draws no People section rather than failing to draw at all.
+    expect(engine.creditTally(["tt-x"])).toEqual([]);
     // NULL rather than empty, and the difference is the whole point: the route omits the
     // `people` key entirely, so a client can tell "no such person" from "no people here".
     expect(engine.hasPeopleSearch).toBe(false);
