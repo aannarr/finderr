@@ -285,10 +285,43 @@ describe("the filter SEEKS its index", () => {
     a scan. `browseSql` and `INDEXES.origin` have to change together, and this is what says
     so when one of them moves.
   */
+
+  /*
+    DO NOT PIN THE WORD "CORRELATED" HERE AGAIN. It is SQLite's wording for the plan node,
+    not a property of our query, and SQLite changed it underneath us.
+
+    Both assertions below used to read `expect(plan).toContain("CORRELATED")`. That passed on
+    macOS and FAILED IN CI, which is the worst shape a test can have -- green on the machine
+    that writes the code, red on the machine that gates it, and the red line names a SQL
+    keyword rather than the thing that broke. Measured on 2026-09-06 with the same fixture
+    and the same query, bun 1.4.0 on both sides:
+
+      macOS, SQLite 3.51.0   SEARCH g USING INDEX ix_genre (genre=?)
+                             CORRELATED SCALAR SUBQUERY 1
+                             SEARCH l USING COVERING INDEX ix_lang_rank (lang=? AND title_rowid=?)
+                             SEARCH t USING INTEGER PRIMARY KEY (rowid=?)
+
+      Linux,  SQLite 3.53.2  SEARCH g USING INDEX ix_genre (genre=?)
+                             SEARCH t USING INTEGER PRIMARY KEY (rowid=?)
+                             SEARCH l EXISTS USING COVERING INDEX ix_lang (title_rowid=? AND lang=?)
+
+    3.53 folded the `exists` into the outer loop and emits `SEARCH ... EXISTS` where 3.51
+    emitted a separate `CORRELATED SCALAR SUBQUERY` node. **The invariant is intact in both**
+    -- arguably stated more plainly by the newer form -- so the TEST was the bug, not the
+    query and not the index.
+
+    What actually has to hold is: `l` is reached by an indexed SEEK keyed on the outer row's
+    rowid, never scanned and never materialised into a list. That is what `seeksTitleLang`
+    asserts, and it is true on both versions. A future SQLite may reword this again; it may
+    not turn the seek into a scan without this failing.
+  */
   const planOf = (db: Database, sql: string, args: unknown[]) =>
     (db.query(`explain query plan ${sql}`).all(...(args as never[])) as { detail: string }[])
       .map((r) => r.detail)
       .join(" | ");
+
+  /** The language table is SEEKED through one of its own indexes, whatever SQLite calls the node. */
+  const seeksTitleLang = (plan: string) => /SEARCH l\b[^|]*USING COVERING INDEX ix_lang/.test(plan);
 
   test("a genre browse seeks ix_lang and materialises no list", () => {
     const db = indexOf(CORPUS);
@@ -297,11 +330,11 @@ describe("the filter SEEKS its index", () => {
        where g.genre = ? and exists (select 1 from title_lang l where l.title_rowid = g.title_rowid
          and l.lang in (?, ?, ?)) order by g.rank desc limit 40`;
     const plan = planOf(db, sql, ["Crime", ...EN_SV]);
-    expect(plan).toContain("ix_lang");
-    expect(plan).toContain("CORRELATED");
+    expect(seeksTitleLang(plan)).toBe(true);
     // The shape that was 1,014 ms. A LIST SUBQUERY here means the `in (select ...)` form
     // has come back, whatever the index says.
     expect(plan).not.toContain("LIST SUBQUERY");
+    expect(plan).not.toContain("SCAN l");
   });
 
   test("the index leads with title_rowid, which is what makes the seek possible", () => {
@@ -334,8 +367,7 @@ describe("the filter SEEKS its index", () => {
          and not exists (select 1 from title_lang l where l.title_rowid = t.rowid_ and l.lang in (?))
        order by t.rank desc limit 250`;
     const plan = planOf(db, sql, ["movie", "hi", "en"]);
-    expect(plan).toContain("ix_lang");
-    expect(plan).toContain("CORRELATED");
+    expect(seeksTitleLang(plan)).toBe(true);
     // The `not exists` half is the one that could quietly become a scan of the whole
     // language table once per candidate row, which is 1.3M rows on the real index.
     expect(plan).not.toContain("LIST SUBQUERY");
