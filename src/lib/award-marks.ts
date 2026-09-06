@@ -1,5 +1,5 @@
 /**
- * Which titles WON an award's headline prize, as a lookup a render path may use.
+ * Which titles WON an award's headline prize, as lookups a render path may use.
  *
  * A card in a browse grid gets its award mark from a `Map` held in memory, never from a
  * query. That is not an optimisation bolted onto a query -- the award tables live in the app
@@ -8,6 +8,12 @@
  * makes the Map the obvious answer: eight awards, a few hundred anchor winners between them,
  * against ~12k nominations in total. Holding the winners costs a rounding error and every
  * lookup after that is free.
+ *
+ * TWO QUESTIONS OVER ONE READ. "What did this title win" is the mark on a card; "what has
+ * this award gone to lately" is the poster strip behind a row on `/lists`. Both are answered
+ * from `buildAnchorWins` -- one query per award and none per title, whichever is asked --
+ * because a second builder would mean a second pass over the same rows to reach the same
+ * eight-award, few-hundred-row set.
  *
  * ANCHOR WINNERS ONLY. A nomination chip would land on thousands of titles and stop meaning
  * anything; a win of the award's top prize is the signal, and which prize that is per award is
@@ -39,38 +45,93 @@ export interface AwardMark {
   year: string;
 }
 
+/** One film that took an award's top prize, and the edition it took it at. */
+export interface AnchorWin extends AwardMark {
+  tconst: string;
+  /**
+   * The film's title AS THE AWARD SOURCE PRINTS IT, never as the index spells it.
+   *
+   * It travels with the win because it costs nothing here and an index lookup everywhere
+   * else: the poster strip on `/lists` wants a name for a frame it has not fetched yet, and
+   * this file has no connection to the title index to ask for a better one. Where the two
+   * spellings differ the source's is still the right answer for an award page.
+   */
+  title: string;
+}
+
 /** Exactly what building the marks reads. `Store` satisfies it; a test fake can too. */
 export interface AwardWinnerReader {
   awardWinners(award: string, category: string | null): Nomination[];
 }
 
 /**
- * Every anchor winner we can identify, keyed by tconst. ONE query per award, none per title.
+ * Every anchor winner we can identify, per award, newest ceremony first.
+ *
+ * ONE query per award, none per title -- the read the whole in-memory layer is built on, and
+ * the reason `AwardMarkIndex` can answer two different questions without a second pass.
+ * Awards come back in `defs` order and `Map` preserves insertion order, so registry order
+ * survives into everything derived from this.
+ *
+ * A film that took the same award twice appears ONCE, at its most recent win. Breaking Bad
+ * won Outstanding Drama Series in two different years and a strip of posters showing it
+ * twice is a bug wearing a duplicate.
+ *
+ * A winner with no `FilmId` contributes nothing: the source has rows whose film we cannot
+ * identify, and this file follows the same rule as the rest of the award subsystem -- an id we
+ * do not hold is never guessed at from a title string.
+ */
+export function buildAnchorWins(
+  reader: AwardWinnerReader,
+  defs: readonly AwardDef[] = AWARDS,
+): Map<string, AnchorWin[]> {
+  const byAward = new Map<string, AnchorWin[]>();
+  for (const def of defs) {
+    const wins: AnchorWin[] = [];
+    const seen = new Set<string>();
+    for (const win of reader.awardWinners(def.id, def.anchorCategory)) {
+      win.filmIds.forEach((tconst, i) => {
+        if (tconst === null || seen.has(tconst)) return;
+        seen.add(tconst);
+        wins.push({
+          tconst,
+          title: win.films[i] ?? "",
+          award: def.id,
+          ceremony: win.ceremony,
+          year: win.year,
+        });
+      });
+    }
+    byAward.set(def.id, wins);
+  }
+  return byAward;
+}
+
+/**
+ * Every anchor winner we can identify, keyed by tconst.
  *
  * A title that won the top prize at two of these awards keeps the FIRST in registry order,
  * which is the order `/lists` offers them. That case is real rather than theoretical --
  * Parasite took Best Picture and the Palme d'Or -- and one card draws one chip, so something
  * has to choose. Registry order is the choice a reader can predict and a second award can be
  * added without re-deciding.
- *
- * A winner with no `FilmId` contributes nothing: the source has rows whose film we cannot
- * identify, and this file follows the same rule as the rest of the award subsystem -- an id we
- * do not hold is never guessed at from a title string.
  */
+export function marksFromWins(byAward: Map<string, AnchorWin[]>): Map<string, AwardMark> {
+  const marks = new Map<string, AwardMark>();
+  for (const wins of byAward.values()) {
+    for (const win of wins) {
+      if (marks.has(win.tconst)) continue;
+      marks.set(win.tconst, { award: win.award, ceremony: win.ceremony, year: win.year });
+    }
+  }
+  return marks;
+}
+
+/** The marks alone, for a caller with no use for the per-award lists. ONE query per award. */
 export function buildAwardMarks(
   reader: AwardWinnerReader,
   defs: readonly AwardDef[] = AWARDS,
 ): Map<string, AwardMark> {
-  const marks = new Map<string, AwardMark>();
-  for (const def of defs) {
-    for (const win of reader.awardWinners(def.id, def.anchorCategory)) {
-      for (const tconst of win.filmIds) {
-        if (tconst === null || marks.has(tconst)) continue;
-        marks.set(tconst, { award: def.id, ceremony: win.ceremony, year: win.year });
-      }
-    }
-  }
-  return marks;
+  return marksFromWins(buildAnchorWins(reader, defs));
 }
 
 /**
@@ -85,23 +146,36 @@ export function buildAwardMarks(
  * card draws a chip. That is the ordinary first-boot state, not an error.
  */
 export class AwardMarkIndex {
+  private wins: Map<string, AnchorWin[]>;
   private marks: ReadonlyMap<string, AwardMark>;
 
   constructor(
     private readonly reader: AwardWinnerReader,
     private readonly defs: readonly AwardDef[] = AWARDS,
   ) {
-    this.marks = buildAwardMarks(reader, defs);
+    this.wins = buildAnchorWins(reader, defs);
+    this.marks = marksFromWins(this.wins);
   }
 
   /** Re-read the winners after an import swapped them. Returns how many titles are marked. */
   refresh(): number {
-    this.marks = buildAwardMarks(this.reader, this.defs);
+    this.wins = buildAnchorWins(this.reader, this.defs);
+    this.marks = marksFromWins(this.wins);
     return this.marks.size;
   }
 
   /** This title's mark, or null. The only call on a render path, and it queries nothing. */
   get(tconst: string): AwardMark | null {
     return this.marks.get(tconst) ?? null;
+  }
+
+  /**
+   * What this award's top prize has gone to, newest first. Empty for an id we hold nothing for.
+   *
+   * The same memory the marks are built from, so a strip of posters per award on `/lists`
+   * costs no query either -- which is the constraint that page was built under.
+   */
+  winnersFor(award: string): readonly AnchorWin[] {
+    return this.wins.get(award) ?? [];
   }
 }

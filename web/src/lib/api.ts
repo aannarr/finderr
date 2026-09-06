@@ -983,37 +983,51 @@ export async function getAwardPeople(award: string, className: string | null): P
 }
 
 /**
- * How much of each computed list this library holds, keyed by the catalogue's list id.
+ * Everything `/lists` fetches, cached under ONE key.
  *
- * ONE entry for the whole catalogue, cached under one key, because both surfaces that draw
- * a completion want a different slice of the same answer: `/lists` prints twenty-six of
- * them at once and a ranked `/browse` prints exactly one. Fetching per list would make the
- * index page twenty-six requests, and fetching per page would make the two disagree.
+ * One entry for the whole page, because both surfaces that read it want a different slice
+ * of the same answer: `/lists` draws all of it and a ranked `/browse` wants one completion.
+ * Fetching per list would make the index page twenty-nine requests, and fetching per page
+ * would make the two disagree.
  *
  * A list id ABSENT from `completions` has no count to draw -- an index with no rank column,
- * or a decade the server's clock does not agree exists. Callers render nothing for it.
+ * or a decade the server's clock does not agree exists. Same for `posters`: an award we hold
+ * no artwork for simply has no key. Callers render nothing for either.
  */
-const listCompletionCache = new Cache<ListCompletions>(1);
+const listsIndexCache = new Cache<ListsIndex>(1);
 
 export type ListCompletions = Record<string, ListCompletion>;
 
-/** Completions we already hold. Synchronous, for the same reason `cachedAwards` is. */
-export function cachedListCompletions(): ListCompletions | undefined {
-  return listCompletionCache.get("all");
+export interface ListsIndex {
+  completions: ListCompletions;
+  posters: CompletionPayload["posters"];
+  boards: CompletionPayload["boards"];
 }
 
-export async function getListCompletions(): Promise<ListCompletions> {
-  const hit = listCompletionCache.fresh("all");
+/** The empty index, so a page that has not fetched yet renders the same code path. */
+export const NO_LISTS_INDEX: ListsIndex = { completions: {}, posters: {}, boards: [] };
+
+/** What we already hold. Synchronous, for the same reason `cachedAwards` is. */
+export function cachedListsIndex(): ListsIndex | undefined {
+  return listsIndexCache.get("all");
+}
+
+export async function getListsIndex(): Promise<ListsIndex> {
+  const hit = listsIndexCache.fresh("all");
   if (hit) return hit;
-  return dedupe("list-completions", async () => {
+  return dedupe("lists-index", async () => {
     const res = await fetch("/api/lists/completion");
     if (!res.ok) throw new Error(`list completion failed: ${res.status}`);
     const data = (await res.json()) as CompletionPayload;
-    // Keyed on the way IN rather than at every read: both callers look a list up by id, and
-    // the server sends an array because that is the shape it builds.
-    const byId = Object.fromEntries(data.completions.map((c) => [c.id, c]));
-    listCompletionCache.set("all", byId);
-    return byId;
+    const index: ListsIndex = {
+      // Keyed on the way IN rather than at every read: both callers look a list up by id,
+      // and the server sends an array because that is the shape it builds.
+      completions: Object.fromEntries(data.completions.map((c) => [c.id, c])),
+      posters: data.posters,
+      boards: data.boards,
+    };
+    listsIndexCache.set("all", index);
+    return index;
   });
 }
 
@@ -1669,6 +1683,7 @@ export function resetCaches(): void {
   personCache.clear();
   collectionCache.clear();
   discoverCache.clear();
+  listsIndexCache.clear();
   inFlight.clear();
 }
 
@@ -1747,7 +1762,15 @@ export function clearPersistedCaches(): Promise<void> {
  * how that gets to reuse `Poster` instead of growing a second `<img>` with its own idea of
  * the fallback, which is the whole reason that component exists.
  */
-export type PosterSubject = Pick<Title, "tconst" | "title" | "posterUrl">;
+/**
+ * The three fields `Poster` reads, with the URL OPTIONAL.
+ *
+ * A caller holding only an id and a name -- the poster strips on `/lists` do -- omits it and
+ * `posterUrl` below derives `/img/t/<tconst>`, which is what the field would have said. The
+ * distinction the field carries is `null`, "we looked and there is genuinely no artwork", and
+ * only a caller that has looked can say that. A full `Title` satisfies this unchanged.
+ */
+export type PosterSubject = Pick<Title, "tconst" | "title"> & Partial<Pick<Title, "posterUrl">>;
 
 /**
  * Posters always come from OUR proxy. finderr will be internet-facing while
@@ -1756,7 +1779,7 @@ export type PosterSubject = Pick<Title, "tconst" | "title" | "posterUrl">;
  * `null` means we already looked and there genuinely is no artwork -- render the
  * fallback tile immediately rather than firing a request that will 404.
  */
-export function posterUrl(t: Pick<Title, "tconst" | "posterUrl">, size = "w342"): string | null {
+export function posterUrl(t: Pick<PosterSubject, "tconst" | "posterUrl">, size = "w342"): string | null {
   if (t.posterUrl === null) return null;
   return `${t.posterUrl ?? `/img/t/${t.tconst}`}?size=${size}`;
 }

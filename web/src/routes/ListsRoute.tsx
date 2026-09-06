@@ -1,14 +1,24 @@
 /**
- * `/lists` -- what lists exist, and how much of each one you already own.
+ * `/lists` -- what lists exist, how much of each one you already own, and who is in them.
  *
- * An INDEX rather than a view: every row is a link and no titles are fetched. Drawing a
- * strip of posters per list would make this page slower than the lists it points at, and it
- * would need a request per row to say something the row's own name already says.
+ * An INDEX rather than a view, and still ONE request. Drawing a strip of posters per list
+ * would make this page slower than the lists it points at if each strip cost a fetch -- so
+ * none of them does: `/api/lists/completion` answers for the whole page at once, and
+ * everything added to this route since has ridden that same call rather than earning a
+ * second round trip. The page renders complete without it, so counts, posters and people
+ * fill in behind the links rather than gating them.
  *
- * ONE request now, and it is the exception that proves that rule rather than a break with
- * it: `/api/lists/completion` answers for the whole catalogue at once, and it says the one
- * thing a row's name cannot -- "you own 178 of 250". The page renders complete without it,
- * so the counts fill in behind the links rather than gating them.
+ * THREE SECTIONS, and the difference between them is what a row IS:
+ *
+ * - CURATED -- eight award lists with their own pages, each drawing up to five posters of
+ *   what its top prize has recently gone to. Ids only, so the strip is a hint at the list
+ *   rather than a copy of it, and no title card machinery is involved -- see `ListPoster`
+ *   for why that matters.
+ * - COMPUTED -- the generated genre and decade rows, text with a completion count. Thirty
+ *   poster strips is the page this docstring rejects, and correctly.
+ * - PEOPLE -- a list of PEOPLE rather than titles, ranked over the membership of the
+ *   all-time lists above. Drawn with `PeopleLeaderboard`, the same component the award
+ *   people pages use: the ranking is the parameter and the page is not.
  *
  * The membership rules live in `src/lib/lists.ts` and are pure data, so this component
  * decides only how a group of links looks. A new list is one entry there and no change
@@ -27,9 +37,12 @@ import {
   listGroups,
   RANK_EXPLAINER,
 } from "../../../src/lib/lists";
+import type { ListPoster } from "../../../src/server/lists";
 import { Completion } from "../components/Completion";
+import { PeopleLeaderboard } from "../components/PeopleLeaderboard";
+import { Poster } from "../components/Poster";
 import type { SearchParams } from "../lib/search-params";
-import { useListCompletions } from "../lib/use-list-completions";
+import { useListsIndex } from "../lib/use-lists-index";
 
 /**
  * A list's browse params: its filters, plus the ordering that makes it a list.
@@ -44,7 +57,7 @@ function searchOf(list: ComputedList): SearchParams {
 
 export function ListsRoute() {
   const groups = listGroups(new Date().getFullYear());
-  const completions = useListCompletions();
+  const { completions, posters, boards } = useListsIndex();
 
   return (
     <>
@@ -61,55 +74,119 @@ export function ListsRoute() {
       */}
       {CURATED.length > 0 && (
         <Section heading="Curated" blurb="Lists somebody maintains, with their own pages.">
-          {CURATED.map((list) => (
-            <ListCard
-              key={list.id}
-              title={list.title}
-              subtitle={list.subtitle}
-              to="/awards/$award"
-              params={{ award: list.id }}
-            />
-          ))}
+          <CardGrid>
+            {CURATED.map((list) => (
+              <ListCard
+                key={list.id}
+                title={list.title}
+                subtitle={list.subtitle}
+                to="/awards/$award"
+                params={{ award: list.id }}
+              >
+                <PosterStrip posters={posters[list.id]} />
+              </ListCard>
+            ))}
+          </CardGrid>
         </Section>
       )}
 
       {groups.map((group) => (
         <Section key={group.heading} heading={group.heading} blurb={group.blurb}>
-          {group.lists.map((list) => {
-            const done = completions[list.id];
-            return (
-              <ListCard
-                key={list.id}
-                title={list.title}
-                subtitle={list.subtitle}
-                to="/browse"
-                search={searchOf(list)}
-              >
-                {done && (
-                  <Completion
-                    owned={done.owned}
-                    total={done.size}
-                    noun={completionNoun(list.filters.kind)}
-                    className="mt-1.5 text-xs text-muted"
-                  />
-                )}
-              </ListCard>
-            );
-          })}
+          <CardGrid>
+            {group.lists.map((list) => {
+              const done = completions[list.id];
+              return (
+                <ListCard
+                  key={list.id}
+                  title={list.title}
+                  subtitle={list.subtitle}
+                  to="/browse"
+                  search={searchOf(list)}
+                >
+                  {done && (
+                    <Completion
+                      owned={done.owned}
+                      total={done.size}
+                      noun={completionNoun(list.filters.kind)}
+                      className="mt-1.5 text-xs text-muted"
+                    />
+                  )}
+                </ListCard>
+              );
+            })}
+          </CardGrid>
         </Section>
       ))}
+
+      {/*
+        The caveat is stated ONCE, here, rather than on each of the three boards: they count
+        the same thing over the same set, so three copies of one sentence is not a caveat.
+        The section is absent entirely on an index built without the cast tables, which is
+        the same rule every other section on this page follows for a thing it cannot draw.
+      */}
+      {boards.length > 0 && (
+        <Section
+          heading="People"
+          blurb="Who turns up most across the two finderr Top 250 lists above -- the ranked head of the index, not a career total."
+        >
+          <div className="grid gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
+            {boards.map((board) => (
+              <PeopleLeaderboard key={board.id} board={board} />
+            ))}
+          </div>
+        </Section>
+      )}
     </>
   );
 }
 
-/** A heading, its blurb, and the grid of cards under it. */
+/** A heading, its blurb, and whatever the section lays out under it. */
 function Section({ heading, blurb, children }: { heading: string; blurb?: string; children: ReactNode }) {
   return (
     <section className="mb-8">
       <h3 className="mb-1 text-sm font-semibold tracking-tight">{heading}</h3>
       {blurb && <p className="mb-3 max-w-2xl text-xs text-muted">{blurb}</p>}
-      <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>
+      {children}
     </section>
+  );
+}
+
+/**
+ * The grid of link cards.
+ *
+ * Split out of `Section` when the people boards arrived: they are a section of this page
+ * with a heading and a blurb like any other, and they are emphatically not a `ul` of cards.
+ */
+function CardGrid({ children }: { children: ReactNode }) {
+  return <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>;
+}
+
+/**
+ * A few posters of what a curated list holds, drawn inside its link.
+ *
+ * `aria-hidden`, and that is the correct answer rather than a shortcut: the strip sits
+ * INSIDE the row's link, which already names the award it goes to, so five film titles read
+ * out after it would bury the destination. It is decoration for a link that is already
+ * labelled -- and being inside the link is also why no poster here is a link of its own.
+ *
+ * Nothing at all until the payload lands, and nothing ever for an award we hold no artwork
+ * for. There is no placeholder row: `Poster` reserves its own frame, so a strip that appears
+ * one beat later grows the card downward and moves nothing above it.
+ */
+function PosterStrip({ posters }: { posters?: ListPoster[] }) {
+  if (!posters || posters.length === 0) return null;
+  return (
+    <span className="mt-2 flex gap-1.5" aria-hidden="true">
+      {posters.map((poster) => (
+        <Poster
+          key={poster.tconst}
+          title={poster}
+          // Matched to the rendered width: a 40px frame has no use for a 342px image.
+          size="w92"
+          className="aspect-2/3 w-10 shrink-0 overflow-hidden rounded bg-surface-2"
+        />
+      ))}
+    </span>
   );
 }
 

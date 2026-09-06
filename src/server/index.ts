@@ -1340,6 +1340,12 @@ const listsDeps = (): ListsDeps => ({
   year: new Date().getFullYear(),
   members: (list) => live.current.rankedMembers(list.filters, LIST_SIZE),
   ownedCount: (tconsts) => store.ownedCount(tconsts),
+  winners: (award) => awardMarks.winnersFor(award),
+  // `undefined` is a title we have never looked up and `{url: null}` is one we looked up and
+  // found nothing for. Both mean "do not put it in a strip", and only the second is a fact:
+  // see `Store.getArtwork` for why the two must not be collapsed anywhere else.
+  hasPoster: (tconst) => (store.getArtwork(tconst)?.url ?? null) !== null,
+  credits: (tconsts) => live.current.creditTally(tconsts),
 });
 
 const staticDir = `${import.meta.dir}/../../web/dist`;
@@ -2236,11 +2242,12 @@ const appRoutes = {
   },
 
   /**
-   * How much of each computed list this library holds.
+   * Everything `/lists` cannot derive for itself: completion, posters, people boards.
    *
-   * The completion counts and NOTHING else: the catalogue itself is static data both sides
-   * import from `src/lib/lists.ts`, so sending it back over the wire would be a second copy
-   * of a table the browser already has, arriving later than the page that draws it.
+   * NOT the catalogue. That is static data both sides import from `src/lib/lists.ts`, so
+   * sending it back over the wire would be a second copy of a table the browser already
+   * has, arriving later than the page that draws it. What travels here is the three answers
+   * that need the index or the library -- see `completionPayload`.
    *
    * Per-session and short, on the same reasoning as the awards timeline: the membership
    * moves once per index rebuild and the ownership moves on a library sync, which is the
