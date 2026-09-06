@@ -165,18 +165,20 @@ export interface ListLanguage {
  * > lands between 0.21 and 0.26 ms**, which is the shape of the change: the cost stopped
  * > depending on the language at all. `completionPayload` owns the whole-request figure.
  *
- * **Chinese is the one exception, and it is a DATA exclusion rather than a cost one.** `zh`
- * reaches a full 250 and would now cost 0.26 ms like everything else, so nothing about the
- * measurement keeps it out. P364 records most Chinese-language cinema under codes with no
- * two-letter ISO 639-1 form and `parseOriginCsv` keeps only two-letter codes, so the set is
- * undercounted by an order of magnitude and a "Best films in Chinese" drawn from it would
- * quietly misrepresent itself. Widening the crosswalk is its own card
- * (`widen-parseorigincsv-past-two-letter-language-codes-so-zh-an`); when it lands, `zh`
- * belongs here.
- *
- * Greek needs no exception: `el` reaches 3 ranked non-English films on the same index, so the
- * floor above excludes it. Whether 3 is the truth about the corpus or another crosswalk gap
- * is the same question that card asks.
+ * > [!NOTE] Chinese, Greek and Tagalog are here since 2026-09-06, and the corpus is what
+ * > changed rather than the rule
+ * > All three used to be excluded on data: Wikidata files their cinema under language items
+ * > carrying no ISO 639-1 code, so `LANGUAGE_CROSSWALK` never emitted a row for it. Widening
+ * > that query past P218 is what put them over the floor, and the counts are why there is no
+ * > editorial argument to make -- ranked non-English films, measured on a real 1,276,669-title
+ * > build on an M1 Max on 2026-09-06, before -> after: **`zh` 463 -> 3,525**, **`el` 3 -> 844**,
+ * > **`tl` 204 -> 432**. Chinese was the one language this list held out deliberately, on the
+ * > grounds that a set undercounted by an order of magnitude would misrepresent itself; that
+ * > reason is spent.
+ * >
+ * > `tl` is named Tagalog because that is the language ISO 639-1 assigns the code to. The
+ * > `Filipino` item folds onto it, so the row is mostly Filipino cinema -- naming it Filipino
+ * > would claim a code (`fil`) this index does not store.
  */
 export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "sq", name: "Albanian" },
@@ -184,6 +186,7 @@ export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "bn", name: "Bengali" },
   { code: "bg", name: "Bulgarian" },
   { code: "ca", name: "Catalan" },
+  { code: "zh", name: "Chinese" },
   { code: "hr", name: "Croatian" },
   { code: "cs", name: "Czech" },
   { code: "da", name: "Danish" },
@@ -192,6 +195,7 @@ export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "fi", name: "Finnish" },
   { code: "fr", name: "French" },
   { code: "de", name: "German" },
+  { code: "el", name: "Greek" },
   { code: "he", name: "Hebrew" },
   { code: "hi", name: "Hindi" },
   { code: "hu", name: "Hungarian" },
@@ -215,6 +219,7 @@ export const LIST_LANGUAGES: readonly ListLanguage[] = [
   { code: "si", name: "Sinhala" },
   { code: "es", name: "Spanish" },
   { code: "sv", name: "Swedish" },
+  { code: "tl", name: "Tagalog" },
   { code: "ta", name: "Tamil" },
   { code: "te", name: "Telugu" },
   { code: "th", name: "Thai" },
