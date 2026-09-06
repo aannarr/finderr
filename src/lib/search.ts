@@ -158,6 +158,51 @@ export function decadeOf(year: number): number {
 const FUZZY_WINDOW = 300;
 
 /**
+ * How far from the query a spellfix1 candidate may be and still be RANKED.
+ *
+ * > [!CAUTION] Without this, a query matching nothing returned the most famous films in the corpus
+ * > spellfix1 always hands back its `top` N, however bad they are, and `rank()` scores a
+ * > candidate that shares no query token on `22 * textSim + popularity(votes)` -- where a
+ * > phonetic-bucket stranger has `textSim` of 0 and a blockbuster has 30 points of votes. So
+ * > the tier had no way to say "nothing here". Measured on the real index, 2026-09-06:
+ * > `"xyzzyplughfoo"` returned **Casablanca**, `"qwertzuiopasdf"` returned **Spirited Away**,
+ * > and `"andrenochrome"` returned Ender's Game, Andrei Rublev and Antichrist.
+ *
+ * > [!IMPORTANT] 300 is the MIDDLE OF AN EMPTY BAND, not a tuning knob
+ * > Measured across every typo case in the canary plus the reported ones, 2026-09-06. The
+ * > distance of the title the reader actually meant, worst first: `budapest hotell` 246,
+ * > `eternl sunshien of the spotles mind` 225, `nile city` 224, `strager thigs` 200,
+ * > `brigerton` 100, `matrics` 90, `andrenochrome` 85, `izombee` 40, `seven samuri` 20,
+ * > `interstelar` 10, `solstollarna` 0. The best candidate for a string that means nothing:
+ * > `xyzzyplughfoo` **401**, `qwertzuiopasdf` **485**.
+ * >
+ * > So real matches stop at 246 and nonsense starts at 401, and **nothing at all was observed
+ * > between them**. 300 sits in the middle of that 155-wide gap rather than against either
+ * > edge. A first attempt at 150 looked reasonable and was wrong: it cut `strager thigs`,
+ * > which is two ordinary typos, and the canary caught it in one run.
+ *
+ * If a future query lands inside the band, the honest fix is a canary case naming it, not a
+ * quiet nudge to this number -- that is what the suite is for.
+ */
+const FUZZY_MAX_DISTANCE = 300;
+
+/**
+ * The scope for the SECOND pass, taken only when the first finds nothing within the floor.
+ *
+ * spellfix1 shortlists on a prefix of the phonetic hash -- `scope` characters of it, 4 by
+ * default -- so a letter inserted near the FRONT of a word moves it out of the bucket and no
+ * amount of `top` will reach it. `andrenochrome` hashes to `AMDRMACRMA` against
+ * `adrenochrome`'s `ADRMACRMA`: one edit apart, different at character 2, absent from all 300
+ * candidates at scope 4 and rank 1 at scope 1.
+ *
+ * It is a fallback and never the default because it is 20-50x the work: measured 2026-09-06 on
+ * the real 257,764-word vocabulary, scope 4 costs 2-11 ms and scope 1 costs 81-266 ms. The
+ * first pass keeps every query that already worked on the fast path, and only a query that
+ * would otherwise have returned junk ever pays.
+ */
+const FUZZY_WIDE_SCOPE = 1;
+
+/**
  * What matching every word of the query is worth.
  *
  * Named because two branches of `rank()` read it: the coverage branch, and an exact match
@@ -962,24 +1007,47 @@ export class SearchEngine {
     const nq = normalizeStripped(p.text);
     if (nq.length === 0) return [];
 
-    const rows = this.db
-      .query(
-        `select m.rowid_ as rowid from ${SPELLFIX_TABLE} v
-         join ${SPELLFIX_MAP_TABLE} m on m.id = v.rowid
-         where v.word match ? and v.top = ?`,
-      )
-      .all(nq, limit) as { rowid: number }[];
+    // Pass one at spellfix1's default scope. This is the fast path and it answers almost
+    // every typo -- 2 to 11 ms against the real vocabulary, measured 2026-09-06.
+    let rows = this.spellfixRows(nq, limit, null);
+    let near = rows.filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
+
+    // Pass two, ONLY when the first found nothing close. See FUZZY_WIDE_SCOPE.
+    if (near.length === 0) {
+      rows = this.spellfixRows(nq, limit, FUZZY_WIDE_SCOPE);
+      near = rows.filter((r) => r.distance <= FUZZY_MAX_DISTANCE);
+    }
 
     // One title can appear twice (primary and original form); keep first occurrence,
     // which is the closer match since spellfix1 returns in distance order.
     const seen = new Set<number>();
     const out: number[] = [];
-    for (const r of rows) {
+    for (const r of near) {
       if (seen.has(r.rowid)) continue;
       seen.add(r.rowid);
       out.push(r.rowid);
     }
     return out;
+  }
+
+  /**
+   * One spellfix1 lookup. `scope` null means the extension's own default.
+   *
+   * `distance` is SELECTED rather than discarded, which is the whole of the fix above: it is
+   * the only signal that separates "one edit away" from "shares a phonetic bucket and nothing
+   * else", and `rank()` cannot re-derive it -- its `textSim` is trigram overlap, which is 0
+   * for both a near miss on a short word and a total stranger.
+   */
+  private spellfixRows(
+    nq: string,
+    limit: number,
+    scope: number | null,
+  ): { rowid: number; distance: number }[] {
+    const sql = `select m.rowid_ as rowid, v.distance as distance from ${SPELLFIX_TABLE} v
+       join ${SPELLFIX_MAP_TABLE} m on m.id = v.rowid
+       where v.word match ? and v.top = ?${scope === null ? "" : " and v.scope = ?"}`;
+    const args = scope === null ? [nq, limit] : [nq, limit, scope];
+    return this.db.query(sql).all(...(args as never[])) as { rowid: number; distance: number }[];
   }
 
   /** Load full rows for a set of rowids, preserving nothing about order. */

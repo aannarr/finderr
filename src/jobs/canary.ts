@@ -28,16 +28,34 @@ import { loadConfig, paths } from "../lib/config";
 
 const NO_INDEX = 2;
 
+/**
+ * THE DEVELOPER GATE DEMANDS 100%, and that is a different question from the promote gate.
+ *
+ * `runCanary`'s own default is 0.9 and it stays there, because the caller it was written for
+ * is `build-index` deciding whether a CANDIDATE INDEX is fit to serve -- and an index that is
+ * a shade off still beats having none, so a tolerance there is a real judgement.
+ *
+ * Nobody is choosing between two indexes here. This asks "did search regress on the one we
+ * have", `.claude/CLAUDE.md` has always answered that with *"it must stay at 100%; a card is
+ * not done if it moved"*, and the code disagreed with the document in the lenient direction.
+ * Measured 2026-09-06: with the three `andrenochrome` cases failing, this job reported
+ * **`PASS 43/46 (93%, floor 90%)`** -- three known-broken queries and a green gate.
+ */
+const DEV_FLOOR = 1;
+
 export function main(argv: readonly string[] = Bun.argv.slice(2)): number {
   const cfg = loadConfig();
-  const dbPath = argv[0] ?? paths(cfg).db;
+  // The path is the first argument that is not a flag. Reading `argv[0]` blindly made
+  // `bun run canary --timings` report "no index at --timings", which is a confusing way to
+  // say "that was a flag".
+  const dbPath = argv.find((a) => !a.startsWith("--")) ?? paths(cfg).db;
 
   if (!Bun.file(dbPath).size) {
     console.error(`[canary] no index at ${dbPath} -- build one with \`bun run index:build\``);
     return NO_INDEX;
   }
 
-  const r = runCanary(dbPath, cfg);
+  const r = runCanary(dbPath, cfg, DEV_FLOOR);
   console.log(`[canary] ${dbPath}`);
 
   // The absence goes ABOVE the score, because it is what makes the score mean something
@@ -51,6 +69,20 @@ export function main(argv: readonly string[] = Bun.argv.slice(2)): number {
   for (const f of r.failures) {
     console.log(`[canary]   miss: "${f.query}" wanted ~${f.want}, got ${f.got} [${f.tier}]`);
   }
+  for (const s of r.slow) {
+    console.log(`[canary]   SLOW: "${s.query}" ${s.ms.toFixed(0)}ms over its ${s.budgetMs}ms budget`);
+  }
+
+  // The cost side of the same run. Printed always rather than only on a breach, because the
+  // point of the table is to be READ while it is still green -- a budget nobody looks at until
+  // it trips is a budget nobody can set honestly. `--timings` opens the whole list.
+  const slowest = r.timings.slice(0, argv.includes("--timings") ? r.timings.length : 5);
+  const io =
+    r.readBytes === null ? "not visible on this platform" : `${(r.readBytes / 1e6).toFixed(1)} MB read`;
+  console.log(
+    `[canary] slowest: ${slowest.map((t) => `${t.query} ${t.ms.toFixed(0)}ms [${t.tier}]`).join(", ")}`,
+  );
+  console.log(`[canary] I/O: ${io}`);
 
   return r.ok ? 0 : 1;
 }
