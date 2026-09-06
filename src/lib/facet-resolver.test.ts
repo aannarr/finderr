@@ -50,7 +50,12 @@ function registryOf(
   const registry = new PluginRegistry();
   for (const p of providers) {
     const meta: PluginMeta = { id: p.id, entities: ["movie", "series"] };
-    const plugin: LoadedPlugin = { meta, file: `${p.id}.ts`, configVersion: DEFAULT_CONFIG_VERSION };
+    const plugin: LoadedPlugin = {
+      meta,
+      file: `${p.id}.ts`,
+      configVersion: DEFAULT_CONFIG_VERSION,
+      config: [],
+    };
     // No context to fake: a provider closes over its own, so what reaches the resolver is
     // already a bound `(entity) => ...`.
     registry.add(plugin, [{ pluginId: p.id, facet: p.facet, run: p.run }]);

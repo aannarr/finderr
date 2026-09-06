@@ -15,6 +15,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
+import { AddonConfigStore, redactingLog } from "../lib/addon-config";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { attributedRequest, isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
@@ -84,6 +85,7 @@ import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
+import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
@@ -421,13 +423,25 @@ const logos = await loadLogoIndex(undefined, log);
 // Facet providers. A plugin supplies facts core does not know how to fetch; the resolver
 // keeps them in SQLite so no handler ever waits on one. Two ways in, one loader: files in
 // the plugins directory, and installed packages named in `pluginModules`.
+const addonConfig = new AddonConfigStore(store);
+/*
+  The one log sink an addon's own words reach, and therefore the one that redacts.
+
+  Two paths carry text an addon wrote: its `c.log` calls, and the `err.message` FacetResolver
+  prints when a provider throws. Both are wrapped here, so a plugin that puts its own API key
+  into an error message -- which nothing can stop it doing -- cannot put it in the container
+  log. The rest of the server's log stays unwrapped deliberately: it never carries plugin
+  text, and one narrow wrapper is easier to keep honest than a global one.
+*/
+const pluginLog = redactingLog(log, () => addonConfig.secrets());
 const plugins = await loadPlugins({
   dir: cfg.pluginsDir || undefined,
   modules: cfg.pluginModules,
   kv: store,
-  log,
+  config: addonConfig,
+  log: pluginLog,
 });
-const facets = new FacetResolver({ store, registry: plugins, log });
+const facets = new FacetResolver({ store, registry: plugins, log: pluginLog });
 log(`plugins: ${plugins.list().length} loaded`);
 
 /*
@@ -3370,7 +3384,16 @@ const appRoutes = {
  * DESCRIBES this table. "A route added later appears in the manifest by having been added"
  * is only true while there is exactly one table and one place that owns it.
  */
-const allRoutes = { ...appRoutes, ...auth.routes() };
+const allRoutes = {
+  ...appRoutes,
+  ...auth.routes(),
+  ...addonConfigRoutes({
+    registry: plugins,
+    config: addonConfig,
+    asAdmin: (req, fn) => auth.asAdmin(req, fn),
+    log: pluginLog,
+  }),
+};
 
 /**
  * The table, read at CALL time rather than closed over.
