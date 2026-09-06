@@ -175,6 +175,18 @@ describe("the vocabulary", () => {
     expect(facetsFor("series")).not.toContain("availability");
   });
 
+  /**
+   * `coreOnly` is a closed door with ONE reason written behind it -- the ruling beside
+   * `FACETS.availability`, which turns on that facet driving the Request button and on the
+   * library mirror being its only possible source. Neither of those transfers to another
+   * facet, so a second `coreOnly` entry is a new decision rather than an application of the
+   * old one, and it should have to argue for itself here before it ships. ADDONS.md counts
+   * "fifteen providable plus one core-only" out loud; this is what keeps that count honest.
+   */
+  test("availability is the only core-owned facet", () => {
+    expect(FACET_NAMES.filter((f) => FACETS[f].coreOnly)).toEqual(["availability"]);
+  });
+
   test("a movie is never asked for seasons, a series never for releaseDates", () => {
     expect(facetsFor("movie")).toContain("releaseDates");
     expect(facetsFor("movie")).not.toContain("seasons");

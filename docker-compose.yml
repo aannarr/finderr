@@ -117,6 +117,17 @@ services:
       # the gate working, and the fix is on the Plex side, not here.
       FINDERR_PLEX_MACHINE_ID: ${PLEX_MACHINE_ID:-}
 
+      # OFF, and turning it on is a product decision rather than a deployment one: it
+      # makes gate two SUFFICIENT, so anybody the server above is shared with signs in
+      # with no invitation and gets a `user` account. That is the membership list you
+      # already keep in Plex, and it is also everybody they hand a Plex login to.
+      #
+      # It REFUSES TO BOOT without FINDERR_PLEX_MACHINE_ID, on purpose: with no server to
+      # be a member of it would mean "any Plex account on earth", which is an open door
+      # wearing a login screen. Un-sharing on Plex revokes it at the next sign-in; disable
+      # the row on /admin to revoke now.
+      FINDERR_PLEX_OPEN_SIGNUP: ${PLEX_OPEN_SIGNUP:-}
+
       # --- auth. finderr is INVITE-ONLY: nothing but /api/health and the sign-in
       # ceremonies is reachable without a session.
       #

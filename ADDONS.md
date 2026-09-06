@@ -210,7 +210,7 @@ the reason the surface is shaped this way.
 | `watchProviders` | movie, series | list | JustWatch-shaped streaming availability |
 | `externalIds` | movie, series, episode | object | any id space core does not already hold |
 | `links` | movie, series, episode | list | an official site, a wiki, a fan page -- see the note below |
-| `availability` | movie, series | single | **core-only.** Comes from the local library mirror; an addon could only make it wrong. |
+| `availability` | movie, series | single | **core-only, and nothing else is** -- see the note below |
 
 > [!IMPORTANT] `cast` is the one facet where contributions COMPETE, so put ids on your credits
 > Every other list facet concatenates: RT's audience score lands beside IMDb's and both are
@@ -231,6 +231,24 @@ the reason the surface is shaped this way.
 >   provider's coverage you are adding duplicates rather than replacing anything.
 > - **Losing is not failing.** Your contribution is still fetched, still cached under your own
 >   plugin id, and starts rendering the moment the provider above you goes dark.
+
+> [!IMPORTANT] `availability` is closed to addons, and that is DECIDED rather than pending
+> Declare it and core drops that one key at load time with a log line; the rest of your addon
+> registers as usual. It is the only facet this applies to, and it is not a placeholder for a
+> rule nobody has got round to: **the ruling, the two alternatives it refused and the
+> condition that re-opens it are written beside `FACETS.availability` in
+> `src/lib/facets.ts`**, which is the one place they live.
+>
+> The short version for you as an author: `availability` answers "does this finderr's own
+> library already hold this title", so the library mirror is the only thing that can know, and
+> the surface has no way yet to say *this facet has exactly one legitimate provider*. It also
+> drives the Request button, so a wrong answer is a download that never starts rather than a
+> wrong pane. If what you actually want is "where can I stream this", that is
+> `watchProviders` and it is wide open.
+>
+> Replacing the mirror itself -- running Jellyfin instead of Plex, say -- is a real case and
+> not a refused one. It waits on per-addon configuration, because the flag that would let it
+> in has to be set by the operator and never by the addon. See **What an addon cannot do yet**.
 
 > [!IMPORTANT] `language` is a CODE, and core folds whichever ISO you send
 > Send `{ code: "hi" }` or `{ code: "hin" }` -- `languageCode` in `src/lib/facets.ts` folds
@@ -485,7 +503,7 @@ ask for:
 | `on` -- request lifecycle | `itemWillQueue`, `itemWasSent`, `itemDidBecomeAvailable`, `itemDidFail` | **notifications** -- Discord, WhatsApp, ntfy, webhooks, all as addons instead of four core features; quotas and profile rules as policy |
 | `on` -- search | `searchWillRun`, `searchDidRun`, `resultsWillRender`, `searchDidReturnNothing` | query rewriting, "did you mean", badge injection |
 | `on` -- entities | `willBuildPersonDetails`, `willBuildRelated`, `entityWillLink` | person bios, a real recommender, suppressing a link that would dead-end |
-| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | search tuning against real queries rather than invented ones |
+| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | nothing that is still unserved -- see below |
 | `on` -- system | `periodic`, `indexWasRebuilt`, `libraryDidSync` | anything cron-shaped, cache invalidation |
 | `shelves` | a built shelf | an addon putting its own row on the front page |
 | `routes`, `config` | a page, a settings screen | addon-authored pages and settings |
@@ -493,6 +511,15 @@ ask for:
 Facet names and event names are two vocabularies, which is why they would land in separate
 groups rather than one flat object. Astro's `astro:config:setup` prefixes are what merging
 them costs.
+
+The signals row is worth reading as an example of how a would-be hook earns its place,
+because it is the one that lost its user. Search tuning was the only consumer ever named
+for `on` -- signals, and it shipped in CORE instead: a click posts to `/api/search/click`
+and settles into `search_log` (`src/lib/search-log.ts`), carrying no identity. The second
+half of the argument for making it a hook -- "no addon installed, no logging" -- is served
+by `NO_SEARCH_LOG`, a null logger chosen once at boot, so the off switch exists without an
+extension surface behind it. A hook is worth building when a consumer cannot be served any
+other way; this one could be, and was.
 
 Two of these are the ones people actually hit first:
 

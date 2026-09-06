@@ -2,12 +2,15 @@
  * How much memory this process may actually use, and what to tune from it.
  *
  * > [!IMPORTANT] THIS FILE EXISTS BECAUSE SQLITE CANNOT SEE A CONTAINER'S MEMORY LIMIT
- * > Measured on the live deployment 2026-09-05. The container ran under a **1.5 GB** cgroup cap
- * > while serving an **1,892 MB** index, and was configured with `mmap_size = 2 GB` and
- * > `cache_size = 256 MB` -- told to map more than the whole container could hold, plus a pager
- * > cache worth 17% of the total budget. The cgroup at the time held `cache 898 MB`, `rss 75 MB`:
- * > **only ~47% of the index resident.** The prefault logged *"1892 MB into the page cache"* and
- * > roughly half of it was reclaimed behind the log line.
+ * > **On 2026-09-05** the deployment ran under a 1.5 GB cgroup cap while serving an 1,892 MB
+ * > index, configured with `mmap_size = 2 GB` and `cache_size = 256 MB` -- told to map more
+ * > than the whole container could hold, plus a pager cache worth 17% of the total budget. The
+ * > cgroup held `cache 898 MB`, `rss 75 MB`: only ~47% of the index resident. The prefault
+ * > logged *"1892 MB into the page cache"* and roughly half of it was reclaimed behind the log
+ * > line. That is a dated EVENT and it is why this file exists; it is not a description of the
+ * > cap you are running under. **The live budget has ONE owner and it is not a comment: read
+ * > `index.warm.tuning.budgetMb` and `budgetSource` off `/api/health`.** (The cap was raised
+ * > after the measurement above, so anything reasoning from 1.5 GB is reasoning from history.)
  * >
  * > Nothing inside SQLite or Bun reads a cgroup limit. `os.totalmem()` reports the HOST's RAM --
  * > 19.8 GB on that machine -- so every default derived from it was wrong by more than 10x. The

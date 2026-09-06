@@ -45,9 +45,62 @@ interface Row {
 interface FixtureShape {
   /** `false` builds a file from before the origin stage: no `title_lang` at all. */
   withOrigin?: boolean;
-  /** `false` builds a file from before the WIDENING: the original two columns, two indexes. */
+  /** `false` builds a file from before the 2026-09-06 WIDENING: the original two columns. */
   withLangRank?: boolean;
+  /**
+   * `false` builds a file from before the 2026-09-07 widening: `kind`, `rank` and
+   * `non_english` present, `year` and `votes` absent, and no `ix_lang_votes`.
+   *
+   * The state between the two widenings, and it is the one a running deployment is actually
+   * in for up to a day after this ships -- which is why it is a shape rather than a mock.
+   */
+  withLangYear?: boolean;
 }
+
+/**
+ * `title_lang` as an OLDER build wrote it, rebuilt from the current one rather than ALTERed.
+ *
+ * An `alter table drop column` would leave the file carrying today's indexes minus a column,
+ * which is a shape no release ever produced -- and a capability probe exercised against a
+ * file that could not exist proves nothing about the file that can. Both the columns and the
+ * index DDL are spelled out by the caller, because both of them are what the old build wrote.
+ *
+ * `INDEXES.origin` is deliberately NOT read here: it is today's list, and the whole point of
+ * these fixtures is to be yesterday's.
+ */
+function narrowLangTable(db: Database, columns: readonly string[], indexes: readonly string[]): void {
+  const names = columns.map((c) => c.split(/\s+/)[0]).join(", ");
+  db.run(`create table lang_old (${columns.join(", ")})`);
+  db.run(`insert into lang_old select ${names} from title_lang`);
+  db.run("drop table title_lang");
+  db.run("alter table lang_old rename to title_lang");
+  for (const sql of indexes) db.run(sql);
+}
+
+/** The two columns and two indexes `title_lang` shipped with until 2026-09-06. */
+const LANG_BEFORE_RANK = {
+  columns: ["title_rowid integer not null", "lang text not null"],
+  indexes: [
+    "create index ix_lang on title_lang(title_rowid, lang)",
+    "create index ix_lang_code on title_lang(lang, title_rowid)",
+  ],
+} as const;
+
+/** What it carried between the two widenings: the list columns, no `year` and no `votes`. */
+const LANG_BEFORE_YEAR = {
+  columns: [
+    "title_rowid integer not null",
+    "lang text not null",
+    "kind text not null default ''",
+    "rank real",
+    "non_english integer not null default 1",
+  ],
+  indexes: [
+    "create index ix_lang on title_lang(title_rowid, lang)",
+    "create index ix_lang_code on title_lang(lang, title_rowid)",
+    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english)",
+  ],
+} as const;
 
 /** A throwaway index carrying the real schema, the origin stage, and its indexes. */
 function indexOf(rows: Row[], opts: FixtureShape = {}): Database {
@@ -71,21 +124,10 @@ function indexOf(rows: Row[], opts: FixtureShape = {}): Database {
     rows.flatMap((r) => (r.langs ?? []).map((code) => ({ imdb: r.tconst, code }))),
     rows.flatMap((r) => (r.countries ?? []).map((code) => ({ imdb: r.tconst, code }))),
   );
-  if (opts.withLangRank === false) {
-    /*
-      A file built before the 2026-09-06 widening: `title_lang` with `title_rowid` and `lang`
-      and nothing else. Rebuilt rather than ALTERed away, so what the test opens is the table
-      the older build actually wrote -- an index with the columns present but the index
-      missing would exercise the capability flag without exercising the shape.
-    */
-    db.run("create table lang_v2 (title_rowid integer not null, lang text not null)");
-    db.run("insert into lang_v2 select title_rowid, lang from title_lang");
-    db.run("drop table title_lang");
-    db.run("alter table lang_v2 rename to title_lang");
-    for (const sql of INDEXES.origin) if (!sql.includes("ix_lang_rank")) db.run(sql);
-    return db;
-  }
-  for (const sql of INDEXES.origin) db.run(sql);
+  const older =
+    opts.withLangRank === false ? LANG_BEFORE_RANK : opts.withLangYear === false ? LANG_BEFORE_YEAR : null;
+  if (older) narrowLangTable(db, older.columns, older.indexes);
+  else for (const sql of INDEXES.origin) db.run(sql);
   return db;
 }
 
@@ -475,11 +517,16 @@ describe("a language LIST seeks ix_lang_rank rather than walking the rank order"
       scan. Together they say seek AND why. Moving `rank desc` in front of `lang` or `kind`
       would leave an index that cannot serve the order for a fixed language.
 
-      `non_english` sits AFTER `rank desc`, which is what admits English -- the one language
-      that constrains it not at all. Moving it back in front would restore an index that
-      serves every foreign-language list and cannot serve `?lang=en` at all: see `langListJoin`.
+      `non_english` and `year` sit AFTER the sort column, and for the same reason: `non_english`
+      is what admits English, the one language that constrains it not at all, and `year` is a
+      RANGE on a decade browse. Either one in front of `rank desc` leaves an index that cannot
+      serve the order -- see `langListJoin` and `INDEXES.origin`.
+
+      Both orders are pinned, because there is one index per order now and a widening applied
+      to only one of them is exactly the drift this asserts against.
     */
-    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, rank desc, non_english)");
+    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, rank desc, non_english, year)");
+    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, votes desc, non_english, year)");
   });
 
   test("English seeks the same index, with no `non_english` range to merge", () => {
@@ -536,9 +583,15 @@ describe("the two paths are the same list", () => {
     > at a 250 boundary. The fixture below carries a deliberate tie so the rule is pinned
     > rather than only written down.
   */
+  /*
+    `fast` turns on EVERY `title_lang` capability, not only `langRank`. They are one stage's
+    output and a real engine reads all three off the same file, so a `fast` that left `langYear`
+    off would quietly decline the join on any year-sliced shape -- and then compare the slow
+    path against itself, which is the vacuous test this block exists to avoid.
+  */
   const both = (db: Database, opts: Parameters<typeof browseIndex>[1]) => ({
-    slow: browseIndex(db, { ...opts, langRank: false }),
-    fast: browseIndex(db, { ...opts, langRank: true }),
+    slow: browseIndex(db, { ...opts, langRank: false, langYear: false, langVotes: false }),
+    fast: browseIndex(db, { ...opts, langRank: true, langYear: true, langVotes: true }),
   });
 
   for (const lang of ["hi", "ta", "sv", "pa", "ko"]) {
@@ -631,33 +684,55 @@ describe("the two paths are the same list", () => {
     expect(fast.total).toBe(slow.total);
   });
 
-  test("every filter that puts `title` back in the query hands English to the slow path", () => {
+  test("a GENRE still puts `title` back in the query and hands English to the slow path", () => {
     /*
-      One case per clause of `langIndexServesAlone`, because each was measured to be a real
-      regression on the joined path and none of them is a guess: with a genre 195.8 ms against
-      15.8, with a year 79.2 against 10.0, on a votes sort 156.2 against 29.0 -- all on a copy
-      of the real index, 2026-09-06, M1 Max. A decade is here for the same reason a year is.
+      The one clause of `langIndexServesAlone` that did NOT move on 2026-09-07, and it is a
+      decision rather than a gap -- a title has many genres, so denormalising one onto
+      `title_lang` is a cross product rather than a column. See `coveringCountTable`.
 
       WHICH BRANCH RAN IS ASSERTED, not just that the answers match -- an equivalence between
       two runs of the SAME query is the vacuous test the preference case below names. The
-      device is the one that block uses: on a file built before the widening the denormalised
-      predicate is a `no such column`, so forcing `langRank` on THROWS exactly when the join
-      was taken. The unfiltered shape throwing is half the assertion; the four filtered ones
-      not throwing is the other half.
+      device: on a file built before the 2026-09-06 widening the denormalised predicate is a
+      `no such column`, so forcing `langRank` on THROWS exactly when the join was taken. The
+      unfiltered shape throwing is half the assertion; the genre one not throwing is the other.
     */
     const old = indexOf(CORPUS, { withLangRank: false });
     const force = (opts: Parameters<typeof browseIndex>[1]) => () =>
       browseIndex(old, { ...opts, langRank: true });
     expect(force({ kind: "movie", lang: "en", sort: "rank", limit: 50 })).toThrow();
 
+    const genred = { kind: "movie", lang: "en", genre: "Crime", sort: "rank" as const, limit: 50 };
+    expect(force(genred)).not.toThrow();
     const db = indexOf(CORPUS);
-    for (const opts of [
-      { kind: "movie", lang: "en", genre: "Crime", sort: "rank" as const, limit: 50 },
-      { kind: "movie", lang: "en", year: 2015, sort: "rank" as const, limit: 50 },
-      { kind: "movie", lang: "en", decade: 2010, sort: "rank" as const, limit: 50 },
-      { kind: "movie", lang: "en", sort: "votes" as const, limit: 50 },
-    ]) {
-      expect(force(opts)).not.toThrow();
+    const { slow, fast } = both(db, genred);
+    expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+    expect(fast.total).toBe(slow.total);
+  });
+
+  test("a YEAR, a DECADE and a VOTES sort now take the join, and mean the same thing", () => {
+    /*
+      The three clauses that MOVED on 2026-09-07, once `year` and `votes` were denormalised
+      here. Each was a measured regression on the joined path before those columns existed --
+      79.2 ms against 10.0 with a year, 156.2 against 29.0 on a votes sort -- and each is now
+      the other way round: measured on a copy of the real 1,276,669-title index, M1 Max,
+      `?lang=en&kind=movie&decade=2010&sort=rank` 280.9 ms -> 3.2 and
+      `?lang=en&kind=movie&sort=votes` 28.1 -> 0.9.
+
+      Same device as the genre case above, one widening later: on a file carrying the list
+      columns but not `year` or `votes`, forcing the new capability on is a `no such column`,
+      so it THROWS exactly when the join was taken. Both halves are asserted -- forcing the
+      flag ON throws, leaving it OFF does not -- because only the pair rules out a flag that
+      does nothing.
+    */
+    const old = indexOf(CORPUS, { withLangYear: false });
+    const db = indexOf(CORPUS);
+    for (const [opts, caps] of [
+      [{ kind: "movie", lang: "en", year: 2015, sort: "rank" as const, limit: 50 }, { langYear: true }],
+      [{ kind: "movie", lang: "en", decade: 2010, sort: "rank" as const, limit: 50 }, { langYear: true }],
+      [{ kind: "movie", lang: "en", sort: "votes" as const, limit: 50 }, { langVotes: true }],
+    ] as const) {
+      expect(() => browseIndex(old, { ...opts, langRank: true, ...caps })).toThrow();
+      expect(() => browseIndex(old, { ...opts, langRank: true })).not.toThrow();
       const { slow, fast } = both(db, opts);
       expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
       expect(fast.total).toBe(slow.total);
@@ -730,6 +805,69 @@ describe("an index built BEFORE the widening", () => {
         const b = wide.browse({ kind: "movie", lang, limit: 50 });
         expect(a.rows.map((r) => r.tconst)).toEqual(b.rows.map((r) => r.tconst));
         expect(a.total).toBe(b.total);
+      }
+    } finally {
+      old.close();
+      wide.close();
+    }
+  });
+});
+
+describe("an index built between the two widenings -- list columns, no `year` and no `votes`", () => {
+  /*
+    The state a running deployment is actually in for up to a day after the 2026-09-07 stage
+    lands, and the one this card's capability pair exists for. Same contract as the block
+    above: SLOWER, never absent, never an exception.
+  */
+  test("hasLangRank stays true while hasLangYear and hasLangVotes go false", () => {
+    const engine = engineOn(CORPUS, { withLangYear: false });
+    try {
+      expect(engine.hasOrigin).toBe(true);
+      expect(engine.hasLangRank).toBe(true);
+      expect(engine.hasLangYear).toBe(false);
+      expect(engine.hasLangVotes).toBe(false);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("the COLUMN alone is not enough -- a narrow `ix_lang_rank` still reads false", () => {
+    /*
+      The half `hasLangRank` set the precedent for, and the one a column check alone would
+      miss: with `year` on the table but not in the index, the count falls out of the index
+      onto a table lookup per candidate row -- slower than the path it replaced, which is the
+      one way a capability probe can make things worse rather than better.
+    */
+    const db = indexOf(CORPUS, { withLangYear: false });
+    db.run("alter table title_lang add column year integer");
+    const path = db.filename;
+    db.close();
+    const engine = new SearchEngine(path, loadConfig());
+    try {
+      expect(engine.hasLangYear).toBe(false);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("every shape the new columns serve answers exactly what the widened file answers", () => {
+    const old = engineOn(CORPUS, { withLangYear: false });
+    const wide = engineOn(CORPUS);
+    try {
+      expect(wide.hasLangYear).toBe(true);
+      expect(wide.hasLangVotes).toBe(true);
+      for (const opts of [
+        { kind: "movie", lang: "en", year: 2015, sort: "rank" as const, limit: 50 },
+        { kind: "movie", lang: "en", decade: 2010, sort: "rank" as const, limit: 50 },
+        { kind: "movie", lang: "en", sort: "votes" as const, limit: 50 },
+        { kind: "movie", lang: "hi", decade: 2020, sort: "votes" as const, limit: 50 },
+        { kind: "movie", lang: "sv", sort: "votes" as const, limit: 50 },
+        { kind: "movie", lang: "hi", genre: "Crime", sort: "votes" as const, limit: 50 },
+      ]) {
+        const a = old.browse(opts);
+        const b = wide.browse(opts);
+        expect(b.rows.map((r) => r.tconst)).toEqual(a.rows.map((r) => r.tconst));
+        expect(b.total).toBe(a.total);
       }
     } finally {
       old.close();

@@ -39,7 +39,10 @@ export function init(c: PluginContext): PluginExports {
 - **`src/lib/facets.ts` is the vocabulary.** A facet core does not declare cannot be
   provided, and a facet's shape is core's, not the plugin's. Two plugins contributing
   `ratings` merge into one list because they both fit that shape. A key core does not
-  recognise costs that entry alone -- its siblings still register.
+  recognise costs that entry alone -- its siblings still register. One declared facet is
+  nonetheless closed to plugins: `availability` is `coreOnly` and that key is dropped at
+  load. The ruling and what would re-open it are beside `FACETS.availability` in that same
+  file; [`ADDONS.md`](../../ADDONS.md) says what it means for an addon author.
 - **Return a freshness class, never a duration.** A plugin knows what kind of fact it
   fetched; only core knows how settled this particular title is.
 - **`c.fetch` is the only way out.** It refuses any host not in `meta.hosts`, refuses

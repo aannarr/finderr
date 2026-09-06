@@ -16,6 +16,12 @@
  * > 2. When `plex.machineIdentifier` is configured, the account must additionally have
  * >    access to OUR server -- checked against `/api/v2/resources`. That is a SECOND gate,
  * >    never a substitute for the first.
+ * >
+ * > **One deployment may make gate two sufficient on its own**, and it is the only way past
+ * > gate one: `plex.openSignup`, OFF unless an operator sets it, and refused at boot
+ * > without a machine identifier -- because without one it would be exactly the mode
+ * > ruled out above. `plexOpenSignupActive` in `config.ts` owns that condition; nothing
+ * > here decides it, and the file it decides for is `server/auth-routes.ts`.
  *
  * Everything here takes `fetchImpl` so the tests never touch plex.tv, the same shape the
  * plugins use.
