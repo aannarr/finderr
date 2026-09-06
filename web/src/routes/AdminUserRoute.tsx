@@ -112,9 +112,16 @@ function Identity({ user }: Pick<AdminUserDetail, "user">) {
           <h1 className="truncate text-2xl font-semibold tracking-tight">{user.displayName}</h1>
           <UserBadges user={user} />
         </div>
+        {/*
+          The ROLE is only in this line for a member, because an administrator already wears
+          the badge beside their name -- printing "Administrator · Administrator" one line
+          apart was the first thing a browser showed. A member has no badge (a pill reading
+          "Member" on every ordinary account is noise), so the word has to live somewhere and
+          this is it.
+        */}
         <p className="mt-1 text-sm text-muted">
-          {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")}{" "}
-          · last seen {formatStamp(user.lastSeenAt, "never")}
+          {user.role === "admin" ? "" : "Member · "}joined {formatStamp(user.createdAt, "never")} · last seen{" "}
+          {formatStamp(user.lastSeenAt, "never")}
         </p>
         {/*
           Plex is a way IN as much as a way to watch, so it belongs in the identity line rather
