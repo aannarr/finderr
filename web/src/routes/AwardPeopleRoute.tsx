@@ -24,7 +24,6 @@ import { ToggleChip } from "../components/Chip";
 import { PeopleLeaderboard } from "../components/PeopleLeaderboard";
 import { useChipGroup } from "../components/RovingFocus";
 import { type AwardPeople, cachedAwardPeople, getAwardPeople } from "../lib/api";
-import { prettyCategory } from "../lib/awards-format";
 
 export function AwardPeopleRoute() {
   const { award } = useParams({ strict: false }) as { award: string };
@@ -98,7 +97,13 @@ export function AwardPeopleRoute() {
             ← {page.award.title}
           </Link>
         </p>
-        <h2 className="text-xl font-semibold tracking-tight">Most nominated</h2>
+        {/*
+          "People" rather than "Most nominated", which is the FIRST BOARD's heading and stood
+          here too -- one word repeated two lines apart reads as a rendering fault. The
+          back-link above already names the award, so this only has to say which of its screens
+          you are on.
+        */}
+        <h2 className="text-xl font-semibold tracking-tight">People</h2>
         <p className="mt-1 max-w-prose text-xs text-muted">
           The same nominations the {page.award.editionMany} are built from, counted by person instead of by{" "}
           {page.award.editionOne}. Every name goes to their own page.
@@ -126,11 +131,12 @@ export function AwardPeopleRoute() {
             <ToggleChip
               key={c.className}
               /*
-                The source's own word for the group, which is already readable -- unlike a
-                stored CATEGORY, which is shouted. `prettyCategory` runs anyway so a class
-                added upstream in the shouted style is not the one chip that yells.
+                The source's own word, VERBATIM, and deliberately not through
+                `prettyCategory` -- a class is already title case where a stored CATEGORY is
+                shouted, so the fold has nothing to fix and one thing to break: it rendered
+                `SciTech` as `Scitech`, which is the chip a reader would have to squint at.
               */
-              label={prettyCategory(c.className)}
+              label={c.className}
               count={c.people}
               active={page.className === c.className}
               onClick={() => showClass(c.className)}
