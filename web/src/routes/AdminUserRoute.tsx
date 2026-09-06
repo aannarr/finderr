@@ -21,6 +21,7 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useState } from "react";
 import { ConfirmAction } from "../components/ConfirmAction";
+import { QuotaField, ToggleSetting } from "../components/SettingControls";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
 import {
   type AdminUserDetail,
@@ -39,7 +40,7 @@ import {
 import { device } from "../lib/device";
 import { logOrder, seasonLine } from "../lib/request-log";
 import { formatAge, formatStamp } from "../lib/timestamps";
-import { LINK_BUTTON } from "../lib/ui";
+import { count } from "../lib/units";
 import { useAsyncData } from "../lib/use-async-data";
 
 /**
@@ -281,69 +282,39 @@ function Settings({ acting, quota }: { acting: Acting; quota: QuotaState }) {
  * Zero is offered and explained rather than being rejected as empty -- it is what exempts one
  * person from a site-wide limit, which is the whole reason the override is nullable AND
  * allowed to be zero.
+ *
+ * The FIELD is `QuotaField`, shared with the site-wide default on `/admin`. What is here is
+ * what makes this one about a PERSON: the draft starts at their effective limit, and clearing
+ * the override is offered only while they have one.
  */
 function QuotaSetting({ acting, quota }: { acting: Acting; quota: QuotaState }) {
   const { user, reload } = acting;
-  const [draft, setDraft] = useState(String(user.quotaPerDay ?? quota.siteLimitPerDay));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const save = async (quotaPerDay: number | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await patchUser(user.id, { quotaPerDay });
-      await reload();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    await patchUser(user.id, { quotaPerDay });
+    await reload();
   };
 
   return (
     <div className="mt-2">
-      <form
-        className="flex flex-wrap items-baseline gap-x-3 gap-y-1"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const n = Number(draft);
-          if (!Number.isInteger(n) || n < 0) {
-            setError("a whole number of titles, 0 or more");
-            return;
-          }
-          void save(n);
-        }}
+      <QuotaField
+        id="quota"
+        label="Titles a day"
+        value={user.quotaPerDay ?? quota.siteLimitPerDay}
+        save={save}
+        secondary={
+          user.quotaPerDay === null
+            ? undefined
+            : {
+                label: `Follow the site default (${quota.siteLimitPerDay === 0 ? "unlimited" : quota.siteLimitPerDay})`,
+                run: () => save(null),
+              }
+        }
       >
-        <label htmlFor="quota" className="text-sm">
-          Titles a day
-        </label>
-        <input
-          id="quota"
-          name="quota"
-          type="number"
-          min={0}
-          step={1}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          className="w-20 rounded-lg border border-line bg-surface px-2 py-1 text-sm tabular-nums"
-        />
-        <button type="submit" disabled={busy} className={LINK_BUTTON}>
-          {busy ? "Saving…" : "Save"}
-        </button>
-        {user.quotaPerDay !== null && (
-          <button type="button" disabled={busy} onClick={() => void save(null)} className={LINK_BUTTON}>
-            Follow the site default ({quota.siteLimitPerDay === 0 ? "unlimited" : quota.siteLimitPerDay})
-          </button>
-        )}
-        {error && <span className="text-xs text-danger">{error}</span>}
-      </form>
-      <p className="mt-1 text-xs text-muted">
         {user.quotaPerDay === null
           ? `Following the site default${quota.siteLimitPerDay === 0 ? ", which is unlimited" : ""}.`
           : `Their own allowance${user.quotaPerDay === 0 ? ", which is unlimited" : ""}, whatever the site does.`}{" "}
         0 means no limit. Administrators are never limited.
-      </p>
+      </QuotaField>
     </div>
   );
 }
@@ -357,36 +328,22 @@ function QuotaSetting({ acting, quota }: { acting: Acting; quota: QuotaState }) 
  */
 function AssistantSetting({ acting }: { acting: Acting }) {
   const { user, reload } = acting;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const toggle = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await patchUser(user.id, { assistantAllowed: !user.assistantAllowed });
-      await reload();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="mt-4">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm">Assistant</span>
-        <button type="button" disabled={busy} onClick={() => void toggle()} className={LINK_BUTTON}>
-          {busy ? "Saving…" : user.assistantAllowed ? "Turn off for this person" : "Turn on for this person"}
-        </button>
-        {error && <span className="text-xs text-danger">{error}</span>}
-      </div>
-      <p className="mt-1 text-xs text-muted">
+      <ToggleSetting
+        label="Assistant"
+        on={user.assistantAllowed}
+        action={(on) => (on ? "Turn off for this person" : "Turn on for this person")}
+        save={async (assistantAllowed) => {
+          await patchUser(user.id, { assistantAllowed });
+          await reload();
+        }}
+      >
         {user.assistantAllowed
           ? "They can ask the assistant, which sends their question to a model outside this house."
           : "Off. They see no assistant at all, as if this instance had none."}
-      </p>
+      </ToggleSetting>
     </div>
   );
 }
@@ -418,7 +375,7 @@ function Request({ request }: { request: AttributedRequest }) {
  * re-deriving the rule it was just handed the answer to.
  */
 function quotaLine(quota: QuotaState): string {
-  const used = `${quota.usedToday} title${quota.usedToday === 1 ? "" : "s"} today`;
+  const used = `${count(quota.usedToday, "title")} today`;
   return quota.applies
     ? `${used}, of ${quota.limitPerDay} allowed. The allowance is replenished ${formatAge(quota.resetsAt) ?? "at midnight UTC"}.`
     : `${used}. No daily limit applies to this account.`;
