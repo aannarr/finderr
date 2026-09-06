@@ -222,7 +222,11 @@ function WinnerHero({ row, label, onRequest }: { row: Title; label: string; onRe
           title={row}
           link
           eager
-          className="aspect-2/3 w-28 shrink-0 overflow-hidden rounded-lg bg-surface-2 sm:w-40"
+          // `self-start`: the frame is a direct child of a `flex` row whose other column is
+          // a label, a heading and a synopsis of unbounded length, so without it the poster
+          // stretches to that column's height and `aspect-2/3` loses. `Poster`'s `className`
+          // doc carries the whole reason and why the class is not forced inside it.
+          className="aspect-2/3 w-28 shrink-0 self-start overflow-hidden rounded-lg bg-surface-2 sm:w-40"
         />
 
         <div className="flex min-w-0 flex-1 flex-col">

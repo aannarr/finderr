@@ -83,7 +83,27 @@ export interface PosterProps {
   title?: PosterSubject | null;
   /** TMDB size hint. Match it to the rendered width -- a 40px row does not want `w342`. */
   size?: string;
-  /** The FRAME: sizing, rounding, border. The caller owns layout; this component owns fill. */
+  /**
+   * The FRAME: sizing, rounding, border. The caller owns layout; this component owns fill.
+   *
+   * > [!IMPORTANT] A poster that is a DIRECT FLEX CHILD needs `self-start` in this string
+   * > A flex item defaults to `align-items: stretch`, and that is the CROSS axis -- so a
+   * > frame in a `flex` row grows to the height of the tallest sibling and the caller's own
+   * > `aspect-2/3` loses. `shrink-0` is no defence; it governs the MAIN axis. Chrome drew
+   * > this component at 56x138 and at 56x190 on one screen before `RequestsRoute` carried
+   * > the class. Where the PARENT already sets `items-start` or `items-center` the row has
+   * > made the decision and the poster needs nothing -- `NominationRow` is that case.
+   * >
+   * > IT IS NOT FORCED ON INSIDE THE FRAME, and that is a ruling rather than an oversight.
+   * > `align-self` is layout and the line above says the caller owns layout; a future caller
+   * > that genuinely wants a poster to fill a row's height could not reliably override a
+   * > baked-in class either, because Tailwind sorts its own utilities and "later in the
+   * > attribute wins" is not true of them. So the class goes where the row is decided.
+   * >
+   * > `web/src/styles.test.ts` pins the call sites that need it. No rendered DOM can see
+   * > this: happy-dom computes no layout, so a test that measured the frame would be
+   * > comparing zero against zero.
+   */
   className?: string;
   fallback?: PosterFallback;
   /** Wrap the poster in a link to the title. Ignored when there is no row to link to. */
