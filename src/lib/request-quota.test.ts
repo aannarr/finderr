@@ -13,8 +13,11 @@ import { join } from "node:path";
 import { loadConfig } from "./config";
 import {
   isQuotaValue,
+  type QuotaState,
   quotaApplies,
   quotaLimitFor,
+  quotaStateFor,
+  quotaSummary,
   quotaVerdict,
   utcDayReset,
   utcDayStart,
@@ -267,5 +270,80 @@ describe("quotaVerdict", () => {
         allowed: true,
       });
     });
+  });
+});
+
+describe("quotaStateFor", () => {
+  const now = new Date("2026-09-06T18:00:00.000Z");
+
+  test("their own override wins over the site default", () => {
+    expect(quotaStateFor({ role: "user", override: 2, siteDefault: 5, usedToday: counter(1), now })).toEqual({
+      limitPerDay: 2,
+      usedToday: 1,
+      resetsAt: "2026-09-07T00:00:00.000Z",
+      applies: true,
+    });
+  });
+
+  test("no override follows the site", () => {
+    const state = quotaStateFor({ role: "user", override: null, siteDefault: 5, usedToday: counter(1), now });
+    expect(state.limitPerDay).toBe(5);
+  });
+
+  /*
+    NULL AND ZERO ARE DIFFERENT ANSWERS -- see `quotaLimitFor`. Zero is an explicit
+    "unlimited for this person" that survives the operator capping everybody else, so it must
+    not fall through to the site's 5.
+  */
+  test("an override of zero is a decision, not an absence", () => {
+    const state = quotaStateFor({ role: "user", override: 0, siteDefault: 5, usedToday: counter(1), now });
+    expect(state).toMatchObject({ limitPerDay: 0, applies: false });
+  });
+
+  /*
+    The count is read even for somebody the limit does not bind, unlike in `quotaVerdict`.
+    Here it is a fact a screen REPORTS -- an admin's own page says "4 today" beside "no
+    limit" -- and an exempt reader handed a zero would be shown a number that is false.
+  */
+  test("an exempt reader is still counted, because the count is shown rather than enforced", () => {
+    const used = counter(4);
+    const state = quotaStateFor({ role: "admin", override: null, siteDefault: 5, usedToday: used, now });
+
+    expect(state).toMatchObject({ applies: false, usedToday: 4 });
+    expect(used.calls).toBe(1);
+  });
+});
+
+describe("quotaSummary", () => {
+  /** Stands in for `formatRemaining`, which lives with the request verdicts. */
+  const remaining = (ms: number) => (ms > 0 ? `${Math.round(ms / 3_600_000)} h` : null);
+  const state = (over: Partial<QuotaState> = {}): QuotaState => ({
+    limitPerDay: 5,
+    usedToday: 3,
+    resetsAt: "2026-09-07T00:00:00.000Z",
+    applies: true,
+    ...over,
+  });
+  const at = Date.parse("2026-09-06T18:00:00.000Z");
+
+  test("says what has been spent and when it comes back", () => {
+    expect(quotaSummary(state(), at, remaining)).toBe("3 of 5 today · resets in 6 h");
+  });
+
+  /*
+    A header reading "0 of 0 today" at an admin is worse than one saying nothing, and
+    "unlimited" is a fact about the configuration nobody reading their own requests needs.
+  */
+  test("says nothing at all when the limit does not bind this reader", () => {
+    expect(quotaSummary(state({ applies: false }), at, remaining)).toBeNull();
+  });
+
+  /*
+    A reset already in the past is a clock that has drifted or a page left open through
+    midnight. "resets in -1 h" reads as broken, so the count is kept and the clause dropped --
+    the same call `formatRemaining` makes for an expired ETA.
+  */
+  test("an elapsed reset drops the clause rather than counting up", () => {
+    expect(quotaSummary(state(), Date.parse("2026-09-07T01:00:00.000Z"), remaining)).toBe("3 of 5 today");
   });
 });

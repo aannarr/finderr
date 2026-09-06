@@ -7,6 +7,7 @@
  */
 
 import { VERDICT_COPY } from "../../../src/lib/request-diagnostics";
+import { decodeSeasons } from "../../../src/lib/seasons";
 import type { MediaRequest } from "./api";
 import { summariseSeasons } from "./season-select";
 
@@ -20,12 +21,11 @@ import { summariseSeasons } from "./season-select";
  * and a stored list that parses to no numbers at all.
  */
 export function seasonLine(request: Pick<MediaRequest, "seasons">): string | null {
-  if (!request.seasons) return null;
-  const numbers = request.seasons
-    .split(",")
-    .map((s) => Number.parseInt(s, 10))
-    .filter((n) => Number.isFinite(n));
-  return numbers.length > 0 ? summariseSeasons(numbers) : null;
+  // `decodeSeasons` is the one owner of how a selection is spelled in that column, and it
+  // already answers null for all three of the cases that render as nothing. A `split(",")`
+  // here was a fourth copy of a rule that file exists to hold once.
+  const numbers = decodeSeasons(request.seasons);
+  return numbers ? summariseSeasons(numbers) : null;
 }
 
 /**
@@ -91,6 +91,90 @@ export function logOrder<T extends Pick<MediaRequest, "id" | "created_at">>(rows
 export function newsFirst(requests: readonly MediaRequest[], news: ReadonlySet<string>): MediaRequest[] {
   const marked = requests.map((r) => (news.has(r.tconst) ? { ...r, isNew: true } : r));
   return [...marked.filter((r) => r.isNew), ...marked.filter((r) => !r.isNew)];
+}
+
+/**
+ * The four buckets `/requests` reads as a dashboard rather than as a receipt.
+ *
+ * THREE OF THEM ARE `VerdictTone` UNDER ANOTHER NAME, and that is deliberate: `working`,
+ * `done` and `dead_end` already exist as the single owner of how a verdict feels, and
+ * listing verdicts here would be a second copy free to disagree the next time one is added.
+ * The fourth is a SPLIT inside `working` on one predicate -- is a release actually coming
+ * down -- rather than a fifth vocabulary.
+ */
+const BUCKET_ORDER = ["downloading", "waiting", "arrived", "failed"] as const;
+
+export type RequestBucket = (typeof BUCKET_ORDER)[number];
+
+/**
+ * What each bucket is called on screen.
+ *
+ * The reading order is `BUCKET_ORDER` and not this object's key order: a `Record` that
+ * happened to be iterated would be an ordering nobody declared, one reformat away from
+ * putting "Needs attention" first. The type is derived from the array, so a bucket added to
+ * one and not the other is a compile error rather than a heading that never draws.
+ */
+export const BUCKET_LABEL: Record<RequestBucket, string> = {
+  downloading: "Downloading",
+  waiting: "Waiting",
+  arrived: "Arrived",
+  failed: "Needs attention",
+};
+
+/** One bucket with its rows. Empty buckets are dropped, so a heading always has rows under it. */
+export interface RequestGroup {
+  bucket: RequestBucket;
+  rows: MediaRequest[];
+}
+
+/**
+ * Which bucket one request belongs in.
+ *
+ * A row with NO verdict lands in `waiting`, which is the honest reading: the server sends
+ * null when it cannot say anything about a request, and "we have not got an answer yet" is
+ * waiting rather than failure. It is not a state a `/requests` row reaches today -- every
+ * row there has a stored request behind it -- but the type allows it and a silent `undefined`
+ * bucket would drop the row off the page entirely.
+ */
+function bucketOf(request: MediaRequest): RequestBucket {
+  if (!request.requestVerdict) return "waiting";
+  const tone = VERDICT_COPY[request.requestVerdict].tone;
+  if (tone === "done") return "arrived";
+  if (tone === "dead_end") return "failed";
+  // The one split this file makes for itself: a release is either coming down or it is not,
+  // and a reader watching a bar wants those apart. `requestProgress` is non-null exactly
+  // while the arr has something in its queue for this title.
+  return request.requestProgress === null ? "waiting" : "downloading";
+}
+
+/**
+ * The list partitioned into its four states, in the order a reader cares about them.
+ *
+ * ONE PASS AND ONE PREDICATE, rather than a `.filter()` per bucket in the route: four filters
+ * over one array is four chances to disagree about where a verdict lands, and the fourth is
+ * always the one that gets the new state added to it last. Pure and beside the two orderings
+ * for the same reason they are here -- these are decisions about DATA, and a test for them
+ * should not have to render anything.
+ *
+ * ORDER WITHIN A BUCKET IS THE CALLER'S and is preserved. `/requests` hands rows that have
+ * already been through `newsFirst`, so a newly-arrived title stays at the top of `Arrived`.
+ *
+ * An EMPTY bucket is dropped rather than returned with no rows. A heading over nothing is the
+ * page claiming a state it is not in -- "Needs attention (0)" reads as a warning at a glance,
+ * and the whole point of the grouping is that a glance is enough.
+ */
+export function groupByState(requests: readonly MediaRequest[]): RequestGroup[] {
+  const byBucket = new Map<RequestBucket, MediaRequest[]>();
+  for (const request of requests) {
+    const bucket = bucketOf(request);
+    const rows = byBucket.get(bucket);
+    if (rows) rows.push(request);
+    else byBucket.set(bucket, [request]);
+  }
+
+  return BUCKET_ORDER.map((bucket) => ({ bucket, rows: byBucket.get(bucket) ?? [] })).filter(
+    (group) => group.rows.length > 0,
+  );
 }
 
 /**

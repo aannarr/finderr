@@ -14,7 +14,7 @@ import type { ArrLink } from "../../../src/lib/arr-links";
 import type { AwardMark } from "../../../src/lib/award-marks";
 import { AWARDS } from "../../../src/lib/award-registry";
 import type { CollectionSummary } from "../../../src/lib/collections";
-import type { EpisodeState } from "../../../src/lib/episodes";
+import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
@@ -23,6 +23,7 @@ import type { PersonLinks } from "../../../src/lib/people";
 import type { PersonLeaderboard } from "../../../src/lib/people-leaderboard";
 import type { PlexLinks } from "../../../src/lib/plex";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
+import type { QuotaState } from "../../../src/lib/request-quota";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
 import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
@@ -254,6 +255,20 @@ export interface MediaRequest extends RequestStateView {
    * the next Plex sync, and offering a link there would be offering a dead one.
    */
   plex: PlexLinks | null;
+  /**
+   * Our own proxy path for the poster, or null for a title we have looked up and found no
+   * art for. Resolved by `posterPath` on the server -- the same rule a decorated title card
+   * carries, so `Poster` draws a request row and a grid card through one component.
+   */
+  posterUrl: string | null;
+  /**
+   * How much of each REQUESTED season has arrived. Empty for a film, and empty for a series
+   * Sonarr does not mirror yet.
+   *
+   * Not to be confused with `seasons` above, which is what was ASKED for. One is the question
+   * and one is the answer.
+   */
+  seasonProgress: SeasonProgress[];
 }
 
 /** One selectable quality profile, as an arr reports it. */
@@ -1436,6 +1451,15 @@ export interface RequestsResponse {
    * for the two numbers to describe different moments.
    */
   unseen: number;
+  /**
+   * Where the CALLER stands against the daily request limit, or null for an anonymous one --
+   * who has no standing rather than a standing of zero.
+   *
+   * The effective limit, resolved from this person's override and the site default by
+   * `quotaStateFor`. A header printing the site's number at somebody who has been given their
+   * own would be confidently wrong, which is worse than printing none.
+   */
+  quota: QuotaState | null;
 }
 
 /**

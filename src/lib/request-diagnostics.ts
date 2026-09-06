@@ -249,7 +249,10 @@ export function requestStateOf(
  *
  * - a download is more trustworthy when it says WHAT was taken, and the quality name is the
  *   one arr string that is safe to forward (see `ArrHistoryRecord`);
- * - "no releases found" is a claim, and how many indexers were asked is what backs it.
+ * - "no releases found" is a claim, and how many indexers were asked is what backs it;
+ * - "nothing accepted" is a stronger claim still, and the release count is what separates it
+ *   from the one above -- "asked 3 indexers, saw 12 releases" is the sentence that sends
+ *   somebody to their quality profile rather than back to wait another day.
  *
  * A COUNT of indexers and never their NAMES. finderr is internet-facing, and the names of
  * somebody's private trackers are the same class of fact as the root folder paths
@@ -257,7 +260,7 @@ export function requestStateOf(
  */
 export function evidenceLine(
   verdict: RequestVerdict,
-  diagnostic: Pick<RequestDiagnostic, "grabbed_quality" | "indexers_searched"> | null,
+  diagnostic: Pick<RequestDiagnostic, "grabbed_quality" | "indexers_searched" | "releases_seen"> | null,
 ): string | null {
   if (!diagnostic) return null;
   if (verdict === "downloading" || verdict === "imported") {
@@ -266,7 +269,18 @@ export function evidenceLine(
   if (verdict === "no_releases" || verdict === "nothing_accepted") {
     const n = diagnostic.indexers_searched ?? 0;
     if (n === 0) return null;
-    return `Asked ${n} ${n === 1 ? "indexer" : "indexers"}`;
+    const asked = `Asked ${n} ${n === 1 ? "indexer" : "indexers"}`;
+    /*
+      The release count only where it is EVIDENCE and never where it is a shrug.
+
+      `nothing_accepted` is reached only from a positive count, so naming it explains the
+      verdict. On `no_releases` the count is zero or unknown by construction, and "saw 0
+      releases" would add a number to a sentence that has already said there are none. Null
+      is not zero here -- see `RequestDiagnostic`, where every field means "we do not know".
+    */
+    const seen = diagnostic.releases_seen ?? 0;
+    if (verdict !== "nothing_accepted" || seen <= 0) return asked;
+    return `${asked}, saw ${seen} ${seen === 1 ? "release" : "releases"}`;
   }
   return null;
 }

@@ -1015,6 +1015,34 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     return new Map(rows.map((r) => [`${r.season}:${r.episode}`, r]));
   }
 
+  /**
+   * The episodes we mirror for SEVERAL series at once, keyed by imdb id.
+   *
+   * ONE query for a whole page of request rows, rather than `episodeMap` per row. The
+   * request list is served on a route the shell polls every eight seconds, so a per-row
+   * query there is 200 statements every eight seconds for as long as anybody has a tab open
+   * -- the same reason `requestDiagnosticMap` and `plexMap` exist beside their single-row
+   * twins. `imdb_id` leads the primary key, so the `in` is an index scan per id and not a
+   * table walk.
+   *
+   * Series with nothing mirrored are simply absent from the map: a caller asking about a
+   * film gets no entry, which is the honest answer and not an empty list pretending to be one.
+   */
+  episodesForSeries(imdbIds: readonly string[]): Map<string, EpisodeEntry[]> {
+    const byId = new Map<string, EpisodeEntry[]>();
+    if (imdbIds.length === 0) return byId;
+
+    const rows = this.db
+      .query(`select * from episode where imdb_id in (${imdbIds.map(() => "?").join(",")})`)
+      .all(...imdbIds) as EpisodeEntry[];
+    for (const row of rows) {
+      const existing = byId.get(row.imdb_id);
+      if (existing) existing.push(row);
+      else byId.set(row.imdb_id, [row]);
+    }
+    return byId;
+  }
+
   /** One episode, or null when Sonarr has never listed it for us. */
   getEpisode(imdbId: string, season: number, episode: number): EpisodeEntry | null {
     return (

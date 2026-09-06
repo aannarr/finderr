@@ -5,6 +5,7 @@ import {
   episodeStanding,
   hasMissingEpisodes,
   missingEpisodeIdsIn,
+  seasonProgress,
   seasonsWithMissing,
   todayUtc,
 } from "./episodes";
@@ -208,5 +209,83 @@ describe("hasMissingEpisodes", () => {
 
   test("a series Sonarr does not hold has nothing to say", () => {
     expect(hasMissingEpisodes([], TODAY)).toBe(false);
+  });
+});
+
+describe("seasonProgress", () => {
+  const episode = (over: Partial<EpisodeState> & { episode: number }): EpisodeState => ({
+    season: 1,
+    arrEpisodeId: over.episode * 10,
+    hasFile: false,
+    monitored: true,
+    airDate: "2025-05-28",
+    ...over,
+  });
+
+  test("counts held against AIRED, one row per season, ascending", () => {
+    const rows = seasonProgress(
+      [
+        episode({ season: 2, episode: 1, hasFile: true }),
+        episode({ season: 1, episode: 1, hasFile: true }),
+        episode({ season: 1, episode: 2 }),
+      ],
+      TODAY,
+    );
+
+    expect(rows).toEqual([
+      { season: 1, held: 1, aired: 2 },
+      { season: 2, held: 1, aired: 1 },
+    ]);
+  });
+
+  /*
+    HELD OF AIRED AND NEVER HELD OF EXISTS. A season reading "2 of 10" in October because
+    eight episodes are still to broadcast describes a download that is going fine as one that
+    has stalled -- the same reason `seasonGap` treats an unaired episode as nothing to say.
+  */
+  test("an unaired episode is not something to be short of", () => {
+    const rows = seasonProgress(
+      [
+        episode({ episode: 1, hasFile: true }),
+        episode({ episode: 2, hasFile: true }),
+        episode({ episode: 3, airDate: "2026-12-01" }),
+        episode({ episode: 4, airDate: null }),
+      ],
+      TODAY,
+    );
+
+    expect(rows).toEqual([{ season: 1, held: 2, aired: 2 }]);
+  });
+
+  test("a season with nothing aired yet is no row at all, not a row of zeroes", () => {
+    expect(seasonProgress([episode({ episode: 1, airDate: "2026-12-01" })], TODAY)).toEqual([]);
+  });
+
+  /*
+    A reader who asked for seasons 3 and 4 of a nine-season show is owed two rows. The other
+    seven are somebody else's library, not this request's progress.
+  */
+  test("`only` narrows to the seasons the request actually named", () => {
+    const states = [
+      episode({ season: 1, episode: 1, hasFile: true }),
+      episode({ season: 3, episode: 1, hasFile: true }),
+      episode({ season: 4, episode: 1 }),
+    ];
+
+    expect(seasonProgress(states, TODAY, [3, 4]).map((r) => r.season)).toEqual([3, 4]);
+  });
+
+  test("specials are excluded from a whole-series ask and kept when they were asked for", () => {
+    const states = [
+      episode({ season: 0, episode: 1, hasFile: true }),
+      episode({ season: 1, episode: 1, hasFile: true }),
+    ];
+
+    expect(seasonProgress(states, TODAY).map((r) => r.season)).toEqual([1]);
+    expect(seasonProgress(states, TODAY, [0]).map((r) => r.season)).toEqual([0]);
+  });
+
+  test("a film, or a series Sonarr does not mirror, has nothing to break down", () => {
+    expect(seasonProgress([], TODAY)).toEqual([]);
   });
 });

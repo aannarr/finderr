@@ -163,3 +163,68 @@ export function seasonsWithMissing(
 export function hasMissingEpisodes(states: readonly EpisodeState[], today: string): boolean {
   return states.some((s) => s.season !== SPECIALS_SEASON && airedWithoutFile(episodeStanding(s, today)));
 }
+
+/**
+ * How much of ONE season we hold, as the two numbers a reader would say out loud.
+ *
+ * `held of aired`, never `held of exists`: an episode that has not aired is not something
+ * anybody is short of, and a season reading "2 of 10" in October because eight episodes are
+ * still to broadcast would describe a download that is going fine as one that has stalled.
+ * The same reason `seasonGap` treats an unaired episode as nothing to say.
+ */
+export interface SeasonProgress {
+  season: number;
+  /** Aired episodes we hold a file for. */
+  held: number;
+  /** Aired episodes, held or not. Never zero -- a season with none is not reported at all. */
+  aired: number;
+}
+
+/**
+ * A series broken into per-season progress, ascending, from Sonarr's mirror alone.
+ *
+ * The one fact `/requests` was missing for a series: a show downloading 4 of 10 across two
+ * seasons had one text line saying "Seasons 1-2" and no way to see WHICH of the two was
+ * moving. This is that line expanded, and it is derived rather than stored -- `request_diagnostic`
+ * is keyed on `tconst` alone and carries one bar for the whole ask, so per-season progress has
+ * no column and needs none.
+ *
+ * > [!IMPORTANT] `episodeStanding` decides every count here, exactly as it does on the title page
+ * > This is the same rule `seasonGap` rolls up, at a coarser grain and off a narrower input:
+ * > `seasonGap` joins Sonarr's mirror against the `episodes` facet because it draws season
+ * > names and air dates, and this needs neither -- so it reads the mirror and nothing else,
+ * > which is what makes it affordable on a list of request rows. Two summaries of one series
+ * > can still never disagree, because both count through `episodeStanding`.
+ *
+ * `only` narrows to the seasons the request actually named. A reader who asked for seasons 3
+ * and 4 of a nine-season show is owed two rows, not nine -- the other seven are somebody
+ * else's library, not this request's progress. Omit it for a request made for the whole show.
+ *
+ * SEASON 0 IS EXCLUDED unless it was explicitly asked for, for `seriesGap`'s stated reason:
+ * counting 55 behind-the-scenes clips as content makes a complete series look short. A reader
+ * who ticked specials on purpose gets the row, because then it is what they asked for.
+ *
+ * A season with nothing aired yet contributes NO ROW rather than a `0 of 0`: there is nothing
+ * to be short of, and a row of zeroes reads as a failure rather than as a season still to come.
+ */
+export function seasonProgress(
+  states: readonly EpisodeState[],
+  today: string,
+  only?: readonly number[] | null,
+): SeasonProgress[] {
+  const wanted = only && only.length > 0 ? new Set(only) : null;
+  const bySeason = new Map<number, SeasonProgress>();
+
+  for (const state of states) {
+    if (wanted ? !wanted.has(state.season) : state.season === SPECIALS_SEASON) continue;
+    const standing = episodeStanding(state, today);
+    if (standing === "unknown") continue;
+
+    const row = bySeason.get(state.season) ?? { season: state.season, held: 0, aired: 0 };
+    row.aired += 1;
+    if (standing === "owned") row.held += 1;
+    bySeason.set(state.season, row);
+  }
+
+  return [...bySeason.values()].sort((a, b) => a.season - b.season);
+}

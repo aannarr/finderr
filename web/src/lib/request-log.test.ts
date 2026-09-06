@@ -14,7 +14,9 @@ import { describe, expect, test } from "bun:test";
 import type { MediaRequest } from "./api";
 import {
   attributionVisible,
+  BUCKET_LABEL,
   byRequester,
+  groupByState,
   hasWorkInFlight,
   logOrder,
   newsFirst,
@@ -216,5 +218,92 @@ describe("whether the page has anything to watch", () => {
 
   test("an empty list has nothing to watch", () => {
     expect(hasWorkInFlight([])).toBe(false);
+  });
+});
+
+describe("grouping by state", () => {
+  const grouped = (rows: Partial<MediaRequest>[]) =>
+    groupByState(rows.map((over, i) => row({ id: i + 1, created_at: "2026-09-05T00:00:00.000Z", ...over })));
+
+  /*
+    THE FOURTH BUCKET IS A SPLIT INSIDE `working`, on one predicate: has the arr actually got
+    something coming down. Three tones plus that split is four states, and the split is the
+    difference between a bar a reader can watch and a wait they can only refresh.
+  */
+  test("waiting and downloading are the same tone told apart by the bar", () => {
+    const groups = grouped([
+      { requestVerdict: "searching", requestProgress: null },
+      { requestVerdict: "downloading", requestProgress: 0.4 },
+    ]);
+
+    expect(groups.map((g) => g.bucket)).toEqual(["downloading", "waiting"]);
+  });
+
+  test("both dead ends land together, whichever one it is", () => {
+    const groups = grouped([{ requestVerdict: "no_releases" }, { requestVerdict: "failed" }]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.bucket).toBe("failed");
+    expect(groups[0]?.rows).toHaveLength(2);
+  });
+
+  test("an arrived request is its own bucket", () => {
+    expect(grouped([{ requestVerdict: "imported" }])[0]?.bucket).toBe("arrived");
+  });
+
+  /*
+    A heading over nothing is the page claiming a state it is not in -- "Needs attention (0)"
+    reads as a warning at a glance, which is the one thing the grouping exists to make cheap.
+  */
+  test("empty buckets are dropped rather than drawn with a zero", () => {
+    expect(grouped([{ requestVerdict: "imported" }]).map((g) => g.bucket)).toEqual(["arrived"]);
+    expect(grouped([])).toEqual([]);
+  });
+
+  test("the order is downloading, waiting, arrived, failed -- whatever order the rows arrive in", () => {
+    const groups = grouped([
+      { requestVerdict: "failed" },
+      { requestVerdict: "imported" },
+      { requestVerdict: "queued" },
+      { requestVerdict: "downloading", requestProgress: 0.1 },
+    ]);
+
+    expect(groups.map((g) => g.bucket)).toEqual(["downloading", "waiting", "arrived", "failed"]);
+  });
+
+  /*
+    `/requests` hands rows that have already been through `newsFirst`, so a newly-arrived
+    title must stay at the top of its group. A partition that sorted would undo that.
+  */
+  test("the caller's order survives inside a bucket", () => {
+    const groups = grouped([
+      { tconst: "tt-second", requestVerdict: "imported" },
+      { tconst: "tt-first", requestVerdict: "imported" },
+    ]);
+
+    expect(groups[0]?.rows.map((r) => r.tconst)).toEqual(["tt-second", "tt-first"]);
+  });
+
+  /*
+    A row the server could say nothing about is WAITING, not dropped. It is not a state
+    `/requests` reaches today -- every row there has a stored request behind it -- but a
+    bucket function that returned undefined would take the row off the page entirely.
+  */
+  test("a row with no verdict is waiting rather than missing", () => {
+    const groups = grouped([{ requestVerdict: null }]);
+
+    expect(groups.map((g) => g.bucket)).toEqual(["waiting"]);
+    expect(groups[0]?.rows).toHaveLength(1);
+  });
+
+  test("every bucket has a label, so a heading can never draw a raw enum", () => {
+    for (const { bucket } of grouped([
+      { requestVerdict: "downloading", requestProgress: 0.5 },
+      { requestVerdict: "queued" },
+      { requestVerdict: "imported" },
+      { requestVerdict: "failed" },
+    ])) {
+      expect(BUCKET_LABEL[bucket]).toBeTruthy();
+    }
   });
 });
