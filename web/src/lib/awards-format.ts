@@ -4,8 +4,12 @@
  * Here rather than in a route for the same reason `facet-panes.ts` exists: four components
  * across two routes and two panes print an ordinal and a category name, and a rule that
  * lives in a route file has to be imported BY components, which points the dependency the
- * wrong way. No React, no DOM, no fetch -- so they are tested directly.
+ * wrong way. No React, no DOM, no fetch -- so they are tested directly. The award registry is
+ * the one import, and it is data and two lookups by its own contract, so it does not change
+ * that.
  */
+
+import { declaredCategoryLabel } from "../../../src/lib/award-registry";
 
 /** `98` -> `98th`. English ordinals, irregular exactly where you expect. */
 export function ordinal(n: number): string {
@@ -81,9 +85,18 @@ export function ceremonyYear(year: string): number | null {
  * reordered, so a category is still recognisably the one the ceremony page prints in full
  * and a reader can match the two by eye. The apostrophe is inside the word class on
  * purpose: without it `WOMEN'S` becomes `Women'S`.
+ *
+ * A registry-declared spelling wins where there is one, because title case cannot always get
+ * there. `PALME D'OR` is the case that proves it: `Palme d'Or` needs the `d` lower and the
+ * `Or` upper, and the rule that would do that is the same rule that breaks `WOMEN'S`. Nothing
+ * in either string tells them apart, so the answer comes from `AwardSingleCategory` rather
+ * than from a regex that would have to be wrong about one of them.
  */
 export function prettyCategory(name: string): string {
-  return name.replace(/[A-Za-z][A-Za-z']*/g, (word) => word[0] + word.slice(1).toLowerCase());
+  return (
+    declaredCategoryLabel(name) ??
+    name.replace(/[A-Za-z][A-Za-z']*/g, (word) => word[0] + word.slice(1).toLowerCase())
+  );
 }
 
 /**

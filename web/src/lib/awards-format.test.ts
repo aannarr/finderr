@@ -113,6 +113,23 @@ describe("prettyCategory", () => {
     expect(prettyCategory("SHORT SUBJECT (Cartoon)")).toBe("Short Subject (Cartoon)");
     expect(prettyCategory("SOUND RECORDING - 1935")).toBe("Sound Recording - 1935");
   });
+
+  test("a registry-declared spelling beats title case", () => {
+    // The regression. Title case gives `Palme D'or`, because `D'OR` is one word to the rule
+    // that keeps `WOMEN'S` from becoming `Women'S`, and the two cases want opposite things
+    // from the letter after the apostrophe. So the registry says, and every one of the four
+    // components that print a stored category gets the same answer.
+    expect(prettyCategory("PALME D'OR")).toBe("Palme d'Or");
+    expect(prettyCategory("WOMEN'S PICTURE")).toBe("Women's Picture");
+  });
+
+  test("a declared spelling never reorders the words", () => {
+    // Sundance is the entry where `anchorLabel` and the category label genuinely differ --
+    // `U.S. Dramatic Grand Jury Prize` reads well in a sentence and would be wrong as the
+    // heading over rows filed under `GRAND JURY PRIZE (U.S. DRAMATIC)`. Pinned here because
+    // the cheap version of this fix prints `anchorLabel` and silently renames this one.
+    expect(prettyCategory("GRAND JURY PRIZE (U.S. DRAMATIC)")).toBe("Grand Jury Prize (U.S. Dramatic)");
+  });
 });
 
 /**
