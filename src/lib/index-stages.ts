@@ -275,8 +275,16 @@ export const INDEX_STAGES = {
    * `INDEXES.origin`. The data is unchanged, so the bump buys nothing but the index; it is
    * still a bump, because an index built at v1 would draw those lists at nearly twice the
    * cost and nothing on screen would say so.
+   *
+   * **v3 (2026-09-06) widens `title_lang` with `kind`, `rank` and `non_english`, and adds
+   * `ix_lang_rank`.** This one has to be a bump for BOTH reasons the file distinguishes: the
+   * output changes shape, and the answers do not. An index at v2 has every language list
+   * correct and drawn down the walk-the-rank-order path -- which is the whole reason there
+   * were only twelve of them -- so without the bump the widened catalogue would ship against
+   * a file that cannot afford it, green health and all. `hasLangRank` is what keeps that file
+   * serving in the meantime.
    */
-  origin: () => JSON.stringify({ v: 2 }),
+  origin: () => JSON.stringify({ v: 3 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

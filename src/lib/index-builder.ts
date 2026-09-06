@@ -567,8 +567,10 @@ export const INDEXES = {
    * > having no filter at all. Both index shapes are 17.3 MB, so this is a swap and not a
    * > trade. `browseSql` writes the `exists` form; the two must change together.
    *
-   * COVERING by construction: the table has exactly these two columns, so the predicate
-   * never touches a table page.
+   * COVERING for the predicate that reads it: `exists (... where title_rowid = ? and lang in
+   * (...))` names both of its columns, so it never touches a table page. (The table itself
+   * carries three more columns since the widening below -- this index does not, and does not
+   * need to.)
    *
    * > [!IMPORTANT] `ix_lang_code` LEADS WITH `lang`, and it is an ADDITION rather than the
    * > mistake above coming back
@@ -586,10 +588,29 @@ export const INDEXES = {
    * > its plan stayed `SEARCH t USING INDEX ix_rank` with a correlated covering seek, and it
    * > measured 1.9 ms rather than the 1,014 ms of the shape that was withdrawn. 16.5 MB on
    * > disk, which this project trades for render-path time without hesitating.
+   *
+   * > [!IMPORTANT] `ix_lang_rank` is the THIRD, and it is the one a language LIST actually wants
+   * > `ix_lang_code` made the `not exists` half of a list affordable, but the query still
+   * > DROVE from `title` in rank order -- so it walked down the whole ranked corpus until 250
+   * > films of the language had accumulated, and the languages with the THINNEST catalogues
+   * > were the expensive ones. That is the wrong way round, and it is what capped the shipped
+   * > list at twelve.
+   * >
+   * > With `kind`, `rank` and `non_english` denormalised onto `title_lang` (see
+   * > `ORIGIN_SCHEMA`), the query drives from THIS index instead: the three equality columns
+   * > fix a range and `rank desc` reads it in output order, so a list is one covering seek that
+   * > stops at 250 rows whether the language has four thousand films or four hundred. It is the
+   * > same shape `ix_tg_rank` gives a genre, arrived at for the same reason.
+   * >
+   * > `non_english` is IN THE INDEX rather than in a partial `where` clause, because the
+   * > predicate a browse writes binds `lang` as a parameter -- SQLite cannot prove a bound
+   * > parameter satisfies a partial index's condition, so a partial index on `lang` would
+   * > simply never be used. The measurements are in `LIST_LANGUAGES`.
    */
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",
     "create index ix_lang_code on title_lang(lang, title_rowid)",
+    "create index ix_lang_rank on title_lang(lang, kind, non_english, rank desc)",
   ],
 } satisfies Record<string, readonly string[]>;
 

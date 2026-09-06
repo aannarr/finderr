@@ -499,10 +499,26 @@ export const ORIGIN_SCHEMA = `
 --
 -- Every title has at least one row here. A title with no known language gets the empty
 -- string; see UNKNOWN_LANG for why that is a value rather than an absence.
+--
+-- kind, rank and non_english are DENORMALISED from title for the same reason title_genre
+-- carries kind, rank and votes: a LANGUAGE LIST is "the 250 highest-ranked films in this
+-- language and not also in English", and with those three here that is one covering seek
+-- into ix_lang_rank. Reaching through to title instead makes it a walk DOWN the whole rank
+-- order until 250 films of the language have accumulated -- so the languages with the
+-- THINNEST catalogues cost the most, which is the wrong way round and is what kept the
+-- shipped list to twelve. See LIST_LANGUAGES and INDEXES.origin for the measurements.
+--
+-- non_english is a property of the TITLE copied onto each of its rows, not of the row:
+-- every row of a title carrying an en row is 0, including that en row itself. It defaults
+-- to 1 so the backfill below -- titles no source has a language for -- is correct without
+-- a second pass, and loadOrigin() sets 0 for the English ones.
 -- (No backticks in this string: it is a template literal.)
 create table title_lang (
   title_rowid integer not null,
-  lang        text not null
+  lang        text not null,
+  kind        text not null default '',
+  rank        real,
+  non_english integer not null default 1
 );
 `;
 
@@ -585,13 +601,36 @@ export function loadOrigin(
 
   // Scans `lang_in` and seeks `title.tconst`'s unique index, which is the right way round:
   // the source is a quarter the size of the title table.
+  //
+  // `kind` and `rank` are copied here rather than by a later UPDATE for the reason
+  // `EXPLODE_GENRES` copies them at insert time: the row is already in hand, and a second
+  // pass over 1.29M rows to fill columns the insert could have written is pure build time.
+  // THIS RUNS AFTER `applyRank` -- see `originStage`'s position in the build -- so every
+  // rank read here is the final one rather than a NULL.
   db.run(`
-    insert into title_lang (title_rowid, lang)
-    select distinct t.rowid_, i.code from title t join lang_in i on i.imdb = t.tconst
+    insert into title_lang (title_rowid, lang, kind, rank)
+    select distinct t.rowid_, i.code, t.kind, t.rank from title t join lang_in i on i.imdb = t.tconst
   `);
   const withLang = (db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number })
     .c;
   db.run("drop table lang_in");
+
+  /*
+    WHICH TITLES ARE ALSO IN ENGLISH, resolved ONCE into a keyed table and then applied.
+
+    The obvious form -- a correlated `exists` over `title_lang` itself, once per row -- is
+    the shape this whole function's opening comment exists to warn about: at 1.29M rows
+    against an index that does not exist yet, it is the seventeen-minute build again.
+
+    Only English titles are touched, so the UPDATE writes a quarter of the table rather than
+    all of it, and the `default 1` on the column is what makes that sufficient: a title with
+    no `en` row -- including every title the backfill below invents -- is foreign, and stays
+    so without being visited.
+  */
+  db.run("create temporary table en_titles (title_rowid integer primary key)");
+  db.run(`insert into en_titles select distinct title_rowid from title_lang where lang = '${ENGLISH_LANG}'`);
+  db.run("update title_lang set non_english = 0 where title_rowid in (select title_rowid from en_titles)");
+  db.run("drop table en_titles");
 
   /*
     Country is AGGREGATED FIRST, into a keyed table, and only then joined.
@@ -634,8 +673,8 @@ export function loadOrigin(
   */
   db.run("create index ix_lang_backfill on title_lang(title_rowid)");
   db.run(`
-    insert into title_lang (title_rowid, lang)
-    select t.rowid_, '' from title t
+    insert into title_lang (title_rowid, lang, kind, rank)
+    select t.rowid_, '', t.kind, t.rank from title t
      where not exists (select 1 from title_lang l where l.title_rowid = t.rowid_)
   `);
   db.run("drop index ix_lang_backfill");
