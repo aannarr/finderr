@@ -146,8 +146,8 @@ export interface ListLanguage {
  * so "you own 12 of 250" names a denominator that exists. Nothing else is weighed. There is
  * exactly one exception and it is stated below.
  *
- * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why there are
- * > forty-one of these rather than twelve
+ * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why this array is
+ * > dozens long rather than twelve
  * > A language list is `browseSql`'s ranked shape plus "in this language and not also in
  * > English". Against `title` that is a walk DOWN the rank order until 250 films of the
  * > language have accumulated, so the price was set by how deep a language's 250th film sat
@@ -164,6 +164,13 @@ export interface ListLanguage {
  * > Dutch 41.2 -> 0.26, Persian 34.2 -> 0.25, Polish 30.5 -> 0.25. **Every language measured
  * > lands between 0.21 and 0.26 ms**, which is the shape of the change: the cost stopped
  * > depending on the language at all. `completionPayload` owns the whole-request figure.
+ * >
+ * > **RE-MEASURED 2026-09-06 when `ix_lang_rank` was reordered to admit `?lang=en`**, because
+ * > that reorder turns `non_english` from a range column into a covered filter and every list
+ * > here pays for the rows it skips. It is free: the whole array totals **11.2 ms before the
+ * > reorder and 10.5 ms after**, inside the run-to-run spread, with no language moving more
+ * > than 0.05 ms. The skip is bounded by how much of a language is ALSO in English, which is
+ * > 19.6% at the worst of them (Ukrainian, 115 of 587 ranked films). See `INDEXES.origin`.
  *
  * > [!NOTE] Chinese, Greek and Tagalog are here since 2026-09-06, and the corpus is what
  * > changed rather than the rule
