@@ -4,6 +4,10 @@
  * This is the maintainable half of the speed harness (`src/jobs/bench-index.ts` is the
  * runner). A scenario is a NAME, an example ARGUMENT set, and a call into the real code.
  *
+ * `countRows` lives here rather than in the runner because it is knowledge about what the
+ * calls below RETURN: adding a scenario whose result has a new shape and teaching the harness
+ * to count it are one edit, in one file, or the count silently reads 1.
+ *
  * > [!IMPORTANT] A scenario names a QUESTION; it never restates the SQL
  * > The obvious way to build a query benchmark is a list of SQL strings with example
  * > parameters. It is also wrong here, for the reason this repo keeps re-learning: a copy of
@@ -54,6 +58,54 @@ export interface BenchFixtures {
   nconst: string;
   /** The genre the index actually has most of. */
   genre: string;
+}
+
+/**
+ * Every property name a scenario result carries its rows under, most specific first.
+ *
+ * ONE list rather than a chain of `if`s in the runner, because `countRows` reads it TWICE --
+ * once to find the rows and once to notice a shape it does not know -- and two hand-written
+ * copies of "which key holds the rows" would disagree the first time one of them was extended.
+ *
+ * `hits` was missing until 2026-09-07 and the cost is the reason this list is documented: a
+ * `SearchResult` fell through to the runner's `return 1`, so all six `search.*` scenarios
+ * reported exactly one row whatever came back -- including a fuzzy tier that returned zero.
+ * The column exists precisely because a query that got faster by returning less is not faster,
+ * and it was blind for a sixth of the suite.
+ */
+const ROW_KEYS = ["hits", "rows", "results", "credits"] as const;
+
+/**
+ * How many rows a scenario produced, for anything shaped like a result.
+ *
+ * Throws on a result shape it cannot count rather than guessing. A benchmark's `rows` column
+ * is only worth having if it is right, and the failure mode it replaces -- silently reporting
+ * `1` for a shape nobody taught it -- is green, plausible and permanent. Adding a result type
+ * is adding its key to `ROW_KEYS`; the throw is what makes that a step you cannot skip.
+ *
+ * An object with NO array in it genuinely is one row: `byTconst` returns a title, `idsFor`
+ * returns one title's ids. That is the case the guard below must not mistake for a new shape.
+ */
+export function countRows(v: unknown): number {
+  if (Array.isArray(v)) return v.length;
+  if (v === null || v === undefined) return 0;
+  if (typeof v !== "object") return 1;
+
+  const o = v as Record<string, unknown>;
+  for (const key of ROW_KEYS) {
+    const rows = o[key];
+    if (Array.isArray(rows)) return rows.length;
+  }
+
+  const unnamed = Object.keys(o).filter((k) => Array.isArray(o[k]));
+  if (unnamed.length > 0) {
+    throw new Error(
+      `countRows: result carries array field(s) '${unnamed.join("', '")}' that ROW_KEYS does not name. ` +
+        "Add the one holding the rows to ROW_KEYS in bench-scenarios.ts -- otherwise this scenario " +
+        "reports 1 row forever, whatever it returned.",
+    );
+  }
+  return 1;
 }
 
 export function scenarios(f: BenchFixtures): Scenario[] {

@@ -51,7 +51,7 @@ import { hostname, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
-import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
+import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import {
   allIndexes,
@@ -61,6 +61,15 @@ import {
   SHELF_GENRES_META_KEY,
 } from "../lib/index-builder";
 import { SearchEngine } from "../lib/search";
+import { prepareSqlite } from "../lib/spellfix";
+
+// AT IMPORT TIME, above `main()`, for the reason `src/lib/spellfix.ts` documents as TRAP 1:
+// `setCustomSQLite` is a process-global one-shot that throws once ANY Database exists, and
+// this file opens one in `reindex()` and another in `openEngine()`. Called from inside
+// `main()` it would always be too late on macOS, and the only symptom is `search.fuzzy`
+// coming back in microseconds because the tier is not there -- which is what this harness
+// did until 2026-09-07. `build-index.ts` and `build-vocab.ts` call it in the same position.
+prepareSqlite((m) => console.log(`# ${m}`));
 
 interface Args {
   runs: number;
@@ -373,19 +382,6 @@ interface Row {
   plans: string[];
 }
 
-/** How many rows a scenario produced, for anything shaped like a result. */
-function countRows(v: unknown): number {
-  if (Array.isArray(v)) return v.length;
-  if (v && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    if (Array.isArray(o.rows)) return o.rows.length;
-    if (Array.isArray(o.results)) return o.results.length;
-    if (Array.isArray(o.credits)) return o.credits.length;
-    return 1;
-  }
-  return v === null || v === undefined ? 0 : 1;
-}
-
 /**
  * Open an engine, optionally overriding the two pragmas that decide how it reads.
  *
@@ -414,9 +410,45 @@ function openEngine(
     engine.rawDb.run(`pragma cache_size = -${pragmas.cache}`);
   }
   // Without this the fuzzy tier silently does not load and `search.fuzzy` measures an absent
-  // feature -- it comes back in microseconds because it finds nothing.
+  // feature -- it comes back in microseconds because it finds nothing. Suppressed on purpose:
+  // the answer belongs in the report's `# caps:` line, not in noise before it. `prepareSqlite`
+  // at the top of this file is the other half; without it this call cannot succeed on macOS.
   engine.prepareFuzzy(() => {});
   return engine;
+}
+
+/**
+ * What this index and this process can actually do, in the header AND in the JSON.
+ *
+ * > [!IMPORTANT] `fuzzy` is here because a report of an ABSENT tier is otherwise identical to a fast one
+ * > `search.fuzzy` comes back in microseconds either way -- 0.03 ms for a tier that returned
+ * > `tier: "empty"` and zero candidates. Fixing the macOS load alone would leave the harness
+ * > silently wrong anywhere `prepareSqlite` finds no libsqlite3 that permits extensions, or
+ * > where the index carries no vocabulary: a container, a CI runner, a fresh clone. Printing
+ * > the capability is what makes two reports comparable instead of merely similar.
+ *
+ * A string rather than a boolean, because WHICH of the three things the tier needs is missing
+ * decides the remedy -- see `FuzzyAbsence` in `search.ts`, which is the one owner of that
+ * distinction and of the sentence explaining each cause.
+ */
+interface Capabilities {
+  rank: boolean;
+  people: boolean;
+  ids: boolean;
+  episodes: boolean;
+  /** `on`, or `off:extension` / `off:vocabulary` / `off:unprepared`. */
+  fuzzy: string;
+}
+
+function capabilities(engine: SearchEngine): Capabilities {
+  const absence = engine.fuzzyOff;
+  return {
+    rank: engine.hasRank,
+    people: engine.hasPeople,
+    ids: engine.hasIds,
+    episodes: engine.hasEpisodes,
+    fuzzy: absence ? `off:${absence.cause}` : "on",
+  };
 }
 
 async function main(): Promise<void> {
@@ -480,9 +512,16 @@ async function main(): Promise<void> {
   console.log(
     `# built_at=${meta.built_at ?? "?"} rows=${meta.rows ?? "?"} episodes=${meta.episode_rows ?? "0"}`,
   );
+  const caps = capabilities(engine);
   console.log(
-    `# caps: rank=${engine.hasRank} people=${engine.hasPeople} ids=${engine.hasIds} episodes=${engine.hasEpisodes}`,
+    `# caps: rank=${caps.rank} people=${caps.people} ids=${caps.ids} episodes=${caps.episodes} fuzzy=${caps.fuzzy}`,
   );
+  if (engine.fuzzyOff) {
+    // Loud, and not fatal -- the `# !! PROFILE DRIFT` shape, for the same reason. Every other
+    // scenario still produces a usable number; the one that cannot be quoted without this
+    // caveat gets the caveat printed beside it.
+    console.log(`# !! FUZZY TIER ABSENT -- search.fuzzy measures nothing. ${engine.fuzzyOff.detail}`);
+  }
 
   // Fixtures from the index itself, never hardcoded -- a benchmark that measures a MISS is
   // fast for the wrong reason and reports it as good news.
@@ -522,6 +561,10 @@ async function main(): Promise<void> {
           // with another is worse than an ugly name.
           label: args.label ?? `${stamp.host}/${profile?.name ?? "as-is"}${args.prefault ? "/pf" : ""}`,
           stamp,
+          // Travels with the numbers, so a JSON diffed months later still says whether the
+          // fuzzy tier was there. A `search.fuzzy` cell is not comparable across two runs that
+          // disagree about this, and nothing else in the file records it.
+          caps,
           profile: profile?.name ?? null,
           pragmas: { mmap: args.mmap, cache: args.cache },
           prefault: args.prefault,
