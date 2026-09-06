@@ -198,17 +198,30 @@ export interface ListLanguage {
  * > because three rows over one dialect continuum reads like the same films under a third
  * > heading. That is a question with an answer, so it was measured before it was shipped: of
  * > the **417** ranked non-English films `sh` reaches, **85 are also reachable through `hr` or
- * > `sr`** -- 20.4%, and only 9 of them through `sr`. Of the 250 that actually render, 57 sit
- * > in either of the other two heads and **193 sit in no language list at all**: Yugoslav-era
- * > cinema is filed under `sh` and nowhere else, so `Underground`, `Black Cat, White Cat`,
- * > `Time of the Gypsies` and `When Father Was Away on Business` had no row anywhere before
- * > this one. 193 films nothing else carries is a catalogue, not a relabelling.
+ * > `sr`** -- 20.4%, and only 9 of them through `sr`. The 250 that actually render split
+ * > **57 / 8 / 185**: 57 sit in one of the other two heads, 8 sit in some THIRD list (`de` 6,
+ * > `ru` 3, `uk` 2, `it` 2, and one each of `tr`, `ro`, `pl`, `hu`, `fr`, `es` -- they sum
+ * > past 8 because a co-production carries several), and **185 carry no other
+ * > `LIST_LANGUAGES` code at all**. Yugoslav-era cinema is filed under `sh` and nowhere else:
+ * > `Underground` and `When Father Was Away on Business` carry `sh` alone and had no row
+ * > anywhere before this one. 185 films nothing else carries is a catalogue, not a
+ * > relabelling.
  * >
- * > Measured 2026-09-06 over the widened crosswalk and the ranked films of a real
- * > 1,276,669-title build, reproducing this file's rule -- the same set arithmetic
- * > `originStage` and `rankedMembers` do between them, validated by reproducing the
- * > pre-widening 415/358/530 from the older crosswalk. The widening moved `sh` by two films
- * > (415 -> 417) and moved `hr` and `sr` not at all.
+ * > **The 185 is measured against all forty-four other codes in this array, not just `hr` and
+ * > `sr`** -- the distinction matters, because `250 - 57` is a different and larger number
+ * > that quietly ignores the third heads. `Black Cat, White Cat` (`ro,sh`) and `Time of the
+ * > Gypsies` (`it,sh`) are two of those eight, which is why they are not in the sentence
+ * > above.
+ * >
+ * > Measured 2026-09-06 on the ranked films of a real 1,276,669-title build, reproducing this
+ * > file's rule -- the same set arithmetic `originStage` and `rankedMembers` do between them.
+ * > The 417 and the 20.4% are over the WIDENED crosswalk; the 57/8/185 split and the
+ * > 415/358/530 control are over the crosswalk as it stood before the widening, and both were
+ * > re-run from scratch on 2026-09-07 against `.claude/temp/verify-data/titles.db` opened
+ * > read-only. **185 is therefore a ceiling on the widened corpus rather than a stale
+ * > figure**: widening only ADDS folds, so it can only move a film OUT of "carries nothing
+ * > else" and never in. The widening moved `sh` by two films (415 -> 417) and moved `hr` and
+ * > `sr` not at all.
  * >
  * > Named Serbo-Croatian for the reason `tl` is named Tagalog: it is the language ISO 639-1
  * > assigns `sh` to, and a code is named for what the standard says rather than for what a
