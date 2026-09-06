@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Principal, Role, User } from "../lib/auth";
-import { makeChatProbe } from "./agent-chat";
+import { makeChatProbe, surfaced } from "./agent-chat";
 
 const deps = (over: { key?: string; models?: string[] } = {}) =>
   ({
@@ -105,5 +105,83 @@ describe("the assistant probe", () => {
       const off = principal(role, { assistantAllowed: false });
       expect(makeChatProbe(deps())(GET, off).status).toBe(404);
     }
+  });
+});
+
+/**
+ * WHICH CARDS THE PANEL DRAWS, AND IN WHAT ORDER.
+ *
+ * The reported run, 2026-09-06: asked "is there an Adrenochrome movie?", the agent searched
+ * the misspelling, searched it again loosely, then searched the correct spelling. Every card
+ * the reader could see came from the middle call -- the one the agent itself had discarded --
+ * so the prose named two films that were not on screen while five unrelated ones were.
+ */
+describe("the cards beside an answer", () => {
+  const call = (name: string, ids: string[], args: Record<string, unknown> = {}) => ({
+    name,
+    args,
+    ms: 1,
+    bytes: 1,
+    evidence: { ids, relations: [] },
+  });
+
+  const run = (toolCalls: unknown[], answer: string) =>
+    ({
+      answer,
+      turns: 1,
+      toolCalls,
+      ms: 1,
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedTokens: 0,
+      costUsd: 0,
+    }) as unknown as Parameters<typeof surfaced>[0];
+
+  // Every id resolves, so nothing here is testing the index -- only the ordering.
+  const engine = {
+    byTconst: (tconst: string) => ({ tconst, title: `T-${tconst}`, year: 2000, kind: "movie" }),
+    episodesOf: () => [],
+  } as unknown as Parameters<typeof surfaced>[1];
+  const store = { getArtwork: () => undefined } as unknown as Parameters<typeof surfaced>[2];
+
+  const JUNK = ["tt1731141", "tt0060107", "tt0870984", "tt1553656", "tt0213327"];
+
+  test("a title the answer names outranks a discarded search's results", () => {
+    const r = surfaced(
+      run(
+        [call("find_title", []), call("find_title", JUNK), call("find_title", ["tt2273648", "tt3628688"])],
+        "Yes, there is Adrenochrome [tt2273648], and a follow-up Adrenochrome II [tt3628688].",
+      ),
+      engine,
+      store,
+      "Yes, there is Adrenochrome [tt2273648], and a follow-up Adrenochrome II [tt3628688].",
+    );
+    // The two the reader was told about are the two the reader sees first.
+    expect(r.titles.slice(0, 2).map((t) => t.tconst)).toEqual(["tt2273648", "tt3628688"]);
+    // And the discarded search is still THERE -- it is evidence, just not the answer.
+    expect(r.titles).toHaveLength(7);
+  });
+
+  test("an answer that names nothing keeps plain evidence order", () => {
+    const r = surfaced(
+      run([call("find_title", JUNK)], "I could not find that."),
+      engine,
+      store,
+      "I could not find that.",
+    );
+    expect(r.titles.map((t) => t.tconst)).toEqual(JUNK);
+  });
+
+  test("the cap is applied after the ordering, so a named title is never truncated away", () => {
+    // 24 unrelated ids ahead of the one the answer is about: under the old order-then-cap the
+    // named title fell off the end of the list entirely.
+    const many = Array.from({ length: 30 }, (_, i) => `tt900${String(i).padStart(4, "0")}`);
+    const r = surfaced(
+      run([call("find_title", many), call("find_title", ["tt2273648"])], "It is Adrenochrome [tt2273648]."),
+      engine,
+      store,
+      "It is Adrenochrome [tt2273648].",
+    );
+    expect(r.titles[0]?.tconst).toBe("tt2273648");
   });
 });

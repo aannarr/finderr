@@ -108,7 +108,12 @@ export function toolLabel(name: string): string {
  * named here is diagnostics and lives in the expandable detail instead.
  */
 const SUBJECT_KEYS: Record<string, readonly string[]> = {
-  find_title: ["name", "year", "decade"],
+  // `match` is here because WITHOUT IT TWO ROWS CAN CONTRADICT EACH OTHER AND LOOK IDENTICAL.
+  // A `find_title` that finds nothing is meant to be retried at `match: "loose"`, so a run
+  // that does the right thing draws the same query twice -- and on 2026-09-06 a reader saw
+  // `Title search "Andrenochrome" -- 0 matches` directly above `Title search "Andrenochrome"
+  // -- 5 matches`, with the one argument that explains the difference not on screen.
+  find_title: ["name", "year", "decade", "match"],
   find_person: ["name"],
   list_cast: ["tconst", "roles"],
   list_credits: ["nconst", "kind"],
