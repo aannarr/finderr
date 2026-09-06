@@ -55,6 +55,17 @@ export function init(c: PluginContext): PluginExports {
 - **`c.kv` is permanent per-plugin storage**, for the expensive half of a lookup -- a
   resolved RT id, a `tconst -> tvdbId` crosswalk. Facet data belongs in the facet cache;
   ids that never change belong here so a facet expiring does not re-run a fuzzy match.
+- **What an OPERATOR sets is `meta.config`, read back through `c.config`** -- never
+  `process.env` and never `loadConfig()`. Declared in `meta` rather than returned from
+  `init`, because an admin form has to be drawable for a plugin whose `init` never ran. A
+  `type: "secret"` field is write-only through the API and redacted out of every log line,
+  including one built from an error a provider threw. A stored value beats the `env` seed
+  the field names, and both beat the field's `default`. `src/lib/addon-config.ts` owns that
+  rule and nothing else may spell it; [`ADDONS.md`](../../ADDONS.md) is the author's guide.
+- **An unconfigured plugin goes quiet, never broken.** Return `{ facets: {} }` and log why:
+  the returned keys are the declaration, so declaring none says "not today" and the facets
+  resolve empty. Its config is part of its `configVersion`, so a changed setting invalidates
+  what the old one bought -- at the next load, which is also when a change takes effect.
 - **Providers run off the render path.** Take the time you need; the first view of a
   title may miss you and the next one will not.
 - **A directory file is not the only way in.** `pluginModules` in config names installed
