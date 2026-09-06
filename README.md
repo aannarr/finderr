@@ -675,7 +675,7 @@ rebuild.
 | `FINDERR_SONARR_*` | | The same five keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
 | `FINDERR_EPISODE_REFRESH_SECONDS` | `21600` | How stale one series' episode list may get before it is walked again. Sonarr answers per series, so this is a load dial, not a freshness one |
 | `FINDERR_EPISODE_REFRESH_BATCH` | `25` | Series walked per library refresh, neediest first. `0` turns the episode mirror off, and with it the per-episode marks and requests |
-| `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability, and a series' keywords, cast, trailer, "more like this" and official site |
+| `FINDERR_TMDB_API_KEY` | | Optional. It SEEDS the `tmdb` addon's own `apiKey` setting -- streaming availability, and a series' keywords, cast, trailer, "more like this" and official site -- and a value saved through `/api/admin/addons` wins over it from then on. The upcoming and trending sync reads this variable directly and is not affected by that override |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
 | `FINDERR_PLEX_MACHINE_ID` | | Your Plex server's `machineIdentifier`. Set it and a Plex sign-in additionally requires that the account can see that server — a second gate on top of the invitation, never instead of it. It does not feed the Play links, which read the id from the server itself |
@@ -1192,9 +1192,10 @@ Every line here is a real limitation. It is not a roadmap.
   up on `/requests` or `/log` and neither spends anybody's daily quota.
 - A request that finds nothing goes `no_release` on its own after a day and nine
   reconcile passes, rather than showing "Processing" forever. You can retry it.
-- No per-addon configuration. An addon needing an API key reads `process.env` itself.
-  That is the biggest single gap in the extension surface and it blocks every addon that
-  is not keyless.
+- Configuring an addon needs a restart, and there is no form for it yet. An addon declares
+  what it needs and a secret never comes back out, but the values are set through
+  `/api/admin/addons` with an admin key rather than on a page, and a change takes effect at
+  the next restart because an addon reads its settings once at load.
 - The rate limiter is in memory, per process, and resets on restart. See
   [Putting it on the internet](#putting-it-on-the-internet).
 - A series gets its trailer, its "more like this" and its official-site link **only with a
