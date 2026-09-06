@@ -189,12 +189,56 @@ export function scenarios(f: BenchFixtures): Scenario[] {
       run: (e) => e.browse({ genre: f.genre, kind: "movie", limit: 40 }),
     },
 
+    /*
+      --- browse, by LANGUAGE. `/lists` links `?lang=<code>` for forty-five of them.
+
+      A language browse is the one filter whose cost depends on HOW SELECTIVE THE PLANNER
+      BELIEVES THE VALUE IS, because `title_lang` holds a row per title per language and the
+      codes are wildly uneven -- `en` is most of the corpus and `fr` is a few percent of it.
+      That makes this pair the scenarios a STATISTICS change shows up in, and the set had
+      none until the `pragma optimize`-vs-`analyze` card needed to measure one.
+
+      The codes are hardcoded where an id would be a fixture: `fr` and `en` are ISO 639-1
+      constants, not rows that can vanish from a dump. `Horror` is likewise a member of
+      IMDb's closed genre vocabulary rather than the largest genre -- crossing a selective
+      language with a mid-sized genre is the shape, and `f.genre` would give the largest of
+      both and hide it. An index built before the origin stage returns no rows for all four
+      (see `SearchEngine.browse`), which the report's `rows` column makes visible.
+    */
+    {
+      id: "browse.langVotes",
+      surface: "browse",
+      args: "lang=fr kind=movie sort=votes",
+      run: (e) => e.browse({ lang: "fr", kind: "movie", sort: "votes", limit: 40 }),
+    },
+    {
+      id: "browse.langGenre",
+      surface: "browse",
+      args: "lang=fr genre=Horror kind=movie sort=votes",
+      run: (e) => e.browse({ lang: "fr", genre: "Horror", kind: "movie", sort: "votes", limit: 40 }),
+    },
+    // The unselective language over a RANGE: `en` is most of the corpus, so this is the case
+    // where believing a language is rare costs the most.
+    {
+      id: "browse.langDecade",
+      surface: "browse",
+      args: "lang=en kind=movie decade=2010 sort=votes",
+      run: (e) => e.browse({ lang: "en", kind: "movie", decade: 2010, sort: "votes", limit: 40 }),
+    },
+
     // --- lists. `/lists` asks for the head of every computed list at once.
     {
       id: "lists.rankedMembers",
       surface: "lists",
       args: `genre=${f.genre} size=250`,
       run: (e) => e.rankedMembers({ genre: f.genre }, 250),
+    },
+    // The same head, for a language row -- `/lists` draws forty-five of these.
+    {
+      id: "lists.langMembers",
+      surface: "lists",
+      args: "lang=fr size=250",
+      run: (e) => e.rankedMembers({ lang: "fr" }, 250),
     },
 
     // --- the title page's local half: everything on screen at t=0.
