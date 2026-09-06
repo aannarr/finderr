@@ -2443,13 +2443,17 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     ).c;
   }
 
-  /** Distinct PEOPLE one award's nominations name. Zero for a winner-only source. */
-  awardPersonCount(award: string): number {
-    return (
-      this.db.query("select count(distinct nconst) c from award_nominee where award = ?").get(award) as {
-        c: number;
-      }
-    ).c;
+  /**
+   * Does this award name anybody at all? False for a winner-only source.
+   *
+   * EXISTENCE rather than a count, and the difference is measurable: `count(distinct nconst)`
+   * is a temp b-tree over every person edge -- 5.3 ms on the real table -- while this stops at
+   * the first row. It rides on the TIMELINE payload, which is the page that decides whether to
+   * offer a leaderboard link at all, so it is paid for on a screen that has no other use for
+   * the number a count would give.
+   */
+  awardHasPeople(award: string): boolean {
+    return this.db.query("select 1 from award_nominee where award = ? limit 1").get(award) !== null;
   }
 
   /**

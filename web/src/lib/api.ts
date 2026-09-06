@@ -786,8 +786,9 @@ export interface CeremonySummary {
 export interface AwardsTimeline {
   award: AwardIdentity;
   source: AwardSource | null;
-  /** `people` is 0 for a winner-only award, and is what decides whether the boards exist. */
-  totals: { ceremonies: number; nominations: number; wins: number; people: number };
+  totals: { ceremonies: number; nominations: number; wins: number };
+  /** False for a winner-only award, and what decides whether the page offers a leaderboard. */
+  hasPeople: boolean;
   /** "you own 61 of 98 Best Picture winners" -- the noun is the server's, so it is said once. */
   anchor: { noun: string; owned: number; total: number };
   ceremonies: CeremonySummary[];

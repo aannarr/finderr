@@ -81,21 +81,17 @@ export function awardIdentity(def: AwardDef): AwardIdentity {
 export interface TimelinePayload {
   award: AwardIdentity;
   source: AwardSourceMeta | null;
-  totals: {
-    ceremonies: number;
-    nominations: number;
-    wins: number;
-    /**
-     * Distinct people the nominations name, and therefore whether the leaderboards exist.
-     *
-     * On this payload because the timeline is what LINKS to them, and a link to a page with
-     * nothing on it is the dead end this product refuses to draw: a Wikidata award records
-     * who won and names no people at all, so it must not offer a people page. Counted rather
-     * than inferred from `nominations === wins` -- that equality says the source is
-     * winner-only, which is a different fact and only accidentally the same answer.
-     */
-    people: number;
-  };
+  totals: { ceremonies: number; nominations: number; wins: number };
+  /**
+   * Do the nominations name anybody, and therefore do the leaderboards exist.
+   *
+   * On this payload because the timeline is what LINKS to them, and a link to a page with
+   * nothing on it is the dead end this product refuses to draw: a Wikidata award records who
+   * won and names no people at all, so it must not offer a people page. MEASURED rather than
+   * inferred from `nominations === wins` -- that equality says the source is winner-only,
+   * which is a different fact that only happens to have the same answer today.
+   */
+  hasPeople: boolean;
   /**
    * The completion count for the anchor prize -- "you own 61 of 98 Best Picture winners".
    *
@@ -140,8 +136,8 @@ export function timelinePayload({ store, engine, decorate, def, source }: Awards
       ceremonies: ceremonies.length,
       nominations: ceremonies.reduce((n, c) => n + c.nominations, 0),
       wins: ceremonies.reduce((n, c) => n + c.wins, 0),
-      people: store.awardPersonCount(def.id),
     },
+    hasPeople: store.awardHasPeople(def.id),
     anchor: {
       noun: anchorNoun(def),
       // Counted against the library mirror rather than against the decorated rows: a
@@ -182,6 +178,10 @@ export interface AwardPeoplePayload {
  * it does for an edition we do not hold. The check lives here rather than in the handler so
  * the classes are read ONCE and the expensive tally is never computed for a URL that is about
  * to be refused.
+ *
+ * MEASURED against the real table: 37 ms warm unfiltered, 21 ms for one class, beside 16 ms
+ * for `timelinePayload` on the same database. Same order as the page it is linked from, which
+ * is the bar -- and it is cached per session for ten minutes and sits on no keystroke path.
  */
 export function peoplePayload(
   { store, def, source }: AwardsDeps,

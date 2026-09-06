@@ -120,9 +120,10 @@ describe("timelinePayload", () => {
 
   test("totals are over every ceremony, not the page", () => {
     const p = timelinePayload(deps(indexOf("tt1")));
-    // `people: 0` because these fixtures name films and nobody -- which is exactly the
-    // state that must stop the timeline offering a link to an empty leaderboard.
-    expect(p.totals).toEqual({ ceremonies: 2, nominations: 3, wins: 3, people: 0 });
+    expect(p.totals).toEqual({ ceremonies: 2, nominations: 3, wins: 3 });
+    // These fixtures name films and nobody, which is exactly the state that must stop the
+    // timeline offering a link to an empty leaderboard.
+    expect(p.hasPeople).toBe(false);
   });
 
   test("an empty store is an empty timeline rather than a throw", () => {

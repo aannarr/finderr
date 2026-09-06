@@ -329,16 +329,18 @@ describe("the people tallies", () => {
     store.replaceAwards(palme.id, [
       nom({ award: palme.id, ceremony: 1994, films: ["Pulp Fiction"], filmIds: ["tt1"], won: true }),
     ]);
-    expect(store.awardPersonCount(palme.id)).toBe(0);
+    expect(store.awardHasPeople(palme.id)).toBe(false);
     expect(store.awardPersonClasses(palme.id)).toEqual([]);
     expect(store.awardPersonTallies(palme.id, null)).toEqual([]);
   });
 
-  test("the person count is distinct people, not nominations", () => {
-    store.replaceAwards("oscars", [
-      nom({ seq: 0, nominees: ["Nina"], nconsts: ["nm1"] }),
-      nom({ seq: 1, nominees: ["Nina", "Otto"], nconsts: ["nm1", "nm2"] }),
+  test("an award that names one person has people, and does not see another award's", () => {
+    const palme = awardById("palme-dor") as AwardDef;
+    store.replaceAwards("oscars", [nom({ nominees: ["Nina"], nconsts: ["nm1"] })]);
+    store.replaceAwards(palme.id, [
+      nom({ award: palme.id, ceremony: 1994, films: ["Pulp Fiction"], filmIds: ["tt1"], won: true }),
     ]);
-    expect(store.awardPersonCount("oscars")).toBe(2);
+    expect(store.awardHasPeople("oscars")).toBe(true);
+    expect(store.awardHasPeople(palme.id)).toBe(false);
   });
 });

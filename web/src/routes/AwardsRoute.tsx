@@ -146,7 +146,7 @@ export function AwardsRoute() {
             all. A winner-only Wikidata list names none, so the link would be a door onto an
             empty room -- the same dead-end rule the anchor poster follows one row down.
           */}
-          {page.totals.people > 0 && (
+          {page.hasPeople && (
             <>
               <span aria-hidden="true">·</span>
               <Link
