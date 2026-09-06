@@ -21,6 +21,7 @@
 import type { IndexReload, IndexWarm, ServerHealthPayload, SlowRequest } from "../lib/health-api";
 import { formatAge, formatStamp } from "../lib/timestamps";
 import { count, formatBytes } from "../lib/units";
+import { AdminCard } from "./admin/AdminCard";
 
 /**
  * How many slow requests to draw.
@@ -50,28 +51,52 @@ function uptime(seconds: number): string {
   return count(Math.round(seconds), "second");
 }
 
-/** A titled block, matching the shape `/admin/users/:id` uses for its sections. */
+/** A titled block, matching the card `/admin/users/:id` uses for its sections. */
 function Block(props: { title: string; children: React.ReactNode }) {
-  return (
-    <section>
-      <h3 className="text-sm font-medium">{props.title}</h3>
-      {props.children}
-    </section>
-  );
+  return <AdminCard title={props.title}>{props.children}</AdminCard>;
 }
 
-/** One line of the form "label — value", with an optional second line explaining a bad value. */
-function Fact(props: { label: string; value: string; hint?: string }) {
+/**
+ * One fact: its name on the left, its value on the right, both on one baseline.
+ *
+ * > [!IMPORTANT] THE COLUMN IS THE POINT, and it is why this is not a sentence
+ * > These read `Rows 1,276,669` / `Built Sep 6, 2026` as running prose, label and value in
+ * > the same size a word apart, so a screen of twenty of them had no shape at all -- the eye
+ * > had to read every line to find the one it wanted. Ruled onto two columns with the values
+ * > right-aligned and tabular, a reader scans ONE column and stops at the row they came for.
+ * >
+ * > **MOST hints name a reading that is WRONG, so they are drawn as alarms.** A refused swap,
+ * > a reclaimed prefault, a Plex walk that matched nothing. As a third line of grey they
+ * > looked exactly like the two facts above them, which is how a refused index swap sits
+ * > unnoticed on a page whose entire job is to report it.
+ * >
+ * > **`tone: "info"` is for the two that are NOT.** "The daily refresh has not run in this
+ * > process yet" says so and adds *"ordinary for most of a container's life"* -- painting
+ * > that yellow puts an alarm on a perfectly healthy server every time it restarts, and an
+ * > alarm that is usually nothing is an alarm nobody reads. Which of the two a hint is
+ * > belongs to the function that WRITES it, so it travels with the words.
+ */
+function Fact(props: { label: string; value: string; hint?: string; tone?: "alarm" | "info" }) {
   return (
-    <li className="text-sm">
-      <span className="text-muted">{props.label}</span> <span className="tabular-nums">{props.value}</span>
-      {props.hint && <span className="block text-xs text-muted">{props.hint}</span>}
+    <li className="flex flex-col gap-1 py-1.5 not-last:border-b not-last:border-line/60">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 text-sm">
+        <span className="text-muted">{props.label}</span>
+        <span className="tabular-nums text-ink">{props.value}</span>
+      </div>
+      {props.hint &&
+        ((props.tone ?? "alarm") === "info" ? (
+          <p className="text-xs text-muted">{props.hint}</p>
+        ) : (
+          <p className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-xs text-warn">
+            {props.hint}
+          </p>
+        ))}
     </li>
   );
 }
 
 function Facts(props: { children: React.ReactNode }) {
-  return <ul className="mt-2 flex flex-col gap-1">{props.children}</ul>;
+  return <ul className="flex flex-col">{props.children}</ul>;
 }
 
 /**
@@ -81,11 +106,17 @@ function Facts(props: { children: React.ReactNode }) {
  * and we are deliberately still serving the previous one, so the library is quietly a day
  * older than it looks and nothing else says so.
  */
-function reloadLine(reload: IndexReload | null): { value: string; hint?: string } {
+function reloadLine(reload: IndexReload | null): {
+  value: string;
+  hint?: string;
+  tone?: "alarm" | "info";
+} {
   if (!reload) {
     return {
       value: "not since this container started",
       hint: "The daily refresh has not run in this process yet. Ordinary for most of a container's life.",
+      // Says "ordinary" in its own words, so it must not be painted as a fault.
+      tone: "info",
     };
   }
   const when = formatAge(new Date(reload.at).toISOString()) ?? formatStamp(reload.at);
@@ -117,6 +148,7 @@ function Warm({ warm }: { warm: IndexWarm | null }) {
           label="Prefault"
           value="unknown"
           hint="No index is open to ask -- a build is probably running."
+          tone="info"
         />
       </Facts>
     );
@@ -172,10 +204,10 @@ function services(s: ServerHealthPayload["services"]): string {
 
 function Slow({ slow }: { slow: SlowRequest[] }) {
   if (slow.length === 0) {
-    return <p className="mt-2 text-sm text-muted">Nothing has been slow enough to record.</p>;
+    return <p className="text-sm text-muted">Nothing has been slow enough to record.</p>;
   }
   return (
-    <ul className="mt-2 flex flex-col gap-1">
+    <ul className="flex flex-col gap-1">
       {slow.slice(0, SLOW_SHOWN).map((entry) => (
         // Newest first, which is the order the server keeps them in and the order somebody
         // triaging "it was slow a minute ago" wants. The key is the pair, because the same
@@ -200,13 +232,19 @@ export function ServerHealth({ health }: { health: ServerHealthPayload }) {
   const reload = reloadLine(health.index.reload);
   const cgroup = health.runtime.cgroup;
 
+  /*
+    A GRID, because these five cards are five INDEPENDENT questions and a column of them is a
+    scroll. Index and Memory are the pair read together -- how big is it, and is it in RAM --
+    so they lead the first row; the slow log spans both columns because its rows carry a route
+    and its arguments, which is the one block here that wants the width.
+  */
   return (
-    <div className="flex flex-col gap-6">
+    <div className="grid gap-4 md:grid-cols-2">
       <Block title="Index">
         <Facts>
           <Fact label="Rows" value={health.index.rows.toLocaleString()} />
           <Fact label="Built" value={formatStamp(health.index.builtAt, "never")} />
-          <Fact label="Last swap" value={reload.value} hint={reload.hint} />
+          <Fact label="Last swap" value={reload.value} hint={reload.hint} tone={reload.tone} />
         </Facts>
       </Block>
 
@@ -260,7 +298,7 @@ export function ServerHealth({ health }: { health: ServerHealthPayload }) {
 
       <Block title="Addons">
         {health.plugins.loaded.length === 0 ? (
-          <p className="mt-2 text-sm text-muted">No addons are loaded.</p>
+          <p className="text-sm text-muted">No addons are loaded.</p>
         ) : (
           <Facts>
             {health.plugins.loaded.map((plugin) => (
@@ -287,9 +325,11 @@ export function ServerHealth({ health }: { health: ServerHealthPayload }) {
         </Facts>
       </Block>
 
-      <Block title="Slowest requests">
-        <Slow slow={health.timings.slow} />
-      </Block>
+      <div className="md:col-span-2">
+        <Block title="Slowest requests">
+          <Slow slow={health.timings.slow} />
+        </Block>
+      </div>
     </div>
   );
 }

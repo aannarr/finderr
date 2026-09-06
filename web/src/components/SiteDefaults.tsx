@@ -18,7 +18,9 @@
  */
 
 import type { SiteSettings } from "../lib/auth-api";
+import { AdminCard } from "./admin/AdminCard";
 import { QuotaField, ToggleSetting } from "./SettingControls";
+import { Separator } from "./ui/separator";
 
 export function SiteDefaults(props: {
   settings: SiteSettings;
@@ -28,39 +30,44 @@ export function SiteDefaults(props: {
   const { requestQuotaPerDay, assistantAllowedByDefault } = props.settings;
 
   return (
-    <section className="flex flex-col gap-4">
-      <h2 className="text-sm font-medium">Site defaults</h2>
+    <AdminCard
+      title="Site defaults"
+      description="What applies to everybody who has no allowance of their own."
+    >
+      <div className="flex flex-col gap-5">
+        <QuotaField
+          id="site-quota"
+          label="Titles a day"
+          value={requestQuotaPerDay}
+          save={(n) => props.save({ requestQuotaPerDay: n })}
+        >
+          {requestQuotaPerDay === 0
+            ? "Nobody is limited. Set a number to cap how much any one person may ask for in a day."
+            : `Everybody without an allowance of their own may ask for ${requestQuotaPerDay} a day.`}{" "}
+          0 means no limit, and administrators are never limited. Saving this replaces whatever
+          FINDERR_REQUEST_QUOTA_PER_DAY was set to on the host.
+        </QuotaField>
 
-      <QuotaField
-        id="site-quota"
-        label="Titles a day"
-        value={requestQuotaPerDay}
-        save={(n) => props.save({ requestQuotaPerDay: n })}
-      >
-        {requestQuotaPerDay === 0
-          ? "Nobody is limited. Set a number to cap how much any one person may ask for in a day."
-          : `Everybody without an allowance of their own may ask for ${requestQuotaPerDay} a day.`}{" "}
-        0 means no limit, and administrators are never limited. Saving this replaces whatever
-        FINDERR_REQUEST_QUOTA_PER_DAY was set to on the host.
-      </QuotaField>
+        <Separator />
 
-      <ToggleSetting
-        label="Assistant for new accounts"
-        on={assistantAllowedByDefault}
-        action={(on) => (on ? "Turn off for new accounts" : "Turn on for new accounts")}
-        save={(on) => props.save({ assistantAllowedByDefault: on })}
-      >
-        {assistantAllowedByDefault
-          ? "Somebody who joins can ask the assistant, which sends their question to a model outside this house."
-          : "Somebody who joins gets no assistant until you turn it on for them."}{" "}
-        {/*
+        <ToggleSetting
+          label="Assistant for new accounts"
+          on={assistantAllowedByDefault}
+          action={(on) => (on ? "Turn off for new accounts" : "Turn on for new accounts")}
+          save={(on) => props.save({ assistantAllowedByDefault: on })}
+        >
+          {assistantAllowedByDefault
+            ? "Somebody who joins can ask the assistant, which sends their question to a model outside this house."
+            : "Somebody who joins gets no assistant until you turn it on for them."}{" "}
+          {/*
           THE SURPRISING HALF, said out loud rather than left to be discovered. `assistant_allowed`
           is NOT NULL on every existing row, so there is no state meaning "follow the site" for
           this switch to reach -- it decides what the NEXT account starts at and nothing else.
         */}
-        This applies to accounts made from now on; everybody already here keeps what they have, which you
-        change on their own page.
-      </ToggleSetting>
-    </section>
+          This applies to accounts made from now on; everybody already here keeps what they have, which you
+          change on their own page.
+        </ToggleSetting>
+      </div>
+    </AdminCard>
   );
 }
