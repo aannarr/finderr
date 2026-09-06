@@ -140,6 +140,12 @@ function posterStrip(
  * touched -- so the number to plan around is 36ms plus whatever the front page has already
  * warmed, which on any real session is all of it.
  *
+ * That figure PREDATES the language lists and covers twenty-one of the sixty-two lists this
+ * loop now walks. **The whole payload is 50.2 ms**, re-measured 2026-09-06 on an M1 Max
+ * through this function with the real index and the real library mirror behind it -- sixty-two
+ * completions, of which 31.8 ms is membership (see the block below) and the rest is the
+ * ownership counts and the credit rollup. 4,885 bytes on the wire before posters.
+ *
  * **The two halves added since cost 17ms and under 1ms**, measured 2026-09-06 on the same
  * machine: the credit rollup is one seek-bounded grouped query (see `creditTally`), and the
  * posters are indexed artwork lookups at 3.2us each -- 196 of them if every award turns out
@@ -152,23 +158,27 @@ function posterStrip(
  * to argue with if this ever needs to shrink: fewer posters and a shorter board are the
  * levers, in that order. A second round trip is not one of them.
  *
- * > [!IMPORTANT] THE TWELVE LANGUAGE LISTS ARE THE EXPENSIVE HALF OF THIS LOOP, and their
- * > cost is what decided how many of them there are
- * > **77.4 ms for the twelve against 11.4 ms for the other twenty-one put together**, both
- * > measured 2026-09-06 in one run through `rankedMembers` over a copy of the real
- * > 1,288,159-row index; per-language figures live in `LIST_LANGUAGES`. The gap is structural
- * > rather than fixable here: a genre or decade list is a covering seek that stops after 250
- * > rows, while a language list scans DOWN the rank order until 250 films in that language
- * > have accumulated, so a language with a thin catalogue is the expensive one. Swedish would
- * > be 45.5 ms on its own and Finnish 72.4.
+ * > [!IMPORTANT] THE LANGUAGE LISTS USED TO BE THE EXPENSIVE HALF OF THIS LOOP AND ARE NOT ANY MORE
+ * > Measured 2026-09-06 on an M1 Max, one run through `rankedMembers` over a copy of the real
+ * > 1,288,159-row index, whole catalogue: **1,853.0 ms before and 31.8 ms after**, of which
+ * > the forty-one language lists are **1,839.2 ms before and 18.4 ms after** and the other
+ * > twenty-one are 12.9 ms and 12.7 ms -- untouched, which is what says the change is where
+ * > it claims to be.
  * >
- * > The twelve were chosen against that ladder, so the lever if this ever needs to shrink is
- * > **fewer languages**, and the lever if it needs to GROW is not more of them: it is
- * > denormalising `rank` into `title_lang` the way `title_genre` already carries `votes` and
- * > `year`, which turns every one of these into the same covering seek the genre lists get.
+ * > The structure that made them expensive is gone rather than tuned. A language list used to
+ * > scan DOWN the rank order until 250 films of the language had accumulated, so the thinnest
+ * > catalogue was the dearest -- Finnish alone cost more than the twelve lists that shipped.
+ * > `title_lang` now carries `kind`, `rank` and `non_english` and `ix_lang_rank` reads 250
+ * > rows in output order, so every language costs the same 0.25 ms. That is what let the
+ * > catalogue go from twelve languages to forty-one AND get sixty times cheaper.
  * >
- * > On the wire they are cheap: twelve more `{id,size,owned}` objects is ~470 bytes on a
- * > ~5.3KB body.
+ * > End to end the whole payload goes **1,719.3 ms to 50.2 ms** on the same machine and the
+ * > same run, which is the number the paragraph above quotes.
+ * >
+ * > **So the lever if this loop ever needs to shrink is no longer "fewer languages".** At
+ * > 0.25 ms each they are the cheapest thing in the payload; the twenty-one genre, decade and
+ * > all-time lists are now the larger half of the membership half. On the wire they are still
+ * > cheap: forty-one `{id,size,owned}` objects is ~1.6KB of the 4,885.
  *
  * **The all-time membership is REUSED, not re-queried.** The boards rank over the same ids
  * the completion counts are computed from, and those are already in hand in this loop --

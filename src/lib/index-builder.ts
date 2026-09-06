@@ -582,12 +582,20 @@ export const INDEXES = {
    * >
    * > Both indexes exist and SQLite picks per query. Measured on a copy of the real
    * > 1,288,159-row index on 2026-09-06, through `rankedMembers` and with the index the only
-   * > thing that changed: the twelve shipped language lists go **from 125.8 ms to 77.4 ms
-   * > total**, the thin tail improves far more (Danish 197.0 -> 70.1 ms, Thai 308.8 -> 116.2
-   * > ms), and the PREFERENCE query the caution above exists to protect **did not regress** --
+   * > thing that changed: the twelve language lists that shipped that day go **from 125.8 ms
+   * > to 77.4 ms total**, the thin tail improves far more (Danish 197.0 -> 70.1 ms, Thai
+   * > 308.8 -> 116.2 ms), and the PREFERENCE query the caution above exists to protect
+   * > **did not regress** --
    * > its plan stayed `SEARCH t USING INDEX ix_rank` with a correlated covering seek, and it
    * > measured 1.9 ms rather than the 1,014 ms of the shape that was withdrawn. 16.5 MB on
    * > disk, which this project trades for render-path time without hesitating.
+   * >
+   * > **It still earns those bytes now that the language lists have stopped reading it**, and
+   * > that was asked rather than assumed: `ix_lang_rank` below took the lists off this index
+   * > entirely, so the obvious next move was to reclaim it. Measured 2026-09-06 by dropping it
+   * > from a copy of the real index, `/browse?lang=en&kind=movie&sort=rank` goes **194 ms to
+   * > 249 ms** -- English is the one language the denormalised path declines, so it is still
+   * > this index's caller. The lists themselves do not move at all.
    *
    * > [!IMPORTANT] `ix_lang_rank` is the THIRD, and it is the one a language LIST actually wants
    * > `ix_lang_code` made the `not exists` half of a list affordable, but the query still
@@ -606,6 +614,12 @@ export const INDEXES = {
    * > predicate a browse writes binds `lang` as a parameter -- SQLite cannot prove a bound
    * > parameter satisfies a partial index's condition, so a partial index on `lang` would
    * > simply never be used. The measurements are in `LIST_LANGUAGES`.
+   * >
+   * > WHAT IT COSTS THE BUILD, measured 2026-09-06 by running the stage both ways over the
+   * > real 1,288,159 rows: the load goes 1.9s to 3.4s and the indexes 0.9s to 1.6s, so **+2.1
+   * > seconds**, and the file grows by 16.6 MB of table and 28.7 MB of index on 1.79 GB. That
+   * > is the price rather than an objection -- see `.claude/CLAUDE.md` on runtime beating
+   * > build time -- and it buys 1,839 ms of render path per `/api/lists/completion`.
    */
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",

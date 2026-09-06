@@ -139,44 +139,87 @@ export interface ListLanguage {
 }
 
 /**
- * The languages worth a list, and what each one costs to draw.
+ * The languages worth a list, and the one rule that decides which those are.
  *
- * CLOSED and editorial, exactly like `LIST_GENRES` -- but unlike genres there is a second,
- * measured constraint, because every list here is one more ranked query inside the single
- * `/api/lists/completion` request. Measured 2026-09-06 through `SearchEngine.rankedMembers`
- * against a copy of the real 1,288,159-row index, milliseconds to resolve a full 250-title
- * membership: Hindi 2.9, Japanese 3.5, Tamil 4.4, French 4.5, Malayalam 5.9, Spanish 6.2,
- * Italian 6.3, Russian 6.5, German 6.9, Bengali 8.5, Korean 10.6, Portuguese 11.2.
- * **Twelve of them, totalling 77.4 ms** against 11.4 ms for the other twenty-one lists put
- * together in the same run -- see `completionPayload`, which owns that budget.
+ * CLOSED and editorial, exactly like `LIST_GENRES`, and now editorial in the way that array
+ * is: **a language gets a list when it has at least `LIST_SIZE` ranked non-English films**,
+ * so "you own 12 of 250" names a denominator that exists. Nothing else is weighed. There is
+ * exactly one exception and it is stated below.
  *
- * The cost is set by how deep into the rank order a language's 250th film sits, so a language
- * with a THIN catalogue is the expensive one: measured on the same copy, Swedish is 45.5 ms
- * on its own, Chinese 62.9, Danish 70.1, Finnish 72.4. Those are the languages this list
- * leaves out -- not because nobody wants them, but because one of them costs as much as six
- * of these. Fixing that properly means denormalising `rank` into `title_lang` the way
- * `title_genre` already carries `votes` and `year`, which is its own card
- * (`language-lists-the-thin-tail-costs-more-than-the-dense-head-`) and not this one.
+ * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why there are forty
+ * > of these rather than twelve
+ * > A language list is `browseSql`'s ranked shape plus "in this language and not also in
+ * > English". Against `title` that is a walk DOWN the rank order until 250 films of the
+ * > language have accumulated, so the price was set by how deep a language's 250th film sat
+ * > and the THINNEST catalogues were the expensive ones -- Finnish alone cost as much as the
+ * > twelve shipped lists put together. `title_lang` now carries `kind`, `rank` and
+ * > `non_english` (see `ORIGIN_SCHEMA`) and `ix_lang_rank` reads 250 rows in output order, so
+ * > every list here costs the same whatever its language's catalogue looks like.
+ * >
+ * > Measured 2026-09-06 through `SearchEngine.rankedMembers` on a copy of the real
+ * > 1,288,159-row index, on an M1 Max, with the index the only thing that changed. The
+ * > shipped twelve, milliseconds for a full 250-title membership: **74.2 ms before, 2.80 ms
+ * > after.** The tail that was left out is where it shows: Finnish 76.5 -> 0.23, Danish
+ * > 75.3 -> 0.25, Norwegian 68.8 -> 0.25, Ukrainian 61.4 -> 0.24, Swedish 47.2 -> 0.24,
+ * > Dutch 41.2 -> 0.26, Persian 34.2 -> 0.25, Polish 30.5 -> 0.25. **Every language measured
+ * > lands between 0.21 and 0.26 ms**, which is the shape of the change: the cost stopped
+ * > depending on the language at all. `completionPayload` owns the whole-request figure.
  *
- * **Chinese is the omission worth explaining, because its number is misleading.** `zh` reaches
- * only 298 ranked non-English films, not because the corpus lacks Chinese cinema but because
- * P364 records most of it under codes with no two-letter ISO 639-1 form, and `parseOriginCsv`
- * keeps only two-letter codes. Drawing a "Best films in Chinese" from a set we know is
- * undercounted by an order of magnitude would be a list that quietly misrepresents itself.
+ * **Chinese is the one exception, and it is a DATA exclusion rather than a cost one.** `zh`
+ * reaches a full 250 and would now cost 0.26 ms like everything else, so nothing about the
+ * measurement keeps it out. P364 records most Chinese-language cinema under codes with no
+ * two-letter ISO 639-1 form and `parseOriginCsv` keeps only two-letter codes, so the set is
+ * undercounted by an order of magnitude and a "Best films in Chinese" drawn from it would
+ * quietly misrepresent itself. Widening the crosswalk is its own card
+ * (`widen-parseorigincsv-past-two-letter-language-codes-so-zh-an`); when it lands, `zh`
+ * belongs here.
+ *
+ * Greek needs no exception: `el` reaches 3 ranked non-English films on the same index, so the
+ * floor above excludes it. Whether 3 is the truth about the corpus or another crosswalk gap
+ * is the same question that card asks.
  */
 export const LIST_LANGUAGES: readonly ListLanguage[] = [
+  { code: "sq", name: "Albanian" },
+  { code: "ar", name: "Arabic" },
   { code: "bn", name: "Bengali" },
+  { code: "bg", name: "Bulgarian" },
+  { code: "ca", name: "Catalan" },
+  { code: "hr", name: "Croatian" },
+  { code: "cs", name: "Czech" },
+  { code: "da", name: "Danish" },
+  { code: "nl", name: "Dutch" },
+  { code: "et", name: "Estonian" },
+  { code: "fi", name: "Finnish" },
   { code: "fr", name: "French" },
   { code: "de", name: "German" },
+  { code: "he", name: "Hebrew" },
   { code: "hi", name: "Hindi" },
+  { code: "hu", name: "Hungarian" },
+  { code: "id", name: "Indonesian" },
   { code: "it", name: "Italian" },
   { code: "ja", name: "Japanese" },
+  { code: "kn", name: "Kannada" },
   { code: "ko", name: "Korean" },
+  { code: "ms", name: "Malay" },
   { code: "ml", name: "Malayalam" },
+  { code: "mr", name: "Marathi" },
+  { code: "no", name: "Norwegian" },
+  { code: "or", name: "Odia" },
+  { code: "fa", name: "Persian" },
+  { code: "pl", name: "Polish" },
   { code: "pt", name: "Portuguese" },
+  { code: "pa", name: "Punjabi" },
+  { code: "ro", name: "Romanian" },
   { code: "ru", name: "Russian" },
+  { code: "sr", name: "Serbian" },
+  { code: "si", name: "Sinhala" },
   { code: "es", name: "Spanish" },
+  { code: "sv", name: "Swedish" },
   { code: "ta", name: "Tamil" },
+  { code: "te", name: "Telugu" },
+  { code: "th", name: "Thai" },
+  { code: "tr", name: "Turkish" },
+  { code: "uk", name: "Ukrainian" },
 ];
 
 /**
