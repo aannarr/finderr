@@ -11,6 +11,7 @@
 // `import type` is erased under `verbatimModuleSyntax`: no server module reaches the
 // bundle and the browser pays nothing for it.
 import type { ArrLink } from "../../../src/lib/arr-links";
+import type { AwardMark } from "../../../src/lib/award-marks";
 import type { CollectionSummary } from "../../../src/lib/collections";
 import type { EpisodeState } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
@@ -37,6 +38,7 @@ import type { FacetName, FacetProblem, ResolvedFacets } from "./facets";
 
 export type {
   ArrLink,
+  AwardMark,
   CollectionSummary,
   EpisodeState,
   HiddenByFloor,
@@ -140,6 +142,15 @@ export interface Title extends RequestStateView {
    * and only the Plex mirror knows the difference.
    */
   plex: PlexLinks | null;
+  /**
+   * The top prize this title WON, or null -- Best Picture, the Palme d'Or, Outstanding
+   * Drama Series. Never a nomination, which would land on thousands of titles.
+   *
+   * Three small fields and no prize NAME: the browser already holds the registry, so
+   * `AwardChip` resolves what the award is called and how it numbers its editions through
+   * `awardById`. Sending the label per card would be forty copies of one string in a grid.
+   */
+  award: AwardMark | null;
 }
 
 export interface Facets {

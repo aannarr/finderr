@@ -43,6 +43,7 @@ const TITLE: Title = {
   studio: null,
   studioLogo: null,
   plex: null,
+  award: null,
 };
 
 /**

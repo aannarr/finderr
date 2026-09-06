@@ -43,6 +43,7 @@ const TITLE: Title = {
   studio: null,
   studioLogo: null,
   plex: null,
+  award: null,
 };
 
 /** The same title, with artwork. The server hands the client a same-origin path, never an upstream URL. */

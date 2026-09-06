@@ -19,6 +19,7 @@ import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { attributedRequest, isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
 import { AuthStore } from "../lib/auth-store";
+import { AwardMarkIndex } from "../lib/award-marks";
 import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry";
 import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
@@ -771,7 +772,21 @@ async function refreshAwards(defs: readonly AwardDef[] = AWARDS): Promise<void> 
     if (r.meta) log(`awards: ${r.def.id} -- ${r.meta.rows.toLocaleString()} rows`);
     else log(`awards: ${r.def.id} import failed -- ${r.error?.message}`);
   }
+  // The rows the marks were built from have just been swapped. Unconditional, even when
+  // every award failed: a failed import leaves the previous rows standing, so re-reading
+  // them is free and cheaper than deciding whether it was worth it.
+  log(`awards: ${awardMarks.refresh().toLocaleString()} titles carry a mark`);
 }
+
+/**
+ * The anchor winners, in memory, so a title card costs no query to mark. See `AwardMarkIndex`.
+ *
+ * Built HERE rather than lazily on first use, beside the import that is the only thing that
+ * can invalidate it -- `refreshAwards` above owns the refresh and is the sole caller. A
+ * `bun run awards:import` in its own process writes rows this one will not see until the
+ * daily refresh, which is the honest cost of holding the set in memory and is a day at worst.
+ */
+const awardMarks = new AwardMarkIndex(store);
 
 // Only the awards with a COLD table. A redeploy keeps its data directory, so re-importing
 // everything on every boot would re-download 2.2 MB to write rows that are already there --
@@ -1036,6 +1051,14 @@ function decorate<T extends TitleRow>(rows: T[]) {
       studio: art?.studio ?? null,
       studioLogo: logos.urlForTitle(r.kind, art?.studio),
       plex: playLink(r.tconst),
+      /*
+        Did this win Best Picture, the Palme d'Or, Outstanding Drama Series -- a Map read
+        and no query, which is the only reason a mark can be afforded on every card in the
+        product. The award tables are in the app database and these rows come from the title
+        index, so a per-card join is not even available across the two connections; the whole
+        winner set is ~200 rows and lives in memory. See `AwardMarkIndex`.
+      */
+      award: awardMarks.get(r.tconst),
     };
   });
 }
