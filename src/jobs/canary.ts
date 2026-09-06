@@ -13,10 +13,16 @@
  * so a card whose acceptance says "canary unchanged" was asking for something no documented
  * command could produce. It answers in about two seconds against the real 1.27M-row index.
  *
- * DELIBERATELY NOT PART OF `bun run test`. It needs a built index, which CI, the Docker
- * build and a fresh worktree do not have, so wiring it into the four-command gate would
- * make that gate fail for the wrong reason -- which is the exact defect this job's own
- * degraded-tier reporting exists to end.
+ * DELIBERATELY NOT PART OF `bun run test`, and that is still right: it needs a built index,
+ * which CI, the Docker build and a fresh worktree do not have, so a red `bun run test` there
+ * would be red for the wrong reason -- the exact defect this job's own degraded-tier
+ * reporting exists to end.
+ *
+ * **`bun run gate` runs it anyway, and that is the difference.** Staying out of `test` was
+ * read as staying out of every gate, so for a long time nothing ran these queries except an
+ * index build -- a gate on the DATA and never on the CODE. `src/jobs/gate.ts` runs the four
+ * commands and then this one, treating the exit 2 below as "NOT MEASURED, loudly" rather than
+ * as either a pass or a failure.
  *
  * Exits 0 when the suite is at or above the floor and 1 when it is not, so it works in a
  * gate and not only by eye. A missing index file is exit 2: "I could not measure" is a

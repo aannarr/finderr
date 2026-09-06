@@ -251,10 +251,28 @@ describe("how a tool call reads", () => {
 
   /** A row that could be about anything is a row nobody can follow. */
   test("the subject is the argument worth reading, not all of them", () => {
-    expect(toolSubject("find_title", { name: "Heat", year: 1995, match: "loose" })).toBe('"Heat" · 1995');
+    expect(toolSubject("find_title", { name: "Heat", year: 1995 })).toBe('"Heat" · 1995');
     expect(toolSubject("list_episodes", { tconst: "tt0944947", season: 2, limit: 200 })).toBe(
       '"tt0944947" · 2',
     );
+  });
+
+  /**
+   * `match` USED TO BE FILTERED OUT HERE, and this test asserted that it was.
+   *
+   * The rule it was defending is still right -- the subject is the interesting argument, not
+   * every argument -- but `match` had been filed under diagnostics on the assumption that a
+   * reader never needs it. A retry at `match: "loose"` is the DOCUMENTED response to a strict
+   * search finding nothing, so the two calls carry the same `name` and differ only here, and
+   * the transcript drew them as two identical rows reporting 0 matches and 5 matches. An
+   * argument that makes two otherwise-identical rows disagree is the definition of one worth
+   * reading. Reported by aannarr, 2026-09-06.
+   */
+  test("a strict and a loose search of the same name do not render identically", () => {
+    const strict = toolSubject("find_title", { name: "Andrenochrome", match: "strict" });
+    const loose = toolSubject("find_title", { name: "Andrenochrome", match: "loose" });
+    expect(strict).not.toBe(loose);
+    expect(loose).toBe('"Andrenochrome" · "loose"');
   });
 
   test("a tool with no arguments has no subject rather than an empty one", () => {
