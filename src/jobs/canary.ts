@@ -49,12 +49,58 @@ const NO_INDEX = 2;
  */
 const DEV_FLOOR = 1;
 
+/**
+ * The configured index, or the checkout's own `./data` one if that is where it actually is.
+ *
+ * > [!IMPORTANT] Without this the gate says NOT MEASURED on the one machine that CAN measure
+ * > `config.dataDir` defaults to `/data` and is validated as an absolute path, because that is
+ * > where `docker-compose.yml` mounts the volume -- correct for the container and wrong for
+ * > every developer, whose index sits at `./data/titles.db` beside the repo. So a checkout
+ * > with no `FINDERR_DATA_DIR` exported looked for `/data/titles.db`, found nothing, and
+ * > reported "could not measure" while a 1.8 GB index sat one directory away. Measured on main
+ * > immediately after the gate landed, 2026-09-06, which is exactly the shape of quiet
+ * > non-check the gate exists to end.
+ *
+ * The fallback is READ-ONLY and job-local. `config.dataDir` is not touched: changing that
+ * default would move the server's database, the poster cache and the build's scratch space to
+ * follow a convenience for one script.
+ *
+ * **A WORKTREE IS THE CASE THAT MATTERS**, and it is the third candidate. The WORK MODE
+ * covenant puts every change in `.claude/worktrees/<name>/`, so that is where the gate
+ * actually runs -- and a worktree has its own `node_modules`, its own `spellfix1.dylib` and
+ * NO `data/`. Finding only the checkout's own `./data` would mean the suite never measured
+ * anything on the branch where the search was being changed. The parent checkout is a fixed
+ * distance up (`<root>/.claude/worktrees/<name>`), so it is derived rather than guessed at.
+ *
+ * Reading the live index from a worktree is safe and is what the dev server already does: the
+ * engine opens it `readonly` with `query_only`, and the corruption this repo has twice paid
+ * for needs two WRITERS. It also means the branch is measured against the same corpus the
+ * deployment serves, which is the point.
+ *
+ * An explicit path argument always wins and is never second-guessed -- pointing this at a
+ * candidate or at somebody else's copy is the reason it takes one.
+ */
+export function findIndex(configured: string, cwd: string = process.cwd()): string {
+  const worktreeAt = cwd.indexOf("/.claude/worktrees/");
+  for (const candidate of [
+    configured,
+    `${cwd}/data/titles.db`,
+    ...(worktreeAt === -1 ? [] : [`${cwd.slice(0, worktreeAt)}/data/titles.db`]),
+  ]) {
+    if (Bun.file(candidate).size) return candidate;
+  }
+  // Nothing found: report against the CONFIGURED path, because "no index at /data/titles.db"
+  // is the sentence that tells a container operator what is wrong.
+  return configured;
+}
+
 export function main(argv: readonly string[] = Bun.argv.slice(2)): number {
   const cfg = loadConfig();
   // The path is the first argument that is not a flag. Reading `argv[0]` blindly made
   // `bun run canary --timings` report "no index at --timings", which is a confusing way to
   // say "that was a flag".
-  const dbPath = argv.find((a) => !a.startsWith("--")) ?? paths(cfg).db;
+  const explicit = argv.find((a) => !a.startsWith("--"));
+  const dbPath = explicit ?? findIndex(paths(cfg).db);
 
   if (!Bun.file(dbPath).size) {
     console.error(`[canary] no index at ${dbPath} -- build one with \`bun run index:build\``);
