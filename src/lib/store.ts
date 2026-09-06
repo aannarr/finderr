@@ -23,6 +23,7 @@ import {
   type SearchRow,
 } from "./search-log";
 import { encodeSeasons } from "./seasons";
+import { applyShelfPreferenceSchema } from "./shelf-preferences";
 import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 import type { TermPair } from "./terms";
 import { applyWatchlistSchema } from "./watchlist";
@@ -879,6 +880,9 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     // resolves a foreign key at INSERT time -- so the wrong order here fails on somebody's
     // first save rather than here. See `WATCHLIST_SCHEMA`.
     applyWatchlistSchema(this.db);
+    // Same rule, same reason: `shelf_pref` cascades off `app_user`. See
+    // `SHELF_PREFERENCE_SCHEMA`.
+    applyShelfPreferenceSchema(this.db);
     addMissingColumns(this.db, ADDED_COLUMNS);
   }
 

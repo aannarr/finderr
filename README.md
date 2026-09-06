@@ -1057,7 +1057,10 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered, plus `people` — matching names, best known first. The facet chips narrow the titles only. `people` is absent, not empty, on an index built before it carried a people index |
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
 | `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
-| `GET` | `/api/discover` | the front-page shelves, pure index queries |
+| `GET` | `/api/discover` | the front-page shelves, pure index queries, in the order the caller arranged them and without the ones they hid |
+| `GET` | `/api/shelves/preference` | every shelf you could arrange, in your order, hidden ones included and marked -- a page that omitted them would make hiding a one-way door. `customised` says whether any of it is yours |
+| `PUT` | `/api/shelves/preference` `{shelves:[{id,hidden?}]}` | save an arrangement. The body is the whole preference, so saving twice leaves the same page. Answers with the same payload the `GET` does, already resolved: an id no shelf carries any more is dropped, and a shelf you never mentioned is back where the release put it |
+| `DELETE` | `/api/shelves/preference` | back to the shipped default. Resetting something you never arranged answers the default page rather than a `404` |
 | `GET` | `/api/agent/chat` | whether the assistant is available to you and which model answers. `404` when no key is configured and `404` when you are not signed in, because a surface you may not use does not announce itself |
 | `POST` | `/api/agent/chat` | one turn. Streams the run as SSE when `Accept` asks for it and returns plain JSON otherwise, from one route, because they are one operation with one gate, one ledger and one memory |
 | `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
@@ -1174,8 +1177,11 @@ Every line here is a real limitation. It is not a roadmap.
 - English only. The UI has no translation layer and synopses arrive in English from
   upstream. The facet vocabulary carries `language` and `country`, so a translated-synopsis
   addon is possible today; the app's own chrome is not translatable yet.
-- The front page is the same for everyone. Shelves come from the index and the library;
-  no watch history, no "because you watched", no personalisation.
+- The front page has no screen for arranging it yet. The server side is there --
+  `/api/shelves/preference` stores your order and the shelves you hid, and `/api/discover`
+  serves the page that way -- but nothing in the UI calls it, so in a browser the page is
+  still the same for everyone. What it will never be is a recommendation: shelves come from
+  the index and the library, with no watch history and no "because you watched".
 - Installed, it still needs the server to be reachable. The service worker keeps posters
   and bundles on the device and restores the front page you left, but HTML is deliberately
   never cached -- which shell this origin serves depends on your session cookie -- so

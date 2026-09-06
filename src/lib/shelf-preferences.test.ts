@@ -1,0 +1,299 @@
+/**
+ * A reader's own front page: what is stored, and what it resolves to.
+ *
+ * Four properties carry this feature and the rest is SQL doing its job:
+ *
+ *  1. A reader who has never touched it gets TODAY'S PAGE BACK UNCHANGED -- the same shelves
+ *     in the same order, not an equivalent list. Everything else here is a change to what
+ *     somebody asked to change; this is the promise made to everybody who did not.
+ *  2. A shelf a release ADDS appears for a reader who has customised, in the position the
+ *     release put it. The stored list is an ordering hint and never an allow-list.
+ *  3. A stored id that no longer names a shelf is ignored rather than thrown. Genre shelves
+ *     rotate nightly, so this is the ordinary state.
+ *  4. The resolved page is always a SUBSET of the shipped page, which is what lets the warm
+ *     loop keep warming the shipped page and still cover every reader. The day this file
+ *     starts selecting shelves rather than ordering them, that test is what notices.
+ */
+
+import { Database } from "bun:sqlite";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { AuthStore, applyAuthSchema } from "./auth-store";
+import {
+  applyShelfPreference,
+  applyShelfPreferenceSchema,
+  MAX_SHELF_CHOICES,
+  parseShelfChoices,
+  type ShelfPreference,
+  ShelfPreferenceStore,
+  shelfCatalogue,
+} from "./shelf-preferences";
+
+/**
+ * The two schemas in the order `Store`'s constructor applies them, with the pragma it sets.
+ *
+ * `foreign_keys` is not optional and neither is the ORDER -- the cascade is a comment without
+ * the pragma, and the foreign key resolves to a missing table if the schemas are swapped.
+ * Both mistakes pass a test that opens the databases separately.
+ */
+function open(): { auth: AuthStore; prefs: ShelfPreferenceStore } {
+  const db = new Database(":memory:");
+  db.run("pragma foreign_keys = on");
+  applyAuthSchema(db);
+  applyShelfPreferenceSchema(db);
+  return { auth: new AuthStore(db), prefs: new ShelfPreferenceStore(db) };
+}
+
+let auth: AuthStore;
+let prefs: ShelfPreferenceStore;
+let ada: string;
+let grace: string;
+
+beforeEach(() => {
+  ({ auth, prefs } = open());
+  ada = auth.createUser({ displayName: "Ada", role: "user" }).id;
+  grace = auth.createUser({ displayName: "Grace", role: "user" }).id;
+});
+
+/** The shipped page, as far as the resolver is concerned: ids in the server's order. */
+const SHIPPED = [
+  { id: "recently-added", title: "Recently added to your library" },
+  { id: "trending", title: "Popular right now" },
+  { id: "top-250", title: "finderr Top 250" },
+  { id: "genre-horror", title: "Best in Horror" },
+];
+
+/** A preference in reading order, everything visible unless named in `hide`. */
+function pref(order: string[], hide: string[] = []): ShelfPreference {
+  return order.map((id) => ({ id, hidden: hide.includes(id) }));
+}
+
+const ids = (shelves: readonly { id: string }[]) => shelves.map((s) => s.id);
+
+describe("storing a preference", () => {
+  test("it comes back in the order it was saved, hidden flags intact", () => {
+    prefs.replace(ada, pref(["trending", "recently-added"], ["recently-added"]));
+    expect(prefs.read(ada)).toEqual([
+      { id: "trending", hidden: false },
+      { id: "recently-added", hidden: true },
+    ]);
+  });
+
+  test("saving again replaces the whole list rather than merging into it", () => {
+    prefs.replace(ada, pref(["trending", "recently-added", "top-250"]));
+    prefs.replace(ada, pref(["top-250", "trending"]));
+    // `recently-added` is GONE, not sitting at position 1 where nothing on screen could
+    // reach it. That is the difference between replace and upsert.
+    expect(ids(prefs.read(ada))).toEqual(["top-250", "trending"]);
+  });
+
+  test("a reader who has never touched it has no preference", () => {
+    expect(prefs.read(ada)).toEqual([]);
+  });
+
+  test("one reader's arrangement is invisible to another", () => {
+    prefs.replace(ada, pref(["trending"]));
+    expect(prefs.read(grace)).toEqual([]);
+  });
+
+  test("reset reports whether there was anything to undo, and leaves nothing behind", () => {
+    prefs.replace(ada, pref(["trending"]));
+    expect(prefs.clear(ada)).toBe(true);
+    expect(prefs.read(ada)).toEqual([]);
+    expect(prefs.clear(ada)).toBe(false);
+  });
+
+  test("an empty list clears the preference rather than storing an empty page", () => {
+    prefs.replace(ada, pref(["trending"]));
+    prefs.replace(ada, []);
+    expect(prefs.read(ada)).toEqual([]);
+  });
+
+  test("only an account that exists can have a preference", () => {
+    expect(() => prefs.replace("nobody", pref(["trending"]))).toThrow();
+  });
+});
+
+describe("the account it belongs to", () => {
+  test("a deleted user takes their arrangement with them", () => {
+    prefs.replace(ada, pref(["trending"]));
+    prefs.replace(grace, pref(["top-250"]));
+    auth.deleteUser(ada);
+    expect(prefs.read(ada)).toEqual([]);
+    expect(prefs.stats()).toEqual({ readers: 1 });
+  });
+
+  test("stats counts readers and names none of them", () => {
+    expect(prefs.stats()).toEqual({ readers: 0 });
+    prefs.replace(ada, pref(["trending"]));
+    prefs.replace(grace, pref(["top-250"]));
+    expect(prefs.stats()).toEqual({ readers: 2 });
+  });
+});
+
+describe("a reader who never touched it", () => {
+  /*
+    THE REGRESSION TEST FOR EVERYBODY ELSE. Personalisation is worth nothing if it costs the
+    people who ignored it their front page, so this asserts identity rather than equivalence:
+    the same shelves, in the same order, unchanged.
+  */
+  test("gets today's page back, shelf for shelf", () => {
+    expect(applyShelfPreference(SHIPPED, [])).toEqual(SHIPPED);
+  });
+
+  test("and their catalogue is the shipped order with nothing hidden", () => {
+    expect(shelfCatalogue(SHIPPED, [])).toEqual(SHIPPED.map((s) => ({ ...s, hidden: false })));
+  });
+});
+
+describe("order and visibility", () => {
+  test("the page is drawn in the reader's order", () => {
+    const page = applyShelfPreference(
+      SHIPPED,
+      pref(["genre-horror", "top-250", "trending", "recently-added"]),
+    );
+    expect(ids(page)).toEqual(["genre-horror", "top-250", "trending", "recently-added"]);
+  });
+
+  test("a hidden shelf is off the page and still on the catalogue", () => {
+    const preference = pref(["recently-added", "trending", "top-250", "genre-horror"], ["trending"]);
+    expect(ids(applyShelfPreference(SHIPPED, preference))).not.toContain("trending");
+    // On the settings screen it is still there, marked -- otherwise hiding is a one-way door.
+    expect(shelfCatalogue(SHIPPED, preference)).toContainEqual({
+      id: "trending",
+      title: "Popular right now",
+      hidden: true,
+    });
+  });
+});
+
+describe("a release that changes the shelves", () => {
+  test("a NEW shelf appears for a reader who has customised", () => {
+    // Ada arranged the page before `genre-horror` existed.
+    const preference = pref(["top-250", "trending", "recently-added"]);
+    expect(ids(applyShelfPreference(SHIPPED, preference))).toContain("genre-horror");
+  });
+
+  test("a new shelf lands where the release put it, not at the bottom", () => {
+    // `genre-horror` follows `top-250` in the shipped order, so it follows it here -- a new
+    // genre row belongs among the genre rows rather than demoted below everything.
+    const page = applyShelfPreference(SHIPPED, pref(["top-250", "trending", "recently-added"]));
+    expect(ids(page)).toEqual(["top-250", "genre-horror", "trending", "recently-added"]);
+  });
+
+  test("a new shelf shipped at the head of the page stays at the head", () => {
+    const page = applyShelfPreference(SHIPPED, pref(["trending", "top-250", "genre-horror"]));
+    expect(ids(page)).toEqual(["recently-added", "trending", "top-250", "genre-horror"]);
+  });
+
+  test("a stored id the release retired is ignored rather than thrown", () => {
+    const page = applyShelfPreference(
+      SHIPPED,
+      pref(["genre-westerns", "trending", "recently-added", "top-250", "genre-horror"]),
+    );
+    expect(ids(page)).toEqual(["trending", "recently-added", "top-250", "genre-horror"]);
+  });
+
+  test("a preference whose every shelf is gone degrades to the shipped page", () => {
+    expect(applyShelfPreference(SHIPPED, pref(["genre-westerns", "genre-noir"]))).toEqual(SHIPPED);
+  });
+
+  test("hiding a shelf that no longer exists changes nothing", () => {
+    expect(applyShelfPreference(SHIPPED, pref(["genre-westerns"], ["genre-westerns"]))).toEqual(SHIPPED);
+  });
+});
+
+describe("what the warm loop is allowed to assume", () => {
+  /*
+    THE PROPERTY THE WARM LOOP RESTS ON.
+
+    `warmShelves` warms the SHIPPED page and `/api/health` reports coverage against it. That is
+    only honest while no reader can see a shelf the shipped page does not carry -- a preference
+    that could ADD one would hand somebody a cold shelf with nothing on `/api/health` to say
+    so. Ordering and hiding cannot, and this is where that stops being an argument.
+  */
+  test("every arrangement resolves to a subset of the shipped page", () => {
+    const arrangements: ShelfPreference[] = [
+      [],
+      pref(["genre-horror", "recently-added"]),
+      pref(["trending"], ["trending"]),
+      pref(["genre-westerns", "top-250"], ["top-250"]),
+      pref(["recently-added", "trending", "top-250", "genre-horror"], ["recently-added", "top-250"]),
+    ];
+    const shipped = new Set(ids(SHIPPED));
+    for (const arrangement of arrangements) {
+      const page = applyShelfPreference(SHIPPED, arrangement);
+      expect(page.every((shelf) => shipped.has(shelf.id))).toBe(true);
+      // And never twice, however the reader arranged it -- a duplicated shelf would be warmed
+      // once and drawn twice, which is the other way this could go wrong.
+      expect(new Set(ids(page)).size).toBe(page.length);
+    }
+  });
+});
+
+describe("reading an arrangement off a request body", () => {
+  test("the ordinary body, with hidden defaulting to visible", () => {
+    expect(parseShelfChoices({ shelves: [{ id: "trending" }, { id: "top-250", hidden: true }] })).toEqual({
+      choices: [
+        { id: "trending", hidden: false },
+        { id: "top-250", hidden: true },
+      ],
+    });
+  });
+
+  test("an empty list is a valid arrangement -- it is how a reset arrives from an old client", () => {
+    expect(parseShelfChoices({ shelves: [] })).toEqual({ choices: [] });
+  });
+
+  /*
+    AN ID NOTHING CURRENTLY SHIPS IS ACCEPTED, and that is the decision rather than an
+    oversight: the genre rows rotate with the nightly index build, so an id that was real when
+    the browser drew the page can be gone by the time the reader presses save. It is ignored on
+    the way out instead -- see the retired-shelf tests above.
+  */
+  test("an id no shelf currently carries is accepted rather than refused", () => {
+    expect(parseShelfChoices({ shelves: [{ id: "genre-westerns" }] })).toEqual({
+      choices: [{ id: "genre-westerns", hidden: false }],
+    });
+  });
+
+  test.each([
+    ["not an object", "list", "body must be an object"],
+    ["no shelves key", {}, "shelves must be an array"],
+    ["shelves is not an array", { shelves: "trending" }, "shelves must be an array"],
+    ["an entry is not an object", { shelves: ["trending"] }, "each shelf must be an object"],
+    ["an entry has no id", { shelves: [{ hidden: true }] }, "each shelf needs a non-empty id"],
+    ["an entry has an empty id", { shelves: [{ id: "" }] }, "each shelf needs a non-empty id"],
+    ["hidden is not a boolean", { shelves: [{ id: "trending", hidden: 1 }] }, "hidden must be a boolean"],
+    [
+      "the same shelf twice",
+      { shelves: [{ id: "trending" }, { id: "trending", hidden: true }] },
+      "trending is listed twice",
+    ],
+  ])("refuses %s", (_name, body, error) => {
+    expect(parseShelfChoices(body)).toEqual({ error });
+  });
+
+  test("refuses a list longer than the page could ever be", () => {
+    const shelves = Array.from({ length: MAX_SHELF_CHOICES + 1 }, (_, i) => ({ id: `shelf-${i}` }));
+    expect(parseShelfChoices({ shelves })).toEqual({
+      error: `shelves must name at most ${MAX_SHELF_CHOICES} shelves`,
+    });
+  });
+
+  test("refuses an id longer than any shelf we ship", () => {
+    expect(parseShelfChoices({ shelves: [{ id: "x".repeat(101) }] })).toEqual({
+      error: "a shelf id that long is not one of ours",
+    });
+  });
+});
+
+describe("stored and resolved are the same page", () => {
+  test("a round trip through SQLite draws what was arranged", () => {
+    prefs.replace(ada, pref(["genre-horror", "top-250", "trending", "recently-added"], ["trending"]));
+    expect(ids(applyShelfPreference(SHIPPED, prefs.read(ada)))).toEqual([
+      "genre-horror",
+      "top-250",
+      "recently-added",
+    ]);
+  });
+});
