@@ -133,6 +133,7 @@ import { despace, normalizeStripped } from "./normalize";
 import { buildPersonSearchIndex } from "./people";
 import { POPULAR_TITLE_INDEX } from "./search-stopwords";
 import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
+import { buildVocabTrigrams } from "./vocab-trigrams";
 
 export interface BuildStats {
   scanned: number;
@@ -1636,6 +1637,10 @@ export function buildVocabulary(db: Database, cfg: Config, log: (m: string) => v
   }
   db.run("commit");
   db.run(`create index ix_vocab_map on ${SPELLFIX_MAP_TABLE}(rowid_)`);
+
+  // The second shortlist over the same words. `./vocab-trigrams.ts` owns why there are two
+  // and what the union measured; here it only matters that it reads the table just built.
+  buildVocabTrigrams(db, log);
 
   // Record the floor the vocabulary was actually built at. The running server compares
   // it against its own config: changing FINDERR_INDEX_FUZZY_MIN_VOTES without rebuilding
