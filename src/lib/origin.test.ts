@@ -445,7 +445,7 @@ describe("a language LIST seeks ix_lang_rank rather than walking the rank order"
 
       `non_english` sits AFTER `rank desc`, which is what admits English -- the one language
       that constrains it not at all. Moving it back in front would restore an index that
-      serves the forty-four lists and cannot serve `?lang=en` at all: see `langListJoin`.
+      serves every foreign-language list and cannot serve `?lang=en` at all: see `langListJoin`.
     */
     expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, rank desc, non_english)");
   });
