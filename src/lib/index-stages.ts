@@ -290,8 +290,15 @@ export const INDEX_STAGES = {
    * own lights and answers every query, it just answers some of them with a tenth of the
    * catalogue. That is the more dangerous half of what this stamp is for, and it is why the
    * recipe describes the configuration that produced a stage rather than the columns it left.
+   *
+   * **v5 (2026-09-06) reorders `ix_lang_rank` to `(lang, kind, rank desc, non_english)`**, so
+   * `?lang=en` can drive from `title_lang` like every other language -- see `INDEXES.origin`
+   * and `langListJoin`. Neither the data nor the answers change, and a v4 file serves every
+   * one of them correctly; what it cannot do is serve English in 2 ms rather than 78, because
+   * its sort column sits behind a column that browse cannot constrain. Same argument as v2:
+   * an index-only bump is still a bump when nothing on screen would say which shape drew it.
    */
-  origin: () => JSON.stringify({ v: 4 }),
+  origin: () => JSON.stringify({ v: 5 }),
 
   /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it

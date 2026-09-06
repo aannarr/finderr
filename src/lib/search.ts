@@ -1989,10 +1989,10 @@ function browseSql(
 
     A named language on a file carrying the denormalised columns stops being a predicate
     applied to `title` and becomes the table the query DRIVES FROM: `ix_lang_rank(lang, kind,
-    non_english, rank desc)` fixes three equality columns and reads the fourth in output
-    order, so 250 rows are 250 rows read. See `langListJoin` for the two cases it declines.
+    rank desc, non_english)` fixes two equality columns and reads the third in output order,
+    so 250 rows are 250 rows read. See `langListJoin` for the three cases it declines.
   */
-  const langJoin = langListJoin(f, langRank);
+  const langJoin = langListJoin(f, langRank, sort);
   /*
     WHICH TABLE'S COPY OF `votes` -- exactly the question `ranked` answers below for `rank`,
     and it decides the whole cost of a genre browse.
@@ -2167,8 +2167,15 @@ function browseSql(
       `1` is a LITERAL rather than a bound parameter, so `explain query plan` shows the
       predicate as a constrained index column -- a bound one would still work, and would make
       the plan unreadable to the test that pins it.
+
+      ENGLISH TAKES ONLY THE FIRST HALF, and it is the same rule rather than an exception:
+      "in this language and not also in English" reads, for English, as "in English", so the
+      `not exists` half is vacuous. The branch below writes exactly that on the `exists` path
+      and has since the language filter shipped -- this is one membership rule spelled in two
+      places, not two rules.
     */
-    where.push("l.lang = ?", "l.non_english = 1");
+    where.push("l.lang = ?");
+    if (f.lang !== ENGLISH_LANG) where.push("l.non_english = 1");
     args.push(f.lang);
   } else if (f.lang !== undefined) {
     where.push(`exists (${langIn([f.lang])})`);
@@ -2202,18 +2209,29 @@ function browseSql(
 /**
  * The join a NAMED language takes when the file can serve it from `title_lang`, or `""`.
  *
- * Two cases decline it, and neither is a capability:
+ * ONE case declines it, and it is not a capability: **no `lang` at all**. A deployment
+ * PREFERENCE is a list of codes covering 81% of the corpus (`UNKNOWN_LANG` is in it), so
+ * driving from `title_lang` would read most of the table -- which is the 1,014 ms shape
+ * `INDEXES.origin` documents at length. A preference stays a correlated `exists`, and that is
+ * measured rather than conservative.
  *
- * - **No `lang` at all.** A deployment PREFERENCE is a list of codes covering 81% of the
- *   corpus (`UNKNOWN_LANG` is in it), so driving from `title_lang` would read most of the
- *   table -- which is the 1,014 ms shape `INDEXES.origin` documents at length. A preference
- *   stays a correlated `exists`, and that is measured rather than conservative.
- * - **`?lang=en`.** English is the one language with no `not exists` half, so its rows sit
- *   on BOTH sides of `non_english` and the seek would have to read two ranges and sort them
- *   back together. The `exists` path already answers it in one predicate.
+ * > [!IMPORTANT] `?lang=en` used to decline it too, and reordering ONE index is what let it stop
+ * > English is the one language with no `not exists` half -- a title carrying an `en` row is
+ * > not foreign, including its own `en` row -- so its rows sit on BOTH sides of `non_english`.
+ * > Under the original `ix_lang_rank(lang, kind, non_english, rank desc)` that put `rank` after
+ * > a column English does not constrain, so the seek read two ranges and sorted them back
+ * > together, and declining the join was correct. `INDEXES.origin` now spells the index
+ * > `(lang, kind, rank desc, non_english)`, which puts the sort column before the one that is
+ * > sometimes free, so BOTH shapes are an ordered walk. The measurements are on that index.
+ * >
+ * > An index built before the reorder still answers correctly and pays the sort: 78 ms on the
+ * > browse below rather than 2 ms, against 199 ms for the `exists` path it replaced. So this
+ * > needs no capability of its own -- `langRank` already gates the join, the reorder makes it
+ * > faster, and `INDEX_STAGES.origin` rebuilds a stale file through the ordinary mechanism.
  */
-function langListJoin(f: BrowseFilters, langRank: boolean): string {
-  if (!langRank || f.lang === undefined || f.lang === ENGLISH_LANG) return "";
+function langListJoin(f: BrowseFilters, langRank: boolean, sort: BrowseSort): string {
+  if (!langRank || f.lang === undefined) return "";
+  if (sort !== "rank" || f.genre !== undefined) return "";
   return "join title_lang l on l.title_rowid = t.rowid_";
 }
 
