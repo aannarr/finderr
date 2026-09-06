@@ -260,15 +260,30 @@ describe("grouping by state", () => {
     expect(grouped([])).toEqual([]);
   });
 
-  test("the order is downloading, waiting, arrived, failed -- whatever order the rows arrive in", () => {
+  test("the order is downloading, waiting, arrived, failed, removed -- whatever order rows arrive in", () => {
     const groups = grouped([
+      { requestVerdict: "removed" },
       { requestVerdict: "failed" },
       { requestVerdict: "imported" },
       { requestVerdict: "queued" },
       { requestVerdict: "downloading", requestProgress: 0.1 },
     ]);
 
-    expect(groups.map((g) => g.bucket)).toEqual(["downloading", "waiting", "arrived", "failed"]);
+    expect(groups.map((g) => g.bucket)).toEqual(["downloading", "waiting", "arrived", "failed", "removed"]);
+  });
+
+  /*
+    THE DEFECT THIS PINS: a deleted film filed under "Arrived".
+
+    `removed` is `done` in TONE -- there is nothing left to wait for -- and every other bucket
+    is read off the tone, so the obvious implementation puts it beside the things a reader can
+    go and watch. It is the one verdict `bucketOf` names for itself, and this is why.
+  */
+  test("a removed request is not filed with the things that arrived", () => {
+    const groups = grouped([{ requestVerdict: "imported" }, { requestVerdict: "removed" }]);
+
+    expect(groups.map((g) => g.bucket)).toEqual(["arrived", "removed"]);
+    expect(groups.map((g) => g.rows.length)).toEqual([1, 1]);
   });
 
   /*
@@ -302,6 +317,7 @@ describe("grouping by state", () => {
       { requestVerdict: "queued" },
       { requestVerdict: "imported" },
       { requestVerdict: "failed" },
+      { requestVerdict: "removed" },
     ])) {
       expect(BUCKET_LABEL[bucket]).toBeTruthy();
     }

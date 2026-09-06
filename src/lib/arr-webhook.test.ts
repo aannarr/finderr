@@ -189,6 +189,7 @@ describe("nextStatusFor", () => {
     "failed",
     "no_release",
     "manual_import",
+    "removed",
   ];
 
   test("a grab is the first thing that has ever written the `grabbed` status", () => {
@@ -211,6 +212,15 @@ describe("nextStatusFor", () => {
   */
   test("nothing a webhook can say moves an available request", () => {
     for (const event of [grab, imported, blocked]) expect(nextStatusFor(event, "available")).toBeNull();
+  });
+
+  /*
+    `removed` is a DECISION, not an observation. If an admin took a title out and somebody
+    puts it back by hand, the arr will announce the grab and the import -- and our record of
+    who removed what must survive both. Asking for the title again is what re-opens the row.
+  */
+  test("nothing a webhook can say revives a removed request", () => {
+    for (const event of [grab, imported, blocked]) expect(nextStatusFor(event, "removed")).toBeNull();
   });
 
   test("`available` is not in the range of this function at all", () => {

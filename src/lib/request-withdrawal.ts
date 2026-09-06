@@ -18,10 +18,15 @@
  * boundary of this feature.
  *
  * It arrived. There is nothing left to stop searching for, so the only thing "withdraw"
- * could still mean is removing the media -- a destructive library operation against a live
- * household library, done in Radarr or Sonarr where the person doing it can see what they
- * are deleting. Everything else, from `queued` through `failed`, is an ask that has not
- * landed yet and is the reader's to cancel.
+ * could still mean is removing the media, which is a destructive library operation and a
+ * different act with a different rule -- `isRemovable` in `./media-removal.ts`, admin-only,
+ * and offered on `/requests` and `/log` alone. Everything else, from `queued` through
+ * `failed`, is an ask that has not landed yet and is the reader's to cancel.
+ *
+ * `removed` is refused too, and it is the one status neither this nor `isRemovable` accepts.
+ * The media is gone and the row is the RECORD of an admin having removed it, so withdrawing
+ * would delete the log entry that explains where a household's film went. Asking for it again
+ * is what revives the row -- see `RequestStatus.removed`.
  *
  * The parameter is `string` rather than `RequestStatus` on purpose: `RequestStatus` is
  * declared in `./store.ts`, which opens SQLite, and the browser's own `MediaRequest.status`
@@ -29,5 +34,5 @@
  * it is given a verdict to render. Widening here is what lets both sides call one function.
  */
 export function isWithdrawable(status: string): boolean {
-  return status !== "available";
+  return status !== "available" && status !== "removed";
 }

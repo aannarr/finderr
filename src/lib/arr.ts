@@ -161,6 +161,50 @@ export interface ArrUnmonitor {
   unmonitor(arrId: number): Promise<unknown>;
 }
 
+/**
+ * What the arr is holding on disk for one library item, in the three facts a confirmation
+ * has to show before anything is deleted.
+ *
+ * Read LIVE rather than from the library mirror, and that is the point: the mirror answers
+ * "is it here" (`has_file`) and deliberately carries no size, because a byte count changes
+ * on every upgrade and nothing renders it. A confirmation that quoted a stale size would be
+ * describing a different file from the one about to be removed.
+ */
+export interface ArrHoldings {
+  /** Files the arr holds. 0 or 1 for a film; the episode file count for a series. */
+  files: number;
+  /** Total bytes on disk, or null when the arr reports none. */
+  bytes: number | null;
+  /**
+   * The arr's own quality name, e.g. "Bluray-1080p", or null.
+   *
+   * Null for a SERIES and that is honest rather than missing: Sonarr holds one quality per
+   * episode file and has no single answer for the series. Safe to forward for the reason
+   * `ArrHistoryRecord` gives -- it is a profile name from a closed list the operator
+   * configured, with no path and no free text in it.
+   */
+  quality: string | null;
+}
+
+/**
+ * The two arr capabilities REMOVING media needs: look at what is there, then take it out.
+ *
+ * A separate interface from `ArrUnmonitor` rather than more methods on it, and the split is
+ * the safety property. `withdrawRequest` depends on `ArrUnmonitor` and therefore CANNOT
+ * reach a delete however it is edited later; `removeMedia` depends on this one and is the
+ * only caller in the tree that can. Two names for two authorities, checked by the compiler
+ * rather than remembered.
+ */
+export interface ArrRemoval {
+  /** `arrId` is the arr's OWN row id. Null when the arr no longer holds that row. */
+  holdings(arrId: number): Promise<ArrHoldings | null>;
+  /**
+   * Remove the library item. `deleteFiles` decides whether the files go with it -- the arr
+   * forgets the title either way.
+   */
+  remove(arrId: number, opts: { deleteFiles: boolean }): Promise<unknown>;
+}
+
 export class ArrError extends Error {
   constructor(
     readonly service: string,
@@ -341,11 +385,67 @@ export class ArrClient extends ServarrHttp<ArrService> {
   protected unmonitorVia(path: string, idsField: string, arrId: number): Promise<unknown> {
     return this.put<unknown>(path, { [idsField]: [arrId], monitored: false });
   }
+
+  /**
+   * Take one library item out of the arr, optionally with its files.
+   *
+   * > [!CAUTION] THE IMPORT EXCLUSION IS SENT EXPLICITLY FALSE, and never left to default
+   * > `addImportExclusion` (Radarr) / `addImportListExclusion` (Sonarr) adds the title to a
+   * > permanent block list, so a later import list -- or a person re-requesting it here --
+   * > silently gets nothing. That is a much bigger decision than "take this back out", it is
+   * > invisible from finderr, and it is undone only in the arr's own settings. Both arrs
+   * > currently default it to false; sending it says we MEAN false rather than that we did
+   * > not think about it, and the pair of tests in `arr.test.ts` is what keeps it that way.
+   *
+   * The two services spell that parameter differently, which is why the field NAME is an
+   * argument here in the same shape `unmonitorVia` takes `idsField`: one implementation, and
+   * the per-service difference stays a value rather than a second copy of the method.
+   */
+  protected removeVia(
+    path: string,
+    exclusionField: string,
+    arrId: number,
+    deleteFiles: boolean,
+  ): Promise<unknown> {
+    return this.del<unknown>(`${path}/${arrId}`, {
+      deleteFiles: String(deleteFiles),
+      [exclusionField]: "false",
+    });
+  }
+
+  /**
+   * One library item as the arr describes it right now, reduced to `ArrHoldings`.
+   *
+   * The FETCH and the missing-row rule live here; the per-service READ is the callback,
+   * because that is the only part Radarr and Sonarr genuinely disagree about. A 404 is not
+   * an error to report: it means the arr does not hold that row, which is exactly what
+   * `null` says and what a caller about to remove it needs to know.
+   */
+  protected async holdingsOf(
+    path: string,
+    arrId: number,
+    read: (body: Record<string, unknown>) => ArrHoldings,
+  ): Promise<ArrHoldings | null> {
+    try {
+      const body = await this.get<Record<string, unknown>>(`${path}/${arrId}`);
+      return body ? read(body) : null;
+    } catch (err) {
+      if (err instanceof ArrError && err.status === 404) return null;
+      throw err;
+    }
+  }
+}
+
+/** `movieFile.quality.quality.name` off an untyped Radarr body, or null at any missing step. */
+function radarrFileQuality(body: Record<string, unknown>): string | null {
+  const file = body.movieFile as { quality?: { quality?: { name?: unknown } } } | undefined;
+  const name = file?.quality?.quality?.name;
+  return typeof name === "string" && name !== "" ? name : null;
 }
 
 // ---------------------------------------------------------------------------
 
-export class RadarrClient extends ArrClient implements ArrUnmonitor {
+export class RadarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval {
   constructor(svc: ArrService) {
     super("radarr", svc);
   }
@@ -357,6 +457,23 @@ export class RadarrClient extends ArrClient implements ArrUnmonitor {
   /** Stop Radarr looking for one movie. The file, if there is one, is untouched. */
   unmonitor(movieId: number) {
     return this.unmonitorVia("/movie/editor", "movieIds", movieId);
+  }
+
+  /**
+   * What Radarr holds for one movie. A film is one file, so `files` is 0 or 1 and the
+   * quality is the single answer `movieFile` carries.
+   */
+  holdings(movieId: number) {
+    return this.holdingsOf("/movie", movieId, (body) => ({
+      files: body.hasFile === true ? 1 : 0,
+      bytes: typeof body.sizeOnDisk === "number" ? body.sizeOnDisk : null,
+      quality: radarrFileQuality(body),
+    }));
+  }
+
+  /** Take one movie out of Radarr, with its file when asked. See `removeVia`. */
+  remove(movieId: number, opts: { deleteFiles: boolean }) {
+    return this.removeVia("/movie", "addImportExclusion", movieId, opts.deleteFiles);
   }
 
   /**
@@ -440,13 +557,35 @@ export function seasonSelection(
   };
 }
 
-export class SonarrClient extends ArrClient implements ArrUnmonitor {
+export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval {
   constructor(svc: ArrService) {
     super("sonarr", svc);
   }
 
   series() {
     return this.get<SonarrSeries[]>("/series");
+  }
+
+  /**
+   * What Sonarr holds for one series, from the `statistics` block it already computes.
+   *
+   * The quality is NULL by construction: a series holds one quality per episode file, and
+   * picking one of them to print would be inventing a fact about the other ninety.
+   */
+  holdings(seriesId: number) {
+    return this.holdingsOf("/series", seriesId, (body) => {
+      const stats = body.statistics as { episodeFileCount?: unknown; sizeOnDisk?: unknown } | undefined;
+      return {
+        files: typeof stats?.episodeFileCount === "number" ? stats.episodeFileCount : 0,
+        bytes: typeof stats?.sizeOnDisk === "number" ? stats.sizeOnDisk : null,
+        quality: null,
+      };
+    });
+  }
+
+  /** Take one series out of Sonarr, with its files when asked. See `removeVia`. */
+  remove(seriesId: number, opts: { deleteFiles: boolean }) {
+    return this.removeVia("/series", "addImportListExclusion", seriesId, opts.deleteFiles);
   }
 
   /**

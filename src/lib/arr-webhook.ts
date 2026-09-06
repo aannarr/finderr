@@ -208,11 +208,16 @@ export function parseArrWebhook(body: unknown): ArrWebhookEvent | null {
  * - **`queued` is never moved.** The row is still waiting for `RequestWorker.process`, which
  *   refuses to run for anything that is not `queued` -- so advancing it here would silently
  *   drop the add. A grab arriving first only means the arr already held the title.
- * - **Nothing ever moves backwards.** `available` and `queued` are left alone by every
- *   event; the rest are states a webhook is allowed to advance out of, including the two
+ * - **Nothing ever moves backwards.** `available`, `queued` and `removed` are left alone by
+ *   every event; the rest are states a webhook is allowed to advance out of, including the two
  *   dead ends. `no_release` coming back to life on a late grab is the RSS-catches-a-REPACK
  *   case that ruling D14 leaves the arr entry monitored for, and `failed` coming back means
  *   the add finderr could not make had already been made by hand.
+ * - **`removed` is a DECISION and not an observation**, which is why no event may revive it.
+ *   An admin took the title out of the arr; if somebody puts it back by hand and it imports,
+ *   the arr will say so and this function will still say nothing, because our record of who
+ *   removed what must not be erased by the arr. Asking for the title again is what re-opens
+ *   the row -- see `RequestStatus.removed`.
  */
 export function nextStatusFor(event: ArrWebhookEvent, current: RequestStatus): RequestStatus | null {
   switch (event.kind) {
@@ -275,8 +280,8 @@ const BLOCK_MOVES: ReadonlySet<RequestStatus> = new Set([
  *
  * Each set is written out rather than derived from an ordering, because the lifecycle is not
  * a line: `manual_import` sits beside `downloading` rather than after it, and a rank would
- * have to be argued about instead of read. `queued` and `available` are in NO set, which is
- * how the two rules on `nextStatusFor` are enforced rather than restated.
+ * have to be argued about instead of read. `queued`, `available` and `removed` are in NO set,
+ * which is how the rules on `nextStatusFor` are enforced rather than restated.
  */
 function moveTo(
   target: RequestStatus,

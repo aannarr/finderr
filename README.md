@@ -283,7 +283,16 @@ carries Withdraw: it drops finderr's record of the ask, gives you back the daily
 spent, and tells Radarr or Sonarr to stop monitoring the title so nothing keeps searching for
 it. It deletes no movie, no series and no file, ever. A request that has already arrived
 offers no Withdraw at all, because at that point the only thing left to undo is the media
-itself and that belongs in the arr.
+itself.
+
+Undoing that is a separate button, and it belongs to an administrator. On `/requests` and on
+the request log, an admin looking at something that has arrived gets Remove. It asks the arr
+what is actually on disk first and says so -- how many files, how big, what quality, and
+whether Plex is still serving it -- and it makes deleting the files a deliberate tick rather
+than a side effect: leave it and the title simply stops being in Radarr or Sonarr. The row is
+not deleted afterwards, it turns into "Removed", so the log still explains where a film went
+and records who took it out. Asking for it again works, and costs a request like any other.
+The control appears nowhere else -- not on a title page, not on a card, not in search.
 
 With a Plex token, a title you already own gets a Play button that deep-links into the
 Plex app or web player, instead of a line of text saying you have it.
@@ -1133,6 +1142,8 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
 | `DELETE` | `/api/requests/:tconst` | withdraw. The requester or an admin; anybody else gets the same `404 unknown request` a title nobody asked for gets, so the route cannot be used to find out who asked. Drops the row, refunds the day's quota and unmonitors in the arr -- only when the arr row was one WE added. Never deletes a movie, a series or a file, and refuses a request that has already arrived |
+| `GET` | `/api/admin/requests/:tconst/media` | what removing this would delete: file count, bytes, the arr's quality name, and whether Plex still holds it. Read live from the arr, because a cached size describes whatever was on disk an hour ago |
+| `DELETE` | `/api/admin/requests/:tconst/media?deleteFiles=` | remove the media. `deleteFiles` is required and has no default. Takes the title out of Radarr or Sonarr, moves the request row to `removed` rather than deleting it, and writes an audit row naming the admin who did it. Refuses anything that has not arrived -- that is what withdrawing is for |
 | `GET` | `/api/watchlist` | your saved titles as decorated cards, newest save first. One endpoint rather than two: the page draws these and every save button reads the ids out of the same answer. A save whose title has left the index is dropped from the response and kept in the table |
 | `POST` | `/api/watchlist` `{tconst}` | save one title. Writes one row and calls no arr, spends no quota and starts no search. Saving twice is `{"saved":false}` rather than a conflict; an unknown tconst is `404` |
 | `DELETE` | `/api/watchlist/:tconst` | un-save. Removing something that was never on your list is `{"removed":false}`, because the state you asked for is already true |
@@ -1204,9 +1215,10 @@ Every line here is a real limitation. It is not a roadmap.
   need for that are designed and not built; [ADDONS.md](ADDONS.md) lists them and says
   plainly that they do not exist yet.
 - Withdrawing a request never removes the media, and a request that has already arrived
-  cannot be withdrawn at all. Withdraw stops the search and forgets the ask; deleting the
-  film, the series or the file is still done in the arr, where you can see what you are
-  deleting.
+  cannot be withdrawn at all. Withdraw stops the search and forgets the ask; removing what
+  arrived is Remove, which is a different button on the same two pages and belongs to an
+  administrator. There is no way for an ordinary member to ask for something to be taken
+  back out -- that is the approval-workflow shape, and approval is not built.
 - Topping up a series you already have is invisible to the request log. Asking for a show
   the library mirror already knows still answers `409 already in your library`, so the two
   whole-title grains are no use there; the episode and season grains are what fill the gap,

@@ -70,7 +70,21 @@ export type RequestStatus =
    * watching it, so the moment somebody sorts the import out by hand the library mirror
    * takes the row to `available` exactly as it would have anyway.
    */
-  | "manual_import";
+  | "manual_import"
+  /**
+   * An admin took the media back out of the arr. TERMINAL, and the record of a decision.
+   *
+   * The row survives the removal instead of being deleted, so `/log` can still say what was
+   * asked for and what became of it -- a deleted row would make an admin's deliberate act
+   * indistinguishable from a request that was never made. `media_removal` carries who did it.
+   *
+   * NOTHING moves it: no move set in `./arr-webhook.ts` contains it, and `reconcile` does not
+   * list it among the open statuses. The way back is a FRESH ASK -- `createRequest` revives a
+   * removed row to `queued`, so the ordinary Request button works and is quota-counted, while
+   * the one-click "Try again" on `/requests` is deliberately not offered (it would let anybody
+   * undo an admin's removal without asking for it again).
+   */
+  | "removed";
 
 export interface MediaRequest {
   id: number;
@@ -145,6 +159,44 @@ export interface MediaRequest {
    * announce a year of history as new.
    */
   available_seen_at: string | null;
+}
+
+/**
+ * Will a fresh ask for this title WRITE A NEW request row, rather than amending the one
+ * already there?
+ *
+ * True when nothing is held, and true for a `removed` row -- which `createRequest` drops
+ * before inserting, so the new ask is a new row in every column that matters.
+ *
+ * ONE OWNER, because two places have to agree and the failure of disagreeing is silent.
+ * `POST /api/requests` exempts a re-ask from the daily quota exactly when the POST writes no
+ * new row; if it kept its own `getRequest(...) === null` test, an admin's removal would hand
+ * every reader one free request each, forever, on that title.
+ */
+export function createsNewRequest(held: Pick<MediaRequest, "status"> | null): boolean {
+  return held === null || held.status === "removed";
+}
+
+/**
+ * One removal, as it happened. Mirrors the `media_removal` table exactly.
+ *
+ * EVERY FIELD IS A FACT AT THE MOMENT OF REMOVAL and none of them is re-derived later: the
+ * arr no longer holds the title, so `bytes` and `arr_id` can never be looked up again. That
+ * is what makes this an audit record rather than a cache of one.
+ */
+export interface MediaRemoval {
+  tconst: string;
+  title: string;
+  service: "radarr" | "sonarr";
+  /** The arr row id the item was removed under, kept because the arr no longer has it. */
+  arr_id: number;
+  /** 1 when the files went with it, 0 when only the arr entry did. SQLite has no boolean. */
+  deleted_files: number;
+  /** Bytes the arr reported holding, or null when it reported none. */
+  bytes: number | null;
+  /** The admin who did it, or null for the system key -- which is not a person. */
+  removed_by: string | null;
+  removed_at: string;
 }
 
 /**
@@ -372,6 +424,35 @@ create table if not exists request_diagnostic (
   indexers_searched integer,
   releases_seen     integer,
   updated_at        text not null
+);
+
+-- WHO TOOK WHAT BACK OUT OF THE LIBRARY, and when.
+--
+-- NOTE: no backticks anywhere in this comment -- SCHEMA is a template literal.
+--
+-- The one destructive act finderr can perform against somebody else's disk, so it is the one
+-- act that keeps a record of itself. A deletion nobody can attribute is worse than no
+-- deletion: the request row alone says the media went, and says nothing about who decided.
+--
+-- Its own table rather than columns on request, for the reason request_diagnostic is its own
+-- table: the two have different owners and different lifetimes. A request row is rewritten by
+-- the worker on every status change and is deleted outright by a withdraw; this is written
+-- once, by a person, and is never rewritten. Keyed on tconst because a title can only be
+-- removed once before it has to be asked for again, and the fresh ask overwrites the record
+-- of the last removal exactly when it stops describing the present.
+--
+-- removed_by is a WEAK reference to app_user, with no foreign key, for the same reason
+-- request.requested_by declines one: deleting a user must not erase the log of what they did.
+-- The name is resolved at read time and shows as (removed) when the account is gone.
+create table if not exists media_removal (
+  tconst        text primary key,
+  title         text not null,
+  service       text not null,
+  arr_id        integer not null,
+  deleted_files integer not null,
+  bytes         integer,
+  removed_by    text,
+  removed_at    text not null
 );
 
 create table if not exists kv (key text primary key, value text not null);
@@ -966,6 +1047,19 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     ).map((r) => r.imdb_id);
   }
 
+  /**
+   * Drop ONE title from the mirror, because the arr has just stopped holding it.
+   *
+   * The mirror is otherwise swapped wholesale by `replaceLibrary` on a 60-second timer, and
+   * waiting for that timer after a removal would leave every card, every shelf and the
+   * "already in your library" refusal claiming a file that has been deleted -- for a minute,
+   * on a page the person who deleted it is looking at. This is not a second owner of the
+   * mirror: the next full sync still decides, and it will agree.
+   */
+  forgetLibraryEntry(imdbId: string): void {
+    this.db.run("delete from library where imdb_id = ?", [imdbId]);
+  }
+
   /** The whole mirror as a lookup map. Small enough to hold; ~1400 rows here. */
   libraryMap(): Map<string, LibraryEntry> {
     const rows = this.db.query("select * from library").all() as LibraryEntry[];
@@ -1326,6 +1420,27 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       the ask arrived, and re-asking from a browser did not change how it arrived the first
       time.
     */
+    /*
+      A REMOVED TITLE IS ASKED FOR AFRESH, so its old row goes rather than being amended.
+
+      This is what makes an admin's removal reversible at all. `RequestWorker.process` refuses
+      to run for anything that is not `queued`, so an upsert onto a `removed` row would enqueue
+      a job that is silently dropped -- the reader presses Request and nothing ever happens.
+      And amending it in place would leave a row that is half the old ask: a stale `arr_id`
+      pointing at a library row the arr no longer has, a `search_attempts` count that sends the
+      reconcile pass straight to `no_release`, and somebody else's name on a request they did
+      not make this time.
+
+      The AUDIT of the removal is not in this row and does not go with it -- `media_removal`
+      keeps who removed what, and is written once and never by this method.
+
+      No other terminal state is dropped here, because every other one already has the "Try
+      again" control on `/requests` reaching `POST /api/requests/:tconst/retry`. `removed` is
+      deliberately the one that does not: undoing an admin's decision should cost a real,
+      quota-counted request rather than one click. See `RequestStatus.removed`.
+    */
+    const held = this.getRequest(r.tconst);
+    if (held && createsNewRequest(held)) this.deleteRequest(r.tconst);
     this.db.run(
       "insert into request (tconst,title,year,kind,service,status,seasons,requested_by,via_agent_key," +
         "quality_profile_id,root_folder_path,search_on_add,created_at,updated_at) " +
@@ -1519,6 +1634,60 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       .query("select count(*) c from request where requested_by = ? and created_at >= ?")
       .get(userId, sinceIso) as { c: number };
     return row.c;
+  }
+
+  // --- what was taken back out ---------------------------------------------
+  //
+  // The audit half of `../server/remove-media.ts`. Written once per removal, by a person,
+  // and never rewritten -- see the `media_removal` comment in SCHEMA for why it is its own
+  // table rather than columns on `request`.
+
+  /**
+   * Record that an admin removed one title's media.
+   *
+   * An UPSERT rather than an insert, because the key is the title and a title can be removed,
+   * asked for again and removed again. Only the latest removal is kept: the earlier one
+   * describes media that was replaced by a request anybody can see in the log, and an
+   * append-only history here would be a second, unbounded log of an event that already has one.
+   */
+  recordMediaRemoval(r: Omit<MediaRemoval, "removed_at"> & { removed_at?: string }): void {
+    this.db.run(
+      "insert into media_removal (tconst,title,service,arr_id,deleted_files,bytes,removed_by,removed_at) " +
+        "values (?,?,?,?,?,?,?,?) on conflict(tconst) do update set title=excluded.title, " +
+        "service=excluded.service, arr_id=excluded.arr_id, deleted_files=excluded.deleted_files, " +
+        "bytes=excluded.bytes, removed_by=excluded.removed_by, removed_at=excluded.removed_at",
+      [
+        r.tconst,
+        r.title,
+        r.service,
+        r.arr_id,
+        r.deleted_files,
+        r.bytes,
+        r.removed_by,
+        r.removed_at ?? new Date().toISOString(),
+      ],
+    );
+  }
+
+  getMediaRemoval(tconst: string): MediaRemoval | null {
+    return (
+      (this.db.query("select * from media_removal where tconst = ?").get(tconst) as
+        | MediaRemoval
+        | undefined) ?? null
+    );
+  }
+
+  /**
+   * Every removal as a lookup map, for a whole page of request rows at once.
+   *
+   * The same shape and the same reason as `requestDiagnosticMap`: `/api/requests` serves up
+   * to 200 rows on a route the shell polls, so a per-row read would be 200 statements every
+   * eight seconds. The table holds one row per title ever removed, which is far smaller than
+   * the request log it annotates.
+   */
+  removalMap(): Map<string, MediaRemoval> {
+    const rows = this.db.query("select * from media_removal").all() as MediaRemoval[];
+    return new Map(rows.map((r) => [r.tconst, r]));
   }
 
   // --- the AI ledger -------------------------------------------------------

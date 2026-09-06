@@ -26,19 +26,37 @@ export function ConfirmAction({
   confirmLabel,
   busyLabel,
   cancelLabel = "Cancel",
+  onAsk,
   onConfirm,
   danger = false,
   children,
 }: {
   /** The verb, as it reads before anybody has pressed anything: "Remove", "Revoke". */
   label: string;
-  /** What is asked once they have: "Remove this account?" */
-  question: string;
+  /**
+   * What is asked once they have: "Remove this account?"
+   *
+   * A NODE and not a string, because one caller has to show WHAT it is about to delete --
+   * the file count, the size, whether Plex still holds it, and the choice of whether the
+   * files go. A confirmation that can only say "are you sure" is not a confirmation for a
+   * destructive act against a real filesystem. Six of the seven callers pass a sentence and
+   * are unaffected; widening the prop was the alternative to a second confirmation component
+   * that would have re-implemented the guard, the busy lock and the error slot.
+   */
+  question: ReactNode;
   /** The way OUT of the question, and it repeats the verb: "Yes, remove". */
   confirmLabel: string;
   /** While the work is in flight. Present tense: "Removing…". */
   busyLabel: string;
   cancelLabel?: string;
+  /**
+   * Called when the reader ARMS the control, before they have confirmed anything.
+   *
+   * For a question whose facts have to be fetched: asking is the first moment the answer is
+   * wanted, and gathering it on mount would cost every row on the page a request nobody asked
+   * for. It must not do anything destructive -- the reader has said "tell me more", not "yes".
+   */
+  onAsk?: () => void;
   /** Rejecting shows the message and returns to the unasked state, so it can be retried. */
   onConfirm: () => Promise<void>;
   /**
@@ -83,7 +101,16 @@ export function ConfirmAction({
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       {asking ? (
         <>
-          <span className="text-xs text-muted">{question}</span>
+          {/*
+            `w-full` on a rich question and not on a sentence: inside this wrapping flex row a
+            short string should sit beside the two buttons, while a block of facts about what
+            is being deleted needs the whole line above them. `typeof` rather than a second
+            prop, because the layout follows from what was passed and there is nothing for a
+            caller to get wrong.
+          */}
+          <span className={`text-xs text-muted${typeof question === "string" ? "" : " w-full"}`}>
+            {question}
+          </span>
           <button type="button" onClick={confirm} disabled={busy} className={LINK_BUTTON}>
             {busy ? busyLabel : confirmLabel}
           </button>
@@ -95,7 +122,10 @@ export function ConfirmAction({
         <>
           <button
             type="button"
-            onClick={() => setAsking(true)}
+            onClick={() => {
+              setAsking(true);
+              onAsk?.();
+            }}
             className={danger ? `${LINK_BUTTON} text-danger hover:text-danger` : LINK_BUTTON}
           >
             {label}
