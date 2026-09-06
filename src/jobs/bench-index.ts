@@ -49,6 +49,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
 import { dirname, join } from "node:path";
+import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
 import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
@@ -417,40 +418,6 @@ function openEngine(
   return engine;
 }
 
-/**
- * What this index and this process can actually do, in the header AND in the JSON.
- *
- * > [!IMPORTANT] `fuzzy` is here because a report of an ABSENT tier is otherwise identical to a fast one
- * > `search.fuzzy` comes back in microseconds either way -- 0.03 ms for a tier that returned
- * > `tier: "empty"` and zero candidates. Fixing the macOS load alone would leave the harness
- * > silently wrong anywhere `prepareSqlite` finds no libsqlite3 that permits extensions, or
- * > where the index carries no vocabulary: a container, a CI runner, a fresh clone. Printing
- * > the capability is what makes two reports comparable instead of merely similar.
- *
- * A string rather than a boolean, because WHICH of the three things the tier needs is missing
- * decides the remedy -- see `FuzzyAbsence` in `search.ts`, which is the one owner of that
- * distinction and of the sentence explaining each cause.
- */
-interface Capabilities {
-  rank: boolean;
-  people: boolean;
-  ids: boolean;
-  episodes: boolean;
-  /** `on`, or `off:extension` / `off:vocabulary` / `off:unprepared`. */
-  fuzzy: string;
-}
-
-function capabilities(engine: SearchEngine): Capabilities {
-  const absence = engine.fuzzyOff;
-  return {
-    rank: engine.hasRank,
-    people: engine.hasPeople,
-    ids: engine.hasIds,
-    episodes: engine.hasEpisodes,
-    fuzzy: absence ? `off:${absence.cause}` : "on",
-  };
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const cfg = loadConfig();
@@ -512,16 +479,8 @@ async function main(): Promise<void> {
   console.log(
     `# built_at=${meta.built_at ?? "?"} rows=${meta.rows ?? "?"} episodes=${meta.episode_rows ?? "0"}`,
   );
-  const caps = capabilities(engine);
-  console.log(
-    `# caps: rank=${caps.rank} people=${caps.people} ids=${caps.ids} episodes=${caps.episodes} fuzzy=${caps.fuzzy}`,
-  );
-  if (engine.fuzzyOff) {
-    // Loud, and not fatal -- the `# !! PROFILE DRIFT` shape, for the same reason. Every other
-    // scenario still produces a usable number; the one that cannot be quoted without this
-    // caveat gets the caveat printed beside it.
-    console.log(`# !! FUZZY TIER ABSENT -- search.fuzzy measures nothing. ${engine.fuzzyOff.detail}`);
-  }
+  const { caps, lines } = readCapabilities(engine);
+  for (const line of lines) console.log(line);
 
   // Fixtures from the index itself, never hardcoded -- a benchmark that measures a MISS is
   // fast for the wrong reason and reports it as good news.
