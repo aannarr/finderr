@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type HealthDeps, healthPayload } from "./health";
+import { type HealthDeps, healthPayload, warmHealth } from "./health";
+import type { WarmStatus } from "./live-index";
 
 /**
  * Guards the fix for the 2026-08-31 regression where `/api/health` took 1.9 seconds --
@@ -23,7 +24,8 @@ function deps(onCoverage: () => void): HealthDeps {
       // `residentMb` far below `readMb` here is the deployment that looks fine and is
       // serving half its index off the disk.
       warm: {
-        prefault: true,
+        state: "done",
+        ok: true,
         last: { readMb: 1868, ms: 10_520, residentMb: 1851 },
         tuning: {
           budgetMb: 3072,
@@ -207,7 +209,8 @@ describe("healthPayload", () => {
         // one combination worth alerting on -- an operator's filter silently not applied.
         origin: { available: true, configured: ["en", "sv"] },
         warm: {
-          prefault: true,
+          state: "done",
+          ok: true,
           last: { readMb: 1868, ms: 10_520, residentMb: 1851 },
           tuning: {
             budgetMb: 3072,
@@ -321,6 +324,56 @@ describe("healthPayload", () => {
 
     expect(calls).toBe(0);
     expect(out).toEqual({ ok: true });
+  });
+});
+
+/**
+ * The narrowing between the holder and the wire.
+ *
+ * Two things have to survive it and one has to be stopped. `state` and `ok` are the whole
+ * point of the field -- a monitor keys on `ok` and never has to reason across three others --
+ * and `notes` is prose written for an operator reading a boot log, which is not something this
+ * endpoint hands out. The same rule `work.problems` follows for provider errors.
+ */
+describe("the warm report leaving the process", () => {
+  const status = (over: Partial<WarmStatus> = {}): WarmStatus => ({
+    state: "done",
+    ok: true,
+    last: { readMb: 1868, ms: 10_520, residentMb: 1851 },
+    tuning: {
+      budgetMb: 3072,
+      budgetSource: "cgroup-v1",
+      mmapBytes: 1868 * 1024 * 1024,
+      cacheKib: 154 * 1024,
+      prefault: true,
+      notes: ["memory budget 3072 MB (cgroup-v1); index 1868 MB"],
+    },
+    ...over,
+  });
+
+  test("carries the state and the probe field through unchanged", () => {
+    const out = warmHealth(status({ state: "partial", ok: false }));
+    expect(out.state).toBe("partial");
+    expect(out.ok).toBe(false);
+  });
+
+  test("converts the pragma units, so the page does not do arithmetic", () => {
+    const out = warmHealth(status());
+    expect(out.tuning).toEqual({
+      budgetMb: 3072,
+      budgetSource: "cgroup-v1",
+      mmapMb: 1868,
+      cacheMb: 154,
+      prefault: true,
+    });
+  });
+
+  test("the operator prose does NOT travel", () => {
+    expect(warmHealth(status()).tuning).not.toHaveProperty("notes");
+  });
+
+  test("no engine open leaves tuning null rather than inventing zeroes", () => {
+    expect(warmHealth(status({ state: "pending", last: null, tuning: null })).tuning).toBeNull();
   });
 });
 
