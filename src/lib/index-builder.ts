@@ -579,13 +579,13 @@ export const INDEXES = {
    * > candidate row, which is the seek `(title_rowid, lang)` cannot serve selectively.
    * >
    * > Both indexes exist and SQLite picks per query. Measured on a copy of the real
-   * > 1,288,159-row index on 2026-09-06, same SQL either way: the twelve shipped language
-   * > lists go **from 138.4 ms to 81.0 ms total**, the thin tail improves far more (Danish
-   * > 197.0 -> 70.1 ms, Thai 308.8 -> 116.2 ms), and the PREFERENCE query the caution above
-   * > exists to protect **did not regress** -- its plan stayed `SEARCH t USING INDEX ix_rank`
-   * > with a correlated covering seek, and it measured 1.9 ms rather than the 1,014 ms of the
-   * > shape that was withdrawn. 16.5 MB on disk, which this project trades for render-path
-   * > time without hesitating.
+   * > 1,288,159-row index on 2026-09-06, through `rankedMembers` and with the index the only
+   * > thing that changed: the twelve shipped language lists go **from 125.8 ms to 77.4 ms
+   * > total**, the thin tail improves far more (Danish 197.0 -> 70.1 ms, Thai 308.8 -> 116.2
+   * > ms), and the PREFERENCE query the caution above exists to protect **did not regress** --
+   * > its plan stayed `SEARCH t USING INDEX ix_rank` with a correlated covering seek, and it
+   * > measured 1.9 ms rather than the 1,014 ms of the shape that was withdrawn. 16.5 MB on
+   * > disk, which this project trades for render-path time without hesitating.
    */
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",

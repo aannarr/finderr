@@ -143,19 +143,20 @@ export interface ListLanguage {
  *
  * CLOSED and editorial, exactly like `LIST_GENRES` -- but unlike genres there is a second,
  * measured constraint, because every list here is one more ranked query inside the single
- * `/api/lists/completion` request. Measured on a copy of the real 1,288,159-row index on
- * 2026-09-06 with `ix_lang_code` in place, milliseconds to resolve a full 250-title
- * membership: Hindi 3.2, French 3.7, Japanese 3.9, Tamil 4.9, Malayalam 6.4, Telugu 6.6,
- * Spanish 6.8, Italian 6.9, Russian 6.9, German 7.1, Bengali 8.4, Korean 10.8, Portuguese
- * 11.8. **Twelve of them, totalling 81.0 ms**, which is what `completionPayload` records
- * against its own budget.
+ * `/api/lists/completion` request. Measured 2026-09-06 through `SearchEngine.rankedMembers`
+ * against a copy of the real 1,288,159-row index, milliseconds to resolve a full 250-title
+ * membership: Hindi 2.9, Japanese 3.5, Tamil 4.4, French 4.5, Malayalam 5.9, Spanish 6.2,
+ * Italian 6.3, Russian 6.5, German 6.9, Bengali 8.5, Korean 10.6, Portuguese 11.2.
+ * **Twelve of them, totalling 77.4 ms** against 11.4 ms for the other twenty-one lists put
+ * together in the same run -- see `completionPayload`, which owns that budget.
  *
  * The cost is set by how deep into the rank order a language's 250th film sits, so a language
- * with a thin catalogue is the EXPENSIVE one: Swedish is 45.5 ms, Chinese 62.9, Danish 70.1,
- * Finnish 72.4. Those are the languages this list leaves out, not because nobody wants them
- * but because one of them costs as much as six of these. `finderr-language-lists-the-thin-tail`
- * is where that is fixed properly, by denormalising `rank` into `title_lang` the way
- * `title_genre` already carries `votes` and `year`.
+ * with a THIN catalogue is the expensive one: measured on the same copy, Swedish is 45.5 ms
+ * on its own, Chinese 62.9, Danish 70.1, Finnish 72.4. Those are the languages this list
+ * leaves out -- not because nobody wants them, but because one of them costs as much as six
+ * of these. Fixing that properly means denormalising `rank` into `title_lang` the way
+ * `title_genre` already carries `votes` and `year`, which is its own card
+ * (`language-lists-the-thin-tail-costs-more-than-the-dense-head-`) and not this one.
  *
  * **Chinese is the omission worth explaining, because its number is misleading.** `zh` reaches
  * only 298 ranked non-English films, not because the corpus lacks Chinese cinema but because

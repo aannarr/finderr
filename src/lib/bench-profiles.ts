@@ -88,8 +88,8 @@ const SLIM_INDEXES: readonly string[] = [
   // this index is entirely key and carries no payload for a slim profile to drop.
   "create index ix_lang on title_lang(title_rowid, lang)",
   // UNCHANGED for the same reason as its sibling above: both columns are key, so there is no
-  // payload to narrow. It is 16.5 MB of pure key, and the language lists are 138.4 ms without
-  // it against 81.0 ms with -- which makes it a candidate for a future SIZE profile ("what if
+  // payload to narrow. It is 16.5 MB of pure key, and the language lists are 125.8 ms without
+  // it against 77.4 ms with -- which makes it a candidate for a future SIZE profile ("what if
   // you dropped it entirely?"), not for this one.
   "create index ix_lang_code on title_lang(lang, title_rowid)",
   // Was `(parent, season, number, tconst, title, rating, votes, year)`. THIS narrow form is
