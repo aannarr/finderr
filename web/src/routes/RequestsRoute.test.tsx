@@ -79,6 +79,16 @@ describe("the withdraw control", () => {
       expect(withdrawal({ status })).toContain("Withdraw");
     }
   });
+
+  /*
+    A row an admin has already removed offers nothing either. The media is gone, and the row
+    is the RECORD of that -- withdrawing it would delete the log entry that explains where a
+    household's film went. `media-removal.test.ts` pins the same rule as an invariant across
+    both predicates.
+  */
+  test("a removed request offers no control at all", () => {
+    expect(withdrawal({ status: "removed", requestVerdict: "removed" })).toBe("");
+  });
 });
 
 const PLEX = {
@@ -89,8 +99,8 @@ const PLEX = {
 /** Up to the first `&`, because React escapes one in an attribute. See `PlayOnPlex.test`. */
 const APP_PREFIX = PLEX.app.split("&")[0] ?? "";
 
-const actions = (over: Partial<MediaRequest> = {}) =>
-  renderToStaticMarkup(<RequestActions request={request(over)} onWithdrawn={() => {}} />);
+const actions = (over: Partial<MediaRequest> = {}, isAdmin = false) =>
+  renderToStaticMarkup(<RequestActions request={request(over)} isAdmin={isAdmin} onWithdrawn={() => {}} />);
 
 describe("what an arrived request offers", () => {
   /*
@@ -113,6 +123,44 @@ describe("what an arrived request offers", () => {
   test("an arrived request Plex has not scanned yet offers no link at all", () => {
     const html = actions({ status: "available", requestVerdict: "imported", plex: null });
     expect(html).toBe("");
+  });
+
+  /*
+    THE SCOPING THE WHOLE FEATURE IS: admins only, and only where something has landed.
+
+    An ordinary reader on their own requests page must never see a delete button beside a
+    title they asked for -- which is also why `RequestActions` takes `isAdmin` as a prop
+    rather than reading it out of context: the rule is worth asserting on the component that
+    draws it, not on the route around it.
+  */
+  test("an admin is offered Remove on an arrived request, and a member is not", () => {
+    const arrived = { status: "available", requestVerdict: "imported" } as const;
+
+    expect(actions(arrived, true)).toContain("Remove");
+    expect(actions(arrived, false)).not.toContain("Remove");
+  });
+
+  /*
+    And never on a row that has not arrived, even for an admin. That is what Withdraw is for,
+    and offering both on one row is the confusion `isWithdrawable`/`isRemovable` exist to
+    prevent -- one click to call off the ask, the next to delete the file it stopped waiting for.
+  */
+  test("an admin looking at a downloading request is offered Withdraw and not Remove", () => {
+    const html = actions({}, true);
+    expect(html).toContain("Withdraw");
+    expect(html).not.toContain("Remove");
+  });
+
+  /*
+    THE CONFIRMATION, ASSERTED AS AN ABSENCE -- the same property as Withdraw's, and it
+    matters more here: this one deletes files. Neither the Yes button nor the `deleteFiles`
+    checkbox may be in the markup before the reader has armed the control.
+  */
+  test("one click cannot delete anything -- the confirmation is not on the page yet", () => {
+    const html = actions({ status: "available", requestVerdict: "imported" }, true);
+    expect(html).not.toContain("Yes, remove it");
+    expect(html).not.toContain("Yes, delete the files");
+    expect(html).not.toContain("checkbox");
   });
 
   /*

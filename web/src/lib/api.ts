@@ -18,6 +18,7 @@ import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
+import type { MediaRemovalPreview, RequestRemovalView } from "../../../src/lib/media-removal";
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { PersonLeaderboard } from "../../../src/lib/people-leaderboard";
@@ -237,6 +238,15 @@ export interface MediaRequest extends RequestStateView {
    */
   requested_by?: string | null;
   requestedByName?: string | null;
+  /**
+   * WHO TOOK THIS BACK OUT, and when. Present only on a `removed` row, and only for an admin.
+   *
+   * The same absence-is-the-permission rule as `requestedByName` above -- "who removed what"
+   * is the same class of fact as "who asked for what", so the server omits the key rather
+   * than sending it for a component to decline to draw. The shape is
+   * `src/lib/media-removal.ts`'s, imported rather than re-declared here.
+   */
+  removal?: RequestRemovalView;
   /**
    * This arrived and YOU have not been shown it yet.
    *
@@ -1630,6 +1640,40 @@ export async function withdrawRequest(tconst: string): Promise<void> {
   // A request row that fed "Recently requested" has gone, so the held front page is now
   // describing a state that no longer exists -- the same reason `postRequest` marks it
   // stale for the opposite change.
+  staleDiscover();
+}
+
+/** Where the two halves of a removal live. One path, two verbs -- see the route's own doc. */
+const removalPath = (tconst: string) => `/api/admin/requests/${tconst}/media`;
+
+/**
+ * What removing this would actually delete. ADMIN ONLY -- anybody else gets the 404 the whole
+ * `/api/admin/*` surface gives, which is not an error worth showing.
+ *
+ * Asked when the reader ARMS the control and never on render: it costs the arr a lookup, and
+ * a page of arrived requests would otherwise fire one per row for a button nobody pressed.
+ */
+export async function getRemovalPreview(tconst: string): Promise<MediaRemovalPreview> {
+  const res = await fetch(removalPath(tconst));
+  const body = (await res.json().catch(() => ({}))) as { preview?: MediaRemovalPreview; error?: string };
+  if (!res.ok || !body.preview) throw new Error(body.error ?? `removal preview failed: ${res.status}`);
+  return body.preview;
+}
+
+/**
+ * Take the media back out of Radarr or Sonarr. ADMIN ONLY, and irreversible for the files.
+ *
+ * `deleteFiles` is REQUIRED and travels in the query, because the server refuses the call
+ * without it: the difference between forgetting a title and deleting a household's file is
+ * not something to default. See `src/server/remove-media.ts` for the whole rule.
+ */
+export async function removeMedia(tconst: string, opts: { deleteFiles: boolean }): Promise<void> {
+  const res = await fetch(`${removalPath(tconst)}?deleteFiles=${opts.deleteFiles}`, { method: "DELETE" });
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `removal failed: ${res.status}`);
+  // The library mirror lost a title and the request row moved to a terminal state, so every
+  // shelf built from either is now describing something that is gone -- the same reason
+  // `withdrawRequest` above marks the held page stale.
   staleDiscover();
 }
 

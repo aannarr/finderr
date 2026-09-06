@@ -39,6 +39,7 @@ import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } f
 import { rollback } from "../lib/index-builder";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
+import type { RequestRemovalView } from "../lib/media-removal";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
 import { PlexClient, type PlexLinks, plexLinks, syncPlex } from "../lib/plex";
@@ -71,7 +72,7 @@ import {
 import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
-import { Store, syncLibrary } from "../lib/store";
+import { createsNewRequest, type MediaRemoval, Store, syncLibrary } from "../lib/store";
 import {
   isTermDimension,
   TERM_DIMENSIONS,
@@ -121,6 +122,7 @@ import {
 } from "./preview-resolver";
 import { PushNotifier } from "./push";
 import { relatedTconsts } from "./related-crosswalk";
+import { type RemoveMediaDeps, removalPreview, removeMedia } from "./remove-media";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
@@ -1223,6 +1225,40 @@ function plexLinker(): (tconst: string) => PlexLinks | null {
     const ratingKey = mirror.get(tconst);
     return ratingKey ? plexLinks(machineId, ratingKey) : null;
   };
+}
+
+/**
+ * One stored removal as the log renders it, with the actor's name resolved.
+ *
+ * Takes the SAME name table `attributedRequest` is given, so a person is worded identically
+ * wherever the log names them -- "(removed)" for a deleted account, and never a bare id.
+ * Undefined in, undefined out: a `removed` row with no audit record predates the record or was
+ * moved by hand, and inventing an actor for it would be the one lie an audit may not tell.
+ */
+function removalView(
+  removal: MediaRemoval | undefined,
+  names: ReadonlyMap<string, string> | null,
+): RequestRemovalView | undefined {
+  if (!removal) return undefined;
+  return {
+    by: removal.removed_by,
+    byName: removal.removed_by ? (names?.get(removal.removed_by) ?? "(removed)") : null,
+    at: removal.removed_at,
+    deletedFiles: removal.deleted_files === 1,
+    bytes: removal.bytes,
+  };
+}
+
+/**
+ * Everything `./remove-media.ts` needs, assembled per call rather than held.
+ *
+ * Per call because it closes over nothing that outlives one: `plexHolds` reads the Plex
+ * mirror, which the sync rewrites, and a captured map would answer a question about a moment
+ * that has passed. It costs one query and is only ever built when an admin presses a button.
+ */
+function removalDeps(): RemoveMediaDeps {
+  const inPlex = store.plexMap();
+  return { store, radarr, sonarr, plexHolds: (tconst) => inPlex.has(tconst), log };
 }
 
 /**
@@ -2740,6 +2776,16 @@ const appRoutes = {
       */
       const names =
         role === "admin" ? new Map(authStore.listUsers().map((u) => [u.id, u.displayName])) : null;
+      /*
+        WHO TOOK IT BACK OUT -- admin-only, on the same terms as `names` above and for the
+        same reason. "Who removed what" is the same class of fact as "who requested what",
+        which aannarr ruled stays with the admins, so an ordinary reader's JSON must not
+        carry it at all rather than a component declining to draw it.
+
+        One map for the whole page, like `requestDiagnosticMap`: this route serves up to 200
+        rows and the shell polls it.
+      */
+      const removals = role === "admin" ? store.removalMap() : null;
       const playLink = plexLinker();
       const seasonsOf = seasonProgressLinker(rows);
       return json({
@@ -2802,6 +2848,20 @@ const appRoutes = {
             a single key would have silently overwritten the request's own selection.
           */
           seasonProgress: seasonsOf(r),
+          /*
+            WHO REMOVED THIS AND WHEN, on the row that says it was removed.
+
+            Attached ONLY to a `removed` row, deliberately. The audit record is keyed on the
+            title and survives a later re-request -- it is the record of a decision, not of a
+            row -- so a re-requested title would otherwise carry a removal note above a
+            "Queued" verdict and read as if it had just been deleted.
+
+            The name is resolved the same way `attributedRequest` resolves a requester's, and
+            through the same `names` table: an admin whose account has since been deleted
+            shows as "(removed)" rather than as a dangling id.
+          */
+          removal:
+            removals && r.status === "removed" ? removalView(removals.get(r.tconst), names) : undefined,
         })),
         queue: worker.stats(),
         /*
@@ -2896,13 +2956,18 @@ const appRoutes = {
 
         Two things follow from where this sits. An invalid or impossible request never gets
         a quota-shaped error, so "you asked for a title that does not exist" is never
-        reported as "you have asked for too many"; and a title that ALREADY has a request row
-        is exempt, because `createRequest` upserts and this POST will not write a new one.
-        The quota is spent by rows, so only a POST that creates one is charged -- which is
-        what lets somebody at their limit still change the season selection on a series they
-        asked for this morning.
+        reported as "you have asked for too many"; and a title that ALREADY has a live request
+        row is exempt, because `createRequest` upserts onto it and this POST will not write a
+        new one. The quota is spent by rows, so only a POST that creates one is charged --
+        which is what lets somebody at their limit still change the season selection on a
+        series they asked for this morning.
+
+        `createsNewRequest` and not a null check of our own: a `removed` row is dropped and
+        re-inserted by `createRequest`, so asking again for a title an admin took back out
+        DOES write a new row and DOES cost a request. Two spellings of that rule would have
+        made an admin's removal a permanent free request on that title for everybody.
       */
-      if (!store.getRequest(row.tconst)) {
+      if (createsNewRequest(store.getRequest(row.tconst))) {
         const refused = quotaRefusal(asker);
         if (refused) return refused;
       }
@@ -3293,6 +3358,60 @@ const appRoutes = {
       // same call, as the POST above.
       primeShelves("arr");
       return json({ withdrawn: req.params.tconst, unmonitored: outcome.unmonitored });
+    },
+  },
+
+  /**
+   * Take the media back out: what would go (GET), and then take it (DELETE).
+   *
+   * ONE PATH FOR BOTH, because they are one operation seen twice -- the question and the
+   * answer -- and they must agree about every refusal. `resolveTarget` in `./remove-media.ts`
+   * is what makes them agree; two paths would have been two chances for a confirmation to
+   * open on something the delete then declines.
+   *
+   * Under `/api/admin/` and therefore ADMIN-ONLY, which is the whole shape of this feature:
+   * a reader browsing the library is never offered a delete button, an operator reviewing what
+   * has landed is. The rule is `auth.requireAdmin` -- anonymous gets 401, a signed-in
+   * non-admin gets the same 404 the rest of the admin surface gives, and an agent key is
+   * refused by the `/api/admin/` prefix in `./agent-api.ts` before it reaches here.
+   *
+   * Declared HERE rather than in `./auth-routes.ts` for the reason `/api/admin/index/refresh`
+   * is: the thing it drives -- the arr clients, the store, the shelves -- lives in this file,
+   * and wiring them back through the identity module as callbacks would make it import the
+   * arr vocabulary. The AUTHORISATION stays owned there.
+   *
+   * `deleteFiles` rides in the QUERY and not in a body, because a DELETE carrying a body is
+   * the shape half the HTTP stack in the world drops. It is REQUIRED and has no default: it is
+   * the difference between forgetting a title and deleting a household's file, and a default
+   * would be this endpoint choosing for whoever forgot to say.
+   */
+  "/api/admin/requests/:tconst/media": {
+    GET: async (req: Bun.BunRequest<"/api/admin/requests/:tconst/media">) => {
+      const refused = auth.requireAdmin(req);
+      if (refused) return refused;
+      const outcome = await removalPreview(removalDeps(), req.params.tconst);
+      return outcome.ok ? json({ preview: outcome.value }) : bad(outcome.error, outcome.status);
+    },
+    DELETE: async (req: Bun.BunRequest<"/api/admin/requests/:tconst/media">) => {
+      const refused = auth.requireAdmin(req);
+      if (refused) return refused;
+      const deleteFiles = new URL(req.url).searchParams.get("deleteFiles");
+      if (deleteFiles !== "true" && deleteFiles !== "false") {
+        return bad("deleteFiles must be true or false");
+      }
+      const admin = auth.principal(req);
+      const outcome = await removeMedia(
+        removalDeps(),
+        req.params.tconst,
+        { deleteFiles: deleteFiles === "true" },
+        { userId: admin?.user?.id ?? null },
+      );
+      if (!outcome.ok) return bad(outcome.error, outcome.status);
+      // The library mirror and the request row both moved, and "Recently added" and "Recently
+      // requested" are built from them -- so the held page is rebuilt now rather than up to 60
+      // seconds from now, the same reason and the same call the request routes make.
+      primeShelves("arr");
+      return json({ removed: outcome.value });
     },
   },
 

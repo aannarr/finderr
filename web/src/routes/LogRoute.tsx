@@ -20,35 +20,68 @@
  */
 
 import { Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ToggleChip } from "../components/Chip";
+import { RemoveMediaControl } from "../components/RemoveMediaControl";
 import { VerdictChip } from "../components/RequestProgress";
 import { getRequests, type MediaRequest } from "../lib/api";
+import { useApp } from "../lib/app-context";
 import { attributionVisible, byRequester, logOrder, requesters, seasonLine } from "../lib/request-log";
 import { formatAge, formatStamp } from "../lib/timestamps";
+
+/**
+ * "Removed by Ana 2 days ago, with its files" -- the audit line under a removed row.
+ *
+ * The one place a household can find out where a film went, which is the whole reason a
+ * removal leaves the request row standing instead of deleting it. It says WHETHER THE FILES
+ * WENT because that is the difference between "gone from the app" and "gone from the disk",
+ * and the two have very different answers to "can we get it back".
+ *
+ * The size is deliberately not repeated here: it was on the confirmation, where it mattered,
+ * and a byte count in a log line is trivia.
+ */
+function RemovalNote({ removal }: { removal: NonNullable<MediaRequest["removal"]> }) {
+  const who = removal.byName ?? "the system key";
+  const what = removal.deletedFiles ? "with its files" : "the arr entry only";
+  return (
+    <span className="text-xs text-muted" title={formatStamp(removal.at)}>
+      Removed by {who} {formatAge(removal.at)} — {what}
+    </span>
+  );
+}
 
 export function LogRoute() {
   const [rows, setRows] = useState<MediaRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { isAdmin } = useApp();
   /**
    * Which person the log is narrowed to. `undefined` is everybody, `null` is the rows nobody
    * is attached to -- a real selection rather than the absence of one. See `byRequester`.
    */
   const [who, setWho] = useState<string | null | undefined>(undefined);
 
+  /*
+    No `mine` -- this is the whole log, which every signed-in reader may see.
+
+    A `useCallback` rather than a bare effect body because there is now a second caller: an
+    admin removing a title changes the row they are looking at, and re-reading the log is how
+    that page tells the truth about it. Same read either way, so the two can never disagree.
+  */
+  const load = useCallback(() => {
+    getRequests()
+      .then(({ requests }) => setRows(requests))
+      .catch((e) => setError((e as Error).message));
+  }, []);
+
   useEffect(() => {
     /*
-      No `mine` -- this is the whole log, which every signed-in reader may see.
-
       Loaded ONCE rather than polled. `RootLayout` already polls this same endpoint every
       eight seconds for the queue and ready badges, so a second timer here would buy a
       seldom-watched page a repaint it did not ask for; a reader who wants the newest state
       of a request they are waiting on is on `/requests`, which is where the badge sends them.
     */
-    getRequests()
-      .then(({ requests }) => setRows(requests))
-      .catch((e) => setError((e as Error).message));
-  }, []);
+    load();
+  }, [load]);
 
   const people = useMemo(() => (rows ? requesters(rows) : []), [rows]);
   const visible = useMemo(() => (rows ? logOrder(byRequester(rows, who)) : []), [rows, who]);
@@ -123,21 +156,45 @@ export function LogRoute() {
                   </span>
                 )}
 
-                <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+                {/*
+                  A `div` rather than the `span` this cell used to be: it now stacks a title
+                  line, an optional removal note and an optional control, and the control's own
+                  wrapper is a block element that may not sit inside a span.
+                */}
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+                    {/*
+                      The title is the way BACK to the thing itself -- to play it if it arrived,
+                      or to see why if it did not. Same rule as `/requests`: a log row that only
+                      reported a state would be a dead end.
+                    */}
+                    <Link to="/title/$tconst" params={{ tconst: row.tconst }} className="hover:underline">
+                      {row.title}
+                    </Link>
+                    {row.year !== null && <span className="text-xs text-muted">{row.year}</span>}
+                    {seasons && <span className="text-xs text-muted">{seasons}</span>}
+                    {row.requestVerdict && (
+                      <VerdictChip verdict={row.requestVerdict} progress={row.requestProgress} />
+                    )}
+                  </span>
+
                   {/*
-                    The title is the way BACK to the thing itself -- to play it if it arrived,
-                    or to see why if it did not. Same rule as `/requests`: a log row that only
-                    reported a state would be a dead end.
+                    WHO TOOK IT BACK OUT. Admin-only, and the server decides that by sending
+                    the key at all -- exactly like the Who column above, and for the same
+                    reason: it is the same class of fact about the same household.
                   */}
-                  <Link to="/title/$tconst" params={{ tconst: row.tconst }} className="hover:underline">
-                    {row.title}
-                  </Link>
-                  {row.year !== null && <span className="text-xs text-muted">{row.year}</span>}
-                  {seasons && <span className="text-xs text-muted">{seasons}</span>}
-                  {row.requestVerdict && (
-                    <VerdictChip verdict={row.requestVerdict} progress={row.requestProgress} />
-                  )}
-                </span>
+                  {row.removal && <RemovalNote removal={row.removal} />}
+
+                  {/*
+                    THE QUEUE'S HALF OF THE REMOVAL CONTROL.
+
+                    Here as well as on `/requests` because `/requests` is scoped to the reader's
+                    OWN asks -- an admin cleaning up a film somebody else requested cannot reach
+                    it there. Same component on both, so the confirmation, the `deleteFiles`
+                    choice and the copy cannot come out differently on the two pages.
+                  */}
+                  <RemoveMediaControl request={row} isAdmin={isAdmin} onRemoved={load} />
+                </div>
 
                 {/*
                   The AGE is what a reader converts a date into anyway -- "how long has this
