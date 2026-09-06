@@ -25,6 +25,7 @@ import {
 import { encodeSeasons } from "./seasons";
 import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 import type { TermPair } from "./terms";
+import { applyWatchlistSchema } from "./watchlist";
 
 /**
  * Where the mirrored server's identity lives.
@@ -874,6 +875,10 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     // Identity, declared next to the identity rules -- and migrated by the same call the
     // tests use, so the ALTERs are not a path that first runs against the live file.
     applyAuthSchema(this.db);
+    // AFTER the auth schema, never before: `watchlist` cascades off `app_user`, and SQLite
+    // resolves a foreign key at INSERT time -- so the wrong order here fails on somebody's
+    // first save rather than here. See `WATCHLIST_SCHEMA`.
+    applyWatchlistSchema(this.db);
     addMissingColumns(this.db, ADDED_COLUMNS);
   }
 

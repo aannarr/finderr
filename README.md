@@ -290,6 +290,15 @@ sentence about why it is slow that the title page gives. Anything that arrived a
 not seen yet is counted in the header, and the count survives closing the app -- one per
 request, so a season pack finishing is one piece of news rather than twenty.
 
+`/watchlist` is the other kind of list, and the difference is who wrote it: every row on
+`/lists` is a query anybody gets the same answer to, and this one is the titles you kept. The
+bookmark beside Request on any card, and under the request button on any title page, puts one
+there. **Saving downloads nothing.** It writes one row, spends none of your daily quota,
+starts no search and never speaks to Radarr or Sonarr -- Request is still the only control in
+finderr that does, which is exactly why the two sit side by side at different weights. Your
+list is private: nobody else sees it, not even an admin, and deleting an account takes its
+list with it.
+
 `/log` is the same thing for the whole household: everything the server has ever been asked
 for, newest asked first, with the state of each. Everybody can see WHAT was requested and
 WHEN -- that is what stops three people asking for the same film and makes "is it coming?"
@@ -1032,6 +1041,9 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
 | `POST` | `/api/requests/:tconst/retry` | |
 | `DELETE` | `/api/requests/:tconst` | withdraw. The requester or an admin; anybody else gets the same `404 unknown request` a title nobody asked for gets, so the route cannot be used to find out who asked. Drops the row, refunds the day's quota and unmonitors in the arr -- only when the arr row was one WE added. Never deletes a movie, a series or a file, and refuses a request that has already arrived |
+| `GET` | `/api/watchlist` | your saved titles as decorated cards, newest save first. One endpoint rather than two: the page draws these and every save button reads the ids out of the same answer. A save whose title has left the index is dropped from the response and kept in the table |
+| `POST` | `/api/watchlist` `{tconst}` | save one title. Writes one row and calls no arr, spends no quota and starts no search. Saving twice is `{"saved":false}` rather than a conflict; an unknown tconst is `404` |
+| `DELETE` | `/api/watchlist/:tconst` | un-save. Removing something that was never on your list is `{"removed":false}`, because the state you asked for is already true |
 | `POST` | `/api/webhook/arr` | public, and the only public route that CHANGES state. Radarr's and Sonarr's Webhook payloads; basic auth, and closed until a password is set. See [Letting the arrs tell you](#letting-the-arrs-tell-you) |
 | `GET` | `/api/push/key` | whether push is on, and the VAPID public key to subscribe with |
 | `POST` | `/api/push/subscribe` | the browser's own `PushSubscription.toJSON()`, verbatim |

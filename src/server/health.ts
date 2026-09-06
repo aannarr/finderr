@@ -230,6 +230,19 @@ export interface HealthDeps {
     noAuth: boolean;
   };
   /**
+   * The private lists: how many titles are saved, and how many people keep one.
+   *
+   * A COUNT AND NOTHING ELSE, on the same rule as `auth` and `push` above -- the whole
+   * promise of a watchlist is that it is yours, so what may be published about it is that
+   * the feature is being used and never a title or a name. `WatchlistStats` is the one owner
+   * of that shape.
+   *
+   * `rows` rising with `readers` at 1 is the ordinary shape of a small household. Both at
+   * zero on a deployment where people are saving things is worth looking at; nothing else
+   * reports on this table.
+   */
+  watchlist: { rows: number; readers: number };
+  /**
    * Web push: whether it is switched on, and how many devices have subscribed.
    *
    * A COUNT, like everything else in `auth` above, and for the same reason: it says
@@ -367,6 +380,7 @@ export function healthPayload(
     timings: deps.timings,
     services: deps.services,
     auth: deps.auth,
+    watchlist: deps.watchlist,
     push: deps.push,
     webhook: deps.webhook,
     queue: deps.queue,

@@ -65,6 +65,7 @@ import {
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
+import { WatchlistStore } from "../lib/watchlist";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
@@ -201,6 +202,14 @@ const facetImages = new FacetImageProxy({ store, bytes: artwork });
 
 // Identity. Shares the app database connection -- one file, one writer, one migration.
 const authStore = new AuthStore(store.db);
+
+/*
+  The private list, on the same connection and for the same reason.
+
+  It holds NOTHING an arr is ever told about: saving a title writes one row and the download
+  path is not reachable from any route below that touches it. See `src/lib/watchlist.ts`.
+*/
+const watchlistStore = new WatchlistStore(store.db);
 
 /*
   Web push, and it is constructed BEFORE the request worker on purpose.
@@ -1456,6 +1465,8 @@ const appRoutes = {
             // list every user.
             noAuth: cfg.auth.noAuth,
           },
+          // Two integers over the whole table. No title, no name -- see `WatchlistStats`.
+          watchlist: watchlistStore.stats(),
           push: { enabled: pushNotifier.enabled, devices: authStore.pushSubscriptionCount() },
           // Counters held in memory, so this asks nobody anything -- the rule this endpoint
           // runs on. `received: 0` is how an operator finds out the Webhook connection they
@@ -2195,6 +2206,96 @@ const appRoutes = {
    * faster of the two and is what the 60 seconds is for.
    */
   "/api/lists/completion": () => json(completionPayload(listsDeps()), { cache: perSession(60) }),
+
+  /*
+    ---------------------------------------------------------------------------
+    The watchlist: a list you keep, that downloads nothing.
+
+    > [!CAUTION] NOTHING HERE MAY EVER REACH AN ARR
+    > A saved title is a note to yourself. It spends no daily quota, starts no search and
+    > adds nothing to Radarr or Sonarr -- pressing Request is still the only thing in this
+    > product that downloads, and that separation is the entire reason this feature was
+    > safe to build. A timer that turned saves into requests is the ARCHIVED card
+    > `finderr-watchlist-auto-request-from-plex-or-trakt`, archived because exactly that
+    > shape had already auto-added unattended once through a dead OAuth token.
+    ---------------------------------------------------------------------------
+  */
+
+  "/api/watchlist": {
+    /**
+     * The caller's own list, as decorated title cards, newest save first.
+     *
+     * FULL CARDS RATHER THAN IDS, and one endpoint rather than two, because the client needs
+     * both answers and they are the same rows: `/watchlist` draws the cards, and every other
+     * screen's save button reads the ids out of the same response. A second `?ids=1` shape
+     * would be a second thing to keep in step for one fetch per session.
+     *
+     * A save whose title the INDEX no longer carries is dropped rather than sent as a hole.
+     * The index is rebuilt nightly from the IMDb dumps and a tconst can leave it, so this is
+     * the ordinary way a row goes stale -- the same rule `/api/collection/:id` applies to a
+     * member it cannot draw. The row stays in the table: an index that gets the title back
+     * tomorrow should give the reader their save back with it.
+     *
+     * NO CACHE POLICY, unlike every list route around it, and that is the default rather
+     * than an omission -- `json` sends `no-store` unless a handler argues for something
+     * else. There is no argument here: the answer is per-reader and changes the instant they
+     * press Save, so any window at all would show somebody their own list without the thing
+     * they just put on it.
+     */
+    GET: (req: Request) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      // Nobody signed in keeps nothing. Not an error -- an empty list is the true answer.
+      if (!me) return json({ titles: [] });
+      const rows = watchlistStore.list(me).flatMap((e) => live.current.byTconst(e.tconst) ?? []);
+      return json({ titles: decorate(rows) });
+    },
+
+    /**
+     * Save one title for later.
+     *
+     * POST and not PUT: the id is in the body rather than the path because that is the shape
+     * every other write in this table already takes, and there is nothing to be gained by a
+     * second convention. Saving twice is a 200 with `saved: false`, not a conflict -- two
+     * tabs pressing the same button is not an error anybody can act on.
+     *
+     * The tconst must be one the index can draw. Refusing an unknown id here is what stops a
+     * list filling up with rows that can never render and can only ever be removed by an id
+     * nothing on screen shows -- the same check `POST /api/requests` makes, for the same
+     * reason.
+     */
+    POST: async (req: Request) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      if (!me) return bad("sign in to keep a watchlist", 401);
+
+      let body: { tconst?: unknown };
+      try {
+        body = (await req.json()) as { tconst?: unknown };
+      } catch {
+        return bad("body must be JSON");
+      }
+      if (typeof body.tconst !== "string" || !body.tconst) return bad("tconst is required");
+      if (!live.current.byTconst(body.tconst)) return bad("unknown title", 404);
+
+      return json({ saved: watchlistStore.add(me, body.tconst) });
+    },
+  },
+
+  /**
+   * Take one title off your list. Removing something that was never on it is `removed: false`
+   * rather than a 404: the desired state is already true, which is the same answer
+   * `/api/requests/seen` gives an anonymous caller.
+   *
+   * DELETE with the id in the PATH, unlike the POST above, because that is what
+   * `/api/requests/:tconst` already does for the withdraw it is the sibling of -- and a
+   * DELETE carrying a body is the shape half the HTTP stack in the world drops.
+   */
+  "/api/watchlist/:tconst": {
+    DELETE: (req: Bun.BunRequest<"/api/watchlist/:tconst">) => {
+      const me = auth.principal(req)?.user?.id ?? null;
+      if (!me) return bad("sign in to keep a watchlist", 401);
+      return json({ removed: watchlistStore.remove(me, req.params.tconst) });
+    },
+  },
 
   /**
    * The discovery shelves, decorated with local library and request state.

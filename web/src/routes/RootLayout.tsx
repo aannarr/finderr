@@ -29,6 +29,7 @@ import { ariaKeyShortcuts, HOST_PLATFORM, KEYMAP } from "../lib/keymap";
 import type { SearchParams } from "../lib/search-params";
 import { summariseSeasons } from "../lib/season-select";
 import { useToasts } from "../lib/toasts";
+import { loadWatchlist } from "../lib/watchlist";
 
 /**
  * What the success toast says.
@@ -60,6 +61,10 @@ function summariseSent(t: Title, seasons?: readonly number[] | null): string {
  */
 const NAV_LINKS: { to: string; label: string }[] = [
   { to: "/lists", label: "Lists" },
+  // The one list here whose membership a reader writes themselves. Not gated on being signed
+  // in: every route but the sign-in ceremonies already is, so there is nobody in the chrome
+  // to hide it from.
+  { to: "/watchlist", label: "Watchlist" },
   { to: "/awards/oscars", label: "Awards" },
   { to: "/requests", label: "Requests" },
   // The whole house's log, beside your own requests. Not admin-gated: everybody may see
@@ -124,6 +129,22 @@ export function RootLayout() {
     void getAuthState()
       .then((s) => setMe(s.user ?? null))
       .catch(() => setMe(null));
+  }, []);
+
+  /*
+    THE WATCHLIST IS LOADED ONCE, HERE, FOR EVERY SCREEN.
+
+    Every title card in the product draws a bookmark that has to know whether that title is
+    already saved, so the alternative is a request per card. One call in the shell answers all
+    of them and the `/watchlist` page besides -- see `lib/watchlist.ts`, which holds the result
+    and lets a save on one screen repaint the same film on another.
+
+    Nothing is awaited and nothing is caught: the module swallows a failure into an empty list
+    on purpose, because being unable to read your watchlist is not something a reader who came
+    here to search can act on.
+  */
+  useEffect(() => {
+    void loadWatchlist();
   }, []);
 
   /**

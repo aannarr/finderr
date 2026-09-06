@@ -22,6 +22,7 @@ import { PlayOnPlex } from "../components/PlayOnPlex";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
+import { SaveToWatchlist } from "../components/SaveToWatchlist";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { findTerm } from "../components/TermChip";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
@@ -422,6 +423,17 @@ export function TitleRoute() {
                 Request missing seasons
               </button>
             )}
+
+            {/*
+              KEEPING A NOTE OF IT, under whichever of the controls above was drawn.
+
+              Offered for every title, including one already in the library and one already
+              requested: "I want to watch this" and "we hold this" are different facts, and a
+              list you keep is the only one of the two that is yours. It downloads nothing --
+              see `SaveToWatchlist` -- which is exactly why it can sit under the request
+              button without competing with it.
+            */}
+            <SaveToWatchlist title={title} tone="block" />
 
             {/*
               Under the button and never inside the header block: it loads its lists on

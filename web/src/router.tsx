@@ -42,6 +42,7 @@ import { RootLayout } from "./routes/RootLayout";
 import { SearchRoute } from "./routes/SearchRoute";
 import { TermRoute } from "./routes/TermRoute";
 import { TitleRoute } from "./routes/TitleRoute";
+import { WatchlistRoute } from "./routes/WatchlistRoute";
 
 const rootRoute = createRootRoute({ component: RootLayout });
 
@@ -141,6 +142,21 @@ const listsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/lists",
   component: ListsRoute,
+});
+
+/**
+ * `/watchlist` -- the titles you kept, newest first.
+ *
+ * Beside `/lists` rather than under it, and the difference is who owns the membership: every
+ * row on `/lists` is a query anybody would get the same answer to, and this one is a set of
+ * rows one reader wrote. It takes no search params -- a private list is not a shareable link,
+ * and giving it one would be the only URL in this product that renders differently depending
+ * on who opens it.
+ */
+const watchlistRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/watchlist",
+  component: WatchlistRoute,
 });
 
 /**
@@ -306,6 +322,7 @@ const routeTree = rootRoute.addChildren([
   awardPeopleRoute,
   ceremonyRoute,
   listsRoute,
+  watchlistRoute,
   requestsRoute,
   logRoute,
   accountRoute,

@@ -8,6 +8,7 @@ import { BrowseChip } from "./BrowseChip";
 import { JumpBadge, useJumpKey } from "./JumpKeys";
 import { Poster } from "./Poster";
 import { RequestAction } from "./RequestAction";
+import { SaveToWatchlist } from "./SaveToWatchlist";
 
 /**
  * What KIND of date this is, spelt for a reader.
@@ -288,8 +289,19 @@ export const TitleCard = memo(function TitleCard({
           </p>
         )}
 
-        <div className="mt-auto pt-2">
-          <RequestAction title={t} onRequest={onRequest} shortcut={requestShortcut} />
+        {/*
+          Request and Save, side by side, at deliberately different weights.
+
+          Request keeps the whole accent-filled button and the width it always had; saving is
+          a bordered square beside it. They are not alternatives -- you can ask for a film and
+          also keep a note of one you are not asking for -- and only one of them spends the
+          household's disk, which is why the cheaper one looks cheaper.
+        */}
+        <div className="mt-auto flex items-stretch gap-1.5 pt-2">
+          <div className="min-w-0 flex-1">
+            <RequestAction title={t} onRequest={onRequest} shortcut={requestShortcut} />
+          </div>
+          <SaveToWatchlist title={t} />
         </div>
       </div>
     </article>
