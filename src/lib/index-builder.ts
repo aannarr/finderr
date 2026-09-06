@@ -662,9 +662,12 @@ export const INDEXES = {
    * > tested while walking `rank desc` or `votes desc` and the walk still stops at `limit`.
    * >
    * > Measured on a copy of the real 1,276,669-title index, M1 Max, 2026-09-07, best of five
-   * > warm through `SearchEngine.browse`. Both files carry the statistics a REAL BUILD leaves
-   * > -- `pragma optimize`'s estimates, not a full `analyze` -- because that is what the
-   * > planner actually sees, and the two disagree enough to change a plan (see the note below):
+   * > warm through `SearchEngine.browse`. Both files carried the statistics a build left AT
+   * > THE TIME -- `pragma optimize`'s capped estimates -- because that is what the planner
+   * > then saw. The build has since ended on `analyze` instead (see the comment on that line).
+   * > The three of these rows the bench now carries -- `browse.langVotes`, `browse.langDecade`
+   * > and `browse.langGenre` in `../lib/bench-scenarios.ts` -- were re-measured under both sets
+   * > of statistics on a freshly built index, and neither their plans nor their times moved.
    * >
    * > | browse | before | after |
    * > |---|---|---|
@@ -693,20 +696,18 @@ export const INDEXES = {
    * > browse sorted by votes splits into ten per-year seeks that each fall out of the index,
    * > 9.4 ms against 4.4 for English and 8.8 against 2.5 for French, for 3.6 MB.
    * >
-   * > > [!CAUTION] MEASURE AGAINST THE STATISTICS A BUILD LEAVES, or price a plan that never runs
-   * > > `buildIndex` ends on `pragma optimize`, which writes ESTIMATES rather than scanning:
-   * > > `ix_lang_rank` gets `1288966 572 401 1 1` where a full `analyze title_lang` computes
-   * > > `1288966 8006 3175 5 5` -- a 14x disagreement about how many rows one `lang` matches.
-   * > > It is not staleness and a rebuild does not fix it; `optimize` writes the same estimate
-   * > > on a file whose `title_lang` was created seconds earlier. Measured on SQLite 3.51.0,
-   * > > the version `bun:sqlite` bundles.
+   * > > [!CAUTION] MEASURE AGAINST THE STATISTICS A BUILD LEAVES -- WHICH IS NOW `analyze`
+   * > > Dropping and recreating an index by hand on a copy of the real file DELETES its
+   * > > `sqlite_stat1` row, and the planner is then estimating with nothing. That made the
+   * > > change measured above look like a 29 ms -> 52 ms REGRESSION on
+   * > > `?lang=fr&genre=Horror&kind=movie&sort=votes` until the file was rebuilt properly.
    * > >
-   * > > It changes plans, so it changes numbers. Mutating a copy of the real index by hand
-   * > > DROPS the stat row for any index you drop and recreate, and the planner then has no
-   * > > estimate at all -- which made this exact change look like a 29 ms -> 52 ms REGRESSION
-   * > > on `?lang=fr&genre=Horror&kind=movie&sort=votes` before the file was rebuilt the way a
-   * > > build builds. Whether `optimize`'s estimate is the RIGHT thing for this index to ship
-   * > > with is a separate question and a separate card.
+   * > > **Repairing it is now one statement: run `analyze` on the copy.** That is exactly what
+   * > > a build leaves since 2026-09-07, so a prototyped copy and a shipped index agree. It was
+   * > > not always this simple -- while the build ended on `pragma optimize` the only faithful
+   * > > recipe was to rebuild the table and its indexes and then reproduce the capped estimate,
+   * > > and `delete from sqlite_stat1; pragma optimize;` does NOT reproduce it (measured: on a
+   * > > connection that has not queried the table, `optimize` writes nothing at all).
    * >
    * > WHAT IT COSTS THE BUILD, measured 2026-09-07 by writing `title_lang` and its indexes
    * > both ways over the real 1,288,966 rows: **2.23 s to 3.72 s, so +1.5 seconds**, and
@@ -1126,7 +1127,36 @@ export async function buildIndex(
   // run, and never by a stage itself -- see `stampStages`.
   stampStages(db, cfg);
 
-  db.run("pragma optimize");
+  /*
+    THE STATISTICS THE PLANNER WILL SEE FOR THE LIFE OF THIS FILE. It is `analyze`, not
+    `pragma optimize`, and the difference is the whole reason this comment exists.
+
+    `pragma optimize` -- what this line was until 2026-09-07 -- does NOT scan. It caps the
+    analysis at 2000 rows per index and extrapolates, and NOTHING lifts the cap: measured on
+    SQLite 3.51.0 (the build `bun:sqlite` bundles), `pragma analysis_limit = 1000000000`
+    reads back as 1e9 and the stat row is still the capped one. It also only analyses tables
+    whose indexes THIS CONNECTION happened to query, so which tables end up with statistics
+    at all is a side effect of what the build read. The reasonable reading of the old line --
+    "the build analyses itself" -- was wrong on both counts.
+
+    What that cost, on the real 1,276,669-title index: `ix_kind` claimed every `kind` value
+    matches 2,001 of 1.28M rows where the truth is 319,168, and `ix_lang_rank` claimed 572
+    rows per language against 8,006. A planner choosing between indexes on a 160x under-
+    estimate is right by luck, and luck does not survive the next index change.
+
+    THE PRICE IS 3.0 SECONDS on the finished 1.9 GB file (M1 Max, 2026-09-07), against ~20 ms
+    for the estimate. That is the price rather than an objection -- see `.claude/CLAUDE.md` on
+    runtime beating build time -- and it is under 3% of even the fastest measured build above.
+
+    WHAT IT BOUGHT AT THE TIME OF THE CHANGE, measured rather than assumed: nothing visible.
+    A full `bun run bench` both ways over the same freshly built file changed NO query plan in
+    any of the 33 scenarios and no warm total (65.0 ms against 64.7). The card that made this
+    change was filed on a 3x gap on `?lang=fr&genre=Horror&kind=movie&sort=votes`, and by the
+    time it was built `ix_lang_votes` (see `INDEXES.origin`) had already given the planner an
+    index good enough that the statistics no longer decided anything. So this is not a
+    measured speedup; it is the removal of a lie the planner was reading, taken on a tie.
+  */
+  db.run("analyze");
   db.close();
 
   vacuumIndex(dest, log);
