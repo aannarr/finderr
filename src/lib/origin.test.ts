@@ -452,6 +452,20 @@ describe("the two paths are the same list", () => {
     fixture can express rather than on one language, because the ways they could diverge are
     all edges: a multi-language title counted twice by the join, a title whose `en` row makes
     it foreign to itself, a language nobody is in.
+
+    > [!IMPORTANT] "The same list" means the same SET. TIED RANKS ORDER ARBITRARILY, on both
+    > paths, and that is not something this card introduced
+    > `order by rank desc` carries no unique tiebreak anywhere in `browseSql`, and the
+    > Bayesian rank collapses to the identical value for every title sharing a rating and a
+    > vote count -- which most of the low-vote tail does. So the two paths, reading two
+    > different indexes, legitimately disagree about which of two equally-ranked films sits at
+    > position 148, and about which of them falls off the end at 250.
+    >
+    > Measured on the real 1,288,159-row index on 2026-09-06: 37 of 75 language lists came
+    > back in a different order, and across 54 checked position by position, EVERY difference
+    > was between titles carrying the same `rank` bit for bit, with exactly one title swapping
+    > at a 250 boundary. The fixture below carries a deliberate tie so the rule is pinned
+    > rather than only written down.
   */
   const both = (db: Database, opts: Parameters<typeof browseIndex>[1]) => ({
     slow: browseIndex(db, { ...opts, langRank: false }),
@@ -466,6 +480,40 @@ describe("the two paths are the same list", () => {
       expect(fast.total).toBe(slow.total);
     });
   }
+
+  test("tied ranks give the same SET, and any positional difference is a tie", () => {
+    // Two Swedish films with the identical rating and vote count, so `applyRank` gives them
+    // the identical rank and neither path has anything to order them by. What must hold is
+    // that both films are in both answers.
+    const tied: Row[] = [
+      {
+        tconst: "tt-tie1",
+        year: 2001,
+        kind: "movie",
+        votes: 40_000,
+        rating: 7.5,
+        genres: "Crime",
+        langs: ["sv"],
+      },
+      {
+        tconst: "tt-tie2",
+        year: 2002,
+        kind: "movie",
+        votes: 40_000,
+        rating: 7.5,
+        genres: "Crime",
+        langs: ["sv"],
+      },
+    ];
+    const db = indexOf([...CORPUS, ...tied]);
+    const ranks = db.query("select rank from title where tconst in ('tt-tie1','tt-tie2')").all() as {
+      rank: number;
+    }[];
+    expect(ranks[0]?.rank).toBe(ranks[1]!.rank);
+    const { slow, fast } = both(db, { kind: "movie", lang: "sv", sort: "rank", limit: 50 });
+    expect(new Set(fast.rows.map((r) => r.tconst))).toEqual(new Set(slow.rows.map((r) => r.tconst)));
+    expect(fast.total).toBe(slow.total);
+  });
 
   test("a multi-language title appears ONCE, not once per language", () => {
     // The join's own hazard: `title_lang` has three rows for `tt-multi`, and a join that did

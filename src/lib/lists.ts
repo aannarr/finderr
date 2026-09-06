@@ -146,8 +146,8 @@ export interface ListLanguage {
  * so "you own 12 of 250" names a denominator that exists. Nothing else is weighed. There is
  * exactly one exception and it is stated below.
  *
- * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why there are forty
- * > of these rather than twelve
+ * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why there are
+ * > forty-one of these rather than twelve
  * > A language list is `browseSql`'s ranked shape plus "in this language and not also in
  * > English". Against `title` that is a walk DOWN the rank order until 250 films of the
  * > language have accumulated, so the price was set by how deep a language's 250th film sat
