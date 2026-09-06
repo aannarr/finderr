@@ -296,9 +296,10 @@ describe("the filter SEEKS its index", () => {
       ONE code matching a fraction of a percent, and its `not exists` half has to prove a
       negative per candidate row, which `(title_rowid, lang)` cannot do selectively.
 
-      Measured on a copy of the real 1,288,159-row index on 2026-09-06, same SQL either way:
-      the twelve shipped lists go from 138.4 ms to 81.0 ms, and the preference query kept its
-      correlated-seek plan at 1.9 ms rather than the 1,014 ms of the shape that was withdrawn.
+      Measured on a copy of the real 1,288,159-row index on 2026-09-06, with the index the
+      only thing that changed: the twelve shipped lists go from 125.8 ms to 77.4 ms, and the
+      preference query kept its correlated-seek plan at 1.9 ms rather than regressing to the
+      1,014 ms of the shape that was withdrawn.
     */
     expect(INDEXES.origin.join("")).toContain("title_lang(lang, title_rowid)");
   });
