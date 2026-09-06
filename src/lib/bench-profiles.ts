@@ -93,7 +93,7 @@ const SLIM_INDEXES: readonly string[] = [
   // on that browse -- which makes it a candidate for a future SIZE profile ("what if you
   // dropped it entirely?"), not for this one.
   "create index ix_lang_code on title_lang(lang, title_rowid)",
-  // Was `(lang, kind, non_english, rank desc)`. Drops the two COVERED FILTER columns and
+  // Was `(lang, kind, rank desc, non_english)`. Drops the two COVERED FILTER columns and
   // keeps `(lang, rank desc)` -- the same narrowing `ix_tg_rank` takes above, and the same
   // line: the ordering survives, the filters become a row fetch. This is the outer bound
   // rather than a shape anybody would deploy.
@@ -147,11 +147,12 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   // Unchanged for the reason `slim` gives: two columns, both key, no payload to drop.
   "create index ix_lang on title_lang(title_rowid, lang)",
   "create index ix_lang_code on title_lang(lang, title_rowid)",
-  // Unchanged, and this is the `ix_year` line again: `kind` and `non_english` are equality
-  // columns that sit BEFORE the sort column, so dropping either leaves `rank desc` unable to
-  // serve the order. That is a plan change rather than a payload one, which is `slim`'s
-  // question and not this profile's.
-  "create index ix_lang_rank on title_lang(lang, kind, non_english, rank desc)",
+  // Unchanged, and this is the `ix_year` line again: `kind` sits BEFORE the sort column, so
+  // dropping it leaves `rank desc` unable to serve the order. `non_english` is the one column
+  // here that IS trailing payload by position -- and it is still not this profile's question,
+  // because it is read as a covered FILTER (see `INDEXES.origin`), so dropping it would not
+  // save a row fetch, it would add one per candidate row.
+  "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english)",
   // Drops five payload columns, keeps the whole key. The pure case, and the one whose
   // docstring already claims 20-30% warm and up to 496 ms cold.
   "create index ix_ep_parent on episode(parent, season, number)",

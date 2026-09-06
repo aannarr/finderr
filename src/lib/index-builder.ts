@@ -606,8 +606,8 @@ export const INDEXES = {
    * > list at twelve.
    * >
    * > With `kind`, `rank` and `non_english` denormalised onto `title_lang` (see
-   * > `ORIGIN_SCHEMA`), the query drives from THIS index instead: the three equality columns
-   * > fix a range and `rank desc` reads it in output order, so a list is one covering seek that
+   * > `ORIGIN_SCHEMA`), the query drives from THIS index instead: `lang` and `kind` fix a
+   * > range and `rank desc` reads it in output order, so a list is one covering seek that
    * > stops at 250 rows whether the language has four thousand films or four hundred. It is the
    * > same shape `ix_tg_rank` gives a genre, arrived at for the same reason.
    * >
@@ -615,6 +615,23 @@ export const INDEXES = {
    * > predicate a browse writes binds `lang` as a parameter -- SQLite cannot prove a bound
    * > parameter satisfies a partial index's condition, so a partial index on `lang` would
    * > simply never be used. The measurements are in `LIST_LANGUAGES`.
+   * >
+   * > **`non_english` SITS AFTER `rank desc`, and that ordering is what lets `?lang=en` in.**
+   * > It shipped as `(lang, kind, non_english, rank desc)`, which serves the forty-four
+   * > language lists perfectly and serves ENGLISH not at all: English is the one language with
+   * > no `not exists` half, so its rows are on both sides of `non_english` and the sort column
+   * > sat behind a column the query could not constrain. Moving `non_english` behind `rank
+   * > desc` makes it a COVERED FILTER applied while walking, which costs a foreign list only
+   * > the rows it skips -- bounded by how much of that language is also in English, and that
+   * > is 19.6% at the worst of the forty-four (Ukrainian). Measured 2026-09-06 on a copy of the
+   * > real 1,288,159-row index, M1 Max, with the column order the only thing that changed: the
+   * > forty-four lists total **11.2 ms before and 10.9 ms after** -- inside the run-to-run
+   * > spread, no language moving more than 0.05 ms -- while `/browse?lang=en&kind=movie&
+   * > sort=rank` goes **198.9 ms to 2.0 ms**. See `langListJoin`.
+   * >
+   * > A SECOND index `(lang, kind, rank desc)` beside the original was measured as the
+   * > alternative and REJECTED: it produced the same 2 ms and the same 10.3 ms of lists, for
+   * > another ~28 MB and a second owner of one decision. Nothing bought the bytes.
    * >
    * > WHAT IT COSTS THE BUILD, measured 2026-09-06 by running the stage both ways over the
    * > real 1,288,159 rows: the load goes 1.9s to 3.4s and the indexes 0.9s to 1.6s, so **+2.1
@@ -625,7 +642,7 @@ export const INDEXES = {
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",
     "create index ix_lang_code on title_lang(lang, title_rowid)",
-    "create index ix_lang_rank on title_lang(lang, kind, non_english, rank desc)",
+    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english)",
   ],
 } satisfies Record<string, readonly string[]>;
 
