@@ -613,6 +613,104 @@ describe("LiveIndex with no index yet", () => {
     live.close();
   });
 
+  /*
+    A PREFAULT THAT FAILS MUST NOT LOOK LIKE ONE THAT HAS NOT FINISHED.
+
+    The catch arm used to return without recording anything, so `warmStatus().last` stayed
+    `null` -- the same answer a container gives three seconds into its boot. On the deployment
+    array the difference between those two is 224x on the first queries, and the only evidence
+    was a log line nobody greps.
+
+    The stream is INJECTED for these. A prefault fails when the filesystem goes away under a
+    running container, and nothing that can be done to a temp file reproduces "the read threw
+    after 1,400 of 1,892 MB" -- which is the state with the most to say and the one most likely
+    to rot. `.claude/CLAUDE.md`: a check that passes is not a check that works.
+  */
+  const throwingStream = (chunks: Uint8Array[], message: string): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = chunks.shift();
+        if (next) controller.enqueue(next);
+        else controller.error(new Error(message));
+      },
+    });
+
+  test("a prefault that throws on the first byte reports FAILED, not 'not finished'", async () => {
+    const path = freshPath("prefault-failed");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Broken", tconst: "tt-broken" });
+    const lines: string[] = [];
+
+    const live = new LiveIndex({
+      path,
+      cfg,
+      floor: 0,
+      log: (m) => lines.push(m),
+      warmStream: () => throwingStream([], "EIO: i/o error, read"),
+    });
+    await Bun.sleep(50);
+
+    const warm = live.warmStatus();
+    expect(warm.state).toBe("failed");
+    // The one field a probe keys on. It is the whole point of the state above having a name.
+    expect(warm.ok).toBe(false);
+    expect(warm.last?.readMb).toBe(0);
+    expect(warm.last?.error).toContain("EIO");
+    expect(lines.some((l) => l.includes("index warm: FAILED"))).toBe(true);
+    // The index is open and serving throughout: a failed warm costs the warm, nothing else.
+    expect(live.current.byTconst("tt-broken")?.title).toBe("Broken");
+    live.close();
+  });
+
+  test("a prefault that throws part-way reports PARTIAL and keeps the bytes it did read", async () => {
+    const path = freshPath("prefault-partial");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Half", tconst: "tt-half" });
+    const lines: string[] = [];
+
+    const live = new LiveIndex({
+      path,
+      cfg,
+      floor: 0,
+      log: (m) => lines.push(m),
+      // 3 MB delivered, then the read dies. "Read most of it" and "read none of it" leave the
+      // page cache in completely different states and used to report identically.
+      warmStream: () => throwingStream([new Uint8Array(3_000_000)], "EIO: i/o error, read"),
+    });
+    await Bun.sleep(50);
+
+    const warm = live.warmStatus();
+    expect(warm.state).toBe("partial");
+    expect(warm.ok).toBe(false);
+    expect(warm.last?.readMb).toBe(3);
+    expect(lines.some((l) => l.includes("index warm: PARTIAL"))).toBe(true);
+    live.close();
+  });
+
+  test("a prefault that completes reports done, ok, and no error", async () => {
+    const path = freshPath("prefault-done");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Whole", tconst: "tt-whole" });
+
+    const live = new LiveIndex({ path, cfg, floor: 0 });
+    await Bun.sleep(50);
+
+    const warm = live.warmStatus();
+    expect(warm.state).toBe("done");
+    expect(warm.ok).toBe(true);
+    expect(warm.last?.error).toBeUndefined();
+    live.close();
+  });
+
+  test("no index open yet is `pending`, because the prefault runs when one is adopted", () => {
+    // The first-install path: the server listens while the index is still being built. That is
+    // not a decision to skip the prefault, and reporting it as `off` would read as one.
+    const live = new LiveIndex({ path: freshPath("prefault-pending"), cfg, floor: 0, allowMissing: true });
+
+    const warm = live.warmStatus();
+    expect(warm.state).toBe("pending");
+    expect(warm.ok).toBe(true);
+    expect(warm.tuning).toBeNull();
+    live.close();
+  });
+
   test("prefault: false opens the index and reads nothing extra", async () => {
     // The opt-out a test or a memory-tight host uses. It must not change what is SERVED.
     const path = freshPath("prefault-off");
@@ -623,6 +721,7 @@ describe("LiveIndex with no index yet", () => {
     await Bun.sleep(50);
 
     expect(lines.some((l) => l.startsWith("index warm:"))).toBe(false);
+    expect(live.warmStatus().state).toBe("off");
     expect(live.current.byTconst("tt-cold")?.title).toBe("Cold");
     live.close();
   });

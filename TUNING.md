@@ -288,19 +288,25 @@ what it replaced.
 ```json
 "index": {
   "warm": {
-    "prefault": true,
+    "state": "done",
+    "ok": true,
     "last": { "readMb": 1868, "ms": 10520, "residentMb": 1851 },
     "tuning": { "budgetMb": 3072, "budgetSource": "cgroup-v1", "mmapMb": 1868, "cacheMb": 154, "prefault": true }
   }
 }
 ```
 
-Three things are worth reading there:
+Four things are worth reading there:
 
+- **`ok`** is the one field to alert on. It is false only for `state: "failed"` and
+  `state: "partial"` -- the prefault RAN and did not deliver the index, so the container is
+  serving off the disk while looking otherwise healthy.
+- **`state`** says which situation this is: `off` (decided against), `pending` (no index open
+  yet, so a build is running), `running`, `done`, `partial` (threw part-way -- `last.readMb` is
+  how far it got and `last.error` is why), `failed` (threw having read nothing).
 - **`budgetSource: "host-ram"`** means no cgroup limit was found and finderr is sizing itself
   against the whole machine. Correct on bare metal; on a container it means the limit is not
   visible and you should set `FINDERR_MEMORY_BUDGET_MB`.
-- **`last: null`** a few minutes after a restart means the prefault has not completed. Either it is
-  still going, or it failed -- the log line says which.
 - **`residentMb` far below `readMb`** means it ran and the memory cap took most of it back. That is
   the shape this whole page is about, and the fix is a bigger limit rather than a setting.
+  `ok` stays true there deliberately: the prefault did its job and the cap undid it.
