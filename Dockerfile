@@ -39,6 +39,19 @@ WORKDIR /app
 COPY tsconfig.json biome.json ./
 COPY web ./web
 
+# `web/src/routes/SourcesRoute.tsx` does `import attribution from "../../../ATTRIBUTION.md?raw"`,
+# so this file is a BUILD INPUT of the web bundle and not documentation. Without it the vite
+# build dies with `[UNRESOLVED_IMPORT] Could not resolve '../../../ATTRIBUTION.md?raw'` -- and
+# it dies ONLY in Docker, because on a developer's machine the file is simply there.
+#
+# That is exactly how it shipped broken: `/sources` landed after the last green CI run, the
+# two runs after it failed at the gate first, and the docker build had therefore NEVER been
+# executed against this import by anything but a human running `bun run build:web` in a tree
+# that already had the file. `web-build-inputs.test.ts` now fails if another root-level import
+# appears without a matching COPY here, which is the guard that was missing rather than a
+# second owner of this line.
+COPY ATTRIBUTION.md ./
+
 # Studio, network, streaming and rating marks, from the Kometa commit pinned in the job.
 #
 # Fetched at BUILD time rather than tracked in git: they are 826 PNGs belonging to their

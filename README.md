@@ -27,9 +27,12 @@ All of that is one plain search box. There is no "fuzzy" checkbox.
 
 ## Why
 
-Seerr is slow because it is a thin proxy. A search, a poster, a "do I have this already?"
-are all live round trips to TMDB, Radarr and Sonarr while you sit there. On a NAS that
-round trip is the whole experience, and I got sick of it.
+Seerr is slow because every page is a live TMDB round trip. A search, a poster, the cast,
+the row of recommendations -- all fetched while you sit there, behind a cache that holds a
+thousand entries for five minutes and is gone on the next restart. It mirrors Radarr and
+Sonarr into its own database much as finderr does, so "do I have this already?" is not the
+slow part; everything you actually came to read is. On a NAS that round trip is the whole
+experience, and I got sick of it.
 
 finderr keeps the whole searchable universe local: 1.27 million titles from the IMDb
 datasets in one SQLite file, plus a mirror of both arr libraries that refreshes every
