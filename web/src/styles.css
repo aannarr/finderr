@@ -27,6 +27,29 @@
      > so it keeps its meaning and `--color-muted-foreground` is added beside it as the same
      > value. The cost is that **`bg-muted` is a trap**: it paints a pale grey block on a
      > dark page. A pasted component using it wants `bg-surface-2`. */
+
+  /* > [!CAUTION] `accent` IS THE SAME COLLISION, ONE NAME OVER, and it is the worse of the two
+     > shadcn's `--accent` is the SUBTLE HOVER SURFACE behind a focused menu item, and
+     > `--accent-foreground` is the text on it. finderr's `--color-accent` is the **bright
+     > green brand colour** -- the Request button, the active chip, the focus ring. Same word,
+     > opposite job.
+     >
+     > So a pasted `focus:bg-accent focus:text-accent-foreground` -- which is on EVERY item of
+     > `dropdown-menu`, `select` and their submenus -- paints a **bright green highlight bar**,
+     > and the text does not change at all, because `--color-accent-foreground` did not exist
+     > and Tailwind emits nothing for an unknown utility. Found on the way in, before it
+     > rendered; `bg-accent` on those surfaces is rewritten to `bg-surface-2`.
+     >
+     > `--color-accent-foreground` is defined below so a FUTURE `shadcn add` that uses the
+     > pair is at least legible rather than invisible. It is not permission to use
+     > `bg-accent` as a hover surface: on a menu row that is still wrong, and the fix is
+     > `bg-surface-2`, the same answer `bg-muted` gets.
+     >
+     > Redefining `--color-accent` itself is not on the table, for the same reason `muted`
+     > was not: it would repaint `ToggleChip`, `RequestAction` and every focus ring in the
+     > product in one line. */
+  --color-accent-foreground: oklch(0 0 0);
+
   --color-background: var(--color-bg);
   --color-foreground: var(--color-ink);
   --color-card: var(--color-surface);
