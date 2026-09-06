@@ -4,6 +4,7 @@ import { todayUtc } from "../../../src/lib/episodes";
 import { prefetchTitle, type Title } from "../lib/api";
 import { shelfDateLabel } from "../lib/facet-panes";
 import { jumpAriaKeyShortcut } from "../lib/jump-keys";
+import { AwardChip } from "./AwardChip";
 import { BrowseChip } from "./BrowseChip";
 import { JumpBadge, useJumpKey } from "./JumpKeys";
 import { Poster } from "./Poster";
@@ -229,6 +230,22 @@ export const TitleCard = memo(function TitleCard({
             </>
           )}
         </div>
+
+        {/*
+          The award mark gets its OWN line, for the reason the date below does: `1994 ·
+          2.1M · Best Picture` is four elements on a card about 150px wide, and the phrase
+          that loses the race breaks mid-word. `truncate` on the chip means a long prize name
+          ends in an ellipsis rather than pushing the card wider.
+
+          Only ever a WIN of the award's top prize -- `award` is null for everything else,
+          including a title on an index with no awards imported, so this line does not exist
+          on the overwhelming majority of cards.
+        */}
+        {t.award && (
+          <p className="min-w-0 text-xs">
+            <AwardChip mark={t.award} />
+          </p>
+        )}
 
         {/*
           The date gets its OWN line, and never wraps.
