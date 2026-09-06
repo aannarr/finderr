@@ -176,7 +176,9 @@ function CardGrid({ children }: { children: ReactNode }) {
 function PosterStrip({ posters }: { posters?: ListPoster[] }) {
   if (!posters || posters.length === 0) return null;
   return (
-    <span className="mt-2 flex gap-1.5" aria-hidden="true">
+    // A `div` rather than a `span`: `Poster` draws a `div`, and an `a` is transparent
+    // content, so this is valid inside the row's link where a span wrapping a div is not.
+    <div className="mt-2 flex gap-1.5" aria-hidden="true">
       {posters.map((poster) => (
         <Poster
           key={poster.tconst}
@@ -186,7 +188,7 @@ function PosterStrip({ posters }: { posters?: ListPoster[] }) {
           className="aspect-2/3 w-10 shrink-0 overflow-hidden rounded bg-surface-2"
         />
       ))}
-    </span>
+    </div>
   );
 }
 
@@ -224,7 +226,17 @@ function ListCard({
       >
         <span className="text-sm">{title}</span>
         {subtitle && <span className="mt-0.5 block text-xs text-muted">{subtitle}</span>}
-        {children}
+        {/*
+          THE SLOT IS A BLOCK, and that is a fix rather than a wrapper.
+
+          `Completion` is `inline-flex` and carried its own top margin, which a subtitle above
+          it made look right -- a margin puts space above a line that is already its own line.
+          On the nineteen genre and decade rows, which have NO subtitle, it flowed straight on
+          from the name: "Best Actionyou own 66 of 250 top-ranked films", on every one of them.
+          Found in a browser; no assertion about either component could have caught it, because
+          each was correct and it was their composition that was not.
+        */}
+        {children && <div>{children}</div>}
       </Link>
     </li>
   );

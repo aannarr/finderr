@@ -95,6 +95,28 @@ describe("the whole page", () => {
     expect(document.querySelector('img[src^="/img/t/"]')).toBeNull();
   });
 
+  /**
+   * The regression: "Best Actionyou own 66 of 250 top-ranked films", on nineteen rows.
+   *
+   * `Completion` is `inline-flex` with a top margin, and a margin does not start a line. The
+   * curated rows have a subtitle above it so it looked right; the genre and decade rows have
+   * none, so the sentence ran straight on from the list's name. Found in a browser, because
+   * both components were individually correct and it was their composition that was not.
+   */
+  test("the completion sentence starts its own line, on a row with no subtitle", async () => {
+    stubFetch({ ...FULL, completions: [{ id: "genre-action", size: 250, owned: 66 }] });
+    render(await routed());
+
+    await waitFor(() => expect(screen.getByText(/you own 66/)).toBeDefined());
+
+    // The nearest BLOCK around the sentence must not be one that also holds the name. Without
+    // the slot, the nearest block is the page itself and this reads "Best Action" -- which is
+    // exactly the run-on, asserted structurally rather than as a margin nobody can see.
+    const block = screen.getByText(/you own 66/).closest("div");
+    expect(block?.textContent).toContain("you own 66");
+    expect(block?.textContent).not.toContain("Best Action");
+  });
+
   test("a poster is drawn INSIDE the award's own link, and never as a link of its own", async () => {
     // Nested links are not a thing a browser can render, and the strip is decoration for a
     // row that already says where it goes -- so it is hidden from the accessibility tree
