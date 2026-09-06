@@ -200,7 +200,12 @@ function PosterStrip({ posters }: { posters?: ListPoster[] }) {
           title={poster}
           // Matched to the rendered width: a 40px frame has no use for a 342px image.
           size="w92"
-          className="aspect-2/3 w-10 shrink-0 overflow-hidden rounded bg-surface-2"
+          // `self-start` is PROPHYLACTIC here, not a repair -- say so, because a reader who
+          // cannot tell this apart from the two real fixes will not trust either. Every
+          // sibling in this row is an identical `w-10` poster, so nothing is taller and
+          // nothing stretches today; the row breaks the moment anything else joins it. One
+          // class, no visual change, and the shape stops being a trap.
+          className="aspect-2/3 w-10 shrink-0 self-start overflow-hidden rounded bg-surface-2"
         />
       ))}
     </div>

@@ -348,12 +348,11 @@ function RequestRow({ request, onChanged }: { request: MediaRequest; onChanged: 
       <Poster
         title={request}
         size="w154"
-        /*
-          `self-start` is not cosmetic: a flex child defaults to `stretch`, so the frame grew
-          to the height of the row beside it and `aspect-2/3` lost -- a browser drew Inception
-          at 56x138 and Breaking Bad, whose row is taller for its season lines, at 56x190. Both
-          were the same poster cropped to two different shapes on one screen.
-        */
+        // `self-start`: the frame is a direct child of a `flex` row whose other column may
+        // carry season lines, so without it the poster stretches to that column's height and
+        // `aspect-2/3` loses. This is where the defect was first measured; the account of it
+        // moved to `Poster`'s `className` doc when three more call sites needed the same
+        // sentence, so there is one copy rather than four that drift.
         className="aspect-2/3 w-14 shrink-0 self-start overflow-hidden rounded-md bg-surface-2"
         link
         alt={request.title}

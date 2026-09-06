@@ -468,6 +468,28 @@ export class SearchEngine {
   readonly hasOrigin: boolean;
 
   /**
+   * Whether `title_lang` carries the denormalised list columns AND the index that reads them.
+   *
+   * > [!IMPORTANT] This one gates an OPTIMISATION, not a filter -- the opposite of `hasOrigin`
+   * > above, which is the guard it is most easily confused with
+   * > `hasOrigin` fails toward MORE because an index without `title_lang` cannot answer a
+   * > language question at all. An index built before the WIDENING still has `title_lang`
+   * > with `title_rowid` and `lang`, so the `exists`/`not exists` pair `browseSql` writes is
+   * > exactly as correct as it ever was -- it just walks down the rank order to find its 250
+   * > instead of seeking them. False here means SLOW, never absent, which is the contract
+   * > `hasGenreVotes` and `hasGenreYear` already state.
+   *
+   * FOUR checks and one flag, the shape `hasPeopleSearch` uses: the three columns and
+   * `ix_lang_rank` are one stage's output, so a file carrying some of them and not the rest
+   * is not a state this build can produce. The index is checked as well as the columns
+   * because without it the denormalised join is a SCAN of 1.29M rows -- far worse than the
+   * path it replaces, which is the one way a capability probe can make things worse.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasLangRank: boolean;
+
+  /**
    * Whether `title_genre` carries its own copy of `votes`.
    *
    * The fourth guard, for the same reason as the three above: the index a deploy meets is
@@ -619,6 +641,11 @@ export class SearchEngine {
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
     this.hasOrigin = this.tableExists("title_lang");
+    this.hasLangRank =
+      this.columnExists("title_lang", "kind") &&
+      this.columnExists("title_lang", "rank") &&
+      this.columnExists("title_lang", "non_english") &&
+      this.indexExists("ix_lang_rank");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
     this.hasGenreYear = this.columnExists("title_genre", "year");
     this.hasBrowseCounts = this.tableExists("browse_count");
@@ -1528,6 +1555,7 @@ export class SearchEngine {
       languages: this.hasOrigin ? safe.languages : undefined,
       genreVotes: this.hasGenreVotes,
       genreYear: this.hasGenreYear,
+      langRank: this.hasLangRank,
       browseCounts: this.hasBrowseCounts,
       rankIndexes: this.hasRankIndexes,
     });
@@ -1555,6 +1583,7 @@ export class SearchEngine {
       limit: size,
       genreVotes: this.hasGenreVotes,
       genreYear: this.hasGenreYear,
+      langRank: this.hasLangRank,
       rankIndexes: this.hasRankIndexes,
     });
   }
@@ -1765,6 +1794,14 @@ export interface BrowseOptions extends BrowseFilters {
    * query is built without `INDEXED BY` and the planner chooses, which is correct and slower.
    */
   rankIndexes?: boolean;
+  /**
+   * Whether `title_lang` carries the denormalised list columns -- `SearchEngine.hasLangRank`.
+   *
+   * A capability of the open file, like the three above. False means a named language is
+   * filtered by the `exists`/`not exists` pair against `title` -- the same rows, found by
+   * walking the rank order rather than by seeking `ix_lang_rank`.
+   */
+  langRank?: boolean;
 }
 
 /**
@@ -1892,6 +1929,7 @@ interface BrowseCaps {
   genreVotes?: boolean;
   genreYear?: boolean;
   rankIndexes?: boolean;
+  langRank?: boolean;
   languages?: readonly string[];
 }
 
@@ -1904,7 +1942,12 @@ interface BrowseCaps {
  * make that recount silently filtered and `hiddenByLanguage` would always be zero.
  */
 function capsOf(opts: BrowseOptions): BrowseCaps {
-  return { genreVotes: opts.genreVotes, genreYear: opts.genreYear, rankIndexes: opts.rankIndexes };
+  return {
+    genreVotes: opts.genreVotes,
+    genreYear: opts.genreYear,
+    rankIndexes: opts.rankIndexes,
+    langRank: opts.langRank,
+  };
 }
 
 function browseSql(
@@ -1921,7 +1964,13 @@ function browseSql(
   /** ` indexed by <name>`, or empty. Goes straight after `title t`. See the rank pin below. */
   indexedBy: string;
 } {
-  const { genreVotes = false, genreYear = false, rankIndexes = false, languages = [] } = caps;
+  const {
+    genreVotes = false,
+    genreYear = false,
+    rankIndexes = false,
+    langRank = false,
+    languages = [],
+  } = caps;
   const where: string[] = [];
   const args: unknown[] = [];
   // Set by any clause that names a column only `title` has. It is what decides whether the
@@ -1929,12 +1978,21 @@ function browseSql(
   // predicate that quietly starts reading `t.` while a string test still passes is exactly
   // the bug that would make a count wrong instead of slow.
   let touchesTitle = false;
-  let join = "";
+  const genreJoin = f.genre ? "join title_genre g on g.title_rowid = t.rowid_" : "";
   if (f.genre) {
-    join = "join title_genre g on g.title_rowid = t.rowid_";
     where.push("g.genre = ?");
     args.push(f.genre);
   }
+  /*
+    THE SECOND JOIN, and it is decided HERE -- before `kind` and before the order -- because
+    it decides which table serves both of them.
+
+    A named language on a file carrying the denormalised columns stops being a predicate
+    applied to `title` and becomes the table the query DRIVES FROM: `ix_lang_rank(lang, kind,
+    non_english, rank desc)` fixes three equality columns and reads the fourth in output
+    order, so 250 rows are 250 rows read. See `langListJoin` for the two cases it declines.
+  */
+  const langJoin = langListJoin(f, langRank);
   /*
     WHICH TABLE'S COPY OF `votes` -- exactly the question `ranked` answers below for `rank`,
     and it decides the whole cost of a genre browse.
@@ -1948,7 +2006,7 @@ function browseSql(
     `genreVotes` false is an index built before that column existed: it still answers every
     query correctly, on the old slow path, until the rebuild the stage stamp has ordered.
   */
-  const voted = join && genreVotes ? "g.votes" : "t.votes";
+  const voted = genreJoin && genreVotes ? "g.votes" : "t.votes";
   // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
   // spelling it out only stops SQLite covering the count from an index. Omitting it is
   // what makes an unfloored per-genre list a pure seek.
@@ -1970,7 +2028,7 @@ function browseSql(
     `genreYear` false is an index built before the column existed: correct, on the old slow
     path, until the rebuild the stage stamp has already ordered.
   */
-  const yearCol = join && genreYear ? "g.year" : "t.year";
+  const yearCol = genreJoin && genreYear ? "g.year" : "t.year";
   const yearOnTitle = yearCol.startsWith("t.");
   if (f.decade !== undefined) {
     where.push(`${yearCol} >= ? and ${yearCol} <= ?`);
@@ -1987,13 +2045,14 @@ function browseSql(
     if (yearOnTitle) touchesTitle = true;
   }
   if (f.kind) {
-    // `g.kind` on a join for the same reason as `voted` above: it is the trailing column of
-    // ix_tg_votes, so the filter is answered from the index the seek is already in rather
-    // than by reaching into `title` for every candidate row. ix_tg_rank carries it too, so
-    // a ranked genre browse gains the same thing.
-    where.push(join ? "g.kind = ?" : "t.kind = ?");
+    // WHICH TABLE'S COPY OF `kind`, the same question `voted` and `yearCol` answer above:
+    // whichever index the seek is already in carries it, so the filter is covered rather
+    // than paid for with a reach into `title` per candidate row. `ix_lang_rank` covers it
+    // for a language list and `ix_tg_votes`/`ix_tg_rank` for a genre; `title_lang` is named
+    // FIRST because a language list is the more selective of the two seeks.
+    where.push(langJoin ? "l.kind = ?" : genreJoin ? "g.kind = ?" : "t.kind = ?");
     args.push(f.kind);
-    if (!join) touchesTitle = true;
+    if (!langJoin && !genreJoin) touchesTitle = true;
   }
 
   /*
@@ -2005,11 +2064,17 @@ function browseSql(
     sort to get there, which is the whole cost this layer was built to remove -- so the
     join decides which column is named, not taste.
 
+    A LANGUAGE LIST joins `title_lang`, which carries the same three columns for the same
+    reason, and it wins over the genre copy when both are present: `ix_lang_rank` is the more
+    selective seek of the two, and only the table the query drives from can serve the order.
+    All three columns hold the identical number -- they are one value copied at build time --
+    so this decides the PLAN and never the answer.
+
     `rank is not null` is a MEMBERSHIP rule, not a filter: an unrated title has no rank, so
     it is not in the list. Without it `total` would count 1.2M unrated rows as members of
     "the top comedies" and paging far enough would eventually reach them.
   */
-  const ranked = join ? "g.rank" : "t.rank";
+  const ranked = langJoin ? "l.rank" : genreJoin ? "g.rank" : "t.rank";
   let order = `${voted} desc`;
   /*
     PINNING THE RANK INDEX ON A DECADE, and it is the one place this file overrides the planner.
@@ -2041,13 +2106,15 @@ function browseSql(
     benchmark re-explains every scenario for exactly this reason.
   */
   let indexedBy = "";
-  if (sort === "rank" && f.decade !== undefined && !join && rankIndexes) {
+  // NOT pinned when either join is present: the pin names an index on `title`, and both
+  // joined shapes exist precisely so the query drives from the other table instead.
+  if (sort === "rank" && f.decade !== undefined && !genreJoin && !langJoin && rankIndexes) {
     indexedBy = f.kind ? " indexed by ix_rank" : " indexed by ix_rank_all";
   }
   if (sort === "rank") {
     where.push(`${ranked} is not null`);
     order = `${ranked} desc`;
-    if (!join) touchesTitle = true;
+    if (!genreJoin && !langJoin) touchesTitle = true;
   }
 
   /*
@@ -2083,11 +2150,27 @@ function browseSql(
   // WHICH TABLE'S ROWID, the same question `voted` and `ranked` answer above. A genre count
   // reads `title_genre` alone and has no `t` to name; naming one would be a `no such column`
   // on exactly the query the covering count exists to serve.
-  const rowid = join ? "g.title_rowid" : "t.rowid_";
+  const rowid = genreJoin ? "g.title_rowid" : "t.rowid_";
   const langIn = (codes: readonly string[]) =>
     `select 1 from title_lang l where l.title_rowid = ${rowid}` +
     ` and l.lang in (${codes.map(() => "?").join(",")})`;
-  if (f.lang !== undefined) {
+  if (langJoin) {
+    /*
+      THE SAME MEMBERSHIP RULE, read off two stored columns instead of proved per row.
+
+      `l.lang = ?` is the `exists` half and `l.non_english = 1` is the `not exists` half --
+      the build already asked, once, whether each title carries an `en` row. The join itself
+      cannot duplicate a title the way a plain join on `title_lang` would: `lang` is fixed to
+      one value and the rows are `distinct (title_rowid, lang)`, so a trilingual film has
+      exactly one matching row rather than three.
+
+      `1` is a LITERAL rather than a bound parameter, so `explain query plan` shows the
+      predicate as a constrained index column -- a bound one would still work, and would make
+      the plan unreadable to the test that pins it.
+    */
+    where.push("l.lang = ?", "l.non_english = 1");
+    args.push(f.lang);
+  } else if (f.lang !== undefined) {
     where.push(`exists (${langIn([f.lang])})`);
     args.push(f.lang);
     // A list of English films is not foreign to itself: `?lang=en` would otherwise be
@@ -2102,17 +2185,56 @@ function browseSql(
     args.push(...languages);
   }
 
+  const join = [genreJoin, langJoin].filter(Boolean).join(" ");
   return {
     join,
     indexedBy,
     // The COUNT never pins: it has no ORDER BY to serve, so the planner's choice is right
     // there, and `browse_count` answers most of them without a query at all.
-    countFrom: join && !touchesTitle ? "title_genre g" : `title t ${join}`,
+    countFrom: coveringCountTable(genreJoin, langJoin, touchesTitle) ?? `title t ${join}`,
     // A browse with no filters at all and no floor has nothing to put in a WHERE.
     where: where.length > 0 ? where.join(" and ") : "1",
     order,
     args,
   };
+}
+
+/**
+ * The join a NAMED language takes when the file can serve it from `title_lang`, or `""`.
+ *
+ * Two cases decline it, and neither is a capability:
+ *
+ * - **No `lang` at all.** A deployment PREFERENCE is a list of codes covering 81% of the
+ *   corpus (`UNKNOWN_LANG` is in it), so driving from `title_lang` would read most of the
+ *   table -- which is the 1,014 ms shape `INDEXES.origin` documents at length. A preference
+ *   stays a correlated `exists`, and that is measured rather than conservative.
+ * - **`?lang=en`.** English is the one language with no `not exists` half, so its rows sit
+ *   on BOTH sides of `non_english` and the seek would have to read two ranges and sort them
+ *   back together. The `exists` path already answers it in one predicate.
+ */
+function langListJoin(f: BrowseFilters, langRank: boolean): string {
+  if (!langRank || f.lang === undefined || f.lang === ENGLISH_LANG) return "";
+  return "join title_lang l on l.title_rowid = t.rowid_";
+}
+
+/**
+ * The ONE table a count can be answered from alone, or `undefined` when it needs the join.
+ *
+ * A count needs no column, so it can drop `title` whenever no predicate names one -- and the
+ * join is droppable by CONSTRUCTION rather than by hope, for `title_lang` exactly as for
+ * `title_genre`: every row of either is written from an existing `title` row keyed on an
+ * INTEGER PRIMARY KEY, so the join can neither add a row nor remove one. SQLite cannot work
+ * that out for itself, which is why it is decided here.
+ *
+ * With BOTH joins present it declines. Re-hanging `title_genre` off `title_lang`'s rowid
+ * would be correct too, and would be a second place that knows how these tables key together
+ * -- for a case that is one language list crossed with one genre, which nothing links to.
+ */
+function coveringCountTable(genreJoin: string, langJoin: string, touchesTitle: boolean): string | undefined {
+  if (touchesTitle || (genreJoin && langJoin)) return undefined;
+  if (langJoin) return "title_lang l";
+  if (genreJoin) return "title_genre g";
+  return undefined;
 }
 
 /**

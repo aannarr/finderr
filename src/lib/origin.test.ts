@@ -41,8 +41,16 @@ interface Row {
   countries?: string[];
 }
 
-/** A throwaway index carrying the real schema, the origin stage, and its index. */
-function indexOf(rows: Row[], opts: { withOrigin?: boolean } = {}): Database {
+/** How faithful a `title_lang` the fixture should carry. */
+interface FixtureShape {
+  /** `false` builds a file from before the origin stage: no `title_lang` at all. */
+  withOrigin?: boolean;
+  /** `false` builds a file from before the WIDENING: the original two columns, two indexes. */
+  withLangRank?: boolean;
+}
+
+/** A throwaway index carrying the real schema, the origin stage, and its indexes. */
+function indexOf(rows: Row[], opts: FixtureShape = {}): Database {
   const db = new Database(join(dir, `${crypto.randomUUID()}.db`), { create: true });
   db.run(SCHEMA);
   const insert = db.query(
@@ -63,6 +71,20 @@ function indexOf(rows: Row[], opts: { withOrigin?: boolean } = {}): Database {
     rows.flatMap((r) => (r.langs ?? []).map((code) => ({ imdb: r.tconst, code }))),
     rows.flatMap((r) => (r.countries ?? []).map((code) => ({ imdb: r.tconst, code }))),
   );
+  if (opts.withLangRank === false) {
+    /*
+      A file built before the 2026-09-06 widening: `title_lang` with `title_rowid` and `lang`
+      and nothing else. Rebuilt rather than ALTERed away, so what the test opens is the table
+      the older build actually wrote -- an index with the columns present but the index
+      missing would exercise the capability flag without exercising the shape.
+    */
+    db.run("create table lang_v2 (title_rowid integer not null, lang text not null)");
+    db.run("insert into lang_v2 select title_rowid, lang from title_lang");
+    db.run("drop table title_lang");
+    db.run("alter table lang_v2 rename to title_lang");
+    for (const sql of INDEXES.origin) if (!sql.includes("ix_lang_rank")) db.run(sql);
+    return db;
+  }
   for (const sql of INDEXES.origin) db.run(sql);
   return db;
 }
@@ -119,7 +141,7 @@ const titles = (db: Database, opts: Parameters<typeof browseIndex>[1]) =>
  * drives cannot be exercised against a `Database` handed straight to `browseIndex` -- that
  * function deliberately knows nothing about which file it was given.
  */
-function engineOn(rows: Row[], opts: { withOrigin?: boolean } = {}): SearchEngine {
+function engineOn(rows: Row[], opts: FixtureShape = {}): SearchEngine {
   const db = indexOf(rows, opts);
   const path = db.filename;
   db.close();
@@ -318,6 +340,282 @@ describe("the filter SEEKS its index", () => {
     // language table once per candidate row, which is 1.3M rows on the real index.
     expect(plan).not.toContain("LIST SUBQUERY");
     expect(plan).not.toContain("SCAN l");
+  });
+});
+
+describe("the denormalised list columns", () => {
+  /*
+    `kind`, `rank` and `non_english` are one value each, copied from the title at build time
+    -- the same trade `title_genre` makes with `kind`, `rank` and `votes`. What these tests
+    defend is that they are copies of the RIGHT thing: a `rank` written before `applyRank`
+    would be a table of NULLs and every language list would be empty, which is the shape the
+    genre explosion's own docstring warns about.
+  */
+  test("kind and rank are the title's own, on every row", () => {
+    const db = indexOf(CORPUS);
+    const wrong = db
+      .query(
+        `select count(*) c from title_lang l join title t on t.rowid_ = l.title_rowid
+          where l.kind != t.kind or l.rank is not t.rank`,
+      )
+      .get() as { c: number };
+    expect(wrong.c).toBe(0);
+    // And not vacuously: the fixture has ranks, so a stage that ran before `applyRank` would
+    // agree with a table of NULLs and pass the assertion above.
+    const ranked = db.query("select count(*) c from title_lang where rank is not null").get() as {
+      c: number;
+    };
+    expect(ranked.c).toBeGreaterThan(0);
+  });
+
+  test("non_english is a property of the TITLE, so every row of a title agrees", () => {
+    // `tt-multi` is hi/en/pa: all three of its rows are 0, including the `hi` one, which is
+    // what makes "in Hindi and not also in English" a single equality rather than a proof.
+    const db = indexOf(CORPUS);
+    const flags = db
+      .query(
+        `select t.tconst, l.lang, l.non_english n from title_lang l join title t on t.rowid_ = l.title_rowid
+          where t.tconst in ('tt-multi', 'tt-hi', 'tt-en1', 'tt-unknown') order by t.tconst, l.lang`,
+      )
+      .all() as { tconst: string; lang: string; n: number }[];
+    expect(flags).toEqual([
+      { tconst: "tt-en1", lang: "en", n: 0 },
+      { tconst: "tt-hi", lang: "hi", n: 1 },
+      { tconst: "tt-multi", lang: "en", n: 0 },
+      { tconst: "tt-multi", lang: "hi", n: 0 },
+      { tconst: "tt-multi", lang: "pa", n: 0 },
+      // The backfill. Nobody knows its language, so nothing says it is English.
+      { tconst: "tt-unknown", lang: UNKNOWN_LANG, n: 1 },
+    ]);
+  });
+
+  test("the backfilled row carries the columns too, not just the language", () => {
+    // It is in the same index as every other row, so a NULL `kind` here would be a row that
+    // seeks differently from its neighbours for no reason anybody would think to look for.
+    const db = indexOf(CORPUS);
+    const row = db
+      .query(
+        `select l.kind, l.rank from title_lang l join title t on t.rowid_ = l.title_rowid
+          where t.tconst = 'tt-unknown'`,
+      )
+      .get() as { kind: string; rank: number | null };
+    expect(row.kind).toBe("movie");
+    expect(row.rank).not.toBeNull();
+  });
+});
+
+describe("a language LIST seeks ix_lang_rank rather than walking the rank order", () => {
+  /*
+    THE POINT OF THE WHOLE CARD, and it cannot be asserted as a duration on a seven-row
+    fixture, so it is asserted as a PLAN -- the same device the `ix_lang` block above uses.
+
+    The shape being defended: three equality columns fix a range and `rank desc` is read in
+    output order, so 250 rows cost 250 rows however thin the language's catalogue is. A TEMP
+    B-TREE here means the ordering has stopped being served and the seek has become a sort of
+    everything that matched, which is the regression that would be invisible in every other
+    test in this file.
+
+    Measured on a copy of the real 1,288,159-row index on 2026-09-06 with `ix_lang_rank` the
+    only thing that changed -- figures per language are in `LIST_LANGUAGES`.
+
+    `browseSql` writes this predicate and `INDEXES.origin` builds this index; the two have to
+    move together and this is what says so when one of them does.
+  */
+  const planOf = (db: Database, sql: string, args: unknown[]) =>
+    (db.query(`explain query plan ${sql}`).all(...(args as never[])) as { detail: string }[])
+      .map((r) => r.detail)
+      .join(" | ");
+
+  test("the plan is a covering seek with no sort", () => {
+    const db = indexOf(CORPUS);
+    db.run("analyze");
+    const sql = `select t.tconst from title t join title_lang l on l.title_rowid = t.rowid_
+       where l.lang = ? and l.non_english = 1 and l.kind = ? and l.rank is not null
+       order by l.rank desc limit 250`;
+    const plan = planOf(db, sql, ["hi", "movie"]);
+    expect(plan).toContain("ix_lang_rank");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("the index carries the three equality columns AHEAD of the sort column", () => {
+    // Pinned as DDL, because the plan test above would still pass on a fixture small enough
+    // to scan. Together they say seek AND why. Moving `rank desc` in front of any of the
+    // three would leave an index that cannot serve the order for a fixed language.
+    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, non_english, rank desc)");
+  });
+});
+
+describe("the two paths are the same list", () => {
+  /*
+    The denormalised path is an OPTIMISATION, so the only thing that may differ between it
+    and the `exists`/`not exists` pair is how long it takes. Asserted over every shape the
+    fixture can express rather than on one language, because the ways they could diverge are
+    all edges: a multi-language title counted twice by the join, a title whose `en` row makes
+    it foreign to itself, a language nobody is in.
+
+    > [!IMPORTANT] "The same list" means the same SET. TIED RANKS ORDER ARBITRARILY, on both
+    > paths, and that is not something this card introduced
+    > `order by rank desc` carries no unique tiebreak anywhere in `browseSql`, and the
+    > Bayesian rank collapses to the identical value for every title sharing a rating and a
+    > vote count -- which most of the low-vote tail does. So the two paths, reading two
+    > different indexes, legitimately disagree about which of two equally-ranked films sits at
+    > position 148, and about which of them falls off the end at 250.
+    >
+    > Measured on the real 1,288,159-row index on 2026-09-06: 37 of 75 language lists came
+    > back in a different order, and across 54 checked position by position, EVERY difference
+    > was between titles carrying the same `rank` bit for bit, with exactly one title swapping
+    > at a 250 boundary. The fixture below carries a deliberate tie so the rule is pinned
+    > rather than only written down.
+  */
+  const both = (db: Database, opts: Parameters<typeof browseIndex>[1]) => ({
+    slow: browseIndex(db, { ...opts, langRank: false }),
+    fast: browseIndex(db, { ...opts, langRank: true }),
+  });
+
+  for (const lang of ["hi", "ta", "sv", "pa", "ko"]) {
+    test(`\`lang=${lang}\` resolves to the same rows and the same total`, () => {
+      const db = indexOf(CORPUS);
+      const { slow, fast } = both(db, { kind: "movie", lang, sort: "rank", limit: 50 });
+      expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+      expect(fast.total).toBe(slow.total);
+    });
+  }
+
+  test("tied ranks give the same SET, and any positional difference is a tie", () => {
+    // Two Swedish films with the identical rating and vote count, so `applyRank` gives them
+    // the identical rank and neither path has anything to order them by. What must hold is
+    // that both films are in both answers.
+    const tied: Row[] = [
+      {
+        tconst: "tt-tie1",
+        year: 2001,
+        kind: "movie",
+        votes: 40_000,
+        rating: 7.5,
+        genres: "Crime",
+        langs: ["sv"],
+      },
+      {
+        tconst: "tt-tie2",
+        year: 2002,
+        kind: "movie",
+        votes: 40_000,
+        rating: 7.5,
+        genres: "Crime",
+        langs: ["sv"],
+      },
+    ];
+    const db = indexOf([...CORPUS, ...tied]);
+    const ranks = db.query("select rank from title where tconst in ('tt-tie1','tt-tie2')").all() as {
+      rank: number;
+    }[];
+    expect(ranks[0]?.rank).toBe(ranks[1]!.rank);
+    const { slow, fast } = both(db, { kind: "movie", lang: "sv", sort: "rank", limit: 50 });
+    expect(new Set(fast.rows.map((r) => r.tconst))).toEqual(new Set(slow.rows.map((r) => r.tconst)));
+    expect(fast.total).toBe(slow.total);
+  });
+
+  test("a multi-language title appears ONCE, not once per language", () => {
+    // The join's own hazard: `title_lang` has three rows for `tt-multi`, and a join that did
+    // not fix `lang` would return it three times -- which a `limit` turns into a short page
+    // rather than into an error. Here it is out of the Hindi list entirely (it is also in
+    // English), so the case is put on a title that IS in its list.
+    const db = indexOf([
+      ...CORPUS,
+      {
+        tconst: "tt-hipa",
+        year: 2020,
+        kind: "movie",
+        votes: 60_000,
+        rating: 8.0,
+        genres: "Crime",
+        langs: ["hi", "pa"],
+      },
+    ]);
+    const ids = browseIndex(db, { kind: "movie", lang: "hi", sort: "rank", limit: 50, langRank: true }).rows;
+    expect(ids.filter((r) => r.tconst === "tt-hipa").length).toBe(1);
+  });
+
+  test("`lang=en` declines the join and still means films in English", () => {
+    // English is the one language with no `not exists` half, so its rows sit on BOTH sides of
+    // `non_english` -- see `langListJoin`. With the join taken it would return nothing at all.
+    const db = indexOf(CORPUS);
+    const { slow, fast } = both(db, { genre: "Crime", lang: "en", limit: 50 });
+    expect(fast.rows.map((r) => r.tconst).sort()).toEqual(["tt-en1", "tt-en2", "tt-multi"].sort());
+    expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+  });
+
+  test("a genre, a decade and a vote floor all survive the join", () => {
+    // The combined shapes, where the count can no longer read one table alone and `title` is
+    // back in the from-clause. Correct or a `no such column`, never quietly different.
+    const db = indexOf(CORPUS);
+    for (const opts of [
+      { genre: "Crime", lang: "hi", sort: "rank" as const, limit: 50 },
+      { kind: "movie", lang: "hi", decade: 2020, limit: 50 },
+      { kind: "movie", lang: "hi", minVotes: 1000, limit: 50 },
+    ]) {
+      const { slow, fast } = both(db, opts);
+      expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+      expect(fast.total).toBe(slow.total);
+    }
+  });
+
+  test("a DEPLOYMENT PREFERENCE is untouched by the flag -- it is not a list", () => {
+    // Driving a preference from `title_lang` would read 81% of the table, which is the
+    // 1,014 ms shape `INDEXES.origin` documents. `langListJoin` declines it, so the two
+    // answers here are the same query rather than two paths agreeing.
+    const db = indexOf(CORPUS);
+    const { slow, fast } = both(db, { genre: "Crime", languages: EN_SV, limit: 50 });
+    expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+    expect(fast.hiddenByLanguage).toEqual(slow.hiddenByLanguage);
+  });
+});
+
+describe("an index built BEFORE the widening", () => {
+  /*
+    The `hasGenreVotes` contract rather than the `hasOrigin` one: this capability gates an
+    OPTIMISATION, so a file without it must answer every language list CORRECTLY and merely
+    more slowly. The failure it exists to prevent is the opposite of `hasOrigin`'s -- not an
+    empty product, but a `no such column: l.non_english` on every language list for the
+    up-to-a-day window before the next nightly rebuild lands.
+  */
+  test("the flag switches a real path, which is what makes the equivalence above mean something", () => {
+    // The denormalised predicate names columns this file does not have, so forcing the flag
+    // on is a `no such column`. Without this, every "the two paths agree" test above would
+    // still pass if `langRank` did nothing at all.
+    const db = indexOf(CORPUS, { withLangRank: false });
+    expect(() => browseIndex(db, { kind: "movie", lang: "hi", langRank: true, limit: 50 })).toThrow();
+    expect(() => browseIndex(db, { kind: "movie", lang: "hi", langRank: false, limit: 50 })).not.toThrow();
+  });
+
+  test("hasLangRank is false while hasOrigin stays true", () => {
+    const engine = engineOn(CORPUS, { withLangRank: false });
+    try {
+      expect(engine.hasOrigin).toBe(true);
+      expect(engine.hasLangRank).toBe(false);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("every language list answers exactly what the widened file answers", () => {
+    const old = engineOn(CORPUS, { withLangRank: false });
+    const wide = engineOn(CORPUS);
+    try {
+      expect(wide.hasLangRank).toBe(true);
+      for (const lang of ["hi", "ta", "sv", "en", "ko"]) {
+        expect(old.rankedMembers({ kind: "movie", lang }, 250)).toEqual(
+          wide.rankedMembers({ kind: "movie", lang }, 250),
+        );
+        const a = old.browse({ kind: "movie", lang, limit: 50 });
+        const b = wide.browse({ kind: "movie", lang, limit: 50 });
+        expect(a.rows.map((r) => r.tconst)).toEqual(b.rows.map((r) => r.tconst));
+        expect(a.total).toBe(b.total);
+      }
+    } finally {
+      old.close();
+      wide.close();
+    }
   });
 });
 

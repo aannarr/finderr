@@ -6,6 +6,7 @@ import {
   CROSSWALK_MAX_AGE_MS,
   CROSSWALK_SOURCES,
   type CrosswalkRow,
+  crosswalkQueryStampPath,
   fetchCrosswalk,
   loadCrosswalk,
   loadPersonCrosswalk,
@@ -147,6 +148,15 @@ describe("loadCrosswalk", () => {
 describe("fetchCrosswalk", () => {
   const path = () => `${dir}/${TITLE_CROSSWALK.file}`;
   const ok = (body: string) => async () => new Response(body);
+  /** A cached file as a successful download leaves it: the CSV plus the query it answers. */
+  const cache = (body: string, query = TITLE_CROSSWALK.query) => {
+    writeFileSync(path(), body);
+    writeFileSync(crosswalkQueryStampPath(path()), query);
+  };
+  const age = (file: string) => {
+    const old = new Date(Date.now() - CROSSWALK_MAX_AGE_MS - 60_000);
+    utimesSync(file, old, old);
+  };
 
   test("downloads and writes when there is nothing on disk", async () => {
     expect(
@@ -155,10 +165,11 @@ describe("fetchCrosswalk", () => {
       }),
     ).toBe(true);
     expect(await Bun.file(path()).text()).toBe("imdb,a,b,c\n");
+    expect(await Bun.file(crosswalkQueryStampPath(path())).text()).toBe(TITLE_CROSSWALK.query);
   });
 
   test("a recent file is reused and nothing is asked for", async () => {
-    writeFileSync(path(), "cached");
+    cache("cached");
     let called = false;
     const spy = (async () => {
       called = true;
@@ -171,12 +182,63 @@ describe("fetchCrosswalk", () => {
   });
 
   test("past the age window it is fetched again", async () => {
-    writeFileSync(path(), "stale");
-    const old = new Date(Date.now() - CROSSWALK_MAX_AGE_MS - 60_000);
-    utimesSync(path(), old, old);
+    cache("stale");
+    age(path());
 
     await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok("fresh") as unknown as typeof fetch });
     expect(await Bun.file(path()).text()).toBe("fresh");
+  });
+
+  /**
+   * The bug this pins cost a week rather than a build: widening `LANGUAGE_CROSSWALK` past
+   * P218 changed nothing on a deployment that already held a fresh copy of the answer to the
+   * OLD query, and nothing anywhere said so. Age cannot see a query edit.
+   */
+  test("a file answering an older query is refetched however fresh it is", async () => {
+    cache("answers the old question", "SELECT ?a WHERE { ?a ?b ?c }");
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response("answers this one");
+    }) as unknown as typeof fetch;
+
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
+    expect(called).toBe(true);
+    expect(await Bun.file(path()).text()).toBe("answers this one");
+    expect(await Bun.file(crosswalkQueryStampPath(path())).text()).toBe(TITLE_CROSSWALK.query);
+  });
+
+  /** Every deployment upgrading into this change has a CSV and no stamp. It refetches once. */
+  test("a file with no stamp at all is refetched", async () => {
+    writeFileSync(path(), "from before the stamp existed");
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response("fresh");
+    }) as unknown as typeof fetch;
+
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
+    expect(called).toBe(true);
+  });
+
+  /**
+   * Keeping the old answer is right -- it is better than none -- but the stamp must stay
+   * disagreeing, or one failed download would freeze the wrong answer in for a whole week.
+   */
+  test("a failed refetch of an edited query leaves the stamp disagreeing, so the next build retries", async () => {
+    cache("answers the old question", "SELECT ?a WHERE { ?a ?b ?c }");
+    const dead = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
+
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(true);
+    expect(await Bun.file(path()).text()).toBe("answers the old question");
+
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response("fresh");
+    }) as unknown as typeof fetch;
+    await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy });
+    expect(called).toBe(true);
   });
 
   /**
@@ -184,9 +246,8 @@ describe("fetchCrosswalk", () => {
    * the only cost is that a title Wikidata gained this week pays a `/find` call.
    */
   test("a failed download leaves the copy on disk alone and still reports usable", async () => {
-    writeFileSync(path(), "cached");
-    const old = new Date(Date.now() - CROSSWALK_MAX_AGE_MS - 60_000);
-    utimesSync(path(), old, old);
+    cache("cached");
+    age(path());
     const dead = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(true);

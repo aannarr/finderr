@@ -275,8 +275,23 @@ export const INDEX_STAGES = {
    * `INDEXES.origin`. The data is unchanged, so the bump buys nothing but the index; it is
    * still a bump, because an index built at v1 would draw those lists at nearly twice the
    * cost and nothing on screen would say so.
+   *
+   * **v3 (2026-09-06) widens `title_lang` with `kind`, `rank` and `non_english`, and adds
+   * `ix_lang_rank`.** This one has to be a bump for BOTH reasons the file distinguishes: the
+   * output changes shape, and the answers do not. An index at v2 has every language list
+   * correct and drawn down the walk-the-rank-order path -- which is the whole reason there
+   * were only twelve of them -- so without the bump the widened catalogue would ship against
+   * a file that cannot afford it, green health and all. `hasLangRank` is what keeps that file
+   * serving in the meantime.
+   *
+   * **v4 (2026-09-06) widens `LANGUAGE_CROSSWALK` past P218, so the CONTENT changes while the
+   * shape does not** -- `zh` goes from 833 titles to 5,468 and `el` from 8 to 1,361. No
+   * capability probe can see this one: a v3 index has a `title_lang` that is complete by its
+   * own lights and answers every query, it just answers some of them with a tenth of the
+   * catalogue. That is the more dangerous half of what this stamp is for, and it is why the
+   * recipe describes the configuration that produced a stage rather than the columns it left.
    */
-  origin: () => JSON.stringify({ v: 2 }),
+  origin: () => JSON.stringify({ v: 4 }),
 
   /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it

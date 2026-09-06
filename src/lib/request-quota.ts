@@ -180,7 +180,25 @@ export interface AdminQuotaState extends QuotaState {
  * It is called UNCONDITIONALLY, unlike in `quotaVerdict` where an exempt caller skips it. The
  * count is a fact a screen reports rather than a step in a refusal -- an admin's own page says
  * "4 today" beside "no limit", and an exempt reader who was handed a zero would be shown a
- * number that is simply false. One indexed `count(*)` is the price of that being true.
+ * number that is simply false.
+ *
+ * > [!NOTE] COST, MEASURED -- 0.015 ms, and it is NOT indexed
+ * > `/api/requests` is polled every eight seconds per open tab and pays this on every response,
+ * > so "it is only one count" was an argument rather than evidence. Measured on studio
+ * > (M-series, macOS arm64, bun 1.4.0), 2026-09-06, with `src/jobs/bench-requests.ts` at 200
+ * > outstanding requests -- the depth at which `listRequests` caps and therefore the worst case
+ * > the route can be asked for: **0.015 ms per response**, against a handler that takes 4.5 ms
+ * > at that depth. It is 0.3% of the response and 0.0002% of the eight-second interval.
+ * >
+ * > The line this replaces called it "one indexed `count(*)`" and that was never true. There is
+ * > no index on `request(requested_by)` -- `SCHEMA` in `../lib/store.ts` declares two indexes on
+ * > that table, on `status` and on `tconst` -- so `countRequestsSince` scans it, and says so
+ * > itself. The scan is cheap because the table holds one row per title anybody has ever asked
+ * > for, which is thousands at the very most. **Cheap for the right reason, not the stated one.**
+ * >
+ * > So the unconditional call STANDS: making it lazy behind `applies` would save 0.015 ms and
+ * > cost an exempt reader a true number. Re-open it only if `request` ever stops being small --
+ * > and then the fix is an index, not a branch.
  */
 export function quotaStateFor(input: {
   role: Role;
