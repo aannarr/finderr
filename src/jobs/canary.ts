@@ -24,9 +24,17 @@
  * commands and then this one, treating the exit 2 below as "NOT MEASURED, loudly" rather than
  * as either a pass or a failure.
  *
- * Exits 0 when the suite is at or above the floor and 1 when it is not, so it works in a
- * gate and not only by eye. A missing index file is exit 2: "I could not measure" is a
- * different answer from "I measured and it is bad".
+ * Exits 0 when the suite is at or above the floor AND every correct answer came in under its
+ * budget, and 1 when either fails, so it works in a gate and not only by eye. A missing index
+ * file is exit 2: "I could not measure" is a different answer from "I measured and it is bad".
+ *
+ * **THIS IS THE ONE CALLER THAT REFUSES ON TIMING, and that asymmetry is deliberate.** The
+ * promote gate REPORTS a budget breach and adopts the index anyway, because it measures while
+ * the machine is still hot from a build and the candidate has never been prefaulted -- it
+ * cannot tell a slow index from a busy machine, and on 2026-09-06 it discarded a 455-second
+ * build that hand-measured 46/46 at 127 ms. Nothing like that is true here: a developer runs
+ * this on a quiet machine against a warm index, so a breach is a real cost regression in the
+ * code and is the thing `budgetMs` was written to catch. `CanaryResult` owns the full argument.
  */
 
 import { runCanary } from "../lib/canary";
@@ -114,8 +122,13 @@ export function main(argv: readonly string[] = Bun.argv.slice(2)): number {
   // other than what a reader would assume.
   if (r.degraded) console.log(`[canary] ${r.degraded}`);
 
+  // BOTH verdicts, named, and the reason for a FAIL is legible from the line itself. The
+  // promote gate reports timing rather than refusing on it (see `CanaryResult`); THIS gate
+  // refuses, because it runs on a quiet machine against a warm index and is where a fix that
+  // finds the right title by scanning the vocabulary has to go red.
+  const why = [r.accurate ? null : "accuracy", r.withinBudget ? null : "timing"].filter(Boolean);
   console.log(
-    `[canary] ${r.ok ? "PASS" : "FAIL"} ${r.passed}/${r.total} ` +
+    `[canary] ${why.length === 0 ? "PASS" : `FAIL (${why.join(" + ")})`} ${r.passed}/${r.total} ` +
       `(${(r.ratio * 100).toFixed(0)}%, floor ${(r.floor * 100).toFixed(0)}%) in ${r.ms.toFixed(0)}ms`,
   );
   for (const f of r.failures) {
@@ -136,7 +149,7 @@ export function main(argv: readonly string[] = Bun.argv.slice(2)): number {
   );
   console.log(`[canary] I/O: ${io}`);
 
-  return r.ok ? 0 : 1;
+  return r.accurate && r.withinBudget ? 0 : 1;
 }
 
 if (import.meta.main) process.exit(main());

@@ -59,7 +59,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { runCanaryOn } from "../lib/canary";
+import { type CanaryResult, type NanoClock, runCanaryOn, slowLine } from "../lib/canary";
 import type { Config } from "../lib/config";
 import { readMemoryUsage, type StorageTuning } from "../lib/memory-budget";
 import { SearchEngine } from "../lib/search";
@@ -134,8 +134,15 @@ export interface ReloadOutcome {
   ms: number;
   /** Why nothing was swapped -- a refusal, or simply that there was nothing new. */
   reason?: string;
-  /** How the candidate scored. Absent when it did not construct at all. */
-  canary?: { passed: number; total: number; ratio: number };
+  /**
+   * How the candidate scored. Absent when it did not construct at all.
+   *
+   * `slow` is here so a candidate that was PROMOTED DESPITE breaching a budget is visible to
+   * something other than a log line. Timing does not refuse a swap -- `canary.ts` owns why --
+   * and an unattended 09:00 UTC refresh has no reader, so without this field the fact would
+   * exist only in a container's stdout.
+   */
+  canary?: { passed: number; total: number; ratio: number; slow: CanaryResult["slow"] };
   /** `built_at` of the engine serving AFTER this attempt -- unchanged on a refusal. */
   builtAt: string | null;
   /** Row count of the engine serving after this attempt. */
@@ -183,6 +190,16 @@ export interface LiveIndexOptions {
    * throw is the backstop for a path that forgets to.
    */
   allowMissing?: boolean;
+  /**
+   * The nanosecond clock the canary times each case against. Real by default.
+   *
+   * A test seam, and the same kind as `recover` above: the branch it reaches is otherwise
+   * unreachable. A fixture index answers in microseconds, so no honest fixture can breach a
+   * 400 ms budget -- and "a slow candidate is adopted rather than refused" is precisely the
+   * decision this holder makes, so it has to be shown going the other way before it is worth
+   * trusting. `.claude/CLAUDE.md`: a check that passes is not a check that works.
+   */
+  nowNs?: NanoClock;
 }
 
 /**
@@ -199,6 +216,7 @@ export class LiveIndex {
   private readonly log: (msg: string) => void;
   private readonly floor: number;
   private readonly recover?: () => void;
+  private readonly nowNs: NanoClock;
   private last: ReloadOutcome | null = null;
   /**
    * Has the file under `this.engine` been replaced by something else?
@@ -216,6 +234,7 @@ export class LiveIndex {
     this.cfg = opts.cfg;
     this.log = opts.log ?? (() => {});
     this.floor = opts.floor ?? 0.9;
+    this.nowNs = opts.nowNs ?? Bun.nanoseconds;
     this.recover = opts.recover;
     this.prefault = opts.prefault ?? null;
     if (opts.allowMissing && !existsSync(this.path)) {
@@ -484,9 +503,14 @@ export class LiveIndex {
 
     let canary: ReloadOutcome["canary"];
     try {
-      const res = runCanaryOn(candidate, this.floor);
-      canary = { passed: res.passed, total: res.total, ratio: res.ratio };
-      if (!res.ok) {
+      const res = runCanaryOn(candidate, this.floor, this.nowNs);
+      canary = { passed: res.passed, total: res.total, ratio: res.ratio, slow: res.slow };
+      // ACCURACY refuses a swap; TIMING never does. A swap is decided while the candidate has
+      // just been promoted and has not been prefaulted -- the same worst-moment problem the
+      // build gate has, and `canary.ts` carries the measurement that settles it. Refusing here
+      // is strictly worse than refusing at build time, because the file this holder opened has
+      // already been renamed out from under it: the only alternative to adopting is a rollback.
+      if (!res.accurate) {
         candidate.close();
         const misses = res.failures
           .slice(0, 3)
@@ -500,6 +524,9 @@ export class LiveIndex {
           canary,
         };
       }
+      // Accurate but slow: adopted, and named. `slowLine` is the single owner of the wording.
+      const slow = slowLine(res.slow);
+      if (slow) this.log(`index candidate accepted but SLOW -- ${slow} Reported, never a refusal.`);
     } catch (err) {
       candidate.close();
       return { error: `it opened but could not answer: ${(err as Error).message}`, canary };

@@ -65,10 +65,18 @@ export interface CanaryCase {
 /**
  * The default ceiling for one query, in ms.
  *
- * MEASURED, not chosen: on the real 1.28M-row index (M1 Max, 2026-09-06) the slowest of the
- * original 42 was 176 ms and the median was single-digit. 400 leaves room for the two-stage
- * fuzzy escalation, which only a query with no close match ever pays for, and still fails
- * loudly on anything that starts scanning the vocabulary.
+ * MEASURED, not chosen -- **on ONE machine, under conditions that machine was not busy.** On
+ * the real 1.28M-row index (M1 Max, 2026-09-06) the slowest of the original 42 was 176 ms and
+ * the median was single-digit. 400 leaves room for the two-stage fuzzy escalation, which only
+ * a query with no close match ever pays for, and still fails loudly on anything that starts
+ * scanning the vocabulary.
+ *
+ * > [!CAUTION] ITS PROVENANCE IS NOT UNIVERSAL, and this number is not a promote gate
+ * > A figure read off a laptop is enforced unchanged on a Celeron J4125, and it happens to
+ * > fit -- measured 2026-09-06 inside the production container, the same NAS, the same file:
+ * > **46/46 with a slowest case of 127 ms.** That is luck rather than design, and the luck is
+ * > not what makes this safe. What makes it safe is `withinBudget` being reported rather than
+ * > gated on wherever the machine's state is unknown; see the block above `CanaryResult`.
  *
  * A case needing more says so with `budgetMs` and a number somebody read off a machine.
  */
@@ -191,8 +199,65 @@ export const CANARY_CASES: CanaryCase[] = [
   { query: "qwertzuiopasdf", want: null, note: "returned Spirited Away" },
 ];
 
+/**
+ * TWO VERDICTS, NEVER ONE, AND ONLY ONE OF THEM MAY REFUSE A PROMOTE.
+ *
+ * There was a single `ok` here, and it was `ratio >= floor && slow.length === 0`. On the live
+ * NAS on 2026-09-06 that discarded a complete, correct, 455-second build and reported it as:
+ *
+ * ```
+ * [index] gate canary: FAIL -- 46/46 (100%, floor 90%)
+ * [index] ABORT: search quality regressed. The live index is untouched.
+ * ```
+ *
+ * 46/46 is 100%, the floor is 90%, and it says FAIL -- because the timing term fired and
+ * nothing printed it. The first reader spent minutes convinced the boolean was inverted,
+ * which on the evidence shown it is.
+ *
+ * **The obvious diagnosis was measured and is WRONG.** `CASE_BUDGET_MS` is not unreachable on
+ * a Celeron: the same rejected candidate, on the same NAS, in the same container, scored
+ * **46/46 with a slowest case of 127 ms against a 400 ms budget**. The file was fine.
+ *
+ * What differs is WHEN the gate measures. At gate time the candidate was written seconds
+ * earlier and has never been prefaulted (the prefault happens on adopt, and is worth 224x --
+ * see the storage brief); the machine has just spent 455 s building, 63 s of it a VACUUM
+ * rewriting 1.9 GB; and the live index's page cache is still resident inside a container cap
+ * that holds neither comfortably. So the timing half was measuring **the machine's state
+ * during a build** and spending that reading as a permanent judgement on the artifact.
+ *
+ * **A promote gate asks "is this index CORRECT".** It cannot ask "is this index slow", because
+ * at that instant it cannot distinguish that from "is this machine busy" -- and a correct
+ * index that is slow while the builder is still cooling beats the live index, which on the day
+ * this was found was missing `rank`, `origin` and `vocab` entirely. A flaky gate is worse than
+ * a strict one: it discards a valid build non-deterministically, unattended, at 09:00 UTC.
+ *
+ * So the verdicts are split by NAME, and every caller must choose one deliberately:
+ *
+ * - **`accurate`** -- did the right titles come back. **This, and only this, gates a promote**
+ *   (`build-index.ts`) and a live swap (`LiveIndex.attempt`).
+ * - **`withinBudget`** -- did every correct answer arrive inside its budget. A REPORT on the
+ *   promote path, printed loudly and carried on `/api/health`; a REFUSAL in `bun run canary`,
+ *   which is the developer gate, runs on a quiet machine against a warm index and is where
+ *   "a fix that widens the search until it scans the vocabulary" must still fail.
+ *
+ * The rename is the point. There is no `ok` to inherit the wrong meaning from.
+ */
 export interface CanaryResult {
-  ok: boolean;
+  /**
+   * The ACCURACY verdict: enough cases returned the right title. Gates a promote.
+   *
+   * False also when nothing ran at all -- a suite that scored 0/0 as 100% would be a gate
+   * that passes by having nothing to measure.
+   */
+  accurate: boolean;
+  /**
+   * The TIMING verdict: every correct answer came in under its budget. Never gates a promote.
+   *
+   * True whenever `slow` is empty, which is the whole of it -- the field exists so a caller
+   * reads a verdict rather than re-deriving one from an array's length, and so the two
+   * questions are symmetrical at every call site.
+   */
+  withinBudget: boolean;
   passed: number;
   /** Cases actually RUN. Below `CANARY_CASES.length` only when `degraded` says why. */
   total: number;
@@ -205,7 +270,8 @@ export interface CanaryResult {
    * SEPARATE FROM `failures` on purpose. They are two different verdicts with two different
    * remedies -- a wrong hit is a ranking or candidate bug, a slow one is a cost bug -- and
    * folding a timing breach into the accuracy ratio would let a 90% floor absorb it silently.
-   * Both block `ok`.
+   * They feed `withinBudget` and never `accurate`; see the block above this interface for why
+   * only one of the two may refuse a promote.
    */
   slow: { query: string; ms: number; budgetMs: number }[];
   /** Every case that ran, slowest first. The table this suite is meant to be filled with. */
@@ -240,6 +306,34 @@ function degradedLine(absence: FuzzyAbsence, skipped: readonly CanaryCase[]): st
 }
 
 /**
+ * The `slow` line: which queries breached, by how much, and against what.
+ *
+ * The ONE place this wording lives, exactly as `degradedLine` is for the other absence.
+ * `build-index`, `LiveIndex` and the `canary` job all print this rather than each composing
+ * its own account -- the defect this fixes was a gate that refused on `slow` and printed only
+ * the accuracy numbers, so a reader was shown an accuracy verdict for a latency failure and
+ * had nothing to act on.
+ *
+ * Returns null when nothing breached, so a caller can `if (line)` instead of asking twice.
+ */
+export function slowLine(slow: readonly CanaryResult["slow"][number][]): string | null {
+  if (slow.length === 0) return null;
+  const cases = slow.map((s) => `"${s.query}" ${s.ms.toFixed(0)}ms over its ${s.budgetMs}ms budget`);
+  return `${slow.length} of them answered CORRECTLY but slowly: ${cases.join("; ")}.`;
+}
+
+/**
+ * The clock the per-case timer reads, in nanoseconds.
+ *
+ * Injectable for ONE reason: a timing breach is otherwise unreachable from a test. The
+ * fixture index answers in microseconds, so no honest fixture can breach a 400 ms budget, and
+ * a check that cannot be shown RED is a check nobody should trust green -- which is exactly
+ * how the defect this file now documents survived. `canary.test.ts` drives both directions
+ * through this.
+ */
+export type NanoClock = () => number;
+
+/**
  * The 42 cases against an engine SOMEBODY ELSE owns.
  *
  * Split out of `runCanary` so the same gate can be pointed at a live engine, not only
@@ -251,8 +345,12 @@ function degradedLine(absence: FuzzyAbsence, skipped: readonly CanaryCase[]): st
  * It does NOT close the engine and it does NOT call `prepareSqlite`. Both belong to
  * whoever opened the thing.
  */
-export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
-  const t0 = Bun.nanoseconds();
+export function runCanaryOn(
+  engine: SearchEngine,
+  floor = 0.9,
+  nowNs: NanoClock = Bun.nanoseconds,
+): CanaryResult {
+  const t0 = nowNs();
   const io0 = ioReadBytes();
   const failures: CanaryResult["failures"] = [];
   const slow: CanaryResult["slow"] = [];
@@ -266,9 +364,9 @@ export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
   const runnable = absence ? CANARY_CASES.filter((c) => !c.fuzzyOnly) : CANARY_CASES;
 
   for (const c of runnable) {
-    const t = Bun.nanoseconds();
+    const t = nowNs();
     const res = engine.search(c.query, { limit: 5, facets: false });
-    const ms = (Bun.nanoseconds() - t) / 1e6;
+    const ms = (nowNs() - t) / 1e6;
     timings.push({ query: c.query, ms, tier: res.tier });
 
     const top = res.hits[0];
@@ -301,10 +399,13 @@ export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
   const ratio = runnable.length === 0 ? 0 : passed / runnable.length;
   const io1 = ioReadBytes();
   return {
-    // A budget breach is not graded on a curve. The accuracy floor tolerates a share of
-    // misses because ranking is a judgement call; a query that got slower is a fact, and one
-    // of them is enough to fail the run.
-    ok: runnable.length > 0 && ratio >= floor && slow.length === 0,
+    accurate: runnable.length > 0 && ratio >= floor,
+    // A budget breach is not graded on a curve: the accuracy floor tolerates a share of misses
+    // because ranking is a judgement call, where a query that got slower is a fact and one of
+    // them is enough. It is a SEPARATE verdict rather than a term in `accurate` because at
+    // promote time it cannot tell a slow index from a busy machine -- see the block above
+    // `CanaryResult`, and the 455-second build it threw away.
+    withinBudget: slow.length === 0,
     passed,
     total: runnable.length,
     ratio,
@@ -315,12 +416,17 @@ export function runCanaryOn(engine: SearchEngine, floor = 0.9): CanaryResult {
     readBytes: io0 !== null && io1 !== null ? io1 - io0 : null,
     skipped: skipped.map((c) => ({ query: c.query, want: c.want })),
     degraded: absence ? degradedLine(absence, skipped) : null,
-    ms: (Bun.nanoseconds() - t0) / 1e6,
+    ms: (nowNs() - t0) / 1e6,
   };
 }
 
 /** The same gate, against a file this function opens and closes itself. */
-export function runCanary(dbPath: string, cfg: Config, floor = 0.9): CanaryResult {
+export function runCanary(
+  dbPath: string,
+  cfg: Config,
+  floor = 0.9,
+  nowNs: NanoClock = Bun.nanoseconds,
+): CanaryResult {
   // Before the SearchEngine opens anything: on macOS the fuzzy tier needs a libsqlite3
   // that permits extensions, and that choice is process-global and cannot be made once
   // a connection exists. Without it every typo case here fails for the wrong reason.
@@ -328,7 +434,7 @@ export function runCanary(dbPath: string, cfg: Config, floor = 0.9): CanaryResul
   const engine = new SearchEngine(dbPath, cfg);
   engine.prepareFuzzy();
   try {
-    return runCanaryOn(engine, floor);
+    return runCanaryOn(engine, floor, nowNs);
   } finally {
     engine.close();
   }

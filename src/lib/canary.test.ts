@@ -20,7 +20,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CANARY_CASES, runCanaryOn } from "./canary";
+import { CANARY_CASES, CASE_BUDGET_MS, type NanoClock, runCanaryOn, slowLine } from "./canary";
 import { loadConfig } from "./config";
 import { buildTitleSearchIndex, SCHEMA } from "./index-builder";
 import { SearchEngine } from "./search";
@@ -108,6 +108,97 @@ test("the degraded line names the missing capability and how to get it back", ()
   } finally {
     engine.close();
   }
+});
+
+/**
+ * A clock that advances a fixed step on EVERY read, so each case's elapsed time is that step.
+ *
+ * `runCanaryOn` reads it once before the loop and twice per case, and only the per-case pair
+ * feeds a budget, so a step above `CASE_BUDGET_MS` breaches every case that answered
+ * correctly. This is the only way to reach the timing branch: the fixture index below answers
+ * in microseconds, so no honest fixture can breach 400 ms, and a branch that cannot be shown
+ * RED is one nobody should trust green.
+ */
+function steppingClock(stepMs: number): NanoClock {
+  let ns = 0;
+  return () => {
+    const read = ns;
+    ns += stepMs * 1e6;
+    return read;
+  };
+}
+
+/**
+ * `floor: 0` makes ACCURACY pass on an index that finds nothing.
+ *
+ * That is the point rather than a dodge: the two `want: null` cases genuinely answer
+ * correctly on an empty index (nothing is there, and nothing came back), so they are the
+ * cases that get TIMED -- `runCanaryOn` only times a case once it is correct. So this fixture
+ * is the exact shape the NAS hit on 2026-09-06: correct answers, over budget.
+ */
+const NONSENSE = CANARY_CASES.filter((c) => c.want === null).map((c) => c.query);
+
+test("a correct-but-slow suite is ACCURATE and NOT withinBudget -- the two verdicts split", () => {
+  // THE REGRESSION THIS FILE EXISTS FOR, in its second form. A single `ok` folded these two
+  // together, so the NAS logged `FAIL -- 46/46 (100%, floor 90%)` and threw away 455 seconds
+  // of work while printing an accuracy verdict for a latency failure.
+  const engine = engineWithoutFuzzy();
+  try {
+    const r = runCanaryOn(engine, 0, steppingClock(CASE_BUDGET_MS + 100));
+
+    expect(r.accurate).toBe(true);
+    expect(r.withinBudget).toBe(false);
+    // And the breach is attributable: every slow case is named, with the budget it broke.
+    expect(r.slow.map((s) => s.query).sort()).toEqual([...NONSENSE].sort());
+    for (const s of r.slow) expect(s.ms).toBeGreaterThan(s.budgetMs);
+    // A slow case is NOT also a miss. Two verdicts, two lists, no double-counting.
+    expect(r.failures.map((f) => f.query)).not.toContain(NONSENSE[0]);
+  } finally {
+    engine.close();
+  }
+});
+
+test("the same run at a real-speed clock is withinBudget -- the fixture is not slow by nature", () => {
+  // Guards the guard. Without this, the test above would pass just as well against a clock
+  // bug, and would be measuring itself rather than the gate.
+  const engine = engineWithoutFuzzy();
+  try {
+    const r = runCanaryOn(engine, 0);
+    expect(r.accurate).toBe(true);
+    expect(r.withinBudget).toBe(true);
+    expect(r.slow).toEqual([]);
+  } finally {
+    engine.close();
+  }
+});
+
+test("an inaccurate suite fails on ACCURACY whether or not it was fast", () => {
+  // The other direction of the same fixture: the real 0.9 floor against an index that finds
+  // nothing. Timing is irrelevant here and must not rescue it.
+  const engine = engineWithoutFuzzy();
+  try {
+    const r = runCanaryOn(engine, 0.9);
+    expect(r.accurate).toBe(false);
+    expect(r.withinBudget).toBe(true);
+    expect(r.failures.length).toBeGreaterThan(0);
+  } finally {
+    engine.close();
+  }
+});
+
+test("`slowLine` names every breach and its budget, and is null when nothing breached", () => {
+  // The sentence whose ABSENCE was the whole first bug: the gate refused on `slow` and printed
+  // only the accuracy numbers, so the operator had a self-contradicting line and nothing to
+  // act on. One owner for the wording, exactly as `degradedLine` is for the other absence.
+  expect(slowLine([])).toBeNull();
+  const line = slowLine([
+    { query: "seven samuri", ms: 512.4, budgetMs: 400 },
+    { query: "Nile City", ms: 901, budgetMs: 800 },
+  ]);
+  expect(line).toContain('"seven samuri" 512ms over its 400ms budget');
+  expect(line).toContain('"Nile City" 901ms over its 800ms budget');
+  // It must say the answers were RIGHT, or a reader takes it for a ranking failure again.
+  expect(line).toContain("CORRECTLY");
 });
 
 test("a missing spellfix1 is reported as a missing spellfix1, with the command that builds it", () => {

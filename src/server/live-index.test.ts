@@ -183,6 +183,73 @@ describe("LiveIndex", () => {
     live.close();
   });
 
+  /**
+   * The decision this card was written to make, driven both ways against the real holder.
+   *
+   * A fixture index answers in microseconds, so `nowNs` is the only way to reach the branch.
+   * `CASE_BUDGET_MS` is 400 and this clock advances 500 ms per read, so every case that
+   * answers CORRECTLY breaches -- which on this one-row index is the two `want: null` cases,
+   * the only ones an index holding "After" gets right. Exactly the NAS's 2026-09-06 shape:
+   * accurate, and over budget on a machine that was busy.
+   */
+  function slowClock(stepMs = 500): () => number {
+    let ns = 0;
+    return () => {
+      const read = ns;
+      ns += stepMs * 1e6;
+      return read;
+    };
+  }
+
+  test("a candidate that is CORRECT but slow is ADOPTED, and the breach is reported", () => {
+    // THE BUG. On the live NAS this discarded a complete 455-second build and logged
+    // `FAIL -- 46/46 (100%, floor 90%)`. Timing at swap time measures whether the machine is
+    // busy, which it cannot tell from whether the index is slow -- and here it is measured at
+    // the worst instant available, seconds after a promote and before any prefault.
+    const path = freshPath("slow-but-right");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Before", tconst: "tt-before" });
+
+    const live = new LiveIndex({ path, cfg, floor: 0, nowNs: slowClock() });
+    promoteOver(path, { builtAt: "2026-08-31T00:00:00.000Z", title: "After", tconst: "tt-after" });
+
+    const out = live.reload();
+
+    // Adopted. The candidate is correct, and a correct index beats the one this holder can no
+    // longer read out of -- "keep serving the old engine" is not an available outcome here.
+    expect(out.ok).toBe(true);
+    expect(out.swapped).toBe(true);
+    expect(out.builtAt).toBe("2026-08-31T00:00:00.000Z");
+    expect(live.current.byTconst("tt-after")?.title).toBe("After");
+
+    // And NOT silently: the breach rides `/api/health` through `index.reload.canary.slow`,
+    // because the refresh it happens on is unattended at 09:00 UTC and a log line has no
+    // reader. Distinguishable from an accuracy refusal, which carries a `reason` instead.
+    expect(out.canary?.slow.length).toBeGreaterThan(0);
+    for (const s of out.canary?.slow ?? []) expect(s.ms).toBeGreaterThan(s.budgetMs);
+    expect(out.reason).toBeUndefined();
+
+    live.close();
+  });
+
+  test("a candidate that is INACCURATE is still refused, slow clock or not", () => {
+    // The other half of the same decision. Splitting the verdict must not have made the gate
+    // permissive: accuracy is what a promote gate is for, and it still refuses.
+    const path = freshPath("wrong-and-slow");
+    writeIndex(path, { builtAt: "2026-08-30T00:00:00.000Z", title: "Before", tconst: "tt-before" });
+
+    const live = new LiveIndex({ path, cfg, floor: 1, nowNs: slowClock() });
+    promoteOver(path, { builtAt: "2026-08-31T00:00:00.000Z", title: "After", tconst: "tt-after" });
+
+    const out = live.reload();
+    expect(out.ok).toBe(false);
+    expect(out.swapped).toBe(false);
+    // The reason names the FLOOR, so a reader can tell which of the two verdicts refused --
+    // the whole complaint on the card was a FAIL line that named the wrong one.
+    expect(out.reason).toContain("floor");
+
+    live.close();
+  });
+
   test("a promoted-away engine either throws or serves the OLD file -- never the promoted one", () => {
     // 40 promotes rather than one: the two branches are load-dependent, and asserting a
     // single read is exactly the flake this replaces. See the helper.
