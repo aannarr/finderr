@@ -98,6 +98,46 @@ Answer in one or two sentences. Name the specific titles and people you found.`;
  * > plan they had already made and could no longer see. `results` exists because condensing
  * > the bulky JSON and deleting the model's own notes are two different operations, and only
  * > the first one was ever the goal.
+ *
+ * ## COMPACTION COST, MEASURED -- neither arm pays, and `off` stays the default
+ *
+ * `bun run agent:eval --tier advanced --compact all`, six scenarios, one run per cell,
+ * 2026-09-06. Every arm answers the same six questions; `vs off` is that model's own `off`
+ * row, so the three models are never compared to each other here.
+ *
+ * | model | mode | correct | tok in | tok out | cost | vs `off` |
+ * |---|---|---|---|---|---|---|
+ * | `z-ai/glm-5.3-flash` | off | 6/6 | 94,392 | 6,202 | $0.0040 | -- |
+ * | | results | 6/6 | 89,730 | 5,263 | $0.0033 | cost **-17%** |
+ * | | ledger | 6/6 | 84,536 | 8,778 | $0.0045 | cost +12% |
+ * | `anthropic/claude-haiku-4.5` | off | 6/6 | 107,373 | 2,448 | $0.1196 | -- |
+ * | | results | **5/6** | 99,083 | 2,223 | $0.1102 | cost **-8%** |
+ * | | ledger | 6/6 | 110,741 | 2,872 | $0.1251 | cost +5% |
+ * | `google/gemini-3.8-flash` | off | 6/6 | 109,200 | 6,604 | $0.1067 | -- |
+ * | | results | **5/6** | 131,130 | 6,662 | $0.1233 | cost +16% |
+ * | | ledger | 6/6 | 88,131 | 11,482 | $0.1092 | cost +2% |
+ *
+ * `ledger` costs MORE than sending the raw transcript on all three models, because the input
+ * it saves comes straight back as output -- glm -10% in for +42% out, gemini -19% in for
+ * +74% out. That is the 2026-09-04 finding again, now with a price on it.
+ *
+ * `results` saves 8-17% on two models and costs 16% more on the third, and both correctness
+ * failures in the whole matrix landed in that arm.
+ *
+ * > [!CAUTION] `results` makes `claude-haiku-4.5` GIVE UP on the two-hop query, three runs of three
+ * > S8 was re-run three times per cell to tell a real effect from variance, and the effect is
+ * > real for one model: `claude-haiku-4.5` under `results` failed all three runs identically
+ * > -- same route (`find_title -> find_title -> list_cast -> list_cast`), the same 21,154
+ * > prompt tokens, and the same answer, *"there's no actor who appears in both ... Could you
+ * > clarify"*. The same model under `off` and under `ledger` passed all three. The other two
+ * > models do not show it: `gemini-3.8-flash` failed S8 twice under `results` and once under
+ * > `off`, which is variance, and `glm-5.3-flash` passed nine of nine.
+ * >
+ * > The failure is the `ledger` shape one notch milder rather than a new one. Nothing was
+ * > fabricated -- the type wall held and `inferred` was 0 in every cell of the matrix -- the
+ * > model stopped REACHING, concluded from two cast lists, and asked the user a question
+ * > instead of calling find_connections. So condensing only the tool results is not the safe
+ * > half of compaction it was designed to be, and there is no arm here worth defaulting to.
  */
 export type CompactMode = "off" | "results" | "ledger";
 
@@ -199,11 +239,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const system = opts.systemPrompt ?? SYSTEM_PROMPT;
 
   /**
-   * The append-only transcript, used when NOT compacting.
+   * The append-only transcript. Every mode appends to it; they differ in what gets SENT.
    *
-   * Under compaction this is never sent: the request is rebuilt from the ledger each turn,
-   * which also sidesteps the protocol rule that every `tool_calls` id needs a matching
-   * `tool` message -- there is no assistant tool_calls message in the payload to match.
+   * `off` sends it as-is and `results` sends it message-for-message with earlier tool-result
+   * content swapped, so both obey the protocol rule that every `tool_calls` id has a matching
+   * `tool` message. `ledger` never sends it at all -- the request is rebuilt each turn -- and
+   * sidesteps that rule instead, because there is no assistant tool_calls message in the
+   * payload to match.
    */
   /*
     History sits BETWEEN the system prompt and the new question, which is the only order that
