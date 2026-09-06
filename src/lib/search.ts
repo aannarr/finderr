@@ -23,7 +23,7 @@
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import type { Config } from "./config";
-import { type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
+import { ENGLISH_LANG, type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
 import type { PersonCredit } from "./facets";
 // The builder is already in the server's module graph (`src/server/index.ts` imports
 // `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
@@ -1361,6 +1361,19 @@ export class SearchEngine {
   }
 
   browse(opts: BrowseOptions): BrowseResult {
+    /*
+      A NAMED LANGUAGE REFUSES on an index with no `title_lang`, where the preference below
+      DROPS -- and the two opposite answers are the same rule applied to different things.
+
+      A preference fails toward showing too much: a reader briefly sees titles they did not
+      ask for. A `lang` is what the page IS, so dropping it would serve the unfiltered top
+      250 under the heading "Best films in Korean" -- a wrong answer wearing a right one's
+      name, which is what `rankedMembers` refuses for `rank` for the same reason.
+
+      It is also a hard requirement rather than a nicety: `title_lang` is absent as a TABLE
+      on such an index, so the semi-join would not return nothing, it would throw.
+    */
+    if (opts.lang !== undefined && !this.hasOrigin) return { rows: [], total: 0 };
     const safe = opts.sort === "rank" && !this.hasRank ? { ...opts, sort: "votes" as const } : opts;
     // `genreVotes` is a CAPABILITY, so it comes from the open file and is never something a
     // caller passes in -- same split as the downgrade above: policy in `browseIndex`, "what
@@ -1391,6 +1404,10 @@ export class SearchEngine {
    */
   rankedMembers(filters: BrowseFilters, size: number): string[] {
     if (!this.hasRank) return [];
+    // The same refusal `browse` makes above, and the reason `/lists` draws no language rows
+    // at all on an index built before the origin stage: no members means no completion,
+    // which means the group has nothing to render. See `listGroups`.
+    if (filters.lang !== undefined && !this.hasOrigin) return [];
     return browseMembers(this.db, {
       ...filters,
       sort: "rank",
@@ -1509,6 +1526,31 @@ export interface BrowseFilters {
    * does gets a defined answer rather than two conflicting predicates.
    */
   years?: [number, number];
+  /**
+   * ONE ISO 639-1 code the title is in -- and, unless that code IS English, is not also in.
+   *
+   * > [!IMPORTANT] A FILTER, where `BrowseOptions.languages` is a PREFERENCE, and the two
+   * > mean genuinely different things rather than being one idea spelled twice
+   * > `languages` is what the DEPLOYMENT wants to see by default: any-match, fail-open over
+   * > the titles nobody knows the language of, liftable with `anyLanguage=1`, and kept out
+   * > of the address bar on purpose. This is what a PAGE IS -- "Best films in Korean" -- so
+   * > it belongs in the URL exactly as `genre` does, and the two never apply together: a
+   * > reader who named a language has overridden the default, and applying both would empty
+   * > every language list on a deployment that had configured one.
+   *
+   * **The English exclusion is the whole reason this is not just `languages: [code]`, and it
+   * was measured rather than assumed.** Wikidata's P364 is multi-valued and the any-match
+   * rule admits a film with a single subtitled scene: on the real 1.27M-row index the top of
+   * "has `ja`" is Inception, "has `es`" is Coco and Toy Story, "has `it`" is The Godfather.
+   * Excluding English gives Spirited Away, Pan's Labyrinth and Cinema Paradiso instead --
+   * measured across 34 languages on 2026-09-06. A preference should fail toward showing too
+   * much; a list whose NAME is a claim about the film must not.
+   *
+   * Restricting to a SOLE language was measured too and rejected: it barely changes the size
+   * (Korean 1,401 against 1,421) while dropping films that are genuinely multilingual in
+   * their own country -- Three Colors is `fr`/`pl`.
+   */
+  lang?: string;
 }
 
 /**
@@ -1890,16 +1932,32 @@ function browseSql(
     An EMPTY list is no filter at all rather than a filter matching nothing. That is the
     difference between "this reader has no preference" and "this reader wants no titles",
     and only the first is ever a thing anybody means.
+
+    **`f.lang` REPLACES the preference rather than composing with it.** They are two answers
+    to "which languages is this page about" and the reader's own is the specific one -- the
+    same precedence `year` takes over `decade` above. Composing them would empty every
+    language list on any deployment that had configured `languages`, which is a page of dead
+    links rather than a stricter filter.
   */
-  if (languages.length > 0) {
-    // WHICH TABLE'S ROWID, the same question `voted` and `ranked` answer above. A genre
-    // count reads `title_genre` alone and has no `t` to name; naming one would be a
-    // `no such column` on exactly the query the covering count exists to serve.
-    const rowid = join ? "g.title_rowid" : "t.rowid_";
-    where.push(
-      `exists (select 1 from title_lang l where l.title_rowid = ${rowid}` +
-        ` and l.lang in (${languages.map(() => "?").join(",")}))`,
-    );
+  // WHICH TABLE'S ROWID, the same question `voted` and `ranked` answer above. A genre count
+  // reads `title_genre` alone and has no `t` to name; naming one would be a `no such column`
+  // on exactly the query the covering count exists to serve.
+  const rowid = join ? "g.title_rowid" : "t.rowid_";
+  const langIn = (codes: readonly string[]) =>
+    `select 1 from title_lang l where l.title_rowid = ${rowid}` +
+    ` and l.lang in (${codes.map(() => "?").join(",")})`;
+  if (f.lang !== undefined) {
+    where.push(`exists (${langIn([f.lang])})`);
+    args.push(f.lang);
+    // A list of English films is not foreign to itself: `?lang=en` would otherwise be
+    // "in English and not in English", an empty page with no way to read it as anything
+    // but a bug. See `BrowseFilters.lang` for why the exclusion exists at all.
+    if (f.lang !== ENGLISH_LANG) {
+      where.push(`not exists (${langIn([ENGLISH_LANG])})`);
+      args.push(ENGLISH_LANG);
+    }
+  } else if (languages.length > 0) {
+    where.push(`exists (${langIn(languages)})`);
     args.push(...languages);
   }
 
@@ -2150,7 +2208,13 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   const langs = opts.languages ?? [];
   const sql = browseSql(opts, minVotes, sort, { ...capsOf(opts), languages: langs });
   const counts = opts.browseCounts ?? false;
-  const total = browseTotal(db, sql, opts, minVotes, sort, counts, langs.length > 0);
+  /*
+    A LANGUAGE PREDICATE OF EITHER KIND PUTS THE STORED COUNT OUT OF REACH, so this asks
+    whether one was applied at all rather than whether a preference was passed. `browse_count`
+    has grain (kind, genre, year) and no language dimension -- see `browseTotal`.
+  */
+  const filteredByLanguage = opts.lang !== undefined || langs.length > 0;
+  const total = browseTotal(db, sql, opts, minVotes, sort, counts, filteredByLanguage);
   const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
@@ -2174,9 +2238,15 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
     one hatch is ever offered, and it is the one whose removal would actually help.
 
     Same guard as the floor's: a page that found rows pays for one count, never two.
+
+    **`opts.lang` OFFERS NO HATCH, and that is the point of asking here.** The hatch lifts a
+    threshold of OURS that the reader never chose. A language they navigated to is what the
+    page IS, so "show all 1,132 in any language" under the heading "Best films in Korean"
+    would answer a different question -- the same reason a ranked browse never offers to lift
+    a floor it did not apply.
   */
   if (total > 0) return { rows, total };
-  if (langs.length > 0) {
+  if (opts.lang === undefined && langs.length > 0) {
     const unfiltered = browseTotal(
       db,
       browseSql(opts, minVotes, sort, capsOf(opts)),
@@ -2207,7 +2277,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
     0,
     sort,
     counts,
-    langs.length > 0,
+    filteredByLanguage,
   );
   return unfloored > 0 ? { rows, total, hiddenByFloor: { titles: unfloored, minVotes } } : { rows, total };
 }

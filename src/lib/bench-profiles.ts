@@ -87,6 +87,11 @@ const SLIM_INDEXES: readonly string[] = [
   // and the EXISTS predicate needs both -- `title_rowid` to seek and `lang` to test -- so
   // this index is entirely key and carries no payload for a slim profile to drop.
   "create index ix_lang on title_lang(title_rowid, lang)",
+  // UNCHANGED for the same reason as its sibling above: both columns are key, so there is no
+  // payload to narrow. It is 16.5 MB of pure key, and the language lists are 138.4 ms without
+  // it against 81.0 ms with -- which makes it a candidate for a future SIZE profile ("what if
+  // you dropped it entirely?"), not for this one.
+  "create index ix_lang_code on title_lang(lang, title_rowid)",
   // Was `(parent, season, number, tconst, title, rating, votes, year)`. THIS narrow form is
   // quoted verbatim in `ix_ep_parent`'s own docstring as what it was benchmarked against --
   // "20-30% slower warm, 4-13 ms cold on a title page, and up to 496 ms cold on a
@@ -135,6 +140,7 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   "create index ix_person_name on person(name)",
   // Unchanged for the reason `slim` gives: two columns, both key, no payload to drop.
   "create index ix_lang on title_lang(title_rowid, lang)",
+  "create index ix_lang_code on title_lang(lang, title_rowid)",
   // Drops five payload columns, keeps the whole key. The pure case, and the one whose
   // docstring already claims 20-30% warm and up to 496 ms cold.
   "create index ix_ep_parent on episode(parent, season, number)",

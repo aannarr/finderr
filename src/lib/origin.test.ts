@@ -21,9 +21,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "./config";
 import { loadOrigin, ORIGIN_SCHEMA, parseOriginCsv, UNKNOWN_LANG } from "./crosswalk";
 import { applyRank, EXPLODE_GENRES, INDEXES, SCHEMA } from "./index-builder";
-import { browseIndex, browseVoteFloor, languageFilter } from "./search";
+import { browseIndex, browseVoteFloor, languageFilter, SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-origin-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -110,6 +111,20 @@ const CORPUS: Row[] = [
 const EN_SV = languageFilter(["en", "sv"]);
 const titles = (db: Database, opts: Parameters<typeof browseIndex>[1]) =>
   browseIndex(db, opts).rows.map((r) => r.tconst);
+
+/**
+ * The same fixture, reopened through `SearchEngine`.
+ *
+ * `hasOrigin` is a property of the OPEN FILE rather than of a query, so the two guards it
+ * drives cannot be exercised against a `Database` handed straight to `browseIndex` -- that
+ * function deliberately knows nothing about which file it was given.
+ */
+function engineOn(rows: Row[], opts: { withOrigin?: boolean } = {}): SearchEngine {
+  const db = indexOf(rows, opts);
+  const path = db.filename;
+  db.close();
+  return new SearchEngine(path, loadConfig());
+}
 
 describe("the origin data", () => {
   test("parseOriginCsv keeps two-letter codes and drops everything else", () => {
@@ -272,6 +287,37 @@ describe("the filter SEEKS its index", () => {
     // pass on a scan of a small fixture. Together they say seek AND why.
     expect(INDEXES.origin.join("")).toContain("title_lang(title_rowid, lang)");
   });
+
+  test("a SECOND index leads with lang, which is what a language LIST needs", () => {
+    /*
+      Not the withdrawn shape coming back -- it is an ADDITION, and both exist because the
+      two queries drive from opposite ends. A preference is a list of codes covering 81% of
+      the corpus, so leading with `lang` materialises a million rowids; a language list is
+      ONE code matching a fraction of a percent, and its `not exists` half has to prove a
+      negative per candidate row, which `(title_rowid, lang)` cannot do selectively.
+
+      Measured on a copy of the real 1,288,159-row index on 2026-09-06, same SQL either way:
+      the twelve shipped lists go from 138.4 ms to 81.0 ms, and the preference query kept its
+      correlated-seek plan at 1.9 ms rather than the 1,014 ms of the shape that was withdrawn.
+    */
+    expect(INDEXES.origin.join("")).toContain("title_lang(lang, title_rowid)");
+  });
+
+  test("a language LIST seeks an index too, and materialises no list subquery", () => {
+    const db = indexOf(CORPUS);
+    db.run("analyze");
+    const sql = `select t.tconst from title t
+       where t.kind = ? and exists (select 1 from title_lang l where l.title_rowid = t.rowid_ and l.lang in (?))
+         and not exists (select 1 from title_lang l where l.title_rowid = t.rowid_ and l.lang in (?))
+       order by t.rank desc limit 250`;
+    const plan = planOf(db, sql, ["movie", "hi", "en"]);
+    expect(plan).toContain("ix_lang");
+    expect(plan).toContain("CORRELATED");
+    // The `not exists` half is the one that could quietly become a scan of the whole
+    // language table once per candidate row, which is 1.3M rows on the real index.
+    expect(plan).not.toContain("LIST SUBQUERY");
+    expect(plan).not.toContain("SCAN l");
+  });
 });
 
 describe("languageFilter", () => {
@@ -330,6 +376,83 @@ describe("the browse filter", () => {
     expect(ranked).not.toContain("tt-ta");
     expect(ranked).not.toContain("tt-hi");
     expect(ranked.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a NAMED language -- what a list is, as opposed to what a preference is", () => {
+  /*
+    `BrowseFilters.lang` and `BrowseOptions.languages` are two different rules and this block
+    is where the difference is pinned. The preference fails toward showing TOO MUCH: any
+    match, unknowns admitted, liftable. A list's own language fails the other way, because
+    its NAME is a claim about the film -- measured on the real index, "has `ja` among its
+    languages" puts Inception at the top of what would be called a Japanese list.
+
+    `tt-multi` is the fixture that carries the whole argument: hi/en/pa, a Hindi film with
+    English in it, in on the preference and out of the list.
+  */
+  test("it keeps films in the language and drops films that are also in English", () => {
+    const db = indexOf(CORPUS);
+    const kept = titles(db, { genre: "Crime", lang: "hi", limit: 50 });
+    expect(kept).toEqual(["tt-hi"]);
+    expect(kept).not.toContain("tt-multi");
+    // And the preference, over the same fixture, deliberately keeps it.
+    expect(titles(db, { genre: "Crime", languages: EN_SV, limit: 50 })).toContain("tt-multi");
+  });
+
+  test("a title of unknown language is NOT admitted -- the opposite of the preference", () => {
+    // The fail-open rule exists so OUR gap does not hide a reader's titles. A list is a
+    // claim, and "we do not know what language this is" cannot substantiate one.
+    const db = indexOf(CORPUS);
+    expect(titles(db, { genre: "Crime", lang: "hi", limit: 50 })).not.toContain("tt-unknown");
+  });
+
+  test("`lang=en` is films in English, not the empty contradiction", () => {
+    // Without the exception it would read "in English and not in English", an empty page
+    // with no way to see it as anything but a bug. There is no English LIST, but a browse
+    // can still be bookmarked with one.
+    const db = indexOf(CORPUS);
+    const kept = titles(db, { genre: "Crime", lang: "en", limit: 50 });
+    expect(kept.sort()).toEqual(["tt-en1", "tt-en2", "tt-multi"].sort());
+  });
+
+  test("it REPLACES the deployment preference rather than composing with it", () => {
+    // Composing would empty every language list on a deployment that had configured
+    // `languages` -- a page of dead links rather than a stricter filter. The reader who
+    // named a language has already overridden the default.
+    const db = indexOf(CORPUS);
+    expect(titles(db, { genre: "Crime", lang: "ta", languages: EN_SV, limit: 50 })).toEqual(["tt-ta"]);
+  });
+
+  test("it survives a genre browse and a ranked list, like every other predicate here", () => {
+    // The alias trap again: a genre count reads `title_genre` alone and has no `t` to name,
+    // and this predicate is now TWO subqueries rather than one.
+    const db = indexOf(CORPUS);
+    expect(() => browseIndex(db, { genre: "Crime", lang: "hi", limit: 50 })).not.toThrow();
+    expect(() => browseIndex(db, { kind: "movie", lang: "hi", sort: "rank", limit: 50 })).not.toThrow();
+    expect(titles(db, { kind: "movie", lang: "ta", sort: "rank", limit: 50 })).toEqual(["tt-ta"]);
+  });
+
+  test("the total counts the language's rows, never a stored unfiltered count", () => {
+    // `browse_count`'s grain is (kind, genre, year) and carries no language dimension, so a
+    // stored total here would answer a different question -- and a total is printed to the
+    // reader as a fact.
+    const db = indexOf(CORPUS);
+    const res = browseIndex(db, { genre: "Crime", lang: "hi", limit: 50 });
+    expect(res.total).toBe(1);
+  });
+
+  test("an empty language page offers NO any-language hatch", () => {
+    /*
+      The hatch lifts a threshold of OURS. A language the reader navigated to is what the
+      page IS, so "show all 3 in any language" under the heading "Best films in Swedish"
+      would answer a different question -- and would leave the reader on a page whose title
+      no longer describes it.
+    */
+    const db = indexOf(CORPUS);
+    const res = browseIndex(db, { genre: "Crime", lang: "ko", limit: 50 });
+    expect(res.rows).toEqual([]);
+    expect(res.hiddenByLanguage).toBeUndefined();
+    expect(res.hiddenByFloor).toBeUndefined();
   });
 });
 
@@ -430,5 +553,42 @@ describe("an index built BEFORE the origin stage", () => {
 
   test("ORIGIN_SCHEMA is part of SCHEMA, so a fresh build always has the table", () => {
     expect(SCHEMA).toContain(ORIGIN_SCHEMA.trim().split("\n")[0]);
+  });
+
+  /*
+    THE PREFERENCE DROPS AND A NAMED LANGUAGE REFUSES, and these two tests are the whole of
+    that rule. Both go through `SearchEngine`, because `hasOrigin` is a property of the OPEN
+    FILE and `browseIndex` deliberately knows nothing about it.
+
+    They are opposite answers to one question and both are "fail toward the honest thing". A
+    preference the reader never typed should not empty the product, so it is dropped and they
+    see titles they did not ask for. A language they navigated to is what the page IS, so
+    dropping it would serve the unfiltered top 250 under the heading "Best films in Korean".
+  */
+  test("a PREFERENCE is dropped, so the product still has rows in it", () => {
+    const engine = engineOn(CORPUS, { withOrigin: false });
+    try {
+      expect(engine.hasOrigin).toBe(false);
+      expect(engine.browse({ genre: "Crime", languages: EN_SV, limit: 50 }).rows.length).toBe(CORPUS.length);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("a NAMED language draws nothing, which is what keeps the group off `/lists`", () => {
+    const engine = engineOn(CORPUS, { withOrigin: false });
+    try {
+      // Empty rather than throwing: `title_lang` is absent as a TABLE on such a file, so the
+      // semi-join would not return nothing, it would be a `no such table` on every request.
+      const res = engine.browse({ genre: "Crime", lang: "hi", limit: 50 });
+      expect(res).toEqual({ rows: [], total: 0 });
+      // No members means no completion, which is what `requiresMembers` reads to decide the
+      // language group draws no rows at all rather than a row per dead link.
+      expect(engine.rankedMembers({ kind: "movie", lang: "hi" }, 250)).toEqual([]);
+      // The lists that do not name a language are untouched.
+      expect(engine.rankedMembers({ kind: "movie" }, 250).length).toBeGreaterThan(0);
+    } finally {
+      engine.close();
+    }
   });
 });

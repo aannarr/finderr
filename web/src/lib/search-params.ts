@@ -65,6 +65,20 @@ function nonEmpty(v: unknown): string | undefined {
 }
 
 /**
+ * A bare ISO 639-1 code, or undefined for anything that is not one.
+ *
+ * Shaped-checked and NOT checked against `LIST_LANGUAGES`, which would put an editorial list
+ * in a URL validator: which languages have a list is a decision about the catalogue, and a
+ * browse is free to filter on a code we offer no row for. Lower-cased on the way in so
+ * `?lang=KO` and `?lang=ko` are one page and one cache entry, the rule `country` follows in
+ * the other direction.
+ */
+function langCode(v: unknown): string | undefined {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return /^[a-z]{2}$/.test(s) ? s : undefined;
+}
+
+/**
  * `q` alone keeps its whitespace, and that is not a stylistic exception.
  *
  * The search box is CONTROLLED by what this validator returns -- `RootLayout` reads
@@ -102,6 +116,8 @@ export function validateSearch(raw: Record<string, unknown>): SearchParams {
   if (decade) out.decade = decade;
   const year = posInt(raw.year);
   if (year) out.year = year;
+  const lang = langCode(raw.lang);
+  if (lang) out.lang = lang;
   const role = nonEmpty(raw.role);
   if (role) out.role = role;
   const country = nonEmpty(raw.country);
@@ -205,6 +221,7 @@ export function filtersOf(s: SearchParams): Filters {
   if (s.kind !== undefined) filters.kind = s.kind;
   if (s.decade !== undefined) filters.decade = s.decade;
   if (s.year !== undefined) filters.year = s.year;
+  if (s.lang !== undefined) filters.lang = s.lang;
   return filters;
 }
 
