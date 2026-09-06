@@ -311,7 +311,11 @@ function AnchorPoster({ row, title }: { row: Title | undefined; title: string | 
       size="w185"
       link
       alt={title ?? undefined}
-      className="aspect-2/3 w-16 shrink-0 overflow-hidden rounded-md bg-surface-2 sm:w-20"
+      // `self-start`: the frame is a direct child of a `flex` row whose other column is a
+      // title, a label and however many nominee lines the edition has, so without it the
+      // poster stretches to that column's height and `aspect-2/3` loses. `Poster`'s
+      // `className` doc carries the whole reason and why the class is not forced inside it.
+      className="aspect-2/3 w-16 shrink-0 self-start overflow-hidden rounded-md bg-surface-2 sm:w-20"
     />
   );
 }

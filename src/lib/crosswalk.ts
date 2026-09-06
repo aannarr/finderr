@@ -51,7 +51,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 /**
  * A Wikidata mirror that can answer a query over the whole graph.
@@ -121,17 +121,49 @@ SELECT ?imdb ?tmdb WHERE {
 /**
  * Every title's ORIGINAL LANGUAGE, as an ISO 639-1 code.
  *
- * P364 resolved through P218 rather than kept as a Q-id: the codes are what a config, a
+ * P364 resolved to a code rather than kept as a Q-id: the codes are what a config, a
  * query parameter and `navigator.languages` all already speak, and a Q-id would need a
  * second lookup table nobody else in this tree wants.
+ *
+ * ## Why there are three ways to reach a code, and not one
+ *
+ * P218 alone was the whole rule until 2026-09-06, and it UNDERCOUNTED whole cinemas by an
+ * order of magnitude -- because Wikidata files a film's P364 under whatever item its editors
+ * think in, and most of those items carry no ISO 639-1 code of their own. Chinese-language
+ * cinema is filed under `Cantonese`, `Mandarin`, `Standard Chinese`, `Putonghua` and
+ * `Standard Taiwanese Mandarin`; Greek cinema under `Greek` (the code `el` lives on `Modern
+ * Greek`, a different item). None of those has a P218, so none of them produced a row.
+ *
+ * The two extra alternatives are FALLBACKS, reached only when the item has no P218 of its
+ * own, and each one is answering a different way the data goes missing:
+ *
+ * 1. **The nearest coded ancestor** (`P279+`, stopping at the first one). A variety folds
+ *    onto the language it is a variety OF -- Cantonese and Mandarin onto Chinese, Brazilian
+ *    Portuguese onto Portuguese, Swiss German onto German. "Nearest" is what the inner
+ *    `NOT EXISTS` buys and it is not decoration: an unbounded `P279+` climbs PAST the first
+ *    coded ancestor, and measured against the live endpoint that filed 61 Flemish and
+ *    Belgian Dutch titles as German as well as Dutch.
+ * 2. **The Wikimedia language code** (P424), which is how `Greek` reaches `el` -- there is no
+ *    coded ancestor to climb to, because `Modern Greek` is a child of `Greek` rather than a
+ *    parent. Constrained to codes that are some item's real P218, because P424 also carries
+ *    codes ISO never assigned: unconstrained it filed 47 Tunisian Arabic titles under `tu`,
+ *    which is not an ISO 639-1 code at all.
+ *
+ * **The codes are NOT length-checked here.** `parseOriginCsv` owns that rule for both origin
+ * sources and drops what this query cannot avoid emitting -- `zh-yue`, `pt-br`, `arz`. One
+ * owner; a `FILTER(STRLEN(?code) = 2)` here would be a second copy of it to keep in step.
  *
  * **P364 IS MULTI-VALUED and the extra rows are the point.** `Sardar Udham` is `hi/en/pa`
  * and `Captain Phillips` is `so/en`; a title matches a language preference if ANY of its
  * languages match, because "is there a version of this I can watch" is the question a
  * reader is really asking. Picking one primary language would be picking it arbitrarily --
- * the property carries no order.
+ * the property carries no order. The fallbacks above ride on that: a title filed under an
+ * item with two equally-near coded ancestors gets a row for each, which is the same shape as
+ * a genuinely bilingual film.
  *
- * Measured 2026-09-05: 353,143 rows, 4.6 MB, 2.6s.
+ * Measured against the live endpoint 2026-09-06, before -> after, distinct titles per code:
+ * `zh` 833 -> 5,468, `el` 8 -> 1,361, `tl` 421 -> 1,067, `en` 163,068 -> 163,645, `pt`
+ * 3,822 -> 4,307, `ar` 2,493 -> 2,971, `de` 26,389 -> 26,670. 353,143 rows -> 362,992, 3.3s.
  */
 export const LANGUAGE_CROSSWALK: CrosswalkSource = {
   file: "wikidata-lang.csv",
@@ -140,8 +172,24 @@ export const LANGUAGE_CROSSWALK: CrosswalkSource = {
 SELECT ?imdb ?code WHERE {
   ?s wdt:P345 ?imdb .
   ?s wdt:P364 ?lang .
-  ?lang wdt:P218 ?code .
   FILTER(STRSTARTS(?imdb, "tt"))
+  {
+    ?lang wdt:P218 ?code .
+  } UNION {
+    FILTER NOT EXISTS { ?lang wdt:P218 ?anyCode }
+    {
+      ?lang wdt:P279+ ?ancestor .
+      ?ancestor wdt:P218 ?code .
+      FILTER NOT EXISTS {
+        ?lang wdt:P279+ ?nearer .
+        ?nearer wdt:P218 ?nearerCode .
+        ?nearer wdt:P279+ ?ancestor .
+      }
+    } UNION {
+      ?lang wdt:P424 ?code .
+      ?isoLang wdt:P218 ?code .
+    }
+  }
 }`,
 };
 
@@ -190,6 +238,20 @@ export const CROSSWALK_SOURCES: readonly CrosswalkSource[] = [
  * the meantime.
  */
 export const CROSSWALK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where the query that produced a crosswalk is recorded, beside the crosswalk.
+ *
+ * **AGE IS NOT THE ONLY REASON A CACHED FILE IS WRONG, and this is the half that was
+ * missing.** The file on disk answers the query that was current when it was fetched, so
+ * editing a `CrosswalkSource.query` leaves up to a week of builds silently loading the OLD
+ * answer -- and the edit that prompted this one widened the language crosswalk by 9,849 rows,
+ * so a week of "the fix shipped and nothing changed" was the alternative.
+ *
+ * A sidecar rather than a hash in the filename: the name is the identity a human looks for in
+ * the dump directory, and a hashed name leaves every superseded copy behind forever.
+ */
+export const crosswalkQueryStampPath = (csvPath: string): string => `${csvPath}.query`;
 
 /** One title's ids, as the index holds them. Absent rather than null when unknown. */
 export interface TitleIds {
@@ -265,6 +327,12 @@ function idOrNull(v: string | undefined): number | null {
  * staleness is that a title added to Wikidata this week pays a `/find` call, exactly as it
  * did before any of this existed.
  *
+ * **A CACHED FILE IS REUSED ONLY IF IT ANSWERS THE QUERY WE ASK TODAY** -- see
+ * `crosswalkQueryStampPath`. An edited query invalidates the copy on disk immediately rather
+ * than in a week's time, and a deployment upgrading into a query change re-downloads once.
+ * The retry is automatic on the failure path too: the stamp still disagrees, so the next
+ * build tries again instead of settling for an answer to the old question.
+ *
  * Returns whether a usable file is on disk afterwards.
  */
 export async function fetchCrosswalk(
@@ -283,10 +351,15 @@ export async function fetchCrosswalk(
   const doFetch = opts.fetchImpl ?? fetch;
   const path = `${dumpDir}/${source.file}`;
 
+  const stampPath = crosswalkQueryStampPath(path);
   const cached = existsSync(path) ? statSync(path) : null;
-  if (cached && now() - cached.mtimeMs < maxAge) {
+  const answersThisQuery = existsSync(stampPath) && readFileSync(stampPath, "utf8") === source.query;
+  if (cached && answersThisQuery && now() - cached.mtimeMs < maxAge) {
     log(`crosswalk ${source.label}: reusing ${(cached.size / 1e6).toFixed(1)} MB already on disk`);
     return true;
+  }
+  if (cached && !answersThisQuery) {
+    log(`crosswalk ${source.label}: the copy on disk answers an older query -- refetching`);
   }
 
   try {
@@ -299,6 +372,9 @@ export async function fetchCrosswalk(
     // Written only after the whole body has arrived: a half-written CSV would parse into a
     // crosswalk that is missing its tail, which is worse than not having one.
     await Bun.write(path, text);
+    // The stamp goes down AFTER the CSV, for the same reason: a stamp beside a half-written
+    // or unwritten file would claim the answer to a query nobody had received yet.
+    await Bun.write(stampPath, source.query);
     log(`crosswalk ${source.label}: downloaded ${(text.length / 1e6).toFixed(1)} MB`);
     return true;
   } catch (err) {
@@ -499,10 +575,26 @@ export const ORIGIN_SCHEMA = `
 --
 -- Every title has at least one row here. A title with no known language gets the empty
 -- string; see UNKNOWN_LANG for why that is a value rather than an absence.
+--
+-- kind, rank and non_english are DENORMALISED from title for the same reason title_genre
+-- carries kind, rank and votes: a LANGUAGE LIST is "the 250 highest-ranked films in this
+-- language and not also in English", and with those three here that is one covering seek
+-- into ix_lang_rank. Reaching through to title instead makes it a walk DOWN the whole rank
+-- order until 250 films of the language have accumulated -- so the languages with the
+-- THINNEST catalogues cost the most, which is the wrong way round and is what kept the
+-- shipped list to twelve. See LIST_LANGUAGES and INDEXES.origin for the measurements.
+--
+-- non_english is a property of the TITLE copied onto each of its rows, not of the row:
+-- every row of a title carrying an en row is 0, including that en row itself. It defaults
+-- to 1 so the backfill below -- titles no source has a language for -- is correct without
+-- a second pass, and loadOrigin() sets 0 for the English ones.
 -- (No backticks in this string: it is a template literal.)
 create table title_lang (
   title_rowid integer not null,
-  lang        text not null
+  lang        text not null,
+  kind        text not null default '',
+  rank        real,
+  non_english integer not null default 1
 );
 `;
 
@@ -518,8 +610,13 @@ export interface OriginRow {
  * Dropped rather than repaired on anything unexpected, the same rule the id crosswalks
  * follow. The codes are length-checked because that is the whole validation available: an
  * ISO 639-1 language code is two letters and an ISO 3166-1 alpha-2 country code is two
- * letters, so anything else is a property somebody has mis-modelled upstream rather than a
- * value to act on.
+ * letters, so anything else is not a value this index can file a title under.
+ *
+ * **THIS IS THE ONLY OWNER OF THE TWO-LETTER RULE, and `LANGUAGE_CROSSWALK` leans on it.**
+ * That query's P424 fallback deliberately emits candidates that may not be two letters --
+ * `zh-yue` for Cantonese, `pt-br` for Brazilian Portuguese -- because filtering them there
+ * as well would be a second copy of this rule, in another language, to keep in step. A
+ * three-letter code arriving here is that query working as designed, not a defect upstream.
  */
 export function parseOriginCsv(text: string): OriginRow[] {
   const out: OriginRow[] = [];
@@ -585,13 +682,36 @@ export function loadOrigin(
 
   // Scans `lang_in` and seeks `title.tconst`'s unique index, which is the right way round:
   // the source is a quarter the size of the title table.
+  //
+  // `kind` and `rank` are copied here rather than by a later UPDATE for the reason
+  // `EXPLODE_GENRES` copies them at insert time: the row is already in hand, and a second
+  // pass over 1.29M rows to fill columns the insert could have written is pure build time.
+  // THIS RUNS AFTER `applyRank` -- see `originStage`'s position in the build -- so every
+  // rank read here is the final one rather than a NULL.
   db.run(`
-    insert into title_lang (title_rowid, lang)
-    select distinct t.rowid_, i.code from title t join lang_in i on i.imdb = t.tconst
+    insert into title_lang (title_rowid, lang, kind, rank)
+    select distinct t.rowid_, i.code, t.kind, t.rank from title t join lang_in i on i.imdb = t.tconst
   `);
   const withLang = (db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number })
     .c;
   db.run("drop table lang_in");
+
+  /*
+    WHICH TITLES ARE ALSO IN ENGLISH, resolved ONCE into a keyed table and then applied.
+
+    The obvious form -- a correlated `exists` over `title_lang` itself, once per row -- is
+    the shape this whole function's opening comment exists to warn about: at 1.29M rows
+    against an index that does not exist yet, it is the seventeen-minute build again.
+
+    Only English titles are touched, so the UPDATE writes a quarter of the table rather than
+    all of it, and the `default 1` on the column is what makes that sufficient: a title with
+    no `en` row -- including every title the backfill below invents -- is foreign, and stays
+    so without being visited.
+  */
+  db.run("create temporary table en_titles (title_rowid integer primary key)");
+  db.run(`insert into en_titles select distinct title_rowid from title_lang where lang = '${ENGLISH_LANG}'`);
+  db.run("update title_lang set non_english = 0 where title_rowid in (select title_rowid from en_titles)");
+  db.run("drop table en_titles");
 
   /*
     Country is AGGREGATED FIRST, into a keyed table, and only then joined.
@@ -634,8 +754,8 @@ export function loadOrigin(
   */
   db.run("create index ix_lang_backfill on title_lang(title_rowid)");
   db.run(`
-    insert into title_lang (title_rowid, lang)
-    select t.rowid_, '' from title t
+    insert into title_lang (title_rowid, lang, kind, rank)
+    select t.rowid_, '', t.kind, t.rank from title t
      where not exists (select 1 from title_lang l where l.title_rowid = t.rowid_)
   `);
   db.run("drop index ix_lang_backfill");

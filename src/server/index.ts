@@ -26,6 +26,7 @@ import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import {
   type EpisodeState,
+  episodeStateOf,
   missingEpisodeIdsIn,
   type SeasonProgress,
   seasonProgress,
@@ -61,7 +62,7 @@ import { decodeSeasons, parseSeasonsInput } from "../lib/seasons";
 import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
-import { type EpisodeEntry, Store, syncLibrary } from "../lib/store";
+import { Store, syncLibrary } from "../lib/store";
 import {
   isTermDimension,
   TERM_DIMENSIONS,
@@ -1092,6 +1093,20 @@ function decorate<T extends TitleRow>(rows: T[]) {
  *
  * A second surface wanted it -- the request list, which draws a poster per row since R4 -- and
  * a retyped ternary is exactly the shape that drifts: the wrong half of it still renders.
+ *
+ * > [!IMPORTANT] The ARTWORK LOOKUP that feeds it is PER ROW, and it is the second-dearest
+ * > thing on `/api/requests`
+ * > This function is free -- it is a ternary. What is not free is the `store.getArtwork()` its
+ * > callers pass it, which `decorate` resolves per row and the request route does too. Measured
+ * > on studio (M-series, macOS arm64, bun 1.4.0), 2026-09-06, with `src/jobs/bench-requests.ts`:
+ * > **0.592 ms for 200 rows**, about 3 us each, on an indexed single-row `select` against
+ * > `artwork`. That is about a quarter of everything `5ae3f8e` added to a route polled every
+ * > eight seconds -- second only to the episode read `seasonProgressLinker` owns.
+ * >
+ * > A per-response `Map` would collapse it the way `plexLinker` and `requestDiagnosticMap`
+ * > already collapse theirs, and at 200 rows that is the shape this route would take if the
+ * > number ever mattered. It does not yet: 0.592 ms of a 4.6 ms response, on the worst list the
+ * > route can be asked for. Do not pre-emptively collapse it -- re-measure first.
  */
 function posterPath(tconst: string, art: { url: string | null } | undefined): string | null {
   return art !== undefined && art.url === null ? null : `/img/t/${tconst}`;
@@ -1135,6 +1150,22 @@ function plexLinker(): (tconst: string) => PlexLinks | null {
  * `todayUtc()` is read ONCE per response rather than per row: every season on the page is then
  * described as of the same instant, and a list rendered across a UTC midnight cannot report
  * two different days.
+ *
+ * > [!IMPORTANT] COST, MEASURED -- this is the DEAREST thing `5ae3f8e` put on this route
+ * > Measured on studio (M-series, macOS arm64, bun 1.4.0), 2026-09-06, with
+ * > `src/jobs/bench-requests.ts` at 200 requests of which 80 are series carrying 6 seasons of 12
+ * > episodes -- 5,760 mirrored episode rows: the one `episodesForSeries` query is **1.751 ms**
+ * > and the `episodeStateOf` + `seasonProgress` pass over its result is **0.160 ms**. Together
+ * > that is roughly two thirds of everything `5ae3f8e` added to this response, and it is why
+ * > the per-row form the paragraph above rejects was worth rejecting: the query is already the
+ * > expensive half at ONE statement.
+ * >
+ * > It scales with EPISODES rather than with rows -- 20 series cost 0.451 ms and 80 cost 1.751,
+ * > which is linear in the mirror rather than in the page -- so a household with long-running
+ * > shows pays more than one with the same number of films. If this route ever needs to get
+ * > cheaper this is the read to attack, and `episodesForSeries` is `select *` over a row with
+ * > more columns than `seasonProgress` reads. Whether narrowing it helps is NOT measured; the
+ * > harness above takes the depth as arguments, so measure it before believing it.
  */
 function seasonProgressLinker(
   requests: readonly { tconst: string; kind: string; seasons: string | null }[],
@@ -1150,18 +1181,6 @@ function seasonProgressLinker(
     // it already answers null for "the reader never chose", which is exactly the narrowing
     // `seasonProgress` wants to skip.
     return seasonProgress(rows.map(episodeStateOf), today, decodeSeasons(request.seasons));
-  };
-}
-
-/** One mirrored episode row as the wire shape every rule in `../lib/episodes.ts` reads. */
-function episodeStateOf(e: EpisodeEntry): EpisodeState {
-  return {
-    season: e.season,
-    episode: e.episode,
-    arrEpisodeId: e.arr_episode_id,
-    hasFile: e.has_file === 1,
-    monitored: e.monitored === 1,
-    airDate: e.air_date,
   };
 }
 
@@ -2477,6 +2496,35 @@ const appRoutes = {
      * > leave the id sitting in the JSON, one devtools tab away from every user on the
      * > system. It is stripped HERE, on the server, by the one function that owns the
      * > rule -- and a test in `auth.test.ts` pins it.
+     *
+     * ## WHAT THIS COSTS, MEASURED
+     *
+     * `RootLayout` polls this every eight seconds for every open tab, twice over: as the
+     * `?mine=1` list somebody is reading, and as the badge poll. `src/jobs/bench-requests.ts`
+     * drives both against two live servers -- this tree and `58fe658`, the commit before
+     * `5ae3f8e` added the poster, quota and per-season reads. studio (M-series, macOS arm64,
+     * bun 1.4.0), 2026-09-06, 200 samples per cell, p50 of what a browser waits for:
+     *
+     * ```
+     *   rows  shape   before   after    delta
+     *      5  mine      0.13    0.22     0.09
+     *     50  mine      0.25    1.30     1.05
+     *    200  mine      0.64    4.70     4.06     <- the cap; the worst list this can serve
+     *    200  badge     0.60    4.59     3.99
+     * ```
+     *
+     * Depth is 40% series at 6 seasons of 12 episodes, so 200 rows is 5,760 mirrored episode
+     * rows. **The route got about 7x dearer and it is still 4.6 ms**, which is 0.06% of the
+     * eight-second interval -- the cost is real, was never measured before, and does not
+     * warrant changing anything.
+     *
+     * The added work, dearest first, **each figure owned by the function it describes and
+     * deliberately not restated here**: `seasonProgressLinker` (the episode read and the pass
+     * over its result, together about two thirds of it), `posterPath` (the per-row artwork
+     * lookup its callers feed it), `quotaStateFor` in `../lib/request-quota.ts` (the day's
+     * count). They do not sum to the whole delta and the harness prints the remainder rather
+     * than hiding it: the same statements cost more interleaved with building 200 response
+     * rows than they do in a loop that does nothing else.
      */
     GET: (req: Request) => {
       const principal = auth.principal(req);
