@@ -22,8 +22,8 @@
     "agent:eval": "bun src/jobs/agent-eval.ts",
     "icons:build": "bun src/jobs/build-icons.ts",
     "spellfix:build": "cc -O2 -fPIC -shared -I$(brew --prefix sqlite)/include vendor/sqlite-spellfix/spellfix.c -o vendor/sqlite-spellfix/spellfix1.dylib",
-    "test": "bun test src",
-    "test:web": "bun test web/src",
+    "test": "bun test ./src",
+    "test:web": "bun test --preload ./web/src/test/dom.ts web/src",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.sw.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
@@ -43,13 +43,17 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11",
+    "@happy-dom/global-registrator": "^20.14.0",
     "@simplewebauthn/browser": "13.3.0",
     "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
     "@types/bun": "latest",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.1",
     "concurrently": "9.2.1",
+    "happy-dom": "^20.14.0",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
     "vite": "8.2.2"

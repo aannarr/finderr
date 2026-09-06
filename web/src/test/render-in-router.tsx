@@ -14,6 +14,11 @@
  *
  * Test-only, and in `web/src/test/` rather than `web/src/lib/` to say so -- nothing the app
  * ships imports it.
+ *
+ * THIS IS THE DEFAULT IDIOM, and it is the right one for what a component DRAWS. When the
+ * assertion is about what it DOES -- a click, a keystroke, a state transition, an async
+ * settle -- the answer is `./interact.ts`, whose docstring owns the rule that picks between
+ * the two.
  */
 
 import {

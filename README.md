@@ -1278,7 +1278,10 @@ whole of the coordination there is. A PR I cannot take gets a reason, never sile
 bun run test && bun run test:web && bun run typecheck && bun run lint
 ```
 
-That is the gate CI runs and the one a PR has to pass. Two rules while you are in here;
+That is the gate CI runs and the one a PR has to pass. The first two are disjoint runs in
+different environments -- the browser tests get a DOM and the server tests must not have one
+-- so neither stands in for the other. Adding a browser test? `web/src/test/interact.ts`
+owns the rule for which of the two idioms it should use. Two rules while you are in here;
 
 1. The render path touches nothing but local SQLite and local disk. A handler that can
    block on the network while a person waits is a bug.
