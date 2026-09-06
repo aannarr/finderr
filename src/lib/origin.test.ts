@@ -437,11 +437,48 @@ describe("a language LIST seeks ix_lang_rank rather than walking the rank order"
     expect(plan).not.toContain("TEMP B-TREE");
   });
 
-  test("the index carries the three equality columns AHEAD of the sort column", () => {
-    // Pinned as DDL, because the plan test above would still pass on a fixture small enough
-    // to scan. Together they say seek AND why. Moving `rank desc` in front of any of the
-    // three would leave an index that cannot serve the order for a fixed language.
-    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, non_english, rank desc)");
+  test("the index carries the two equality columns AHEAD of the sort column", () => {
+    /*
+      Pinned as DDL, because the plan test above would still pass on a fixture small enough to
+      scan. Together they say seek AND why. Moving `rank desc` in front of `lang` or `kind`
+      would leave an index that cannot serve the order for a fixed language.
+
+      `non_english` sits AFTER `rank desc`, which is what admits English -- the one language
+      that constrains it not at all. Moving it back in front would restore an index that
+      serves the forty-four lists and cannot serve `?lang=en` at all: see `langListJoin`.
+    */
+    expect(INDEXES.origin.join("")).toContain("title_lang(lang, kind, rank desc, non_english)");
+  });
+
+  test("English seeks the same index, with no `non_english` range to merge", () => {
+    // The card's own case. English constrains `non_english` not at all, so this plan is only
+    // a seek because the sort column comes first -- under the original column order it was a
+    // TEMP B-TREE over every English film, which is why the join was declined outright.
+    const db = indexOf(CORPUS);
+    db.run("analyze");
+    const sql = `select t.tconst from title t join title_lang l on l.title_rowid = t.rowid_
+       where l.lang = ? and l.kind = ? and l.rank is not null
+       order by l.rank desc limit 250`;
+    const plan = planOf(db, sql, ["en", "movie"]);
+    expect(plan).toContain("ix_lang_rank");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("and its COUNT reads title_lang alone, which is where the 194 ms was", () => {
+    // The rows were never the cost: 0.06 ms of them against 196 ms of counting every English
+    // film through `title`. `coveringCountTable` is what turns the count into an index range,
+    // and it can only do that while no predicate names a column `title_lang` lacks.
+    const db = indexOf(CORPUS);
+    db.run("analyze");
+    const plan = planOf(
+      db,
+      "select count(*) c from title_lang l where l.lang = ? and l.kind = ? and l.rank is not null",
+      ["en", "movie"],
+    );
+    expect(plan).toContain("ix_lang_rank");
+    // COVERING is the whole claim: a count that reaches into a table page per matching row is
+    // the 196 ms shape wearing an index's name.
+    expect(plan).toContain("COVERING INDEX");
   });
 });
 
@@ -536,13 +573,63 @@ describe("the two paths are the same list", () => {
     expect(ids.filter((r) => r.tconst === "tt-hipa").length).toBe(1);
   });
 
-  test("`lang=en` declines the join and still means films in English", () => {
-    // English is the one language with no `not exists` half, so its rows sit on BOTH sides of
-    // `non_english` -- see `langListJoin`. With the join taken it would return nothing at all.
+  test("`lang=en` on a FILTERED browse declines the join and still means films in English", () => {
+    // English is the one language with no `not exists` half -- a title carrying an `en` row is
+    // not foreign, including its own `en` row -- so `title_lang` narrows nothing for it and
+    // the join only pays when the index answers the whole query. A genre is one of the four
+    // things that stops it: see `langIndexServesAlone`.
     const db = indexOf(CORPUS);
     const { slow, fast } = both(db, { genre: "Crime", lang: "en", limit: 50 });
     expect(fast.rows.map((r) => r.tconst).sort()).toEqual(["tt-en1", "tt-en2", "tt-multi"].sort());
     expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+  });
+
+  test("`lang=en` on the RANKED browse takes the join and means the same thing", () => {
+    /*
+      The shape the whole card is about, and the one place English drives from `title_lang`.
+      "Films in English" here is every title carrying an `en` row -- `tt-multi` is in three
+      languages including English and belongs, which is exactly the row a `non_english = 1`
+      predicate leaking into this path would drop. That failure would look like a shorter page
+      rather than an error, so it is asserted as a SET and not only as an agreement.
+    */
+    const db = indexOf(CORPUS);
+    const { slow, fast } = both(db, { kind: "movie", lang: "en", sort: "rank", limit: 50 });
+    expect(fast.rows.map((r) => r.tconst).sort()).toEqual(["tt-en1", "tt-en2", "tt-multi"].sort());
+    expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+    expect(fast.total).toBe(slow.total);
+  });
+
+  test("every filter that puts `title` back in the query hands English to the slow path", () => {
+    /*
+      One case per clause of `langIndexServesAlone`, because each was measured to be a real
+      regression on the joined path and none of them is a guess: with a genre 195.8 ms against
+      15.8, with a year 79.2 against 10.0, on a votes sort 156.2 against 29.0 -- all on a copy
+      of the real index, 2026-09-06, M1 Max. A decade is here for the same reason a year is.
+
+      WHICH BRANCH RAN IS ASSERTED, not just that the answers match -- an equivalence between
+      two runs of the SAME query is the vacuous test the preference case below names. The
+      device is the one that block uses: on a file built before the widening the denormalised
+      predicate is a `no such column`, so forcing `langRank` on THROWS exactly when the join
+      was taken. The unfiltered shape throwing is half the assertion; the four filtered ones
+      not throwing is the other half.
+    */
+    const old = indexOf(CORPUS, { withLangRank: false });
+    const force = (opts: Parameters<typeof browseIndex>[1]) => () =>
+      browseIndex(old, { ...opts, langRank: true });
+    expect(force({ kind: "movie", lang: "en", sort: "rank", limit: 50 })).toThrow();
+
+    const db = indexOf(CORPUS);
+    for (const opts of [
+      { kind: "movie", lang: "en", genre: "Crime", sort: "rank" as const, limit: 50 },
+      { kind: "movie", lang: "en", year: 2015, sort: "rank" as const, limit: 50 },
+      { kind: "movie", lang: "en", decade: 2010, sort: "rank" as const, limit: 50 },
+      { kind: "movie", lang: "en", sort: "votes" as const, limit: 50 },
+    ]) {
+      expect(force(opts)).not.toThrow();
+      const { slow, fast } = both(db, opts);
+      expect(fast.rows.map((r) => r.tconst)).toEqual(slow.rows.map((r) => r.tconst));
+      expect(fast.total).toBe(slow.total);
+    }
   });
 
   test("a genre, a decade and a vote floor all survive the join", () => {

@@ -597,6 +597,15 @@ export const INDEXES = {
    * > from a copy of the real index, `/browse?lang=en&kind=movie&sort=rank` goes **194 ms to
    * > 249 ms** -- English is the one language the denormalised path declines, so it is still
    * > this index's caller. The lists themselves do not move at all.
+   * >
+   * > **ASKED AGAIN 2026-09-06 when English stopped declining, and the answer is still yes --
+   * > for a different caller.** The browse named just above is now a `title_lang` seek and
+   * > never reads this index, but a FILTERED English browse still does: `langListJoin` hands
+   * > English back to the `exists` path the moment a genre, a year, a decade or a votes sort
+   * > enters, because `title_lang` cannot answer those. Dropped from the same copy of the real
+   * > index, `?lang=en&genre=Horror` goes 16.5 -> 19.1 ms, `&decade=2010` 217.5 -> 237.4 and a
+   * > votes sort 30.3 -> 37.6, while the unfiltered browse does not move at all. Same 16.5 MB,
+   * > a narrower set of callers, still the cheapest way to serve them.
    *
    * > [!IMPORTANT] `ix_lang_rank` is the THIRD, and it is the one a language LIST actually wants
    * > `ix_lang_code` made the `not exists` half of a list affordable, but the query still
