@@ -50,6 +50,7 @@ import {
   type SearchLogger,
 } from "../lib/search-log";
 import { parseSeasonsInput } from "../lib/seasons";
+import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
 import { Store, syncLibrary } from "../lib/store";
@@ -200,8 +201,17 @@ const artwork = new ArtworkService(cfg, store, { radarr, sonarr }, log);
 // the artwork service for the bytes -- a face is not a different kind of JPEG.
 const facetImages = new FacetImageProxy({ store, bytes: artwork });
 
+/*
+  The site defaults an operator sets on `/admin`, over the `kv` table this store already owns.
+
+  BEFORE `authStore`, because identity reads one of them: `assistantAllowedByDefault` decides
+  what a new account's assistant switch starts at, and it is handed over as a THUNK so a change
+  saved on the admin page binds the next sign-up rather than the next restart.
+*/
+const siteSettings = new SiteSettingsStore(store, siteSettingsSeed(cfg));
+
 // Identity. Shares the app database connection -- one file, one writer, one migration.
-const authStore = new AuthStore(store.db);
+const authStore = new AuthStore(store.db, () => siteSettings.read().assistantAllowedByDefault);
 
 /*
   The private list, on the same connection and for the same reason.
@@ -247,6 +257,7 @@ const auth = new AuthService({
   auth: authStore,
   store,
   cfg,
+  settings: siteSettings,
   log: (m) => log(m),
   // Read at call time, so the closure can name `server` before Bun.serve has returned it.
   addressOf: (req: Request) => server.requestIP(req)?.address ?? null,
@@ -263,6 +274,7 @@ const auth = new AuthService({
 const chatProbe = makeChatProbe({ cfg });
 const chat = makeChatHandler({
   cfg,
+  settings: siteSettings,
   store,
   live,
   indexDb: () => live.rawDb(),
@@ -825,7 +837,7 @@ function quotaRefusal(asker: Principal | null): Response | null {
 
   const verdict = quotaVerdict({
     role: asker.role,
-    limit: quotaLimitFor(user.quotaPerDay, cfg.requests.quotaPerDay),
+    limit: quotaLimitFor(user.quotaPerDay, siteSettings.read().requestQuotaPerDay),
     usedToday: () => store.countRequestsSince(userId, utcDayStart()),
   });
   if (verdict.allowed) return null;
@@ -853,7 +865,10 @@ const agentManifest = agentManifestRoute({
   // Their own allowance where they have one -- a manifest that quoted the site's would
   // promise an agent a budget its owner does not have.
   quota: (userId) => ({
-    limitPerDay: quotaLimitFor(authStore.getUser(userId)?.quotaPerDay ?? null, cfg.requests.quotaPerDay),
+    limitPerDay: quotaLimitFor(
+      authStore.getUser(userId)?.quotaPerDay ?? null,
+      siteSettings.read().requestQuotaPerDay,
+    ),
     usedToday: store.countRequestsSince(userId, utcDayStart()),
     resetsAt: utcDayReset(),
   }),

@@ -6,6 +6,7 @@ import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
 import type { FetchLike } from "../lib/plex-auth";
 import { utcDayReset, utcDayStart, utcDayStartDaysAgo } from "../lib/request-quota";
+import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import type { MediaRequest, Store } from "../lib/store";
 import { ARR_WEBHOOK_PATH } from "./arr-webhook";
 import { AuthService, withAuth } from "./auth-routes";
@@ -81,6 +82,8 @@ function fakeStore(counted: CountedWindow[]): Store {
 interface Harness {
   auth: AuthStore;
   service: AuthService;
+  /** The site defaults, over the fake store's own `kv` -- the same object the routes write. */
+  settings: SiteSettingsStore;
   calls: string[];
   logs: string[];
   /** Which windows the routes counted requests over. See `fakeStore`. */
@@ -92,16 +95,21 @@ function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
   const db = new Database(":memory:");
   db.run("pragma foreign_keys = on");
   applyAuthSchema(db);
-  const auth = new AuthStore(db);
   const logs: string[] = [];
   const calls: string[] = [];
   const counted: CountedWindow[] = [];
   const cfg = opts.cfg ?? config();
+  const store = fakeStore(counted);
+  // Over the fake store's kv, so a PATCH through the route and a read through `auth` are the
+  // same rows -- which is what makes "a new account follows the site default" assertable.
+  const settings = new SiteSettingsStore(store, siteSettingsSeed(cfg));
+  const auth = new AuthStore(db, () => settings.read().assistantAllowedByDefault);
 
   const service = new AuthService({
     auth,
-    store: fakeStore(counted),
+    store,
     cfg,
+    settings,
     log: (m) => logs.push(m),
     fetchImpl:
       opts.fetchImpl ??
@@ -169,7 +177,7 @@ function harness(opts: { cfg?: Config; fetchImpl?: FetchLike } = {}): Harness {
     )) as Response;
   };
 
-  return { auth, service, calls, logs, counted, call };
+  return { auth, service, settings, calls, logs, counted, call };
 }
 
 let h: Harness;
@@ -451,6 +459,84 @@ describe("the per-user settings an admin decides", () => {
       user: { quotaPerDay: number | null; assistantAllowed: boolean };
     };
     expect(body.user).toMatchObject({ quotaPerDay: 7, assistantAllowed: false });
+  });
+});
+
+/**
+ * THE SETTINGS THAT APPLY TO EVERYBODY, and the two things about them that could quietly rot.
+ *
+ * One: the site quota has to be the one the REQUEST rule and the USER PAGE both read, or an
+ * operator lowers a limit and the page goes on quoting the env. Two: `assistantAllowedByDefault`
+ * has to reach the next account CREATED, which is the only moment it applies -- the column is
+ * NOT NULL, so it is a creation default rather than a fallback, and nothing else would notice.
+ */
+describe("the site defaults an operator sets", () => {
+  const read = () => h.call("/api/admin/settings", { bearer: API_KEY });
+  const patch = (body: unknown) =>
+    h.call("/api/admin/settings", { method: "PATCH", bearer: API_KEY, body: JSON.stringify(body) });
+
+  test("a signed-in member cannot read them, and gets the admin surface's 404", async () => {
+    expect((await h.call("/api/admin/settings", { cookie: signIn("user") })).status).toBe(404);
+  });
+
+  test("with nothing saved, they are the env-derived seed", async () => {
+    const body = (await (await read()).json()) as { settings: { requestQuotaPerDay: number } };
+    expect(body.settings.requestQuotaPerDay).toBe(siteSettingsSeed(config()).requestQuotaPerDay);
+  });
+
+  test("a saved quota is what a PATCH answers with and what a later GET returns", async () => {
+    const saved = (await (await patch({ requestQuotaPerDay: 4 })).json()) as {
+      settings: { requestQuotaPerDay: number };
+    };
+    expect(saved.settings.requestQuotaPerDay).toBe(4);
+    const body = (await (await read()).json()) as { settings: { requestQuotaPerDay: number } };
+    expect(body.settings.requestQuotaPerDay).toBe(4);
+  });
+
+  /**
+   * The join that makes the setting mean anything: a person with NO override of their own is
+   * bound by whatever the operator just saved, and `siteLimitPerDay` on their page agrees.
+   * These two came from `cfg.requests.quotaPerDay` before this card and would have gone on
+   * quoting it while the request route obeyed something else.
+   */
+  test("it becomes the limit for somebody with no override, on the page and in the rule", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    await patch({ requestQuotaPerDay: 6 });
+    const body = (await (await h.call(`/api/admin/users/${u.id}`, { bearer: API_KEY })).json()) as {
+      quota: { limitPerDay: number; siteLimitPerDay: number; applies: boolean };
+    };
+    expect(body.quota).toMatchObject({ limitPerDay: 6, siteLimitPerDay: 6, applies: true });
+  });
+
+  test("a person's own override still beats it", async () => {
+    const u = h.auth.createUser({ displayName: "Ada", role: "user" });
+    h.auth.updateUser(u.id, { quotaPerDay: 2 });
+    await patch({ requestQuotaPerDay: 6 });
+    const body = (await (await h.call(`/api/admin/users/${u.id}`, { bearer: API_KEY })).json()) as {
+      quota: { limitPerDay: number; siteLimitPerDay: number };
+    };
+    expect(body.quota).toMatchObject({ limitPerDay: 2, siteLimitPerDay: 6 });
+  });
+
+  test("turning the assistant default off applies to the NEXT account, not to existing ones", async () => {
+    const before = h.auth.createUser({ displayName: "Before", role: "user" });
+    await patch({ assistantAllowedByDefault: false });
+    const after = h.auth.createUser({ displayName: "After", role: "user" });
+
+    expect(h.auth.getUser(after.id)?.assistantAllowed).toBe(false);
+    // The surprising half, asserted so nobody "fixes" it into a mass update by accident.
+    expect(h.auth.getUser(before.id)?.assistantAllowed).toBe(true);
+  });
+
+  test("a nonsense value is a 400 and saves nothing, not even the valid field beside it", async () => {
+    await patch({ requestQuotaPerDay: 5 });
+    expect((await patch({ requestQuotaPerDay: 2.5, assistantAllowedByDefault: false })).status).toBe(400);
+    expect(h.settings.read()).toEqual({ requestQuotaPerDay: 5, assistantAllowedByDefault: true });
+  });
+
+  test("a change is logged, because nothing else records who widened everybody's quota", async () => {
+    await patch({ requestQuotaPerDay: 9 });
+    expect(h.logs.some((l) => l.includes("site settings updated"))).toBe(true);
   });
 });
 

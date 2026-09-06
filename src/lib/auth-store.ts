@@ -198,8 +198,9 @@ export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
     Nullable, and null is the default and the ordinary case: it means "whatever the site
     says", which is what every account had before this column. `quotaLimitFor` in
     `./request-quota.ts` is the one owner of that fallback -- a reader that spelled
-    `override ?? cfg.requests.quotaPerDay` for itself would be a second one, and the site
-    default is about to stop coming from the env (see the site-defaults card).
+    `override ?? siteSettings.read().requestQuotaPerDay` for itself would be a second one. The
+    site default no longer comes from the env: it is a stored setting seeded by it, and
+    `src/lib/site-settings.ts` owns which of the two wins.
 
     Zero here is NOT null: it is an explicit "unlimited for this person" that survives the
     operator later capping everybody else.
@@ -215,6 +216,12 @@ export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
     `not null default 1`, which is what makes the migration silent: SQLite writes the default
     into every existing row, so everybody who could use the assistant yesterday still can.
     Defaulting it OFF would have been a feature withdrawn by an upgrade nobody asked for.
+
+    THE DDL DEFAULT NO LONGER DECIDES WHAT A NEW ROW GETS -- it applies only to rows this
+    migration back-filled. `createUser` writes the column explicitly from the site setting
+    (`SiteSettings.assistantAllowedByDefault`), so an operator who turns the assistant off for
+    new accounts is obeyed. NOT NULL is also why that setting is a creation default rather than
+    a fallback: there is no third state for "follow the site". See `src/lib/site-settings.ts`.
 
     It is the per-account half of the consent `aiGate` documents owing the household: a
     question typed here leaves the house, and this is the switch that decides whose does.
@@ -398,7 +405,24 @@ export class AuthStore {
   /** ms epoch of the last expired-session sweep. Per process, like the limiter windows. */
   private lastSessionSweep = 0;
 
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    /**
+     * What a new account's assistant switch starts at -- `SiteSettings.assistantAllowedByDefault`.
+     *
+     * INJECTED HERE RATHER THAN THREADED THROUGH THE CEREMONIES, and a THUNK rather than a
+     * value. There are four ways an account comes into existence -- passkey registration, Plex
+     * sign-up, the no-auth dev admin, the Seerr import -- and passing a site default down each
+     * of them would put a copy of "where does this default come from" in four call sites and a
+     * new constructor argument on `PasskeyService`. A thunk because an operator changes the
+     * setting while the process runs, so a value captured at wiring time would go stale the
+     * first time anybody used the admin page.
+     *
+     * The default keeps the column's own default, so every test harness and every job that
+     * constructs an `AuthStore` with a bare database behaves exactly as it did before.
+     */
+    private readonly assistantAllowedByDefault: () => boolean = () => true,
+  ) {}
 
   // --- users ---------------------------------------------------------------
 
@@ -417,12 +441,29 @@ export class AuthStore {
   }): User {
     const id = u.id ?? newToken(12);
     const createdAt = isoNow(u.now);
+    /*
+      `assistant_allowed` is WRITTEN rather than left to the column default, because the site
+      default is a live setting and the column default is a constant frozen at migration time.
+      The quota is not: `quota_per_day` stays NULL, which means "follow the site", so its site
+      value is resolved at every read by `quotaLimitFor` and does not need writing down here.
+      Two settings, two different mechanisms -- see `SiteSettings` for why the assistant one
+      cannot be a fallback.
+    */
+    const assistantAllowed = this.assistantAllowedByDefault();
     this.db
       .query(
-        `insert into app_user (id, display_name, role, plex_id, plex_username, created_at)
-         values (?, ?, ?, ?, ?, ?)`,
+        `insert into app_user (id, display_name, role, plex_id, plex_username, created_at, assistant_allowed)
+         values (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, u.displayName, u.role, u.plexId ?? null, u.plexUsername ?? null, createdAt);
+      .run(
+        id,
+        u.displayName,
+        u.role,
+        u.plexId ?? null,
+        u.plexUsername ?? null,
+        createdAt,
+        assistantAllowed ? 1 : 0,
+      );
     return {
       id,
       displayName: u.displayName,
@@ -432,11 +473,8 @@ export class AuthStore {
       createdAt,
       lastSeenAt: null,
       disabledAt: null,
-      // The column defaults, restated: a new account follows the site's quota and may use
-      // the assistant. Nothing here takes them as arguments -- both are decisions an admin
-      // makes about somebody who already exists.
       quotaPerDay: null,
-      assistantAllowed: true,
+      assistantAllowed,
     };
   }
 

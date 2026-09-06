@@ -14,6 +14,7 @@ import { hashToken, isoIn, SESSION_COOKIE } from "../lib/auth";
 import { AuthStore, applyAuthSchema } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { loadConfig } from "../lib/config";
+import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import type { Store } from "../lib/store";
 import {
   AGENT_KEY_PATH,
@@ -76,10 +77,17 @@ function harness(cfg: Config = config()): Harness {
   const auth = new AuthStore(db);
   const logs: string[] = [];
 
+  const kv = new Map<string, string>();
   const service = new AuthService({
     auth,
     store: { listRequests: () => [] } as unknown as Store,
     cfg,
+    // Nothing in this file edits a site setting; it is here because the service reads the
+    // request quota through it, and an in-memory kv keeps that read off a database.
+    settings: new SiteSettingsStore(
+      { getKv: (k) => kv.get(k) ?? null, setKv: (k, v) => void kv.set(k, v) },
+      siteSettingsSeed(cfg),
+    ),
     log: (m) => logs.push(m),
     addressOf: () => "10.0.0.1",
   });
