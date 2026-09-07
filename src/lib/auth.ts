@@ -121,7 +121,15 @@ export interface Session {
  * key nobody knows about.
  */
 export interface AgentKey {
+  id: string;
   userId: string;
+  /**
+   * What this key is FOR, in the holder's own words, or null.
+   *
+   * Nullable and it stays that way: a key that predates naming never had one, and inventing
+   * a name for it would be inventing a fact. Every reader falls back to the kind.
+   */
+  name: string | null;
   /** sha256 of the token. The token itself exists only in the snippet shown once. */
   tokenHash: string;
   createdAt: string;
@@ -129,9 +137,10 @@ export interface AgentKey {
   /**
    * Read-only means GET and HEAD, and nothing else.
    *
-   * The cost of one key per user is that this is a TOGGLE rather than a choice per token:
-   * a user cannot hold a read-only monitoring key and a write key at once. If that ever
-   * bites, the fix is a second key KIND, never a collection.
+   * PER KEY, which it always was in the column and never was in practice: with one key per
+   * user it was effectively an account-wide toggle, so a read-only monitoring key and a
+   * write key could not coexist. Several keys is what makes the per-key part true, and it
+   * is why the create dialog asks the question about the key rather than about you.
    */
   readOnly: boolean;
 }
@@ -166,8 +175,16 @@ export interface Principal {
    */
   role: Role;
   session?: Session;
-  /** Set only for `kind: "agent"`. What that one key may do, beyond who it belongs to. */
-  agent?: { readOnly: boolean };
+  /**
+   * Set only for `kind: "agent"`. WHICH key this is, and what it may do.
+   *
+   * `id` arrived with named keys, and it is what stops "the caller's key" being a lookup by
+   * user: a person may hold several, so `agentKeysFor(user.id)` cannot say which one is on
+   * this request. The authenticating hash already found the row, so the id travels with the
+   * principal rather than being searched for again -- and `/api/agent/manifest` describes the
+   * key that actually asked instead of whichever one sorted first.
+   */
+  agent?: { id: string; readOnly: boolean };
 }
 
 // --- secrets ---------------------------------------------------------------

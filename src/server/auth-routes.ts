@@ -139,10 +139,26 @@ function quotaOverride(raw: unknown): number | null | undefined | Response {
  * somebody eventually renders. Two readers now: the owner on `/api/auth/agent-key` and an
  * admin on the user page, which is what earned it one owner.
  */
-function agentKeySummary(
-  key: AgentKey | null,
-): { createdAt: string; lastUsedAt: string | null; readOnly: boolean } | null {
-  return key ? { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly } : null;
+/**
+ * A key as a reader may see it: never the hash, and never anything derived from the token.
+ *
+ * `id` is here and it is safe: it identifies a ROW, not a credential, and the two routes that
+ * take one scope it to the owner in their own WHERE clause.
+ */
+function agentKeySummary(key: AgentKey): {
+  id: string;
+  name: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  readOnly: boolean;
+} {
+  return {
+    id: key.id,
+    name: key.name,
+    createdAt: key.createdAt,
+    lastUsedAt: key.lastUsedAt,
+    readOnly: key.readOnly,
+  };
 }
 
 export interface AuthServiceDeps {
@@ -271,8 +287,10 @@ export class AuthService {
     if (!key) return null;
     const user = this.deps.auth.getUser(key.userId);
     if (!user || user.disabledAt !== null) return null;
-    this.deps.auth.touchAgentKey(key.userId);
-    return { kind: "agent", user, role: "user", agent: { readOnly: key.readOnly } };
+    // BY KEY ID: touching every row this user owns would stamp the idle key each time the
+    // busy one called, and "last used never" is the fact that says which is safe to revoke.
+    this.deps.auth.touchAgentKey(key.id);
+    return { kind: "agent", user, role: "user", agent: { id: key.id, readOnly: key.readOnly } };
   }
 
   /**
@@ -471,12 +489,35 @@ export class AuthService {
         return json({ authenticated: true, user: publicUser(p.user) });
       },
 
+      /**
+       * You, whole: who you are, how you get in, and where you stand.
+       *
+       * > [!IMPORTANT] `quota` and `activity` are the SAME facts `/api/admin/users/:id` serves
+       * > about somebody else, and they are built by the same two owners
+       * > `quotaStateFor` resolves the limit, the day boundary and the exemption; `ownActivity`
+       * > counts the rows. Neither is re-derived here, because a screen that worked out
+       * > "does a limit bind me" from a number and a role would be free to disagree with the
+       * > endpoint that actually refuses the request.
+       * >
+       * > It is not a privacy widening: every figure is about the CALLER, scoped by their own
+       * > session, and there is no id in the request to point at anybody else. Until now the
+       * > only way to learn your own request count was to ask an administrator to read the
+       * > admin page about you.
+       */
       "/api/auth/me": (req) => {
         const p = this.principal(req);
         if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+        const me = p.user;
         return json({
-          user: publicUser(p.user),
-          ...this.accessFor(p.user.id, p.session?.idHash ?? null),
+          user: publicUser(me),
+          ...this.accessFor(me.id, p.session?.idHash ?? null),
+          activity: this.deps.store.ownActivity(me.id),
+          quota: quotaStateFor({
+            role: me.role,
+            override: me.quotaPerDay,
+            siteDefault: this.deps.settings.read().requestQuotaPerDay,
+            usedToday: () => this.deps.store.countRequestsSince(me.id, utcDayStart()),
+          }),
         });
       },
 
@@ -943,27 +984,32 @@ export class AuthService {
       },
 
       /**
-       * Your ONE agent key: look at it, replace it, or take it away.
+       * Your agent keys: list them, or mint another.
        *
-       * > [!IMPORTANT] There is no list and no id, because there is no collection
-       * > `agent_key.user_id` is the primary key, so "one per user" is the schema rather
-       * > than a rule somebody has to enforce. `POST` is therefore both creation and
-       * > rotation -- it overwrites the row, which kills the previous token in the same
-       * > statement that mints its replacement. There is no window in which both work and
-       * > nothing left over to revoke by id.
+       * > [!IMPORTANT] IT WAS ONE KEY PER USER, AND THE COLLECTION IS THE 2026-09-07 CHANGE
+       * > `agent_key.user_id` was the primary key, so `POST` was both creation and rotation:
+       * > it overwrote the row, killing the previous token in the same statement that minted
+       * > its replacement, and there was nothing to revoke by id. That was a genuinely tidy
+       * > property and it made a second agent impossible -- two of them shared one credential,
+       * > so revoking the leaked one killed the other, and `last_used_at` answered for both.
+       * >
+       * > Rotation is now REPLACE-THEN-REVOKE, two calls in that order, which does leave a
+       * > window where both tokens work. Deliberate: the alternative kills a running agent
+       * > before its replacement is in place, and the person doing it is looking at a named
+       * > list where they can see which row is which.
        *
-       * **A PERSON ONLY.** An agent key cannot reach this route, so it cannot rotate or
-       * revoke itself -- a credential that can renew itself is one that survives its owner
-       * noticing it leaked. `withAgentApi` closes the whole `/api/auth/` prefix to agent
-       * keys and owns that rule; the check below is this route stating what it needs on its
-       * own account, because it is the one route that mints a credential and it must be
-       * correct even when read alone.
+       * **A PERSON ONLY.** An agent key cannot reach this route, so it cannot mint or revoke
+       * one -- a credential that can renew itself is one that survives its owner noticing it
+       * leaked. `withAgentApi` closes the whole `/api/auth/` prefix to agent keys and owns
+       * that rule; the check below is this route stating what it needs on its own account,
+       * because it is the one route that mints a credential and it must be correct when read
+       * alone.
        */
       [AGENT_KEY_PATH]: {
         GET: (req) => {
           const p = this.personalPrincipal(req);
           if (p instanceof Response) return p;
-          return json({ key: agentKeySummary(this.deps.auth.agentKeyFor(p.id)) });
+          return json({ keys: this.deps.auth.agentKeysFor(p.id).map(agentKeySummary) });
         },
 
         POST: async (req) => {
@@ -973,14 +1019,22 @@ export class AuthService {
           if (b.readOnly !== undefined && typeof b.readOnly !== "boolean") {
             return json({ error: "readOnly must be a boolean" }, { status: 400 });
           }
-          const readOnly = b.readOnly === true;
-          const existed = this.deps.auth.agentKeyFor(p.id) !== null;
-          const { token, key } = this.deps.auth.putAgentKey({ userId: p.id, readOnly });
-          this.deps.log(`agent key ${existed ? "rotated" : "created"} for ${p.id}`);
+          if (b.name !== undefined && b.name !== null && typeof b.name !== "string") {
+            return json({ error: "name must be a string" }, { status: 400 });
+          }
+          // A cap, because this string is drawn in a row and stored forever. The same 60 the
+          // passkey label uses -- one number for "a name somebody types on this page".
+          const name = typeof b.name === "string" ? b.name.slice(0, 60) : null;
+          const { token, key } = this.deps.auth.putAgentKey({
+            userId: p.id,
+            name,
+            readOnly: b.readOnly === true,
+          });
+          this.deps.log(`agent key created for ${p.id}`);
           return json({
             /*
               THE ONE TIME THE PLAINTEXT EXISTS OUTSIDE THE HOLDER'S HANDS. Only the sha256
-              is stored, so this is not recoverable -- a lost snippet is rotated, never
+              is stored, so this is not recoverable -- a lost snippet is replaced, never
               looked up.
 
               The SNIPPET is the deliverable rather than the bare token: it is what a person
@@ -990,15 +1044,39 @@ export class AuthService {
             */
             token,
             snippet: bootstrapSnippet(this.originFor(req), token),
-            rotated: existed,
-            key: { createdAt: key.createdAt, lastUsedAt: key.lastUsedAt, readOnly: key.readOnly },
+            key: agentKeySummary(key),
           });
+        },
+      },
+
+      /**
+       * One key: rename it, or revoke it.
+       *
+       * Both are scoped to the OWNER in the store's own WHERE clause rather than here -- the
+       * id is handed to every reader of this account's own `/api/auth/me`, and holding one
+       * must never be authority over it. A key that is not yours answers 404, the same
+       * non-answer `deleteSessionByHash` gives, because distinguishing "not yours" from "no
+       * such key" would confirm that somebody else's exists.
+       */
+      [`${AGENT_KEY_PATH}/:id`]: {
+        PATCH: async (req) => {
+          const p = this.personalPrincipal(req);
+          if (p instanceof Response) return p;
+          const b = await body(req);
+          if (b.name !== undefined && b.name !== null && typeof b.name !== "string") {
+            return json({ error: "name must be a string" }, { status: 400 });
+          }
+          const id = (req as Bun.BunRequest<"/api/auth/agent-key/:id">).params.id;
+          const name = typeof b.name === "string" ? b.name.slice(0, 60) : null;
+          const ok = this.deps.auth.renameAgentKey(id, p.id, name);
+          return json({ ok }, { status: ok ? 200 : 404 });
         },
 
         DELETE: (req) => {
           const p = this.personalPrincipal(req);
           if (p instanceof Response) return p;
-          const ok = this.deps.auth.deleteAgentKey(p.id);
+          const id = (req as Bun.BunRequest<"/api/auth/agent-key/:id">).params.id;
+          const ok = this.deps.auth.deleteAgentKey(id, p.id);
           if (ok) this.deps.log(`agent key revoked for ${p.id}`);
           return json({ ok }, { status: ok ? 200 : 404 });
         },
@@ -1184,7 +1262,7 @@ export class AuthService {
                 token to send even to an admin -- what this answers is "does this person have
                 an agent acting for them", which is the question an operator is asking.
               */
-              agentKey: agentKeySummary(this.deps.auth.agentKeyFor(target.id)),
+              agentKeys: this.deps.auth.agentKeysFor(target.id).map(agentKeySummary),
             });
           }),
         /**

@@ -1,5 +1,5 @@
 /**
- * The two shapes every admin setting takes: a number you type, and a switch you flip.
+ * The two shapes every admin setting takes: a daily limit, and a switch you flip.
  *
  * Four call sites and they arrived in two pairs -- the per-person quota and assistant switch on
  * `/admin/users/:id`, and the site-wide defaults for both on `/admin`. The pairs differ only in
@@ -15,97 +15,218 @@
  * NO CONFIRMATION on either, deliberately. `ConfirmAction` guards the destructive verbs; a
  * setting is undone by pressing the same button again or retyping a number, and a page where
  * everything asks is a page where nothing is asked.
+ *
+ * > [!IMPORTANT] THE CONTROL IS ON THE LEFT AND ITS WORDS ARE TO THE RIGHT -- `[control] {text}`
+ * > aannarr, 2026-09-07, in as many words. It applies to the radios and to the switch alike, and
+ * > the switch previously sat at the far RIGHT of its row on the argument that a card of
+ * > settings then has one column of controls to run an eye down. That argument is real and it
+ * > loses to a bigger one: a reader binds a control to the label it is NEXT to, and a switch
+ * > separated from its own words by a paragraph of explanation is a switch you have to check
+ * > twice. One rule for every control on these screens beats a per-control optimisation.
  */
 
-import { type ReactNode, useState } from "react";
-import { LINK_BUTTON } from "../lib/ui";
+import { type ReactNode, useId, useState } from "react";
 import { useSaving } from "../lib/use-saving";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
+import { Switch } from "./ui/switch";
 
 /**
- * A daily title limit, typed and saved.
+ * What a daily limit can BE, as a closed set rather than as a number with magic values.
  *
- * A form rather than a stepper because the value is a NUMBER an operator means, and the
- * validation is checked HERE as well as on the server -- not as the rule (that is
- * `isQuotaValue` in `src/lib/request-quota.ts`) but so that a typo is answered without a round
- * trip. The server refuses the same values with the same reason if this is bypassed.
- *
- * > [!CAUTION] AN EMPTY FIELD IS NOT ZERO, and reading it as zero was a live bug
- * > `Number("")` is `0`, and zero here means UNLIMITED -- so clearing the box and pressing Save
- * > removed the limit rather than saying nothing had been typed. The browser's own `step`/`min`
- * > validation does not catch it (an empty optional field is valid), so this is the ONE case
- * > the check below actually has to catch; a fraction or a negative never reaches the handler
- * > because the input refuses to submit. That is why the guard tests the STRING first.
- *
- * `secondary` is the per-user page's "Follow the site default", which the site-wide field has
- * no equivalent of: there is nothing above a site default to follow.
+ * - `inherit` -- follow whatever the site says. Only a PERSON can be in this state; there is
+ *   nothing above a site default to follow, which is why the site-wide caller does not offer it.
+ * - `none` -- no limit at all.
+ * - `capped` -- a number, which is the only mode that carries one.
  */
-export function QuotaField(props: {
-  /** Unique on the page -- both fields can be on screen at once in principle. */
-  id: string;
-  label: string;
-  /** The value as it stands. The draft starts here; zero renders as "0", never as blank. */
-  value: number;
-  save: (titlesPerDay: number) => Promise<void>;
-  secondary?: { label: string; run: () => Promise<void> };
-  /** The sentence under the field, explaining what this number does to whom. */
-  children: ReactNode;
-}) {
-  const [draft, setDraft] = useState(String(props.value));
-  const { busy, error, run } = useSaving();
-  const [invalid, setInvalid] = useState<string | null>(null);
-  // Bound once so the JSX below closes over a value rather than over `props.secondary`, which
-  // narrowing cannot follow into a callback.
-  const secondary = props.secondary;
+export type QuotaMode = "inherit" | "none" | "capped";
 
+/**
+ * Which mode a stored value represents.
+ *
+ * > [!CAUTION] `0` MEANT UNLIMITED AND THAT IS THE WHOLE REASON THIS COMPONENT WAS REWRITTEN
+ * > The field was a bare number with a hint reading *"0 means no limit"*, so the difference
+ * > between "nobody is limited" and "everybody may have zero titles" was one character, in a
+ * > box, explained in prose underneath. A reader who did not read the hint had no way to tell,
+ * > and a reader who did still had to hold it in their head. aannarr, 2026-09-07: *"can we make
+ * > it friendly? ... PROPER UI UX PLEASE"*.
+ * >
+ * > **The wire format is unchanged** -- `null` is still inherit and `0` is still unlimited, and
+ * > `src/lib/request-quota.ts` still owns what they mean. This is a rendering of that rule, not
+ * > a second copy of it: `modeOf` and `storedFor` are the two halves of one mapping and are
+ * > exported so a test can pin that they round-trip.
+ */
+export function modeOf(stored: number | null): QuotaMode {
+  if (stored === null) return "inherit";
+  return stored === 0 ? "none" : "capped";
+}
+
+/** The value to SEND for a mode. `capped` is the only one that reads the typed number. */
+export function storedFor(mode: QuotaMode, typed: number): number | null {
+  if (mode === "inherit") return null;
+  return mode === "none" ? 0 : typed;
+}
+
+/** One radio: the control on the left, its words to the right, on one baseline. */
+function Choice({
+  value,
+  children,
+  disabled,
+}: {
+  value: QuotaMode;
+  children: ReactNode;
+  disabled?: boolean;
+}) {
+  const id = useId();
   return (
-    <div>
-      <form
-        className="flex flex-wrap items-baseline gap-x-3 gap-y-1"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const n = Number(draft);
-          if (draft.trim() === "" || !Number.isInteger(n) || n < 0) {
-            setInvalid("a whole number of titles, 0 or more");
-            return;
-          }
-          setInvalid(null);
-          run(() => props.save(n));
-        }}
-      >
-        <label htmlFor={props.id} className="text-sm">
-          {props.label}
-        </label>
-        <input
-          id={props.id}
-          name={props.id}
-          type="number"
-          min={0}
-          step={1}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          className="w-20 rounded-lg border border-line bg-surface px-2 py-1 text-sm tabular-nums"
-        />
-        <button type="submit" disabled={busy} className={LINK_BUTTON}>
-          {busy ? "Saving…" : "Save"}
-        </button>
-        {secondary && (
-          <button type="button" disabled={busy} onClick={() => run(secondary.run)} className={LINK_BUTTON}>
-            {secondary.label}
-          </button>
-        )}
-        {(invalid ?? error) && <span className="text-xs text-danger">{invalid ?? error}</span>}
-      </form>
-      <p className="mt-1 text-xs text-muted">{props.children}</p>
+    <div className="flex items-start gap-2.5">
+      <RadioGroupItem value={value} id={id} disabled={disabled} className="mt-0.5 shrink-0" />
+      <label htmlFor={id} className="text-sm leading-5">
+        {children}
+      </label>
     </div>
   );
 }
 
 /**
- * A setting that is on or off, flipped by a button that says what pressing it would do.
+ * A daily title limit, as three named states rather than as a number with magic values.
  *
- * The button's words are a prop rather than "On"/"Off", because the two live instances mean
- * different things -- one is about a person, the other about every account made from now on --
- * and a switch whose label does not say who it affects is a switch somebody flips twice.
+ * SAVING IS EXPLICIT and it is one button for the whole control. Choosing a radio does not
+ * save: `inherit` and `none` would each be a write on a stray click, and `capped` cannot save
+ * on selection at all because there is no number typed yet. One Save also means one place for
+ * the server's refusal to land.
+ *
+ * The number field APPEARS with `capped` and is absent otherwise -- aannarr's own shape, and
+ * the reason is that a greyed-out number still reads as a value that applies. Nothing shown is
+ * nothing to misread.
+ *
+ * `modes` is what differs between the two callers and is the only thing that does: a person may
+ * follow the site, and the site may not follow anything.
+ */
+export function QuotaField(props: {
+  /** Unique on the page -- both fields can be on screen at once in principle. */
+  id: string;
+  label: string;
+  /** The stored value: `null` inherits, `0` is unlimited, a number is the cap. */
+  value: number | null;
+  /** What `inherit` resolves to, worded for the reader. Omitted where inherit is not offered. */
+  inheritLabel?: string;
+  save: (value: number | null) => Promise<void>;
+  /** The sentence under the control, explaining what this binds. */
+  children: ReactNode;
+}) {
+  const [mode, setMode] = useState<QuotaMode>(modeOf(props.value));
+  /**
+   * The number, kept as a STRING and remembered across a mode change.
+   *
+   * A string because an empty box is not zero -- `Number("")` is `0`, and zero here is a
+   * different mode entirely, so reading the box as a number is how "I have not typed yet"
+   * became "no limit". Remembered because switching to `none` and back should not silently
+   * wipe what somebody had typed; the draft outlives the radio.
+   *
+   * It seeds from a stored cap, or from an empty box when there is not one to seed from.
+   */
+  const [draft, setDraft] = useState(props.value !== null && props.value > 0 ? String(props.value) : "");
+  const { busy, error, run } = useSaving();
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const numberId = `${props.id}-per-day`;
+
+  const stored = modeOf(props.value);
+  // Nothing to save until something differs from what the server already holds. A Save that is
+  // always live invites a write that changes nothing and reloads the page for it.
+  const changed = mode !== stored || (mode === "capped" && draft.trim() !== String(props.value ?? ""));
+
+  return (
+    <div>
+      <fieldset>
+        <legend className="text-sm font-medium">{props.label}</legend>
+
+        <form
+          className="mt-2.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (mode === "capped") {
+              const n = Number(draft);
+              // The STRING is tested first, deliberately: an empty box is the one invalid
+              // value the browser's own `min`/`step` validation calls valid.
+              if (draft.trim() === "" || !Number.isInteger(n) || n < 1) {
+                setInvalid("a whole number, 1 or more");
+                return;
+              }
+            }
+            setInvalid(null);
+            run(() => props.save(storedFor(mode, Number(draft))));
+          }}
+        >
+          <RadioGroup
+            value={mode}
+            onValueChange={(v) => setMode(v as QuotaMode)}
+            disabled={busy}
+            className="gap-2.5"
+          >
+            {props.inheritLabel && <Choice value="inherit">{props.inheritLabel}</Choice>}
+            <Choice value="none">No limit</Choice>
+            <Choice value="capped">Limit the number of requests a day</Choice>
+          </RadioGroup>
+
+          {/*
+            Indented under its own radio, because it belongs to that choice and to no other.
+            The margin lines it up with the radio labels above rather than with the radios.
+          */}
+          {mode === "capped" && (
+            <div className="mt-2.5 ml-6 flex flex-wrap items-center gap-2">
+              <Input
+                id={numberId}
+                name={numberId}
+                type="number"
+                min={1}
+                step={1}
+                value={draft}
+                // Autofocused because this field only exists once somebody has chosen the
+                // radio above it -- they are already reaching for it.
+                // biome-ignore lint/a11y/noAutofocus: it appears on an explicit choice, never on load
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                aria-invalid={invalid !== null || undefined}
+                aria-label="Requests a day"
+                className="w-20 tabular-nums"
+              />
+              <label htmlFor={numberId} className="text-sm text-muted">
+                a day
+              </label>
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button type="submit" size="sm" disabled={busy || !changed}>
+              {busy ? "Saving…" : "Save"}
+            </Button>
+            {(invalid ?? error) && <span className="text-xs text-danger">{invalid ?? error}</span>}
+          </div>
+        </form>
+      </fieldset>
+
+      <p className="mt-2.5 text-xs text-muted">{props.children}</p>
+    </div>
+  );
+}
+
+/**
+ * A setting that is on or off, flipped by a real switch.
+ *
+ * > [!IMPORTANT] IT WAS A LINK READING "Turn off for this person", and the switch is not a restyle
+ * > A boolean drawn as a text link has to state the INVERSE of its own value to be useful --
+ * > the words on screen describe the state you are NOT in. That reads backwards, it cannot be
+ * > scanned down a column of settings, and there is nothing on the page saying which way the
+ * > setting currently points except by implication. A switch shows the STATE, which is the
+ * > thing a reader came for, and the action is the affordance rather than the label.
+ *
+ * **`action` survives as the ACCESSIBLE name and is still a prop**, because the two live
+ * instances mean different things -- one is about a person, the other about every account made
+ * from now on -- and a switch announced only as "Assistant" is a switch somebody flips on the
+ * wrong screen. A sighted reader gets that from the label beside it; a screen reader gets it
+ * from here.
  */
 export function ToggleSetting(props: {
   label: string;
@@ -117,22 +238,28 @@ export function ToggleSetting(props: {
   children: ReactNode;
 }) {
   const { busy, error, run } = useSaving();
+  // `useId` rather than a caller-supplied one: unlike `QuotaField` there is nothing here a
+  // caller needs to address, and two of these are on screen together on `/account`.
+  const id = useId();
 
   return (
-    <div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm">{props.label}</span>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => run(() => props.save(!props.on))}
-          className={LINK_BUTTON}
-        >
-          {busy ? "Saving…" : props.action(props.on)}
-        </button>
-        {error && <span className="text-xs text-danger">{error}</span>}
+    <div className="flex items-start gap-2.5">
+      {/* Control LEFT, words right -- the rule at the top of this file. */}
+      <Switch
+        id={id}
+        checked={props.on}
+        disabled={busy}
+        aria-label={props.action(props.on)}
+        onCheckedChange={(on) => run(() => props.save(on))}
+        className="mt-0.5 shrink-0"
+      />
+      <div className="min-w-0">
+        <label htmlFor={id} className="text-sm font-medium">
+          {props.label}
+        </label>
+        <p className="mt-1 text-xs text-muted">{props.children}</p>
+        {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
-      <p className="mt-1 text-xs text-muted">{props.children}</p>
     </div>
   );
 }

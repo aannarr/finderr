@@ -15,8 +15,9 @@
  */
 
 import type { PushSupport } from "../lib/push-api";
-import { LINK_BUTTON } from "../lib/ui";
 import { usePush } from "../lib/use-push";
+import { ToggleSetting } from "./SettingControls";
+import { Section } from "./settings/Section";
 
 /** What to say when there is no switch to draw. One sentence, and an action where there is one. */
 const UNAVAILABLE: Record<Exclude<PushSupport["kind"], "available">, string> = {
@@ -36,23 +37,40 @@ export function PushToggle() {
   if (!support) return null;
 
   return (
-    <section>
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-medium">Notifications</h2>
-        {support.kind === "available" && (
-          <button type="button" onClick={() => void toggle()} disabled={busy} className={LINK_BUTTON}>
-            {busy ? "One moment…" : subscribed ? "Turn off on this device" : "Turn on for this device"}
-          </button>
-        )}
-      </div>
-      <p className="mt-2 text-sm text-muted">
-        {support.kind !== "available"
-          ? UNAVAILABLE[support.kind]
-          : subscribed
+    <Section label="Notifications">
+      {/*
+        A real switch, through the SAME control the two admin settings use -- a notification
+        is on or off for this browser and that is the whole state. It was a text link reading
+        "Turn off on this device", which is the shape `ToggleSetting`'s own docstring argues
+        against: the words on screen described the state you were NOT in.
+
+        Where push cannot work at all there is nothing to switch, so the sentence stands on
+        its own rather than sitting beside a disabled control -- an unavailable feature and a
+        feature you have turned off should not look the same.
+      */}
+      {support.kind === "available" ? (
+        <ToggleSetting
+          label="Notify this device"
+          on={subscribed}
+          action={(on) => (on ? "Turn off on this device" : "Turn on for this device")}
+          save={async () => {
+            await toggle();
+          }}
+        >
+          {subscribed
             ? "This device will be told when something you asked for arrives. One message per request, so a whole season is one notification."
             : "Be told when something you asked for arrives, without keeping finderr open."}
-      </p>
+        </ToggleSetting>
+      ) : (
+        <p className="text-sm text-muted">{UNAVAILABLE[support.kind]}</p>
+      )}
+      {/*
+        `usePush` owns this one rather than the switch: a permission the BROWSER refused never
+        reaches the save, so `ToggleSetting`'s own error state would stay empty while nothing
+        happened. `busy` is read here for the same reason -- it belongs to the hook.
+      */}
       {error && <p className="mt-2 text-sm text-danger">{error}</p>}
-    </section>
+      {busy && <p className="mt-2 text-xs text-muted">One moment…</p>}
+    </Section>
   );
 }

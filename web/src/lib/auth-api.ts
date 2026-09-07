@@ -235,10 +235,27 @@ export interface SessionSummary {
   current: boolean;
 }
 
+/**
+ * Where you stand, in the three numbers `/account` leads with.
+ *
+ * `requested` is every title you have ever asked for; `inFlight` is how many of those are
+ * still moving; `ready` is how many have arrived that you have not been shown. The three do
+ * not sum to anything -- `ready` is a subset of the arrivals, not a fourth bucket -- and each
+ * one is a link into `/requests` rather than a readout.
+ */
+export interface OwnActivity {
+  requested: number;
+  inFlight: number;
+  ready: number;
+}
+
 export function getMe(): Promise<{
   user: PublicUser;
   credentials: CredentialSummary[];
   sessions: SessionSummary[];
+  activity: OwnActivity;
+  /** Your own standing against the daily limit, resolved by the server. */
+  quota: QuotaState;
 }> {
   return get("/api/auth/me");
 }
@@ -304,10 +321,16 @@ export async function unlinkPlex(): Promise<void> {
 // --- agent key ---------------------------------------------------------------
 
 /**
- * Your ONE agent key, as the account page sees it. Never the token: only the sha256 is
- * stored, so the plaintext exists exactly once, in the snippet returned at creation.
+ * One agent key, as the account page sees it. Never the token: only the sha256 is stored, so
+ * the plaintext exists exactly once, in the snippet returned at creation.
+ *
+ * `id` identifies a ROW rather than a credential, which is why it is safe to hand out: the
+ * two routes that take one scope it to the owner in their own WHERE clause.
  */
 export interface AgentKeySummary {
+  id: string;
+  /** What it is for, in the holder's words. Null for a key made before naming existed. */
+  name: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   readOnly: boolean;
@@ -315,14 +338,17 @@ export interface AgentKeySummary {
 
 const AGENT_KEY_PATH = "/api/auth/agent-key";
 
-export function getAgentKey(): Promise<{ key: AgentKeySummary | null }> {
+/** Every key you hold, newest first. A LIST since 2026-09-07 -- it was one key per user. */
+export function getAgentKeys(): Promise<{ keys: AgentKeySummary[] }> {
   return get(AGENT_KEY_PATH);
 }
 
 /**
- * Create the key, or REPLACE the one you have -- the same call, because there is one key
- * per user and the row is overwritten. `rotated` says which of the two just happened, so
- * the UI can tell somebody their previous key has stopped working.
+ * Mint ANOTHER key. It no longer replaces the one you have.
+ *
+ * Rotation is now replace-then-revoke, two calls in that order, which does leave a window
+ * where both tokens work -- the deliberate trade for being able to run two agents at once.
+ * See the `agent_key` schema comment for the argument.
  *
  * `snippet` is the deliverable: a copyable block that points an agent at the manifest and
  * carries the credential. It is built on the server so the origin comes from the live
@@ -330,13 +356,18 @@ export function getAgentKey(): Promise<{ key: AgentKeySummary | null }> {
  * answers on.
  */
 export function createAgentKey(opts: {
+  name?: string | null;
   readOnly: boolean;
-}): Promise<{ token: string; snippet: string; rotated: boolean; key: AgentKeySummary }> {
+}): Promise<{ token: string; snippet: string; key: AgentKeySummary }> {
   return post(AGENT_KEY_PATH, opts);
 }
 
-export async function revokeAgentKey(): Promise<void> {
-  await del(AGENT_KEY_PATH, "could not revoke that key");
+export async function renameAgentKey(id: string, name: string | null): Promise<void> {
+  await patch(`${AGENT_KEY_PATH}/${encodeURIComponent(id)}`, { name }, "could not rename that key");
+}
+
+export async function revokeAgentKey(id: string): Promise<void> {
+  await del(`${AGENT_KEY_PATH}/${encodeURIComponent(id)}`, "could not revoke that key");
 }
 
 // --- admin -----------------------------------------------------------------
@@ -476,7 +507,13 @@ export interface AdminUserDetail {
   requests: AttributedRequest[];
   quota: AdminQuotaState;
   /** Present or absent -- never the key itself, which exists only in the snippet shown once. */
-  agentKey: AgentKeySummary | null;
+  /**
+   * Everything acting for this person WITHOUT a browser. A list since 2026-09-07.
+   *
+   * Present or absent only -- the token itself is stored as a sha256 and does not exist to be
+   * shown, to an admin least of all.
+   */
+  agentKeys: AgentKeySummary[];
 }
 
 export function getAdminUser(id: string): Promise<AdminUserDetail> {

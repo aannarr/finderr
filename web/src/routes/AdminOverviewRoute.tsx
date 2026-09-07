@@ -20,6 +20,7 @@
  */
 
 import { Link, type LinkProps } from "@tanstack/react-router";
+import { ChevronRight, Clapperboard, type LucideIcon, MailPlus, Users } from "lucide-react";
 import { ServerHealth } from "../components/ServerHealth";
 import { SiteDefaults } from "../components/SiteDefaults";
 import {
@@ -47,15 +48,39 @@ async function loadOverview(): Promise<Overview> {
   return { users: u.users, invites: i.invites, requests: r.requests.length };
 }
 
-/** One figure and the page it leads to. `detail` is the second line, or nothing. */
-function Tile(props: { to: LinkProps["to"]; label: string; value: number; detail?: string }) {
+/**
+ * One figure and the page it leads to. `detail` is the second line, or nothing.
+ *
+ * THE LABEL IS ABOVE THE NUMBER, which is the inversion worth explaining. A tile reading
+ * `13` then `People` makes the reader hold a number until they learn what it counts; the
+ * other way round they read the noun, then the figure that answers it. The icon is the same
+ * argument one step earlier -- it says which tile this is before either line is read.
+ *
+ * The arrow appears on hover rather than always, because three tiles each wearing a
+ * permanent arrow is three arrows competing with the numbers they point away from.
+ */
+function Tile(props: {
+  to: LinkProps["to"];
+  label: string;
+  value: number;
+  detail?: string;
+  icon: LucideIcon;
+}) {
+  const Icon = props.icon;
   return (
     <Link
       to={props.to}
-      className="flex flex-col gap-1 rounded-lg border border-line bg-surface px-4 py-3 hover:border-accent/60"
+      className="group flex flex-col gap-2 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors hover:border-accent/60"
     >
-      <span className="text-2xl font-semibold tabular-nums">{props.value}</span>
-      <span className="text-sm">{props.label}</span>
+      <span className="flex items-center gap-2 text-sm text-muted">
+        <Icon className="size-4 shrink-0" aria-hidden="true" />
+        {props.label}
+        <ChevronRight
+          className="ml-auto size-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+          aria-hidden="true"
+        />
+      </span>
+      <span className="text-3xl font-semibold tabular-nums text-ink">{props.value}</span>
       {props.detail && <span className="text-xs text-muted">{props.detail}</span>}
     </Link>
   );
@@ -99,15 +124,23 @@ function Tiles({ data }: { data: Overview }) {
   const outstanding = data.invites.filter((i) => !i.redeemedAt);
   return (
     <div className="grid gap-3 sm:grid-cols-3">
-      <Tile to="/admin/users" label="People" value={data.users.length} detail={peopleDetail(data.users)} />
+      <Tile
+        to="/admin/users"
+        icon={Users}
+        label="People"
+        value={data.users.length}
+        detail={peopleDetail(data.users)}
+      />
       <Tile
         to="/admin/invites"
+        icon={MailPlus}
         label="Outstanding invitations"
         value={outstanding.length}
         detail={outstanding.length === 0 ? "Nobody is waiting to join." : undefined}
       />
       <Tile
         to="/log"
+        icon={Clapperboard}
         label="Requests"
         value={data.requests}
         detail="Who asked is shown to administrators only."

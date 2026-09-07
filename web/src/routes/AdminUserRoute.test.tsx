@@ -65,7 +65,7 @@ const detail = (over: Partial<AdminUserDetail> = {}): AdminUserDetail => ({
     resetsAt: "2026-09-06T00:00:00.000Z",
     applies: false,
   },
-  agentKey: null,
+  agentKeys: [],
   ...over,
 });
 
@@ -207,16 +207,30 @@ describe("activity", () => {
   });
 });
 
-describe("the agent key", () => {
-  test("absent says nothing is acting for them", async () => {
-    expect(await render()).toContain("No agent key");
+describe("agent keys", () => {
+  test("none says nothing is acting for them", async () => {
+    expect(await render()).toContain("No agent keys");
   });
 
-  test("present says which kind, and never carries a credential", async () => {
+  test("each one says what it is called and what it may do, and never carries a credential", async () => {
     const html = await render({
-      agentKey: { createdAt: "2026-09-01T00:00:00.000Z", lastUsedAt: null, readOnly: true },
+      agentKeys: [
+        {
+          id: "k1",
+          name: "research-bot",
+          createdAt: "2026-09-01T00:00:00.000Z",
+          lastUsedAt: null,
+          readOnly: true,
+        },
+        { id: "k2", name: null, createdAt: "2026-09-02T00:00:00.000Z", lastUsedAt: null, readOnly: false },
+      ],
     });
-    expect(html).toContain("read-only key exists");
+    // A NAMED key leads with its name and states the kind underneath; an unnamed one falls
+    // back to the kind, so no row is ever identified only by an id.
+    expect(html).toContain("research-bot");
+    expect(html).toContain("read-only");
+    expect(html).toContain("Read and write key");
+    expect(html).not.toContain("k1");
   });
 });
 
@@ -282,13 +296,23 @@ describe("every destructive action asks first", () => {
  * harmless controls is what teaches somebody to click through the ones that matter.
  */
 describe("the per-user settings", () => {
-  test("following the site default says so, and offers no way to clear what is not set", async () => {
+  /*
+    THE THREE QUOTA STATES ARE THREE NAMED CHOICES since 2026-09-07, and these three tests
+    used to assert the prose that explained a number field's magic values instead.
+
+    The property being defended is unchanged and is the reason all three survive rather than
+    collapsing into one: `null`, `0` and `n` are genuinely different answers, and a screen
+    that cannot tell them apart is how somebody removes a limit while believing they set one.
+    What changed is that the difference is now on the control rather than in a sentence under
+    it -- so each test names the choice that must be SELECTED.
+  */
+  test("following the site default resolves the site's own answer into words", async () => {
     const html = await render();
-    expect(html).toContain("Following the site default");
-    expect(html).not.toContain("Follow the site default (");
+    // Not "Follow the site default (0)" -- that is the magic value one level up.
+    expect(html).toContain("Follow the site default (no limit)");
   });
 
-  test("an override says it is theirs, and offers the way back to the site's", async () => {
+  test("an override of their own selects the limit choice and shows the number", async () => {
     const html = await render({
       user: { ...detail().user, quotaPerDay: 2 },
       quota: {
@@ -299,16 +323,16 @@ describe("the per-user settings", () => {
         applies: true,
       },
     });
-    expect(html).toContain("Their own allowance");
-    expect(html).toContain("Follow the site default (5)");
+    expect(html).toContain("Follow the site default (5 a day)");
     expect(html).toContain('value="2"');
   });
 
   /*
-    ZERO IS A VALUE, NOT AN EMPTY FIELD. It is what exempts one person from a site-wide
-    limit, so it must read as a decision rather than as a blank the operator forgot to fill.
+    ZERO IS A DECISION, NOT AN EMPTY FIELD. It is what exempts one person from a site-wide
+    limit, and it is now the "No limit" radio rather than a 0 in a box -- so there is nothing
+    on screen for a reader to mistake for a form they forgot to fill in.
   */
-  test("an override of zero reads as unlimited rather than as nothing", async () => {
+  test("an override of zero is the no-limit choice, with no number drawn at all", async () => {
     const html = await render({
       user: { ...detail().user, quotaPerDay: 0 },
       quota: {
@@ -319,8 +343,8 @@ describe("the per-user settings", () => {
         applies: false,
       },
     });
-    expect(html).toContain("Their own allowance, which is unlimited");
-    expect(html).toContain('value="0"');
+    expect(html).toContain("No limit");
+    expect(html).not.toContain('aria-label="Requests a day"');
   });
 
   test("the assistant switch says which way it is pointing", async () => {
