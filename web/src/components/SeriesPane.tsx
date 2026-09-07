@@ -46,7 +46,15 @@ import {
 import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
 import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
-import { EpisodeCard, GridView, Legend, ScoreBadge, TimelineView, useHoverCard } from "./EpisodeScores";
+import {
+  EpisodeCard,
+  GridSkeleton,
+  GridView,
+  Legend,
+  ScoreBadge,
+  TimelineView,
+  useHoverCard,
+} from "./EpisodeScores";
 import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
 import { useChipGroup } from "./RovingFocus";
@@ -216,15 +224,37 @@ function SeasonBrowser({
   */
   const chips = useChipGroup({ selectionFollowsFocus: true });
 
-  const scoreViews = episodes.state === "content" && (
-    <>
-      <Legend />
-      {tab === "grid" && <GridView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />}
-      {tab === "timeline" && (
-        <TimelineView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />
-      )}
-    </>
-  );
+  /*
+    EVERY STATE IS DRAWN, not only `content`, and that is a fix rather than a flourish.
+
+    This was `episodes.state === "content" && (...)`, so while the skyhook facet was pending
+    the legend, the grid and the timeline were absent from the document entirely -- no
+    skeleton, no reserved space -- and then popped in under a tab row that had been on
+    screen the whole time. `episodes` is `moving` (12h) for a running series, so a cold title
+    spends a real second there. Reported by aannarr 2026-09-07 as "that chart does not always
+    render", which is exactly what a pane with no pending state looks like.
+
+    `hidden` still draws nothing: a film is served no `episodes` facet at all and must not
+    reserve a grid's worth of height for a pane it will never have.
+  */
+  const scoreViews =
+    episodes.state === "skeleton" ? (
+      <GridSkeleton />
+    ) : episodes.state === "problem" ? (
+      <ProblemNote problems={episodes.problems} />
+    ) : (
+      episodes.state === "content" && (
+        <>
+          <Legend />
+          {tab === "grid" && (
+            <GridView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />
+          )}
+          {tab === "timeline" && (
+            <TimelineView seasons={ordered} episodes={episodes.data} scores={scores} card={card} />
+          )}
+        </>
+      )
+    );
 
   return (
     <>

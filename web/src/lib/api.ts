@@ -354,6 +354,72 @@ const searchCache = new Cache<SearchResponse>(600);
 const titleCache = new Cache<Title>(1000);
 /** Only ever holds facet sets with nothing still pending -- see `getTitleDetail`. */
 const facetsCache = new Cache<ResolvedFacets>(500);
+/**
+ * Everything `/api/title/:tconst` adds on top of a `Title` and its facets.
+ *
+ * > [!CAUTION] This exists because `titleCache` has NINE writers and only ONE of them is the detail fetch
+ * > Search hits, shelves, browse rows, person credits, and the collection and related maps
+ * > all seed `titleCache` with a plain `Title`. `Cache.set` is a whole-value overwrite that
+ * > also clears the paint-only flag, so a bare row landing over a rich one both DELETES the
+ * > detail-only fields and marks the survivor FRESH -- after which `getTitleDetail`'s
+ * > `row && facets` short-circuit hands them back as `undefined`.
+ * >
+ * > It type-checked the whole way: every field here is optional on `TitleDetail`, so
+ * > spreading a bare row satisfies the return type. Nothing warned. What it looked like from
+ * > the outside (aannarr, 2026-09-07) was two unrelated intermittent bugs on the title page --
+ * > an episode grid of `?` and a cast row that stopped being clickable -- both of which are
+ * > the correct rendering of an absent input.
+ *
+ * A THIRD cache rather than a wider `titleCache`, and the split is the same one the row and
+ * the facets already make: `titleCache` is patched in place by `patchTitleState` when a
+ * request goes out, which is why the row is stored apart from the facets in the first place.
+ * Widening the row's type would invite the same silent erasure back the moment a tenth
+ * writer appears; a separate key that only the detail fetch writes cannot be overwritten by
+ * something that does not know it exists.
+ *
+ * NOT persisted, for `facetsCache`'s reason: it only ever short-circuits alongside a FRESH
+ * row, and a restored row is paint-only, so a snapshot of this could never save a request.
+ */
+type TitleDetailExtras = Omit<TitleDetail, keyof Title | "facets" | "work">;
+const detailCache = new Cache<TitleDetailExtras>(500);
+
+/**
+ * Which keys of a detail response are NOT part of the shared `Title` row.
+ *
+ * A `Record<keyof TitleDetailExtras, true>` rather than an array, and that is the whole
+ * point: a new optional field on `TitleDetail` makes this object MISSING A PROPERTY and
+ * fails `bun run typecheck`. An array of key names would type-check while silently leaving
+ * the new field in the row half, which is the bug this cache exists to end -- it would be
+ * written into `titleCache` and deleted by the next search hit, exactly as before.
+ *
+ * `work` is not here because it is never cached at all: it describes a moment on the server
+ * and is synthesised as `SETTLED_WORK` on the way out.
+ */
+const DETAIL_ONLY: Record<keyof TitleDetailExtras, true> = {
+  people: true,
+  collectionTitles: true,
+  relatedTitles: true,
+  panes: true,
+  arrLink: true,
+  episodeState: true,
+  episodeScores: true,
+  awards: true,
+};
+
+/** One detail response, cut into the three pieces that are cached under three keys. */
+function splitDetail(data: TitleDetail): {
+  row: Title;
+  extras: TitleDetailExtras;
+  facets: ResolvedFacets;
+} {
+  const { facets, work: _work, ...rest } = data;
+  const row: Record<string, unknown> = {};
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rest)) {
+    (key in DETAIL_ONLY ? extras : row)[key] = value;
+  }
+  return { row: row as unknown as Title, extras: extras as TitleDetailExtras, facets };
+}
 const browseCache = new Cache<BrowseResponse>(200);
 /**
  * One value, not a keyed set: `/api/discover` takes no arguments.
@@ -1279,20 +1345,25 @@ export async function getTitleDetail(tconst: string): Promise<TitleDetail> {
   // the app was closed.
   const row = titleCache.fresh(tconst);
   const facets = facetsCache.fresh(tconst);
+  // ALL THREE, never just the row and the facets. `detailCache` is the only one of them a
+  // search hit or a shelf cannot overwrite, so it is what says this cached title came from
+  // a detail fetch rather than from a grid of cards -- see `TitleDetailExtras`.
+  const extras = detailCache.fresh(tconst);
   // A cache hit only happens for a FULLY RESOLVED set, so by construction nobody is still
   // working on it and there is nothing to poll for. Synthesised rather than cached: `work`
   // describes a moment on the server, and a stored copy would be a claim about right now
   // built from whenever the row was written.
-  if (row && facets) return { ...row, facets, work: SETTLED_WORK };
+  if (row && facets && extras) return { ...row, ...extras, facets, work: SETTLED_WORK };
 
   return dedupe(`title:${tconst}`, async () => {
     const res = await fetch(`/api/title/${tconst}`);
     if (!res.ok) throw new Error(`title failed: ${res.status}`);
     const data = (await res.json()) as TitleDetail;
-    const { facets: resolved, ...title } = data;
+    const { facets: resolved, extras: detailOnly, row: title } = splitDetail(data);
     // Row and facets are cached apart, because the row is patched in place when a
     // request goes out and a second copy of it would go stale the moment that happened.
     titleCache.set(tconst, title);
+    detailCache.set(tconst, detailOnly);
     // Every facet FINAL, not merely "nothing pending" -- a `failed` facet is retried by
     // the server after a short TTL, so caching it here would freeze a transient error
     // for the session and hide every pane behind it.
@@ -1318,7 +1389,9 @@ export async function getTitleDetail(tconst: string): Promise<TitleDetail> {
  * on a hover.
  */
 export function prefetchTitle(tconst: string): void {
-  if (titleCache.fresh(tconst) && facetsCache.fresh(tconst)) return;
+  // The same three `getTitleDetail` short-circuits on, or this skips a hover that WOULD
+  // have cost a request and the click then pays for it with the reader watching.
+  if (titleCache.fresh(tconst) && facetsCache.fresh(tconst) && detailCache.fresh(tconst)) return;
   if (inFlight.has(`title:${tconst}`)) return;
   void getTitleDetail(tconst).catch(() => {});
 }
@@ -1903,6 +1976,7 @@ export function cacheStats(): { searches: number; titles: number } {
 export function resetCaches(): void {
   searchCache.clear();
   titleCache.clear();
+  detailCache.clear();
   facetsCache.clear();
   browseCache.clear();
   personCache.clear();

@@ -95,14 +95,6 @@ const BAND_FILL: Record<ScoreBand, string> = {
 /** A cell with no score. Muted rather than coloured -- absence is not a seventh quality. */
 const EMPTY_CELL = "bg-surface-2 text-muted";
 
-type ViewName = "grid" | "list" | "timeline";
-
-const _VIEWS: readonly { name: ViewName; label: string }[] = [
-  { name: "grid", label: "Grid" },
-  { name: "list", label: "Episodes" },
-  { name: "timeline", label: "Timeline" },
-];
-
 export function Legend() {
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
@@ -500,7 +492,7 @@ const SKELETON_COLUMNS = Array.from({ length: 6 }, (_, s) =>
   Array.from({ length: 8 }, (_, e) => `s${s}e${e}`),
 );
 
-function _GridSkeleton() {
+export function GridSkeleton() {
   return (
     <div className="flex flex-col gap-2">
       <Skeleton className="h-6 w-48" />

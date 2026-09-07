@@ -89,6 +89,48 @@ describe("before the providers have answered", () => {
     const pending: ResolvedFacets = { seasons: { status: "pending" }, episodes: { status: "pending" } };
     expect(render(pending, { working: ["seasons"] })).toContain("animate-pulse");
   });
+
+  /*
+    THE GRID RESERVES ITS SPACE TOO, and it did not until 2026-09-07.
+
+    `scoreViews` was gated on `episodes.state === "content"` alone, so the legend, the grid
+    and the timeline were absent from the document while the facet was pending -- the tab row
+    rendered above an empty gap and the whole chart appeared later. `episodes` is `moving`
+    (12h) for a running series, so this is the ordinary cold path rather than an edge case.
+    Reported as "that chart does not always render".
+
+    Asserted on the GRID tab specifically, because that is the default the panel opens on and
+    the one a reader sees before touching anything.
+  */
+  test("reserves the score grid while the episodes facet is still pending", () => {
+    const pending: ResolvedFacets = {
+      seasons: { status: "ready", data: GOT_SEASONS },
+      episodes: { status: "pending" },
+    };
+    const html = render(pending, { working: ["episodes"], initialTab: "grid" });
+    /*
+      ASSERTED ON THE GRID CELL'S OWN GEOMETRY, not on `animate-pulse`.
+
+      The first version of this test checked for `animate-pulse` and `aria-busy` and PASSED
+      with the skeleton branch deleted -- the season selector above the grid is a skeleton
+      too, and it was answering for a chart that was not on the page at all. `h-7 w-12` is
+      `GridSkeleton`'s cell and nothing else in this pane is that shape, so the assertion now
+      fails when the grid is missing. Proved by disabling the branch and watching it go red.
+    */
+    expect(html).toContain("h-7 w-12");
+  });
+
+  /** A film is served no `episodes` facet, so it must reserve nothing at all. */
+  test("reserves nothing for a title that will never have episodes", () => {
+    expect(
+      render(
+        { synopsis: { status: "ready", data: { text: "x", language: "en", source: "s" } } },
+        {
+          initialTab: "grid",
+        },
+      ),
+    ).toBe("");
+  });
 });
 
 describe("a series with both facets resolved", () => {

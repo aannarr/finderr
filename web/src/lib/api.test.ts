@@ -252,6 +252,87 @@ describe("prefetchTitle", () => {
   });
 });
 
+/**
+ * The detail-only half of a title, against the eight payloads that seed a BARE row.
+ *
+ * `titleCache` is `Cache<Title>` and nine things write to it; only the detail fetch writes
+ * the row carrying `people`, `episodeScores`, `awards` and the rest. Every other writer --
+ * search hits, shelves, browse rows, person credits, collection and related maps -- stores a
+ * plain `Title`, and `Cache.set` is a whole-value overwrite that also clears the paint-only
+ * flag. So a bare row lands over the rich one and is then treated as FRESH.
+ *
+ * `getTitleDetail` short-circuits on `row && facets`, which made that overwrite silent and
+ * type-safe at once: every detail-only field is optional on `TitleDetail`, so a spread of a
+ * bare row satisfies the return type with all of them `undefined`.
+ *
+ * What aannarr saw on 2026-09-07, reported as two unrelated bugs: the episode grid drawing
+ * `?` in every cell (no `episodeScores` -> every rating `null`) and the cast row going
+ * un-clickable (no `people` -> `PersonLink` correctly falls back to plain text). One cause.
+ * It is navigation-triggered rather than timing-triggered, which is why it looked like a race.
+ */
+describe("getTitleDetail keeps the detail-only fields across a cache hit", () => {
+  const detail = {
+    tconst: "tt1",
+    title: "X",
+    facets: { cast: { status: "ready", data: [{ name: "A" }] } },
+    people: { byId: { "tmdb:1": "nm1" }, byName: { a: "nm1" } },
+    episodeScores: [{ season: 1, number: 1, rating: 8.4, votes: 12 }],
+    awards: { award: "Academy Awards", nominations: 3, wins: 1, entries: [] },
+  };
+
+  /** A search answer naming the SAME title, carrying only what a search hit carries. */
+  const bareHit: SearchResponse = {
+    hits: [{ tconst: "tt1", title: "X" }],
+  } as unknown as SearchResponse;
+
+  function serve(body: unknown) {
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      return { ok: true, json: async () => body } as unknown as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  test("a search hit landing over the rich row does not strip people or episodeScores", async () => {
+    serve(detail);
+    await getTitleDetail("tt1");
+
+    // Back to the results, which re-seeds `titleCache` with a bare row for the same tconst.
+    serve(bareHit);
+    await search("x");
+
+    // Forward to the title again. Row and facets are both cached, so this must not fetch --
+    // and it must still be the whole detail.
+    serve(detail);
+    calls = [];
+    const again = await getTitleDetail("tt1");
+
+    expect(again.people).toEqual(detail.people);
+    expect(again.episodeScores).toEqual(detail.episodeScores);
+    expect(again.awards).toEqual(detail.awards);
+  });
+
+  test("a cache hit is still a cache hit -- the fix must not cost a request", async () => {
+    serve(detail);
+    await getTitleDetail("tt1");
+    calls = [];
+    await getTitleDetail("tt1");
+    expect(calls).toEqual([]);
+  });
+
+  test("prefetch still skips a fully resolved title after a bare row lands over it", async () => {
+    serve(detail);
+    await getTitleDetail("tt1");
+    serve(bareHit);
+    await search("x");
+
+    serve(detail);
+    calls = [];
+    prefetchTitle("tt1");
+    await Bun.sleep(0);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("cachedBrowseRun", () => {
   const filters = { genre: "Horror" };
 
