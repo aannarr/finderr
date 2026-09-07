@@ -20,6 +20,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { stripImageExt } from "../server/cache-policy";
 import { FORBIDDEN_PATTERNS, HOSTILE, HOSTILE_CASES, NON_STRINGS, RLO } from "./abuse-corpus";
 import {
   boundedHeader,
@@ -109,6 +110,20 @@ const TEXT_ENTRY_POINTS: {
   { name: "despace", run: (v) => despace(v as string), accepts: "string", textOut: (r) => r as string },
   { name: "trigrams", run: (v) => trigrams(normalize(v as string)), accepts: "string" },
   { name: "parseQuery", run: (v) => parseQuery(v as string), accepts: "string" },
+  /*
+    `stripImageExt` DECLARES NO `textOut`, and that is the one entry here where the omission
+    is argued rather than forgotten.
+
+    It takes a route parameter and removes a trailing `.jpg`. It does not sanitize, and it
+    must not: its output is never stored and never rendered. Every call site feeds it
+    straight into a CLOSED regex -- `IMDB_ID`, the facet `KEY`, or `id.startsWith("nm")` --
+    which refuses anything a hostile string could carry, and those refusals are pinned in
+    `../server/facet-images.test.ts`. Declaring `textOut` would assert a property this
+    function does not have and does not need, which is a worse failure than the missing
+    check it would look like it was adding. What IS worth inheriting from this table is that
+    it never throws and never goes quadratic on 22 KB of Zalgo -- it is a regex on a path.
+  */
+  { name: "stripImageExt", run: (v) => stripImageExt(v as string), accepts: "string" },
 ];
 
 describe("no text entry point throws on any hostile input", () => {

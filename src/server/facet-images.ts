@@ -26,6 +26,7 @@ import type { ResolvedFacet, ResolvedFacets } from "../lib/facet-resolver";
 import { type FacetName, mapFacetImages, type PersonCredit } from "../lib/facets";
 import { type PersonLinks, personNameKey } from "../lib/people";
 import { proxyableImageUrl } from "./artwork";
+import { stripImageExt, withImageExt } from "./cache-policy";
 
 /** Where the rewritten paths point. Owned here, so the route and the rewrite agree. */
 export const FACET_IMAGE_PATH = "/img/f";
@@ -70,16 +71,29 @@ export function personFaces(
   return [...out].map(([nconst, imageKey]) => ({ nconst, imageKey }));
 }
 
-/** The key inside a path we issued, or null for anything else -- including a bare URL. */
+/**
+ * The key inside a path we issued, or null for anything else -- including a bare URL.
+ *
+ * Strips the cache extension `facetImagePath` puts on, so this reads a path THIS module
+ * wrote. The two are each other's inverse and both are here for that reason: a path shape
+ * with a producer in one file and a parser in another is a pair that drifts silently, and
+ * the failure is a face filed under nobody.
+ */
 function keyIn(image: string | null): string | null {
   if (!image?.startsWith(`${FACET_IMAGE_PATH}/`)) return null;
-  const key = image.slice(FACET_IMAGE_PATH.length + 1);
+  const key = stripImageExt(image.slice(FACET_IMAGE_PATH.length + 1));
   return KEY.test(key) ? key : null;
 }
 
-/** The path a stored key is served under. One owner, so the row and the route agree. */
+/**
+ * The path a stored key is served under. One owner, so the row and the route agree.
+ *
+ * The `.jpg` is a CDN cache hint and says nothing about the bytes -- see `IMAGE_CACHE_EXT`,
+ * which owns the whole argument. What is stored in `person_image` is the bare KEY, never
+ * this path, so the extension never reaches the database.
+ */
 export function facetImagePath(key: string): string {
-  return `${FACET_IMAGE_PATH}/${key}`;
+  return withImageExt(`${FACET_IMAGE_PATH}/${key}`);
 }
 
 /** What this needs from `Store`. Narrow, so a test can hand over a plain object. */
@@ -143,7 +157,8 @@ export class FacetImageProxy {
    * table, so nothing a client sends can name a host. `serveUrl` re-checks the allowlist
    * anyway -- the table is written from validated URLs, and a second check costs nothing.
    */
-  async serve(key: string, size: string): Promise<Response> {
+  async serve(rawKey: string, size: string): Promise<Response> {
+    const key = stripImageExt(rawKey);
     if (!KEY.test(key)) return new Response("bad key", { status: 400 });
     const url = this.store.facetImageUrl(key);
     if (!url) return new Response("unknown image", { status: 404 });

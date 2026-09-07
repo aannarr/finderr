@@ -20,7 +20,7 @@ import type { RadarrClient, SonarrClient } from "../lib/arr";
 import type { Config } from "../lib/config";
 import { paths } from "../lib/config";
 import { posterFrom, type Store, studioFrom } from "../lib/store";
-import { cacheHeaders, IMMUTABLE_PUBLIC } from "./cache-policy";
+import { cacheHeaders, IMMUTABLE_PUBLIC, withImageExt } from "./cache-policy";
 
 /**
  * Only these hosts may be fetched. The URL comes from Radarr/Sonarr rather than the
@@ -46,6 +46,37 @@ export function proxyableImageUrl(rawUrl: string): URL | null {
   }
   return target.protocol === "https:" && ALLOWED_HOSTS.has(target.hostname) ? target : null;
 }
+
+/**
+ * Where a title's poster is served from, or null when we know there is none.
+ *
+ * **The SINGLE owner of the `/img/t/...` string**, and of the ternary in front of it.
+ * `undefined` means nobody has looked yet, so it still gets a path and the proxy resolves
+ * it on demand; a stored `null` means something answered and said there is no poster, and
+ * pointing an `<img>` at a proxy we KNOW will 404 makes the card flash a broken image
+ * before falling back to initials. Getting that backwards costs one doomed round trip per
+ * card.
+ *
+ * It lived in `./index.ts` with a retyped copy in `./agent-chat.ts`, which is exactly the
+ * shape that drifts -- the wrong half of a duplicated ternary still renders. It moved here
+ * when the cache extension arrived, because that is a third fact about this string and the
+ * copy nobody edits is always the one a reader opens.
+ *
+ * > [!IMPORTANT] This function is FREE. The `store.getArtwork()` its callers feed it is not
+ * > Measured on studio (M-series, macOS arm64, bun 1.4.0), 2026-09-06, with
+ * > `src/jobs/bench-requests.ts`: **0.592 ms for 200 rows**, about 3 us each, on an indexed
+ * > single-row `select` against `artwork` -- about a quarter of everything `5ae3f8e` added
+ * > to a route polled every eight seconds. A per-response `Map` would collapse it the way
+ * > `plexLinker` already does, and at 200 rows that is the shape this would take if the
+ * > number ever mattered. It does not yet: 0.592 ms of a 4.6 ms response, on the worst list
+ * > the route can be asked for. Do not pre-emptively collapse it -- re-measure first.
+ */
+export function posterPath(tconst: string, art: { url: string | null } | undefined): string | null {
+  return art !== undefined && art.url === null ? null : withImageExt(`${POSTER_IMAGE_PATH}/${tconst}`);
+}
+
+/** Where the poster route lives. Owned beside the path builder, so the two agree. */
+export const POSTER_IMAGE_PATH = "/img/t";
 
 /**
  * A width we will ask an upstream CDN for.

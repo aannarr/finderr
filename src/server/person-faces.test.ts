@@ -33,6 +33,7 @@ import { type PersonCredit, tmdbPersonId } from "../lib/facets";
 import { SCHEMA } from "../lib/index-builder";
 import { SearchEngine } from "../lib/search";
 import { Store } from "../lib/store";
+import { IMAGE_CACHE_EXT } from "./cache-policy";
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 
 const TCONST = "tt1375666";
@@ -134,11 +135,15 @@ describe("a face reaches a person through the crosswalk", () => {
 
     // A path of ours, never the upstream URL: `localImageUrl` in the browser drops anything
     // else, so an upstream address here would render as initials and look like no coverage.
-    expect(image).toMatch(new RegExp(`^${FACET_IMAGE_PATH}/[0-9a-f]{1,16}$`));
+    // The trailing `.jpg` is the CDN cache hint (`IMAGE_CACHE_EXT`), not a claim about the
+    // bytes -- `serveUrl` sends the real `Content-Type` it derived from the upstream path.
+    expect(image).toMatch(new RegExp(`^${FACET_IMAGE_PATH}/[0-9a-f]{1,16}\\${IMAGE_CACHE_EXT}$`));
     expect(image).not.toContain("tmdb.org");
 
-    // And it is a key the proxy route already answers, which is what makes the whole edge
-    // one table wide: no bytes stored, no second hash, no second cache.
+    // And it is a key the proxy route already answers -- handed over WITH the extension
+    // still on it, exactly as the browser sends it back, which is what pins that the route
+    // takes back the shape we issue. That keeps the whole edge one table wide: no bytes
+    // stored, no second hash, no second cache.
     const res = await proxy.serve((image as string).slice(FACET_IMAGE_PATH.length + 1), "w342");
     expect(res.status).toBe(200);
     expect(served).toEqual([{ url: HEADSHOT, size: "w342" }]);

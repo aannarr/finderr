@@ -94,7 +94,7 @@ import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
-import { ArtworkService, DEFAULT_IMAGE_SIZE } from "./artwork";
+import { ArtworkService, DEFAULT_IMAGE_SIZE, POSTER_IMAGE_PATH, posterPath } from "./artwork";
 import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, peoplePayload, timelinePayload } from "./awards";
 import {
@@ -104,6 +104,7 @@ import {
   PER_SESSION_REVALIDATED,
   perSession,
   REVALIDATED,
+  stripImageExt,
 } from "./cache-policy";
 import { episodeScoresFor } from "./episode-scores";
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
@@ -1228,37 +1229,6 @@ function decorate<T extends TitleRow>(rows: T[]) {
       award: awardMarks.get(r.tconst),
     };
   });
-}
-
-/**
- * Where the browser fetches a title's poster, or null when there is genuinely none.
- *
- * ALWAYS our own proxy path and never the upstream URL, for the reason `decorate` states at
- * length. What is worth having one owner for is the THREE-WAY distinction the ternary hides:
- * an artwork row we have never written (`undefined`) still gets a path, because the route
- * resolves it through the arrs on first fetch; a row we HAVE written whose `url` is null is a
- * title somebody looked up and found no art for, and pointing at the proxy there is a request
- * guaranteed to 404. Getting that backwards costs one doomed round trip per card.
- *
- * A second surface wanted it -- the request list, which draws a poster per row since R4 -- and
- * a retyped ternary is exactly the shape that drifts: the wrong half of it still renders.
- *
- * > [!IMPORTANT] The ARTWORK LOOKUP that feeds it is PER ROW, and it is the second-dearest
- * > thing on `/api/requests`
- * > This function is free -- it is a ternary. What is not free is the `store.getArtwork()` its
- * > callers pass it, which `decorate` resolves per row and the request route does too. Measured
- * > on studio (M-series, macOS arm64, bun 1.4.0), 2026-09-06, with `src/jobs/bench-requests.ts`:
- * > **0.592 ms for 200 rows**, about 3 us each, on an indexed single-row `select` against
- * > `artwork`. That is about a quarter of everything `5ae3f8e` added to a route polled every
- * > eight seconds -- second only to the episode read `seasonProgressLinker` owns.
- * >
- * > A per-response `Map` would collapse it the way `plexLinker` and `requestDiagnosticMap`
- * > already collapse theirs, and at 200 rows that is the shape this route would take if the
- * > number ever mattered. It does not yet: 0.592 ms of a 4.6 ms response, on the worst list the
- * > route can be asked for. Do not pre-emptively collapse it -- re-measure first.
- */
-function posterPath(tconst: string, art: { url: string | null } | undefined): string | null {
-  return art !== undefined && art.url === null ? null : `/img/t/${tconst}`;
 }
 
 /**
@@ -3644,7 +3614,8 @@ const appRoutes = {
    * bytes from local disk forever. The browser never learns the upstream URL,
    * which matters because finderr will be internet-facing while the arrs are not.
    */
-  "/img/t/:tconst": (req: Bun.BunRequest<"/img/t/:tconst">) => artwork.serve(req.params.tconst, sizeOf(req)),
+  [`${POSTER_IMAGE_PATH}/:tconst`]: (req: Bun.BunRequest<`${typeof POSTER_IMAGE_PATH}/:tconst`>) =>
+    artwork.serve(stripImageExt(req.params.tconst), sizeOf(req)),
 
   /**
    * A facet image -- a cast headshot, a season poster, an episode still.
@@ -3681,7 +3652,7 @@ const appRoutes = {
    * card without a picture is the intended degraded form.
    */
   [`${PREVIEW_IMAGE_PATH}/:id`]: (req: Bun.BunRequest<`${typeof PREVIEW_IMAGE_PATH}/:id`>) => {
-    const id = req.params.id;
+    const id = stripImageExt(req.params.id);
     if (id.startsWith("nm")) {
       // A face is already in `facet_image` under a key the title route issued, so this
       // goes through the facet proxy rather than the artwork cache. `personImageKeys`

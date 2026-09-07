@@ -14,12 +14,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import {
   type CachePolicy,
   cacheHeaders,
+  IMAGE_CACHE_EXT,
   IMMUTABLE_PUBLIC,
   NO_STORE,
   PER_SESSION_REVALIDATED,
   perSession,
   REVALIDATED,
   sharedPerSession,
+  stripImageExt,
+  withImageExt,
 } from "./cache-policy";
 import { json } from "./json-response";
 
@@ -106,6 +109,59 @@ describe("json", () => {
     expect(res.headers.get("Retry-After")).toBe("30");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Content-Type")).toContain("application/json");
+  });
+});
+
+/**
+ * The extension half of cachability.
+ *
+ * `immutable-public` is necessary and NOT sufficient: a CDN reads the path's extension to
+ * decide eligibility before it reads a single header, so an extensionless image route is
+ * never cached however loudly it says `immutable`. Measured 2026-09-07 -- see
+ * `IMAGE_CACHE_EXT`, which owns the numbers.
+ */
+describe("the image cache extension", () => {
+  /**
+   * The pairing that matters. Whatever we ISSUE must be something the routes take BACK, or
+   * every image 400s the moment this ships -- and the failure would be total rather than
+   * partial, because every path is built by the same function.
+   */
+  test("what we issue is what the routes accept back", () => {
+    for (const path of ["/img/t/tt1375666", "/img/f/fb2735bdd2c09484", "/img/og/nm0000138"]) {
+      const issued = withImageExt(path);
+      expect(issued).toBe(`${path}${IMAGE_CACHE_EXT}`);
+      expect(stripImageExt(issued.slice(issued.lastIndexOf("/") + 1))).toBe(
+        path.slice(path.lastIndexOf("/") + 1),
+      );
+    }
+  });
+
+  /**
+   * A path lives in a browser cache for a year and in somebody else's OG card indefinitely,
+   * so an address handed out before this shipped -- or before the constant last changed --
+   * must still resolve. A bare id is the pre-shipping form and it passes through untouched.
+   */
+  test("an id with no extension, or with an older one, still resolves", () => {
+    expect(stripImageExt("tt1375666")).toBe("tt1375666");
+    for (const ext of [".jpg", ".jpeg", ".png", ".webp", ".JPG"]) {
+      expect(stripImageExt(`tt1375666${ext}`)).toBe("tt1375666");
+    }
+  });
+
+  /**
+   * Only a TRAILING extension, and only a whole one. An id is matched against a closed regex
+   * straight after this, so eating something in the middle would turn a refusal into a
+   * lookup for a title nobody named.
+   */
+  test("it strips a trailing extension and nothing else", () => {
+    expect(stripImageExt("tt1375666.jpg.evil")).toBe("tt1375666.jpg.evil");
+    expect(stripImageExt("tt.jpg1375666")).toBe("tt.jpg1375666");
+    expect(stripImageExt(".jpg")).toBe("");
+  });
+
+  /** The whole point: the extension we issue is one a CDN treats as a static image. */
+  test("the issued extension is one a CDN caches by default", () => {
+    expect([".jpg", ".jpeg", ".png", ".webp", ".gif"]).toContain(IMAGE_CACHE_EXT);
   });
 });
 

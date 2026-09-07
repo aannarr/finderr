@@ -86,7 +86,9 @@ describe("previewResponse", () => {
     const { deps: d, calls } = deps({ cachedPoster: () => ({ url: "https://image.tmdb.org/p/w342/b.jpg" }) });
     const html = await (await previewResponse(req(), BATMAN.tconst, d))?.text();
     expect(calls.resolve).toBe(0);
-    expect(html).toContain('property="og:image" content="https://finderr.example.com/img/og/tt0096895"');
+    // `.jpg` is the CDN cache hint every proxy image path carries -- see `IMAGE_CACHE_EXT`.
+    // It matters MORE here than anywhere else: an OG card is fetched by strangers' crawlers.
+    expect(html).toContain('property="og:image" content="https://finderr.example.com/img/og/tt0096895.jpg"');
   });
 
   /**
@@ -235,7 +237,7 @@ describe("personPreviewResponse", () => {
   test("a known face points at the cache-only route under the PERSON's id", async () => {
     const { deps: d } = personDeps({ faceKey: () => "beef1234" });
     const html = (await personPreviewResponse(personReq(), NOLAN_PAGE.person.nconst, d)?.text()) ?? "";
-    expect(html).toContain('property="og:image" content="https://finderr.example.com/img/og/nm0634240"');
+    expect(html).toContain('property="og:image" content="https://finderr.example.com/img/og/nm0634240.jpg"');
     // The KEY is an internal id and has no business in a page a third party caches.
     expect(html).not.toContain("beef1234");
   });

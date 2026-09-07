@@ -2077,10 +2077,23 @@ export type PosterSubject = Pick<Title, "tconst" | "title"> & Partial<Pick<Title
  *
  * `null` means we already looked and there genuinely is no artwork -- render the
  * fallback tile immediately rather than firing a request that will 404.
+ *
+ * > [!IMPORTANT] The `.jpg` is a CDN CACHE HINT and this is a DELIBERATE duplicate of the
+ * > server's `IMAGE_CACHE_EXT`
+ * > CloudFlare decides whether a response is even eligible for the edge from the path's
+ * > EXTENSION, before it reads `Cache-Control` -- measured 2026-09-07, three image routes on
+ * > one origin with identical `immutable` headers, and only the one carrying `.jpg` came back
+ * > `cf-cache-status: HIT`. `src/server/cache-policy.ts` owns the argument and the constant.
+ * >
+ * > Importing it would be a VALUE cross-import pulling a server module into this bundle --
+ * > the trade `decadeOf` and `personNameKey` already took, and the same answer. Unlike those
+ * > two, a divergence here is HARMLESS: the path still resolves (the routes accept jpg, jpeg,
+ * > png and webp, and a bare id as well), it simply stops being edge-cached. Nothing renders
+ * > wrong, so a drift here costs performance where theirs costs correctness.
  */
 export function posterUrl(t: Pick<PosterSubject, "tconst" | "posterUrl">, size = "w342"): string | null {
   if (t.posterUrl === null) return null;
-  return `${t.posterUrl ?? `/img/t/${t.tconst}`}?size=${size}`;
+  return `${t.posterUrl ?? `/img/t/${t.tconst}.jpg`}?size=${size}`;
 }
 
 // How an IMDb id becomes an IMDb page used to live here as `imdbUrl`. It is one entry in

@@ -84,6 +84,67 @@ export const IMMUTABLE_PUBLIC: CachePolicy = { kind: "immutable-public" };
 const ONE_YEAR_SECONDS = 31_536_000;
 
 /**
+ * The extension every proxied image path carries, so a CDN will hold the bytes.
+ *
+ * > [!CAUTION] `immutable-public` is NOT enough on its own, and the reason is not in any header
+ * > Measured against the live deployment on 2026-09-07, three routes on one origin behind one
+ * > Caddy, all three answering `public, max-age=31536000, immutable` with no `Vary`:
+ * >
+ * > | path | `cf-cache-status` |
+ * > |---|---|
+ * > | `/img/w342/qJ2tW6WMUDux911r6m7haRef0WH.jpg` | **HIT**, `age: 203` |
+ * > | `/img/f/fb2735bdd2c09484` | DYNAMIC |
+ * > | `/img/t/tt1375666` | DYNAMIC |
+ * >
+ * > CloudFlare decides ELIGIBILITY from the path's extension before it ever reads
+ * > `Cache-Control`, and `DYNAMIC` means it never considered the response at all. The one
+ * > route that happened to carry `.jpg` -- the legacy TMDB-path proxy -- was the one being
+ * > served from the edge. So the difference between a poster crossing a home uplink from a
+ * > Celeron and one coming off a CDN was six characters in a URL.
+ *
+ * **It is a CACHE HINT, never a declaration of what the bytes are.** `serveUrl` derives the
+ * real type from the upstream path and sends it as `Content-Type`, which is what every
+ * browser and every cache actually keys on; a PNG headshot served at a `.jpg` address
+ * renders as a PNG. Deriving a truthful extension per image was considered and rejected:
+ * the path is issued when a JSON payload is built, and nothing at that moment has fetched
+ * the image or knows its type. Two extensions would be two code paths for one string.
+ *
+ * **The exposure this buys is accepted, by aannarr, 2026-09-07.** An edge-cached image is
+ * served to anyone who asks, so `/img/t/tt1375666.jpg` becomes an oracle for "somebody here
+ * viewed this title". It does NOT open the amplifier `/img/t` is guarded against -- a MISS
+ * still reaches origin, still meets `withAuth`, still 401s, and a `no-store` 401 is never
+ * cached -- so only bytes a signed-in reader already pulled can ever be served this way.
+ */
+export const IMAGE_CACHE_EXT = ".jpg";
+
+/**
+ * Extensions a proxy route accepts back. Wider than what we ISSUE, deliberately.
+ *
+ * A path lives in a client-side cache for a year and in an OG card somebody else's server
+ * holds indefinitely, so narrowing `IMAGE_CACHE_EXT` later must not 404 every address
+ * already handed out. Accepting the whole set costs one regex and makes the constant
+ * genuinely changeable.
+ */
+const ACCEPTED_IMAGE_EXT = /\.(?:jpe?g|png|webp)$/i;
+
+/** A proxy image path, with the hint on it. The one place either is appended. */
+export function withImageExt(path: string): string {
+  return `${path}${IMAGE_CACHE_EXT}`;
+}
+
+/**
+ * A route parameter with the hint taken back off.
+ *
+ * Every proxy route runs its parameter through this BEFORE validating it, so the id
+ * regexes (`IMDB_ID`, the facet `KEY`) keep describing an id rather than growing an
+ * optional suffix each. A parameter with no extension passes through untouched, which is
+ * what keeps a page cached from before this shipped working.
+ */
+export function stripImageExt(param: string): string {
+  return param.replace(ACCEPTED_IMAGE_EXT, "");
+}
+
+/**
  * The headers a policy is worth, ready to spread into a `ResponseInit`.
  *
  * Every branch that permits reuse of a session-dependent body emits `Vary: Cookie` in the

@@ -4,7 +4,7 @@ import {
   renderPersonPreviewPage,
   renderPreviewPage,
 } from "../lib/og-preview";
-import { cacheHeaders, sharedPerSession } from "./cache-policy";
+import { cacheHeaders, sharedPerSession, withImageExt } from "./cache-policy";
 import { PREVIEW_IMAGE_PATH } from "./preview-resolver";
 
 /**
@@ -69,7 +69,7 @@ export async function previewResponse(
     renderPreviewPage({
       title: row,
       synopsis: deps.cachedSynopsis(tconst),
-      imageUrl: posterUrl ? `${origin}${PREVIEW_IMAGE_PATH}/${tconst}` : null,
+      imageUrl: posterUrl ? withImageExt(`${origin}${PREVIEW_IMAGE_PATH}/${tconst}`) : null,
       origin,
       returnPath: `/title/${tconst}`,
       siteName: deps.siteName,
@@ -128,7 +128,7 @@ export function personPreviewResponse(
       person: page.person,
       knownFor: page.knownFor,
       credits: page.credits,
-      imageUrl: key ? `${origin}${PREVIEW_IMAGE_PATH}/${nconst}` : null,
+      imageUrl: key ? withImageExt(`${origin}${PREVIEW_IMAGE_PATH}/${nconst}`) : null,
       origin,
       returnPath: `/person/${nconst}`,
       siteName: deps.siteName,

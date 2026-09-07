@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { loadConfig } from "../lib/config";
 import type { ResolvedFacets } from "../lib/facet-resolver";
 import { Store } from "../lib/store";
+import { IMAGE_CACHE_EXT, stripImageExt } from "./cache-policy";
 import {
   FACET_IMAGE_PATH,
   FacetImageProxy,
@@ -61,7 +62,7 @@ function castFacets(image: string | null): ResolvedFacets {
 
 /** The key out of a rewritten path, so a test never has to know how one is derived. */
 function keyIn(path: string): string {
-  return path.slice(`${FACET_IMAGE_PATH}/`.length);
+  return stripImageExt(path.slice(`${FACET_IMAGE_PATH}/`.length));
 }
 
 describe("what leaves the server", () => {
@@ -213,7 +214,7 @@ describe("filing a face under our own person id", () => {
     store.rememberPersonImages(personFaces(rewrittenCast(HEADSHOT), LINKS));
     const key = store.personImageKeys(["nm-cillian"]).get("nm-cillian") as string;
 
-    expect(facetImagePath(key)).toBe(`${FACET_IMAGE_PATH}/${key}`);
+    expect(facetImagePath(key)).toBe(`${FACET_IMAGE_PATH}/${key}${IMAGE_CACHE_EXT}`);
     expect((await proxy.serve(key, "w342")).status).toBe(200);
     expect(served).toEqual([{ url: HEADSHOT, size: "w342" }]);
   });

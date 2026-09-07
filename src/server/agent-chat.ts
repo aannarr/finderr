@@ -41,6 +41,7 @@ import type { SearchEngine } from "../lib/search";
 import type { SiteSettingsReader } from "../lib/site-settings";
 import type { Store } from "../lib/store";
 import { makeAgentActions } from "./agent-actions";
+import { posterPath } from "./artwork";
 import { json } from "./json-response";
 import type { LiveIndex } from "./live-index";
 import type { RequestWorker } from "./request-worker";
@@ -188,20 +189,10 @@ export function surfaced(result: RunResult, engine: SearchEngine, store: Store, 
       title: row.title,
       year: row.year,
       kind: row.kind,
-      /*
-        THE SAME RULE `decorate()` APPLIES, and it is not "always a path".
-
-        `/img/t/<tconst>` is our own proxy, so the browser never sees an upstream URL.
-        But a title whose artwork has been RESOLVED TO NOTHING (`art.url === null`)
-        gets null rather than a path, because pointing an <img> at a proxy we know will
-        404 makes the card flash a broken image before falling back to initials.
-        `undefined` means we have not looked yet, which is not the same as knowing
-        there is none -- so it still gets the path and the proxy resolves it on demand.
-      */
-      poster: (() => {
-        const art = store.getArtwork(row.tconst);
-        return art !== undefined && art.url === null ? null : `/img/t/${row.tconst}`;
-      })(),
+      // THE SAME RULE `decorate()` APPLIES, through the same function -- `posterPath` in
+      // `./artwork.ts` owns the proxy path AND the three-way `undefined`/`null`/url
+      // distinction. This was a retyped copy of that ternary until 2026-09-07.
+      poster: posterPath(row.tconst, store.getArtwork(row.tconst)),
     });
   }
 
