@@ -20,6 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
+import { INIT_FILE_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -265,11 +266,15 @@ describe("a client that declares nothing gets the conservative floor", () => {
   });
 });
 
-describe("ffmpegArgs turns a plan into flags", () => {
+describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
   const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), CHROME_HEVC);
+  /** Segment 7 of a six-second grid: past the start, so the seek flags are exercised. */
+  const SEG7 = { index: 7, startSec: 42, endSec: 48 };
+  const args = (p: typeof plan, opts: Partial<Parameters<typeof ffmpegArgs>[1]> = {}) =>
+    ffmpegArgs(p, { input: "/plex/a.mkv", outDir: "/tmp/s1", segment: SEG7, ...opts });
 
   test("copies video, encodes audio, and packages fragmented MP4", () => {
-    const a = ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1" });
+    const a = args(plan);
     expect(a.join(" ")).toContain("-c:v copy");
     expect(a.join(" ")).toContain("-c:a aac");
     expect(a.join(" ")).toContain("-hls_segment_type fmp4");
@@ -279,59 +284,61 @@ describe("ffmpegArgs turns a plan into flags", () => {
    * `-ss` BEFORE `-i` is an input seek (instant); after `-i` it decodes and discards
    * everything from the start. Both spellings run; only one returns on a two-hour film.
    */
-  test("a seek goes before the input, never after", () => {
-    const a = ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1", seekSec: 3600 });
+  test("the seek goes before the input, never after", () => {
+    const a = args(plan);
     expect(a.indexOf("-ss")).toBeGreaterThan(-1);
     expect(a.indexOf("-ss")).toBeLessThan(a.indexOf("-i"));
   });
 
   /**
-   * WITHOUT `-re` ONE VIEWER OWNS THE MACHINE. ffmpeg encodes as fast as the hardware
-   * allows and stops when the film is finished -- measured at 344% CPU for a single 4K
-   * software re-encode on an M1 Max, for a viewer who had watched nine seconds. This is
-   * what makes `EXPENSIVE_SESSIONS` a budget rather than a number multiplied by clock speed.
+   * Independently produced segments have to carry the source's own timestamps or every one
+   * of them claims to start at zero and nothing can assemble them. `-to` is then read in the
+   * input's timeline, so it is an absolute position rather than a duration -- measured
+   * 2026-09-08, the `-t <duration>` spelling produced 18.35 s of media instead of 10.34 s.
    */
-  test("reads the input at playback speed rather than flat out", () => {
-    const a = ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1" });
-    expect(a).toContain("-re");
-    // Before `-i`, or it paces the OUTPUT and reads the input as fast as it can anyway.
-    expect(a.indexOf("-re")).toBeLessThan(a.indexOf("-i"));
-  });
-
-  test("paces the expensive path too, which is the one that matters", () => {
-    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    expect(ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o" })).toContain("-re");
+  test("keeps the source timestamps and ends at an absolute position", () => {
+    const a = args(plan).join(" ");
+    expect(a).toContain("-copyts");
+    expect(a).toContain("-avoid_negative_ts disabled");
+    expect(a).toContain("-to 48.000000");
+    expect(a).not.toContain("-t 6");
   });
 
   /**
-   * Burst then throttle beats either extreme: flat realtime leaves the player one segment
-   * from starving, and unpaced encodes the whole film for somebody watching a minute.
+   * A run bounded by one segment needs no pacing, and pacing it would be a BUG: `-re` on a
+   * six-second segment makes the request take six seconds of wall clock. The long-running
+   * ffmpeg those flags existed for is what this design replaced.
    */
-  test("bursts a buffer and then throttles when ffmpeg supports it", () => {
-    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", readrateBurstSec: 30 });
-    expect(a.join(" ")).toContain("-readrate 1");
-    expect(a.join(" ")).toContain("-readrate_initial_burst 30");
-    expect(a.join(" ")).toContain("-readrate_catchup 2");
-    // The two forms are alternatives; emitting both would be an ffmpeg error.
-    expect(a).not.toContain("-re");
-  });
-
-  /**
-   * `-readrate_initial_burst` landed in ffmpeg 6.1 and `-readrate_catchup` in 7.1, and an
-   * unknown option is a HARD ERROR. So an older binary must get the flag that has existed
-   * for a decade rather than a server where nothing plays.
-   */
-  test("falls back to plain -re when the burst flags are unavailable", () => {
-    for (const burst of [undefined, 0]) {
-      const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", readrateBurstSec: burst });
-      expect(a).toContain("-re");
+  test("never paces the read", () => {
+    for (const p of [plan, planPlayback(parseProbe(RANGO), FIREFOX)]) {
+      const a = args(p);
+      expect(a).not.toContain("-re");
       expect(a.join(" ")).not.toContain("readrate");
     }
   });
 
-  test("no seek emits no -ss at all", () => {
-    expect(ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1" })).not.toContain("-ss");
-    expect(ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1", seekSec: 0 })).not.toContain("-ss");
+  /**
+   * The file name has to say where the segment sits in the WHOLE film, because the client is
+   * holding a playlist that names every segment and asks for them by that number.
+   */
+  test("numbers the segment by its place in the timeline", () => {
+    expect(args(plan).join(" ")).toContain("-start_number 7");
+  });
+
+  test("segment zero starts at the beginning and emits no -ss at all", () => {
+    const a = args(plan, { segment: { index: 0, startSec: 0, endSec: 6 } });
+    expect(a).not.toContain("-ss");
+    expect(a.join(" ")).toContain("-start_number 0");
+  });
+
+  /**
+   * The segmentation decision belongs to `hls-timeline.ts`. If the muxer also had an opinion
+   * the run could emit two segments, and the second would overwrite the number after it.
+   */
+  test("the muxer is told never to cut, so one run makes one segment", () => {
+    const a = args(plan);
+    expect(Number(a[a.indexOf("-hls_time") + 1])).toBeGreaterThan(3600);
+    expect(a.join(" ")).toContain("-hls_playlist_type vod");
   });
 
   /**
@@ -339,12 +346,12 @@ describe("ffmpegArgs turns a plan into flags", () => {
    * the vaapi flags only appear when there is an encode to accelerate.
    */
   test("vaapi is wired up only when the video is actually re-encoded", () => {
-    const copying = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
+    const copying = args(plan, { encoder: VAAPI });
     expect(copying).not.toContain("-hwaccel");
     expect(copying.join(" ")).toContain("-c:v copy");
 
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const hw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
+    const hw = args(encoding, { encoder: VAAPI });
     expect(hw).toContain("-hwaccel");
     expect(hw.join(" ")).toContain("h264_vaapi");
   });
@@ -352,7 +359,7 @@ describe("ffmpegArgs turns a plan into flags", () => {
   test("with no hardware it falls back to libx264 rather than failing", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
     for (const encoder of [undefined, SOFTWARE]) {
-      const sw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder });
+      const sw = args(encoding, { encoder });
       expect(sw.join(" ")).toContain("libx264");
       expect(sw).not.toContain("-hwaccel");
     }
@@ -365,7 +372,7 @@ describe("ffmpegArgs turns a plan into flags", () => {
    */
   test("VideoToolbox gets its accelerator and none of VAAPI's device flags", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VIDEOTOOLBOX });
+    const a = args(encoding, { encoder: VIDEOTOOLBOX });
     expect(a.join(" ")).toContain("-hwaccel videotoolbox");
     expect(a.join(" ")).toContain("h264_videotoolbox");
     expect(a).not.toContain("-vaapi_device");
@@ -376,7 +383,7 @@ describe("ffmpegArgs turns a plan into flags", () => {
   test("a hardware encode asks for a bitrate and never a crf", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
     for (const encoder of [VAAPI, VIDEOTOOLBOX]) {
-      const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder });
+      const a = args(encoding, { encoder });
       expect(a).toContain("-b:v");
       expect(a).not.toContain("-crf");
     }
@@ -384,21 +391,25 @@ describe("ffmpegArgs turns a plan into flags", () => {
 
   test("VAAPI names its render node, because it is the one that needs it", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
-    expect(a).toContain(VAAPI_DEVICE);
+    expect(args(encoding, { encoder: VAAPI })).toContain(VAAPI_DEVICE);
   });
 
   test("maps the exact source streams the plan chose", () => {
-    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o" });
+    const a = args(plan);
     expect(a.join(" ")).toContain("-map 0:0");
     expect(a.join(" ")).toContain("-map 0:1");
   });
 
-  /** Relative segment names are what let a client retarget segments at another endpoint. */
-  test("the playlist and segments are written into the session directory", () => {
-    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/sess42" });
-    expect(a).toContain("/tmp/sess42/index.m3u8");
-    expect(a.join(" ")).toContain("/tmp/sess42/seg%05d.m4s");
-    expect(a.join(" ")).toContain("-hls_fmp4_init_filename init.mp4");
+  /**
+   * `hls_fmp4_init_filename` is resolved against the PLAYLIST's directory rather than the
+   * working directory, so both have to name the same place. Getting that wrong is not a
+   * subtle bug: ffmpeg fails at header-write time with "Failed to open segment" and produces
+   * nothing at all.
+   */
+  test("everything a run writes lands in the working directory it was given", () => {
+    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", segment: SEG7 });
+    expect(a).toContain("/tmp/w42/produced.m3u8");
+    expect(a.join(" ")).toContain(`/tmp/w42/${SEGMENT_FILE_PATTERN}`);
+    expect(a.join(" ")).toContain(`-hls_fmp4_init_filename ${INIT_FILE_NAME}`);
   });
 });

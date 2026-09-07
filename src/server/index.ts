@@ -43,7 +43,6 @@ import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { parseVolumes } from "../lib/media-path";
-import { probeReadrateBurst } from "../lib/media-probe";
 import type { RequestRemovalView } from "../lib/media-removal";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
@@ -251,9 +250,6 @@ const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
 */
 const mediaVolumes = parseVolumes(cfg.media.volumes);
 const videoEncoder = mediaVolumes.length > 0 ? await probeEncoder() : SOFTWARE;
-// Whether this ffmpeg can burst-then-throttle. One probe, at boot, for the reason
-// `probeReadrateBurst` gives: an unknown option is a hard error, not a warning.
-const readrateBurstSec = mediaVolumes.length > 0 ? await probeReadrateBurst() : 0;
 mkdirSync(p.transcode, { recursive: true });
 const transcodeSessions = new TranscodeSessions({ root: p.transcode });
 // Both halves of "a previous life of this process left something behind": the signal
@@ -3755,7 +3751,6 @@ const allRoutes = {
     requireAdmin: (req) => auth.requireAdmin(req),
     actorId: (req) => auth.principal(req)?.user?.id ?? null,
     encoder: videoEncoder,
-    readrateBurstSec,
     log,
   }),
   ...auth.routes(),

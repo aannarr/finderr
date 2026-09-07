@@ -7,9 +7,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { INIT_FILE_NAME, segmentFileName, type Timeline } from "../lib/hls-timeline";
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
@@ -25,28 +26,44 @@ const PLAN: PlaybackPlan = {
 let root: string;
 let sessionDir: string;
 
-/** Enough of the manager for the routes; the real one is proved in its own suite. */
+/** Three six-second segments -- enough for the routes to have a timeline to state. */
+const TIMELINE: Timeline = { starts: [0, 6, 12], endSec: 18 };
+
+/**
+ * Enough of the manager for the routes; the real one is proved in its own suite.
+ *
+ * `segmentPath` and `initPath` mimic the real thing in the way that matters HERE: they hand
+ * back a path only for a file that exists, so a name the route lets through still has to
+ * find something, and the traversal cases stay meaningful.
+ */
 function fakeSessions(dir: string) {
   const stopped: string[] = [];
   let refuse: SessionRefused | null = null;
-  const session = {
+  const session: Session = {
     id: "sess-1",
     key: "k",
     dir,
+    input: "/plex/a.mkv",
     plan: PLAN,
+    timeline: TIMELINE,
     expensive: false,
     startedAt: 1,
     lastAccessAt: 1,
     owner: null,
-    exited: Promise.resolve(0),
-    stop: () => {},
-  } as Session;
+  };
+  const found = (id: string, name: string) => {
+    if (id !== "sess-1") return Promise.resolve(null);
+    const path = join(dir, name);
+    return Promise.resolve(existsSync(path) ? path : null);
+  };
   const api = {
     start: () => {
       if (refuse) throw refuse;
       return session;
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
+    segmentPath: (id: string, index: number) => found(id, segmentFileName(index)),
+    initPath: (id: string) => found(id, INIT_FILE_NAME),
     stop: (id: string) => {
       stopped.push(id);
     },
@@ -174,7 +191,7 @@ describe("a segment name cannot walk out of its session directory", () => {
     expect(await res.text()).not.toContain("admin api key");
   });
 
-  test("serves exactly the three names ffmpeg writes", async () => {
+  test("serves exactly the three names a session produces", async () => {
     const { routes } = build({});
     for (const name of ["index.m3u8", "init.mp4", "seg00001.m4s"]) {
       const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
@@ -201,13 +218,32 @@ describe("a segment name cannot walk out of its session directory", () => {
   });
 
   /**
-   * The ordinary state for the first second of a session and for the segment just past the
-   * live edge. It must be a 404 -- hls.js retries those and gives up on a 500.
+   * A segment nobody has produced and that the manager declined to produce right now -- the
+   * back-pressure case. It must be a 404: hls.js retries those and gives up on a 500.
    */
-  test("a segment ffmpeg has not written yet is a 404, not a 500", async () => {
+  test("a segment that could not be produced is a 404, not a 500", async () => {
     const { routes } = build({});
     const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", "seg00042.m4s"))) as Response;
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * THE PLAYLIST IS GENERATED, NOT READ. It has to name every segment of the film before any
+ * of them exists -- that is what gives the player a full scrub bar, which is the whole
+ * feature. A playlist read off disk could only ever name what had already been encoded.
+ */
+describe("the playlist states the whole timeline up front", () => {
+  test("it names every segment and ends the list", async () => {
+    const { routes } = build({});
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", "index.m3u8"))) as Response;
+    const text = await res.text();
+
+    expect(text).toContain(segmentFileName(0));
+    expect(text).toContain(segmentFileName(2));
+    expect(text).toContain("#EXT-X-ENDLIST");
+    // Not the file sitting in the session directory, which says only this.
+    expect(text).not.toBe("#EXTM3U\n");
   });
 });
 

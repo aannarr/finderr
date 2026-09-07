@@ -1,11 +1,29 @@
 /**
- * One running ffmpeg, its output directory, and the rules that stop it owning the machine.
+ * One playback: a plan, a timeline, an output directory, and the rules that stop it owning
+ * the machine.
  *
- * ffmpeg writes HLS segments to a directory; the route hands those files out with
- * `Bun.file`, which is zero-copy, so **segment bytes never enter the JS heap and the event
- * loop pays a stat and an fd handoff per segment** rather than megabytes. That is the whole
- * reason a transcoder can live beside a render path that must stay fast: the expensive work
- * is in another process with its own CPU share, and the cheap work is what Bun is good at.
+ * A session here does NOT hold a running ffmpeg. It holds the DECISION -- which file, cut
+ * how, into which segments -- and makes each segment when a player asks for it. ffmpeg runs
+ * for the length of one segment and exits. `hls-timeline.ts` owns the segmentation,
+ * `playback-plan.ts` owns the argv, and this module owns the bookkeeping between them.
+ *
+ * Segments are handed out by the route with `Bun.file`, which is zero-copy, so **segment
+ * bytes never enter the JS heap and the event loop pays a stat and an fd handoff per
+ * segment** rather than megabytes. That is the whole reason a transcoder can live beside a
+ * render path that must stay fast.
+ *
+ * ## Why the process is short-lived now, and what that bought
+ *
+ * The first version ran one long ffmpeg per session, paced to roughly realtime so it could
+ * not encode a whole film for somebody who watched nine seconds. It worked, and it made
+ * seeking impossible: a player can only seek inside the playlist, the playlist grew as
+ * ffmpeg wrote, and pacing kept the end of it near the playhead on purpose.
+ *
+ * Producing one segment per request fixes that and deletes the pacing problem rather than
+ * solving it. Nothing runs while a viewer is paused, a viewer who quits has bought the
+ * segments they watched and one more, and a scrub to 01:20:00 costs exactly the segment at
+ * 01:20:00. Measured on the NAS over the array 2026-09-08: **0.07-0.08 s for one ten-second
+ * copy-mode segment**, deep into a 3.4 GB file.
  *
  * ## The two budgets, and why one number would be wrong
  *
@@ -16,30 +34,21 @@
  * down.** So there are two limits and `isExpensive(plan)` decides which one a session
  * spends -- see `EXPENSIVE_SESSIONS` and `MAX_SESSIONS`.
  *
- * > [!IMPORTANT] THIS IS THE ONE LIMITER IN THE REPO THAT IS NOT COCKATIEL, AND THAT IS ARGUED
- * > The standing rule is that every timeout, semaphore and retry comes from `cockatiel`, and
- * > it is right everywhere it applies. It does not apply here. A cockatiel `bulkhead`
- * > executes a function and releases its slot when that function's promise settles -- but a
- * > transcode session **outlives the call that starts it** by minutes, and is released by an
- * > idle reaper or a client going away, neither of which is a promise `start()` could
- * > return. Wrapping the spawn would release the slot the instant ffmpeg was launched, which
- * > is a limiter that limits nothing.
+ * > [!CAUTION] A SESSION IS KEYED BY ITS INPUTS, so two viewers of one thing cost one session
+ * > The key is the resolved path, the plan and the encoder. Two clients asking for the same
+ * > thing JOIN, and then share every segment either of them causes to be produced -- which
+ * > is not merely thrift: two sessions over one output directory would have two ffmpegs
+ * > racing to write the same segment file.
  * >
- * > So the counter here is explicit and its release is explicit. What is NOT hand-rolled is
- * > the shape of the refusal: past the limit this throws rather than queueing, for the same
- * > reason `OUTBOUND_QUEUE_LIMIT` exists -- a queued playback request is a person watching a
- * > spinner for a minute, which is worse than being told the server is busy.
- *
- * > [!CAUTION] A SESSION IS KEYED BY ITS INPUTS, so two viewers of one thing cost one ffmpeg
- * > The key is the resolved path, the plan and the seek offset. Two clients asking for the
- * > same thing JOIN the running session instead of racing a second ffmpeg over the same
- * > output directory -- which would not merely be wasteful, it would have two processes
- * > writing one `index.m3u8` and produce a corrupt playlist for both of them.
+ * > The seek offset is NOT part of the key any more, and that is the shape of the whole
+ * > change. It used to be, because a session was a position; a session is now a whole film
+ * > and a position is just which segment gets asked for first.
  */
 
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { EncoderChoice } from "./encoder";
+import { INIT_FILE_NAME, segmentFileName, segmentRange, type Timeline } from "./hls-timeline";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
 /**
@@ -61,15 +70,40 @@ export const EXPENSIVE_SESSIONS = 2;
  */
 export const MAX_SESSIONS = 8;
 
+/**
+ * How many segments one session may be producing at the same moment.
+ *
+ * Two, because a player asks for the initialisation segment and the first media segment
+ * almost together and serialising those two is a visible delay. Past that it is
+ * BACK-PRESSURE, and the case it exists for is the one the card named: a viewer dragging the
+ * scrubber emits a seek per pointer move, and without a ceiling each one would spawn an
+ * ffmpeg for a position the viewer has already left. A refused production is a 404, which is
+ * what a player retries.
+ */
+export const SEGMENT_CONCURRENCY = 2;
+
+/**
+ * How many produced segments a session keeps on disk.
+ *
+ * A full watch-through of a remuxed 4K film would otherwise leave the whole film in the data
+ * directory -- gigabytes, for a viewer who has already passed it. The oldest production is
+ * dropped once this many exist, and re-producing one costs the measured 0.08 s, so a rewind
+ * past the window is cheap rather than broken.
+ */
+export const SEGMENT_CACHE = 10;
+
+/** How long one segment production may take before it is killed. */
+export const SEGMENT_TIMEOUT_MS = 45_000;
+
 /** No client has asked for a segment in this long -- the session is abandoned. */
 export const IDLE_REAP_MS = 60_000;
 
 /**
  * Nothing lives past this, touched or not.
  *
- * A client that keeps polling a playlist forever is indistinguishable from a healthy viewer,
- * so the idle reaper alone cannot bound the total. This is the backstop that makes the
- * session table finite under any client behaviour at all.
+ * A client that keeps polling forever is indistinguishable from a healthy viewer, so the
+ * idle reaper alone cannot bound the total. This is the backstop that makes the session
+ * table finite under any client behaviour at all.
  */
 export const HARD_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -86,11 +120,10 @@ export interface StartOpts {
   /** ALREADY resolved through `media-path.ts`. This module never validates a path. */
   input: string;
   plan: PlaybackPlan;
-  seekSec?: number;
+  /** Every segment of the title, from `hls-timeline.ts`. */
+  timeline: Timeline;
   /** Which encoder to use for a re-encode. From `chooseEncoder`, probed once at boot. */
   encoder?: EncoderChoice;
-  /** Seconds to burst-read before throttling; see `FfmpegOpts.readrateBurstSec`. */
-  readrateBurstSec?: number;
   /** Who asked, for the health report. Never used for a decision. */
   owner?: string;
 }
@@ -99,14 +132,14 @@ export interface Session {
   id: string;
   key: string;
   dir: string;
+  input: string;
   plan: PlaybackPlan;
+  timeline: Timeline;
   expensive: boolean;
+  encoder?: EncoderChoice;
   startedAt: number;
   lastAccessAt: number;
   owner: string | null;
-  /** Resolves when ffmpeg exits, either way. */
-  exited: Promise<number>;
-  stop(): void;
 }
 
 /** Injected so tests need no ffmpeg. */
@@ -125,8 +158,19 @@ export interface ManagerOpts {
   ffmpegPath?: string;
 }
 
+/** Everything a session keeps that a caller has no business seeing. */
+interface SessionState {
+  session: Session;
+  /** Segment index -> the production in flight for it, so two requests cost one ffmpeg. */
+  producing: Map<number, Promise<boolean>>;
+  /** Produced segment indices in the order they landed, for eviction. */
+  produced: number[];
+  /** Live children, so shutdown can kill what is running rather than orphaning it. */
+  running: Set<ReturnType<Spawner>>;
+}
+
 export class TranscodeSessions {
-  private readonly sessions = new Map<string, Session>();
+  private readonly states = new Map<string, SessionState>();
   private readonly byKey = new Map<string, string>();
   private readonly spawn: Spawner;
   private readonly now: () => number;
@@ -139,85 +183,65 @@ export class TranscodeSessions {
   }
 
   /**
-   * Start a session, or JOIN the one already producing exactly this output.
+   * Start a session, or JOIN the one already serving exactly this thing.
    *
-   * The join is not an optimisation -- see the caution above; two ffmpegs writing one
-   * playlist corrupt it for both viewers.
+   * Cheap by construction: no process is started here. What it spends is a slot and a
+   * directory, and what it refuses is a ninth viewer or a third re-encode.
    */
   start(o: StartOpts): Session {
     const key = sessionKey(o);
-    const existing = this.byKey.get(key);
-    if (existing) {
-      const s = this.sessions.get(existing);
-      if (s) {
-        s.lastAccessAt = this.now();
-        return s;
+    const joined = this.byKey.get(key);
+    if (joined) {
+      const state = this.states.get(joined);
+      if (state) {
+        state.session.lastAccessAt = this.now();
+        return state.session;
       }
     }
 
     const expensive = isExpensive(o.plan);
     // Reap before refusing: an abandoned session must never keep a live viewer out.
     this.reap();
-    if (this.sessions.size >= MAX_SESSIONS) throw new SessionRefused("too-many");
+    if (this.states.size >= MAX_SESSIONS) throw new SessionRefused("too-many");
     if (expensive && this.expensiveCount() >= EXPENSIVE_SESSIONS) {
       throw new SessionRefused("too-many-expensive");
     }
 
+    mkdirSync(this.opts.root, { recursive: true });
     const dir = mkdtempSync(join(this.opts.root, "sess-"));
-    const argv = [
-      this.ffmpeg,
-      ...ffmpegArgs(o.plan, {
-        input: o.input,
-        outDir: dir,
-        seekSec: o.seekSec,
-        encoder: o.encoder,
-        readrateBurstSec: o.readrateBurstSec,
-      }),
-    ];
-    const proc = this.spawn(argv);
-    const id = crypto.randomUUID();
     const at = this.now();
-
     const session: Session = {
-      id,
+      id: crypto.randomUUID(),
       key,
       dir,
+      input: o.input,
       plan: o.plan,
+      timeline: o.timeline,
       expensive,
+      encoder: o.encoder,
       startedAt: at,
       lastAccessAt: at,
       owner: o.owner ?? null,
-      exited: proc.exited,
-      stop: () => this.stop(id),
     };
-
-    // Self-cleanup when ffmpeg ends on its own -- the file finished, or it died. Either way
-    // the directory and the slot must go back without waiting for the reaper, or a server
-    // that transcoded eight short files an hour ago refuses the ninth.
-    void proc.exited.then(() => {
-      this.forget(id);
-    });
-
-    this.sessions.set(id, session);
-    this.byKey.set(key, id);
-    (session as Session & { proc: ReturnType<Spawner> }).proc = proc;
+    this.states.set(session.id, { session, producing: new Map(), produced: [], running: new Set() });
+    this.byKey.set(key, session.id);
     return session;
   }
 
-  /** Mark a session as still wanted. Called on every segment and playlist read. */
+  /** Mark a session as still wanted. Called on every playlist and segment read. */
   touch(id: string): Session | null {
-    const s = this.sessions.get(id);
-    if (!s) return null;
-    s.lastAccessAt = this.now();
-    return s;
+    const state = this.states.get(id);
+    if (!state) return null;
+    state.session.lastAccessAt = this.now();
+    return state.session;
   }
 
   get(id: string): Session | null {
-    return this.sessions.get(id) ?? null;
+    return this.states.get(id)?.session ?? null;
   }
 
   list(): Session[] {
-    return [...this.sessions.values()];
+    return [...this.states.values()].map((s) => s.session);
   }
 
   expensiveCount(): number {
@@ -225,31 +249,177 @@ export class TranscodeSessions {
   }
 
   /**
-   * Stop a session: ask ffmpeg to finish, insist shortly after, drop the directory.
+   * The path of segment `index`, producing it first if nobody has yet.
+   *
+   * Null means the caller should answer 404: no such session, no such segment, ffmpeg
+   * failed, or too many productions are already in flight. Every one of those is a state a
+   * player retries out of, which is why they share an answer.
+   */
+  async segmentPath(id: string, index: number): Promise<string | null> {
+    const state = this.states.get(id);
+    if (!state) return null;
+    state.session.lastAccessAt = this.now();
+    const path = join(state.session.dir, segmentFileName(index));
+    if (existsSync(path)) return path;
+    const produced = await this.produce(state, index);
+    return produced && existsSync(path) ? path : null;
+  }
+
+  /**
+   * The path of the fMP4 initialisation segment, producing the first segment to get it.
+   *
+   * Every run writes an init; the first one to land is kept and the rest are dropped, for
+   * the measured reason in `vodPlaylist`'s note -- they differ only in duration fields. A
+   * player asks for this before it asks for any media, so on a cold session this is what
+   * pays for segment 0, which is also the segment a player that is not seeking wants next.
+   */
+  async initPath(id: string): Promise<string | null> {
+    const state = this.states.get(id);
+    if (!state) return null;
+    state.session.lastAccessAt = this.now();
+    const path = join(state.session.dir, INIT_FILE_NAME);
+    if (existsSync(path)) return path;
+    await this.produce(state, 0);
+    return existsSync(path) ? path : null;
+  }
+
+  /**
+   * Produce one segment, or join the production already making it.
+   *
+   * The dedupe is not an optimisation: two ffmpegs writing one segment file would hand a
+   * player half of each.
+   */
+  private produce(state: SessionState, index: number): Promise<boolean> {
+    const already = state.producing.get(index);
+    if (already) return already;
+    if (state.producing.size >= SEGMENT_CONCURRENCY) return Promise.resolve(false);
+    const range = segmentRange(state.session.timeline, index);
+    if (!range) return Promise.resolve(false);
+
+    const run = this.runFfmpeg(state, index, range).finally(() => {
+      state.producing.delete(index);
+    });
+    state.producing.set(index, run);
+    return run;
+  }
+
+  /**
+   * One ffmpeg, into a private working directory, published by rename.
+   *
+   * > [!IMPORTANT] THE RENAME IS WHAT MAKES A SEGMENT SAFE TO SERVE
+   * > ffmpeg writes a segment progressively, so a route that served the file the moment it
+   * > appeared would hand a player a truncated fragment -- which is not a retryable 404, it
+   * > is a decode error. Writing into a directory nobody serves and moving the finished file
+   * > in is atomic within one filesystem, so a segment is either absent or complete.
+   */
+  private async runFfmpeg(
+    state: SessionState,
+    index: number,
+    range: { startSec: number; endSec: number },
+  ): Promise<boolean> {
+    const { session } = state;
+    let work: string;
+    try {
+      work = mkdtempSync(join(session.dir, `w${index}-`));
+    } catch {
+      // The session directory is gone: it was stopped while this request was in flight.
+      return false;
+    }
+
+    const proc = this.spawn([
+      this.ffmpeg,
+      ...ffmpegArgs(session.plan, {
+        input: session.input,
+        outDir: work,
+        segment: { index, startSec: range.startSec, endSec: range.endSec },
+        encoder: session.encoder,
+      }),
+    ]);
+    state.running.add(proc);
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill(9);
+      } catch {
+        // Already gone; the exit below is what the caller waits on.
+      }
+    }, SEGMENT_TIMEOUT_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+
+    let code: number;
+    try {
+      code = await proc.exited;
+    } finally {
+      clearTimeout(timer);
+      state.running.delete(proc);
+    }
+
+    const published = code === 0 && this.publish(state, work, index);
+    rmSync(work, { recursive: true, force: true });
+    return published;
+  }
+
+  /** Move the finished segment (and the first init we see) out of the working directory. */
+  private publish(state: SessionState, work: string, index: number): boolean {
+    const name = segmentFileName(index);
+    const { dir } = state.session;
+    try {
+      if (!existsSync(join(dir, INIT_FILE_NAME)) && existsSync(join(work, INIT_FILE_NAME))) {
+        renameSync(join(work, INIT_FILE_NAME), join(dir, INIT_FILE_NAME));
+      }
+      if (!existsSync(join(work, name))) return false;
+      renameSync(join(work, name), join(dir, name));
+    } catch {
+      return false;
+    }
+    state.produced.push(index);
+    this.evict(state);
+    return true;
+  }
+
+  /** Drop the oldest productions once a session holds more than `SEGMENT_CACHE`. */
+  private evict(state: SessionState): void {
+    while (state.produced.length > SEGMENT_CACHE) {
+      const oldest = state.produced.shift();
+      if (oldest === undefined) return;
+      rmSync(join(state.session.dir, segmentFileName(oldest)), { force: true });
+    }
+  }
+
+  /**
+   * Stop a session: kill whatever it is running, drop its directory, free its slot.
    *
    * SIGTERM first because ffmpeg closes its output cleanly on it. The SIGKILL is a backstop
    * for a process wedged on a stalled read -- a NAS share going away mid-stream is the real
    * case, and it is exactly when a hung ffmpeg would otherwise hold a slot forever.
    */
   stop(id: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    const proc = (s as Session & { proc?: ReturnType<Spawner> }).proc;
-    try {
-      proc?.kill(15);
-    } catch {
-      // Already gone. The forget below is what matters.
-    }
-    const timer = setTimeout(() => {
+    const state = this.states.get(id);
+    if (!state) return;
+    for (const proc of state.running) {
       try {
-        proc?.kill(9);
+        proc.kill(15);
       } catch {
-        // Nothing to insist to.
+        // Already gone. Dropping the directory below is what matters.
       }
-    }, SIGKILL_AFTER_MS);
-    // Do not hold the process open for a grace period nobody is waiting on.
-    (timer as unknown as { unref?: () => void }).unref?.();
-    this.forget(id);
+      const timer = setTimeout(() => {
+        try {
+          proc.kill(9);
+        } catch {
+          // Nothing to insist to.
+        }
+      }, SIGKILL_AFTER_MS);
+      // Do not hold the process open for a grace period nobody is waiting on.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    }
+    this.states.delete(id);
+    if (this.byKey.get(state.session.key) === id) this.byKey.delete(state.session.key);
+    try {
+      rmSync(state.session.dir, { recursive: true, force: true });
+    } catch {
+      // A directory we cannot remove is litter rather than a failure; the slot is what
+      // mattered and it is already back.
+    }
   }
 
   /**
@@ -276,16 +446,16 @@ export class TranscodeSessions {
   /**
    * Stop everything.
    *
-   * > [!CAUTION] A PROCESS THAT EXITS WITHOUT CALLING THIS ORPHANS EVERY RUNNING ffmpeg
+   * > [!CAUTION] A PROCESS THAT EXITS WITHOUT CALLING THIS ORPHANS A RUNNING ffmpeg
    * > A child outlives its parent. When finderr goes away -- a redeploy, a `--watch`
    * > restart, an operator's Ctrl-C -- the new process starts with an empty session map
-   * > while the old ffmpegs keep running, reparented to init, at whatever CPU they were
-   * > using, forever. Nothing reaps them, because the only thing that knew about them was
-   * > the map that just went away.
+   * > while the old ffmpeg keeps running, reparented to init, forever. Nothing reaps it,
+   * > because the only thing that knew about it was the map that just went away.
    * >
    * > Observed 2026-09-08 on the dev server: one orphan from a restart three edits earlier
-   * > was still at 344% CPU when somebody noticed the fans. `bindShutdown` is what stops
-   * > this being possible, and it is not optional wiring.
+   * > was still at 344% CPU when somebody noticed the fans. Segment runs are short, which
+   * > narrows the window rather than closing it -- a 4K re-encode of one segment is still
+   * > seconds of a Celeron. `bindShutdown` is not optional wiring.
    */
   stopAll(): void {
     for (const s of this.list()) this.stop(s.id);
@@ -295,11 +465,10 @@ export class TranscodeSessions {
    * Sweep session directories left by a PREVIOUS life of this process.
    *
    * Called at boot, before anything starts. A hard kill (SIGKILL, an OOM, a pulled plug)
-   * skips `stopAll` by definition, so the disk keeps whatever those sessions had written --
-   * and an HLS session is megabytes per minute. The directories are safe to remove
-   * unconditionally because nothing durable lives here: the whole tree is regenerable
-   * output, which is exactly why `paths.transcode` is its own directory rather than a
-   * corner of the data root.
+   * skips `stopAll` by definition, so the disk keeps whatever those sessions had written.
+   * The directories are safe to remove unconditionally because nothing durable lives here:
+   * the whole tree is regenerable output, which is exactly why `paths.transcode` is its own
+   * directory rather than a corner of the data root.
    */
   sweepStale(): number {
     let removed = 0;
@@ -313,19 +482,6 @@ export class TranscodeSessions {
       // No directory yet, or no permission. Neither is worth failing a boot over.
     }
     return removed;
-  }
-
-  private forget(id: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    this.sessions.delete(id);
-    if (this.byKey.get(s.key) === id) this.byKey.delete(s.key);
-    try {
-      rmSync(s.dir, { recursive: true, force: true });
-    } catch {
-      // A directory we cannot remove is litter rather than a failure; the slot is what
-      // mattered and it is already back.
-    }
   }
 }
 
@@ -355,18 +511,15 @@ export function bindShutdown(sessions: TranscodeSessions): void {
 /**
  * What makes two requests the same session.
  *
- * The seek offset is part of it BECAUSE ffmpeg starts writing at that point: two viewers at
- * different positions genuinely need different output, and treating them as one would give
- * the second viewer the first one's timeline.
+ * The file, the plan and the encoder -- everything that changes what a segment would
+ * CONTAIN. The position is deliberately absent: a session is a whole film now, so two
+ * viewers at different points in it share one session and every segment either of them
+ * causes to be produced.
  */
 export function sessionKey(o: StartOpts): string {
   const p = o.plan;
   return [
     o.input,
-    o.seekSec ?? 0,
-    // Pacing is part of the key because it changes the ARGV, and two sessions that would
-    // run different ffmpegs must not share one output directory.
-    o.readrateBurstSec ?? 0,
     p.video.action,
     p.video.sourceIndex,
     p.audio.action,

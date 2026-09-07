@@ -99,12 +99,21 @@ export function PlayHere({
         return;
       }
       const hls = new Hls({
-        // The server writes an EVENT playlist that grows as ffmpeg encodes, so the player
-        // must tolerate asking for a segment that is not written yet -- those come back 404
-        // by design (hls.js retries a 404 and gives up on a 500).
+        // The playlist names the whole film before any of it has been produced, so a
+        // fragment request is what CAUSES its segment to be made. Two settings follow from
+        // that and neither is a default worth keeping.
+        //
+        // The retries cover a segment the server declined to start right now -- too many
+        // productions already in flight, which is the back-pressure a viewer dragging the
+        // scrubber runs into. Those come back 404 by design (hls.js retries a 404 and gives
+        // up on a 500).
         manifestLoadingMaxRetry: 8,
         levelLoadingMaxRetry: 8,
         fragLoadingMaxRetry: 8,
+        // The timeout has to cover PRODUCING the fragment, not just transferring it. A
+        // copy-mode segment is 0.08 s on the NAS; a 4K software re-encode of one is seconds,
+        // and the default 20 s would abandon it just as it finished.
+        fragLoadingTimeOut: 60_000,
       });
       hlsRef.current = hls;
       hls.loadSource(session.playlist);
