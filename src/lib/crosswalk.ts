@@ -711,6 +711,36 @@ export function loadOrigin(
   `);
   const withLang = (db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number })
     .c;
+
+  /*
+    THE SAME LANGUAGES AGAIN, comma-joined onto `title.lang` for the row payload.
+
+    Language is stored twice on purpose and `SCHEMA` argues why at the column: the exploded
+    table is what the FILTER seeks, this is what a CARD draws. Both are written here, from
+    `lang_in`, so the two forms cannot disagree about what a title is in.
+
+    Aggregated into a KEYED table first and only then joined -- the country block below
+    does the identical dance for the identical reason, and this function's opening comment
+    is the seventeen-minute build that reason was bought with. Sorted inside the subquery so
+    `group_concat` emits a stable string: two builds of the same data must produce the same
+    column, or everything looks changed to anything diffing.
+
+    Titles with no language are simply not visited, so they keep the column's NULL. That is
+    NOT the same decision as the backfill further down, which gives every one of them an
+    `UNKNOWN_LANG` row in `title_lang` -- there, "unknown" has to be a member of the
+    filter's in-list; here it is an absent fact and a card must draw nothing for it.
+  */
+  db.run("create temporary table lang_agg (imdb text primary key, codes text not null)");
+  db.run(`
+    insert into lang_agg (imdb, codes)
+    select imdb, group_concat(code) from (select distinct imdb, code from lang_in order by imdb, code)
+     group by imdb
+  `);
+  db.run(`
+    update title set lang = (select a.codes from lang_agg a where a.imdb = title.tconst)
+     where exists (select 1 from lang_agg a where a.imdb = title.tconst)
+  `);
+  db.run("drop table lang_agg");
   db.run("drop table lang_in");
 
   /*

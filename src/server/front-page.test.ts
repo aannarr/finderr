@@ -36,6 +36,7 @@ function row(tconst: string, kind = "movie"): TitleRow {
     rating: 8,
     genres: "Drama",
     runtime: 100,
+    lang: null,
   };
 }
 

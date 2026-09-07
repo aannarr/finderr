@@ -17,7 +17,7 @@ import { creditLabel } from "./credits";
 import { nconstsByTmdbPersonId } from "./crosswalk";
 import { type PersonCredit, tmdbPersonIdOf } from "./facets";
 import { type PersonLeaderboard, rankPeople } from "./people-leaderboard";
-import type { TitleRow } from "./search";
+import { type TitleRow, titleCols } from "./title-cols";
 
 export interface Person {
   nconst: string;
@@ -97,6 +97,16 @@ export interface PersonCreditsOptions {
    * rather than a better default -- see `CREDIT_ORDER`.
    */
   sort?: PersonCreditSort;
+
+  /**
+   * Whether `title` carries the `lang` display column -- `SearchEngine.hasTitleLang`.
+   *
+   * A capability of the open file rather than a request, so `SearchEngine.personPage`
+   * injects it and no other caller passes it. Defaults to FALSE: a filmography on an
+   * index built before the column exists draws no languages rather than throwing
+   * `no such column`. See `titleCols`.
+   */
+  titleLang?: boolean;
 }
 
 /** The orderings a filmography can be read in. A closed union, so a bad param cannot reach SQL. */
@@ -175,7 +185,7 @@ export function personPage(db: Database, nconst: string, opts: PersonCreditsOpti
   // several of.
   const rows = db
     .query(
-      `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime,
+      `select ${titleCols(opts.titleLang ?? false, "t.")},
               group_concat(distinct tp.category) as categories,
               group_concat(distinct tp.characters) as characters,
               min(tp.ordering) as ordering

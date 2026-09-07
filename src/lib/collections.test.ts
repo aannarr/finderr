@@ -59,6 +59,7 @@ function heldIndex(held: readonly string[]): (tconst: string) => TitleRow | null
       rating: 8,
       genres: "Action",
       runtime: 136,
+      lang: null,
     };
   };
 }

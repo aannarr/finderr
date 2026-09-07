@@ -307,8 +307,20 @@ export const INDEX_STAGES = {
    * `hasLangYear` and `hasLangVotes` exist beside it: a v5 file has no such columns, so the
    * widened predicate on it is a `no such column` rather than a slower plan. The stamp orders
    * the rebuild; the probes keep the file serving until it lands.
+   *
+   * **v7 (2026-09-07) adds `title.lang`** -- the comma-joined display copy every `TitleRow`
+   * carries, so a card can say what language a title is in without a join on the render
+   * path. The data is the same data `title_lang` already held; what changes is that it is
+   * now reachable one row at a time for free.
+   *
+   * The failure without the stamp is the QUIET one rather than the sharp one, which makes
+   * it the more important bump of the two shapes: a v6 file has no such column, `hasTitleLang`
+   * is false, `titleCols` selects `null as lang`, and every card in the product simply never
+   * says what language anything is in. Nothing throws, nothing logs, health is green, and
+   * the feature is invisibly absent -- which is exactly the shape of the `hasIds` incident
+   * this whole stamp mechanism was built after.
    */
-  origin: () => JSON.stringify({ v: 6 }),
+  origin: () => JSON.stringify({ v: 7 }),
 
   /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it
