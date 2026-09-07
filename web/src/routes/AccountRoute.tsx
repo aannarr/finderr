@@ -33,6 +33,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AgentKeyPanel } from "../components/AgentKeyPanel";
 import { ConfirmAction } from "../components/ConfirmAction";
 import { PushToggle } from "../components/PushToggle";
+import { ShelfArrangement } from "../components/ShelfArrangement";
 import { UserAvatar, UserBadges } from "../components/settings/Identity";
 import { ACTION_COL, Empty, Row, Rows, Section } from "../components/settings/Section";
 import { quotaStat, Stat, StatStrip } from "../components/settings/StatStrip";
@@ -350,6 +351,26 @@ export function AccountRoute() {
           </StatStrip>
         </div>
       )}
+
+      {/*
+        FIRST among the sections, above the ways in.
+
+        Everything below is administrative -- how you sign in, which browsers hold a session,
+        what to revoke. This is the one section a reader opens `/account` to CHANGE rather
+        than to audit, and it is the only place in the product that offers it. That is the
+        same ordering rule this file states at the top, applied to the section that arrived
+        from `main` while this page was being rebuilt: order by WHY you opened the page.
+
+        It draws its own section and loads its own state, so nothing above it needs to know
+        shelves exist.
+
+        > [!NOTE] It does NOT yet use the `Section`/`Row` idiom the rest of this page follows
+        > It landed on `main` in parallel with that idiom and predates it, so it carries its
+        > own chrome. Restyling somebody else's new feature blind during a merge is worse than
+        > leaving it consistent with itself for now -- but it is the one thing on this page
+        > that does not follow `DESIGN.md`, and it should.
+      */}
+      <ShelfArrangement />
 
       <Section
         label="Signing in"

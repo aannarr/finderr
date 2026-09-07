@@ -288,19 +288,63 @@ what it replaced.
 ```json
 "index": {
   "warm": {
-    "prefault": true,
+    "state": "done",
+    "ok": true,
     "last": { "readMb": 1868, "ms": 10520, "residentMb": 1851 },
     "tuning": { "budgetMb": 3072, "budgetSource": "cgroup-v1", "mmapMb": 1868, "cacheMb": 154, "prefault": true }
   }
 }
 ```
 
-Three things are worth reading there:
+Four things are worth reading there:
 
+- **`ok`** is the one field to alert on. It is false only for `state: "failed"` and
+  `state: "partial"` -- the prefault RAN and did not deliver the index, so the container is
+  serving off the disk while looking otherwise healthy.
+- **`state`** says which situation this is: `off` (decided against), `pending` (no index open
+  yet, so a build is running), `running`, `done`, `partial` (threw part-way -- `last.readMb` is
+  how far it got and `last.error` is why), `failed` (threw having read nothing).
 - **`budgetSource: "host-ram"`** means no cgroup limit was found and finderr is sizing itself
   against the whole machine. Correct on bare metal; on a container it means the limit is not
   visible and you should set `FINDERR_MEMORY_BUDGET_MB`.
-- **`last: null`** a few minutes after a restart means the prefault has not completed. Either it is
-  still going, or it failed -- the log line says which.
 - **`residentMb` far below `readMb`** means it ran and the memory cap took most of it back. That is
   the shape this whole page is about, and the fix is a bigger limit rather than a setting.
+  `ok` stays true there deliberately: the prefault did its job and the cap undid it.
+
+---
+
+## The other memory question -- the library mirror, which is a spike rather than a resident cost
+
+Everything above is about the index, which is RESIDENT: it sits there, and the question is how much
+of it the kernel is allowed to keep. The library mirror is the opposite shape. Once a minute finderr
+asks Radarr, Sonarr and Plex what they hold, and for a few seconds it is much larger than usual.
+
+That transient lands **on top of** the resident index rather than instead of it, so it is part of
+the limit you choose. It is bounded -- each walk reads its response incrementally, or pages it, and
+keeps only the handful of fields the mirror stores -- but bounded is not free.
+
+Measured on a 10-core Apple Silicon machine, Bun 1.4.0, on **2026-09-07**, against synthetic
+libraries calibrated to what the real servers return (5,491 bytes per Radarr movie, 2,334 per Plex
+item). Peak RSS above the process's own baseline, worst of three runs, each in a fresh process:
+
+| library size | Radarr walk | Plex walk |
+|---|---|---|
+| 1,389 titles (about what a household holds) | 34 MB | 18 MB |
+| 13,890 titles (ten times that) | **77 MB** | **59 MB** |
+
+For comparison, the same walks read whole -- the shape finderr used before v1.1 -- cost **242 MB**
+and **117 MB** at 13,890 titles. That is the number worth knowing if you are running an older
+release with a big library and a small limit.
+
+**A gauge cannot see this, so do not go looking for it in `docker stats`.** The spike is over in a
+few seconds and the health probe runs every thirty, so every reading is taken between spikes. Read
+`runtime.peak` instead -- a high-water mark sampled from inside the walk, kept for the life of the
+process:
+
+```json
+"runtime": { "rss": 168394752, "peak": { "job": "arr-library", "rssMb": 231, "heapMb": 42, "ms": 3759 } }
+```
+
+If `peak.rssMb` plus your resident index is close to `cgroup.limit`, raise the limit. A container
+that dies here dies quietly: the kernel's OOM killer takes the process, Docker restarts it, and the
+health check that ran a second earlier said everything was fine.

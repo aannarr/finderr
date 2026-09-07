@@ -15,8 +15,8 @@
  *
  * GROUPED, NOT LISTED. A flat list in mixed states is a receipt: the row that needs somebody
  * to do something sits between two that arrived last week. `groupByState` partitions it into
- * Downloading / Waiting / Arrived / Needs attention, in that order, and the counts are
- * repeated in the header so one glance answers "is anything wrong".
+ * Downloading / Waiting / Arrived / Needs attention / Removed, in that order, and the counts
+ * are repeated in the header so one glance answers "is anything wrong".
  *
  * IT UPDATES WHILE YOU WATCH IT, and it has to: this is the one page somebody opens in order
  * to see a bar move, and a page that loaded once left that bar frozen at whatever percentage
@@ -27,6 +27,11 @@
  * the title page draws, off the same server-built `plex` field. A DEAD-ENDED one offers
  * something too: `RetryControl`, which is the endpoint that has existed since requests did
  * and that nothing on this page had ever called.
+ *
+ * AND AN ADMIN CAN TAKE ONE BACK OUT -- `RemoveMediaControl`, the one destructive verb in the
+ * product, offered here and on `/log` and on no other surface. It is the complement of
+ * Withdraw rather than an alternative to it: `isWithdrawable` and `isRemovable` are disjoint,
+ * so no row ever draws both.
  */
 
 import { Link } from "@tanstack/react-router";
@@ -38,6 +43,7 @@ import { isWithdrawable } from "../../../src/lib/request-withdrawal";
 import { ConfirmAction } from "../components/ConfirmAction";
 import { PlayOnPlex } from "../components/PlayOnPlex";
 import { Poster } from "../components/Poster";
+import { RemoveMediaControl } from "../components/RemoveMediaControl";
 import { ProgressBar, RequestVerdictPanel } from "../components/RequestProgress";
 import { RequestsHeader } from "../components/RequestsHeader";
 import {
@@ -164,9 +170,15 @@ export function RetryControl({ request, onRetried }: { request: MediaRequest; on
  */
 export function RequestActions({
   request,
+  isAdmin,
   onWithdrawn,
 }: {
   request: MediaRequest;
+  /**
+   * Is the reader an admin? A PROP and not `useApp()`, so this component and its test say
+   * the same thing without a provider around them -- the route reads the context once.
+   */
+  isAdmin: boolean;
   /** Reload the list. One read after a withdraw OR a retry -- both change what the arr is doing. */
   onWithdrawn: () => void;
 }) {
@@ -189,6 +201,13 @@ export function RequestActions({
       {request.plex && <PlayOnPlex plex={request.plex} variant="inline" />}
       <RetryControl request={request} onRetried={onWithdrawn} />
       <WithdrawControl request={request} onWithdrawn={onWithdrawn} />
+      {/*
+        THE ONE DESTRUCTIVE VERB, and it is the complement of Withdraw rather than an
+        alternative to it: `isWithdrawable` and `isRemovable` are disjoint, so exactly one of
+        these two can ever draw on a given row and no reader is offered both. Admin-only, and
+        the component itself is what refuses -- see `RemoveMediaControl`.
+      */}
+      <RemoveMediaControl request={request} isAdmin={isAdmin} onRemoved={onWithdrawn} />
     </>
   );
 }
@@ -205,7 +224,7 @@ export function RequestsRoute() {
   const [error, setError] = useState<string | null>(null);
   /** Everything that has been news at any point during this visit. See `newsFirst`. */
   const news = useRef<Set<string>>(new Set());
-  const { requestsTick } = useApp();
+  const { requestsTick, isAdmin } = useApp();
 
   /** Fetch the caller's rows, and say whether any of them are news to them. */
   const load = useCallback(async (): Promise<boolean> => {
@@ -316,7 +335,7 @@ export function RequestsRoute() {
             </h2>
             <ul className="mt-3 flex flex-col gap-5">
               {rows.map((request) => (
-                <RequestRow key={request.tconst} request={request} onChanged={load} />
+                <RequestRow key={request.tconst} request={request} isAdmin={isAdmin} onChanged={load} />
               ))}
             </ul>
           </section>
@@ -333,7 +352,15 @@ export function RequestsRoute() {
  * under which heading" and a forty-line row body inside two nested maps is where that stops
  * being readable. Nothing here decides anything: every fact is a field the server sent.
  */
-function RequestRow({ request, onChanged }: { request: MediaRequest; onChanged: () => void }) {
+function RequestRow({
+  request,
+  isAdmin,
+  onChanged,
+}: {
+  request: MediaRequest;
+  isAdmin: boolean;
+  onChanged: () => void;
+}) {
   const seasons = seasonLine(request);
 
   return (
@@ -403,7 +430,7 @@ function RequestRow({ request, onChanged }: { request: MediaRequest; onChanged: 
           it, and the same read is what the tick above asks for.
         */}
         <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <RequestActions request={request} onWithdrawn={onChanged} />
+          <RequestActions request={request} isAdmin={isAdmin} onWithdrawn={onChanged} />
         </div>
       </div>
     </li>

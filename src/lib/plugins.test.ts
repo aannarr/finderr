@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { AddonConfigStore, REDACTED, redactingLog } from "./addon-config";
 import { loadConfig } from "./config";
 import { FacetResolver } from "./facet-resolver";
 import type { FacetEntity } from "./facets";
@@ -871,5 +872,205 @@ export function init() {
     const after = await load();
     expect(after.panes()).toEqual([]);
     expect(after.providersFor("ratings", "movie")).toHaveLength(1);
+  });
+});
+
+/**
+ * The declaration half of per-addon configuration, through the real loader.
+ *
+ * `addon-config.test.ts` owns the resolution rule; what is asserted here is the wiring an
+ * addon author actually meets -- a declaration in `meta` becoming a reader on `c.config`, a
+ * malformed field costing itself and not the addon, and a changed value moving the plugin's
+ * `configVersion` so what the old configuration bought stops being served.
+ */
+describe("an addon declares what it needs and reads it back through its context", () => {
+  /** Reports what it was configured with, so a test can see what `init` actually resolved. */
+  function configuredPlugin(id: string): string {
+    return `
+export const meta = {
+  id: ${JSON.stringify(id)},
+  entities: ["movie"],
+  config: [
+    { key: "apiKey", type: "secret", label: "API key", env: "FIXTURE_API_KEY", required: true },
+    { key: "source", type: "string", label: "Source", default: "unconfigured" },
+  ],
+};
+export function init(c) {
+  const source = c.config.string("source");
+  return {
+    facets: {
+      ratings: async () => ({
+        data: [{ source, kind: "critics", value: 50, outOf: 100 }],
+        freshness: "settled",
+      }),
+    },
+  };
+}
+`;
+  }
+
+  function loadWith(config: AddonConfigStore, log?: (m: string) => void) {
+    return loadPlugins({
+      dir: pluginsDir,
+      kv: store,
+      config,
+      log: log ?? ((m) => logs.push(m)),
+      policy: { minIntervalMsPerHost: 0 },
+    });
+  }
+
+  test("a declared field is readable through c.config, defaults and all", async () => {
+    writePlugin("configured.ts", configuredPlugin("configured"));
+    const config = new AddonConfigStore(store, {});
+
+    const facets = await resolveWith(await loadWith(config));
+    expect(facets.ratings?.data?.[0]?.source).toBe("unconfigured");
+    // And the loader recorded what the addon asked for, which is what an admin form draws.
+    expect(config.declarationOf("configured").map((f) => f.key)).toEqual(["apiKey", "source"]);
+  });
+
+  test("a stored value beats the env seed all the way through to what the addon answers", async () => {
+    writePlugin("configured.ts", configuredPlugin("configured"));
+    const config = new AddonConfigStore(store, { FIXTURE_SOURCE: "env-seeded" });
+    config.write("configured", "source", "from-the-store");
+
+    const facets = await resolveWith(await loadWith(config));
+    expect(facets.ratings?.data?.[0]?.source).toBe("from-the-store");
+  });
+
+  test("a malformed field costs itself, and the addon still loads", async () => {
+    writePlugin(
+      "sloppy.ts",
+      `
+export const meta = {
+  id: "sloppy",
+  entities: ["movie"],
+  config: [
+    { key: "ok", type: "string", label: "Fine" },
+    { key: "noLabel", type: "string" },
+    { key: "weird", type: "colour", label: "Weird" },
+    { key: "ok", type: "string", label: "Twice" },
+  ],
+};
+export function init(c) {
+  return {
+    facets: {
+      ratings: async () => ({
+        data: [{ source: "sloppy", kind: "critics", value: 1, outOf: 100 }],
+        freshness: "settled",
+      }),
+    },
+  };
+}
+`,
+    );
+    const config = new AddonConfigStore(store, {});
+    const registry = await loadWith(config);
+
+    expect(registry.list().map((p) => p.meta.id)).toEqual(["sloppy"]);
+    expect(config.declarationOf("sloppy").map((f) => f.key)).toEqual(["ok"]);
+    expect(logs.join("\n")).toMatch(/config 'noLabel' has no label -- dropped/);
+    expect(logs.join("\n")).toMatch(/config 'weird' has unknown type 'colour' -- dropped/);
+    expect(logs.join("\n")).toMatch(/config key 'ok' is declared twice -- second dropped/);
+  });
+
+  test("the registry reports the fields that survived, not the ones the author wrote", async () => {
+    writePlugin("configured.ts", configuredPlugin("configured"));
+    const registry = await loadWith(new AddonConfigStore(store, {}));
+    expect(registry.list()[0]?.config.map((f) => f.key)).toEqual(["apiKey", "source"]);
+  });
+
+  /*
+    THE CACHE-INVALIDATION DECISION, asserted both ways.
+
+    A config change invalidates that addon's cached contributions, because a different API
+    key may buy different data -- but only at the next LOAD, never at the moment somebody
+    saves. `configVersion` is where that lands, which is also what makes the timing right:
+    `init` reads its configuration once, so "the version moves when the plugin is next
+    loaded" is exactly when the new configuration starts being used. An admin form saving on
+    every keystroke therefore costs nothing.
+  */
+  test("changing a config value moves the addon's configVersion", async () => {
+    writePlugin("configured.ts", configuredPlugin("configured"));
+    const config = new AddonConfigStore(store, {});
+
+    const before = (await loadWith(config)).configVersionOf("configured");
+    config.write("configured", "source", "somewhere-else");
+    const after = (await loadWith(config)).configVersionOf("configured");
+
+    expect(after).not.toBe(before);
+  });
+
+  test("re-saving the same value does not move it, so nothing is re-bought for free", async () => {
+    writePlugin("configured.ts", configuredPlugin("configured"));
+    const config = new AddonConfigStore(store, {});
+    config.write("configured", "source", "same");
+
+    const before = (await loadWith(config)).configVersionOf("configured");
+    config.write("configured", "source", "same");
+    const after = (await loadWith(config)).configVersionOf("configured");
+
+    expect(after).toBe(before);
+  });
+
+  /**
+   * A configured secret reaches no log line, and the case that matters is the THROWN one.
+   *
+   * An addon author can be told not to log their own key. They cannot be relied on to have
+   * thought about `FacetResolver`, which prints `err.message` for every provider that
+   * throws -- and an upstream client that builds its error out of a URL carrying `?api_key=`
+   * puts a live credential in the container log with nobody having written a log call at
+   * all. `safeUrl` closes that for the one client in this tree; redaction closes it for
+   * every addon nobody has read.
+   */
+  test("a configured secret reaches no log line, not even through a thrown provider error", async () => {
+    const KEY = "s3cret-key-value";
+    writePlugin(
+      "leaky.ts",
+      `
+export const meta = {
+  id: "leaky",
+  entities: ["movie"],
+  config: [{ key: "apiKey", type: "secret", label: "API key", required: true }],
+};
+export function init(c) {
+  const apiKey = c.config.string("apiKey");
+  // Both routes out: a log line the author wrote, and an error they never meant to leak.
+  c.log("starting with key " + apiKey);
+  return {
+    facets: {
+      ratings: async () => {
+        throw new Error("https://api.example/x?api_key=" + apiKey + " answered 401");
+      },
+    },
+  };
+}
+`,
+    );
+    const config = new AddonConfigStore(store, {});
+    config.declare("leaky", [{ key: "apiKey", type: "secret", label: "API key" }]);
+    config.write("leaky", "apiKey", KEY);
+
+    // The wiring `src/server/index.ts` uses: one redacting sink for the loader AND for the
+    // resolver, because those are the two places an addon's own words are printed.
+    const printed: string[] = [];
+    const log = redactingLog(
+      (m) => printed.push(m),
+      () => config.secrets(),
+    );
+    const registry = await loadWith(config, log);
+    const facets = await new FacetResolver({ store, registry, log }).resolve(INCEPTION, {
+      deadlineMs: 2_000,
+    });
+
+    expect(printed.join("\n")).not.toContain(KEY);
+    expect(printed.join("\n")).toContain(REDACTED);
+    // The failure is still REPORTED -- redaction must not cost the operator the diagnosis.
+    expect(printed.join("\n")).toMatch(/plugin leaky: 'ratings' failed/);
+
+    // And nothing a browser can reach carries it either: the facet reports a status and no
+    // message, and the cached row is the failure, not the reason for it.
+    expect(JSON.stringify(facets)).not.toContain(KEY);
+    expect(JSON.stringify(store.facetContributions("tt1375666"))).not.toContain(KEY);
   });
 });

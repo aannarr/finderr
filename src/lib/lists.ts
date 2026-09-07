@@ -139,6 +139,17 @@ export interface ListLanguage {
 }
 
 /**
+ * The kind a language list ranks, spelled ONCE.
+ *
+ * `LIST_LANGUAGES` decides membership by counting ranked non-English FILMS, and `list-audit.ts`
+ * has to count exactly the rows a list would draw or its verdict is about a different set. Two
+ * copies of the word would drift the day a language list stops being films-only, and the audit
+ * would go on passing while measuring the wrong thing -- which is the silence this whole check
+ * was written to end.
+ */
+export const LANGUAGE_LIST_KIND = "movie";
+
+/**
  * The languages worth a list, and the one rule that decides which those are.
  *
  * CLOSED and editorial, exactly like `LIST_GENRES`, and now editorial in the way that array
@@ -148,6 +159,12 @@ export interface ListLanguage {
  * floor**, audited both ways against a real 1,276,669-title build and the widened crosswalk --
  * forty-five codes clear it, all forty-five are here, and no code here falls short of it. The
  * one exception this array ever carried was Chinese, and the note below is where it was spent.
+ *
+ * **That claim is CHECKED rather than remembered**, and it has to be, because the corpus moves
+ * under it: `sh` sat over the floor and out of this array from the day it grew past twelve, and
+ * the crosswalk widening carried three more over in one commit. `bun run lists:audit` compares
+ * both directions against a real index and `bun run gate` runs it -- see `./list-audit.ts` for
+ * why no unit test can, and for the one direction an older index cannot answer.
  *
  * > [!IMPORTANT] It used to be a COST rule and it no longer is, which is why this array is
  * > dozens long rather than twelve
@@ -176,6 +193,14 @@ export interface ListLanguage {
  * > is ALSO in English, which is 19.6% at the worst of them (Ukrainian, 115 of 587 ranked
  * > films). A list added later costs one more of the same ~0.24 ms, which is the whole point
  * > of the change above -- the cost stopped depending on the language. See `INDEXES.origin`.
+ * >
+ * > **RE-MEASURED AGAIN 2026-09-07 when `title_lang` gained `year` and `votes`**, because that
+ * > widened `ix_lang_rank` with a fifth column and every list here reads it. Also free: the
+ * > forty-five lists total **11.0 ms before and 11.1 after** on a copy of the real
+ * > 1,276,669-title build, M1 Max, best of five warm through `rankedMembers` -- inside the
+ * > run-to-run spread, and no language leaving the 0.21-0.32 ms band. The columns were added
+ * > for a language BROWSE crossed with a year, a decade or a votes sort, which is a different
+ * > query; this line is the control that says they cost the lists nothing.
  *
  * > [!NOTE] Chinese, Greek and Tagalog are here since 2026-09-06, and the corpus is what
  * > changed rather than the rule
@@ -366,7 +391,7 @@ export function computedLists(year: number): ComputedList[] {
     ...LIST_LANGUAGES.map((language) => ({
       id: `${LIST_PREFIX.language}${language.code}`,
       title: `Best films in ${language.name}`,
-      filters: { kind: "movie", lang: language.code },
+      filters: { kind: LANGUAGE_LIST_KIND, lang: language.code },
     })),
   ];
 }

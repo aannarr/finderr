@@ -35,16 +35,32 @@
  * `residency` is sampled at four points, because the interesting number is not any one of
  * them but the DROP from `afterPrefault` to `afterSuite`: that is the page cache being
  * reclaimed under the cap, and it is the mechanism nothing in the deployment reported.
+ *
+ * The `# caps:` line and the loud absent-tier warning come from `src/lib/bench-caps.ts`, which
+ * `bench-index.ts` prints from too. Both harnesses run the same `scenarios()` list, so they
+ * must not be able to disagree about whether the fuzzy tier was loaded when the numbers were
+ * taken -- in this table an absent tier is indistinguishable from a very fast one.
  */
 
 import { rmSync, statSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
 import { join } from "node:path";
+import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
-import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
+import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import { detectMemoryBudget, type MemoryUsage, readMemoryUsage } from "../lib/memory-budget";
 import { SearchEngine } from "../lib/search";
+import { prepareSqlite } from "../lib/spellfix";
+
+// AT IMPORT TIME, above `main()`, for the reason `src/lib/spellfix.ts` documents as TRAP 1:
+// `setCustomSQLite` is a process-global one-shot that throws once ANY Database exists, and
+// this file opens one for the fixtures and another in `openEngine()`. Called from inside
+// `main()` it would always be too late on macOS, and the only symptom is `search.fuzzy`
+// coming back in microseconds because the tier is not there -- which is what this harness
+// did until 2026-09-07. `bench-index.ts`, `build-index.ts` and `build-vocab.ts` call it in
+// the same position.
+prepareSqlite((m) => console.log(`# ${m}`));
 
 interface Args {
   source: string;
@@ -91,6 +107,10 @@ function openEngine(path: string, cfg: ReturnType<typeof loadConfig>, args: Args
   const engine = new SearchEngine(path, cfg);
   if (args.mmap !== null) engine.rawDb.run(`pragma mmap_size = ${args.mmap}`);
   if (args.cache !== null) engine.rawDb.run(`pragma cache_size = -${args.cache}`);
+  // Without this the fuzzy tier silently does not load and `search.fuzzy` measures an absent
+  // feature -- it comes back in microseconds because it finds nothing. Suppressed on purpose:
+  // the answer belongs in the report's `# caps:` line, not in noise before it. `prepareSqlite`
+  // at the top of this file is the other half; without it this call cannot succeed on macOS.
   engine.prepareFuzzy(() => {});
   return engine;
 }
@@ -111,18 +131,6 @@ interface Row {
   p99: number;
   max: number;
   rows: number;
-}
-
-function countRows(v: unknown): number {
-  if (Array.isArray(v)) return v.length;
-  if (v && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    if (Array.isArray(o.rows)) return o.rows.length;
-    if (Array.isArray(o.results)) return o.results.length;
-    if (Array.isArray(o.credits)) return o.credits.length;
-    return 1;
-  }
-  return v === null || v === undefined ? 0 : 1;
 }
 
 function fmtUsage(u: MemoryUsage): string {
@@ -194,6 +202,8 @@ async function main(): Promise<void> {
 
   const engine = openEngine(dbPath, cfg, args);
   const meta = engine.meta();
+  const { caps, lines } = readCapabilities(engine);
+  for (const line of lines) console.log(line);
 
   /*
     FIXTURES COME OFF THE SOURCE FILE, NOT OFF THE CLONE, and that is not fussiness.
@@ -285,6 +295,10 @@ async function main(): Promise<void> {
           },
           budgetMb: budget.mb,
           budgetSource: budget.source,
+          // Travels with the numbers, so a JSON diffed months later still says whether the
+          // fuzzy tier was there. A `search.fuzzy` cell is not comparable across two runs that
+          // disagree about this, and nothing else in the file records it.
+          caps,
           pragmas: { mmap: args.mmap, cache: args.cache },
           prefault: args.prefault,
           prefaultMs,

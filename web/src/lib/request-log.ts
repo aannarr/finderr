@@ -94,15 +94,21 @@ export function newsFirst(requests: readonly MediaRequest[], news: ReadonlySet<s
 }
 
 /**
- * The four buckets `/requests` reads as a dashboard rather than as a receipt.
+ * The buckets `/requests` reads as a dashboard rather than as a receipt.
  *
  * THREE OF THEM ARE `VerdictTone` UNDER ANOTHER NAME, and that is deliberate: `working`,
  * `done` and `dead_end` already exist as the single owner of how a verdict feels, and
  * listing verdicts here would be a second copy free to disagree the next time one is added.
- * The fourth is a SPLIT inside `working` on one predicate -- is a release actually coming
+ * `downloading` is a SPLIT inside `working` on one predicate -- is a release actually coming
  * down -- rather than a fifth vocabulary.
+ *
+ * `removed` is the ONE bucket keyed on a verdict, and it is a deliberate exception rather than
+ * the start of a list. It is `done` in tone -- stop waiting, nothing further will happen -- but
+ * filing it under "Arrived" would tell somebody a film they can no longer watch is there. No
+ * tone can separate those two, because the tone is about what the reader should DO and in both
+ * cases the answer is "nothing"; the difference is what they HAVE. See `bucketOf`.
  */
-const BUCKET_ORDER = ["downloading", "waiting", "arrived", "failed"] as const;
+const BUCKET_ORDER = ["downloading", "waiting", "arrived", "failed", "removed"] as const;
 
 export type RequestBucket = (typeof BUCKET_ORDER)[number];
 
@@ -119,6 +125,7 @@ export const BUCKET_LABEL: Record<RequestBucket, string> = {
   waiting: "Waiting",
   arrived: "Arrived",
   failed: "Needs attention",
+  removed: "Removed",
 };
 
 /** One bucket with its rows. Empty buckets are dropped, so a heading always has rows under it. */
@@ -138,6 +145,10 @@ export interface RequestGroup {
  */
 function bucketOf(request: MediaRequest): RequestBucket {
   if (!request.requestVerdict) return "waiting";
+  // BEFORE the tone, and it is the only verdict named in this file. `removed` is `done` --
+  // there is nothing left to wait for -- but "Arrived" over a film that has been deleted is
+  // the page telling somebody they have something they do not. See `BUCKET_ORDER`.
+  if (request.requestVerdict === "removed") return "removed";
   const tone = VERDICT_COPY[request.requestVerdict].tone;
   if (tone === "done") return "arrived";
   if (tone === "dead_end") return "failed";

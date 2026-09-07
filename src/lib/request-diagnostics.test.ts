@@ -55,6 +55,9 @@ describe("deriving a verdict from status and evidence", () => {
       // The arr said so directly, over a webhook. No poll can see this state and no
       // evidence refines it -- see `RequestStatus.manual_import`.
       ["manual_import", "needs_manual_import"],
+      // Terminal, and there is no evidence to refine it either: the arr no longer holds the
+      // title, so `request_diagnostic` has nothing to observe about it.
+      ["removed", "removed"],
     ];
     for (const [status, verdict] of expected) {
       expect(verdictFor(req(status), null), status).toBe(verdict);
@@ -68,6 +71,16 @@ describe("deriving a verdict from status and evidence", () => {
   */
   test("needing a manual import reads as a dead end, so the reader stops waiting", () => {
     expect(VERDICT_COPY.needs_manual_import.tone).toBe("dead_end");
+  });
+
+  /*
+    `done` and NOT `dead_end`, and the difference is a control: `/requests` draws "Try again"
+    on every dead end, which here would be a one-click undo of an admin's deliberate removal
+    sitting under the row that reports it. Asking for the title again is meant to cost a real,
+    quota-counted request.
+  */
+  test("a removed request reads as finished rather than as a dead end", () => {
+    expect(VERDICT_COPY.removed.tone).toBe("done");
   });
 
   test("evidence never overrides it -- there is nothing to refine", () => {

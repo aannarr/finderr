@@ -8,6 +8,7 @@
  */
 
 import type { ArrService, ServarrService } from "./config";
+import { streamResponseArray } from "./json-array-stream";
 
 /** Every servarr finderr speaks to. Used for log lines and for `safeArrMessage`. */
 export type ServarrName = "radarr" | "sonarr" | "prowlarr";
@@ -161,6 +162,50 @@ export interface ArrUnmonitor {
   unmonitor(arrId: number): Promise<unknown>;
 }
 
+/**
+ * What the arr is holding on disk for one library item, in the three facts a confirmation
+ * has to show before anything is deleted.
+ *
+ * Read LIVE rather than from the library mirror, and that is the point: the mirror answers
+ * "is it here" (`has_file`) and deliberately carries no size, because a byte count changes
+ * on every upgrade and nothing renders it. A confirmation that quoted a stale size would be
+ * describing a different file from the one about to be removed.
+ */
+export interface ArrHoldings {
+  /** Files the arr holds. 0 or 1 for a film; the episode file count for a series. */
+  files: number;
+  /** Total bytes on disk, or null when the arr reports none. */
+  bytes: number | null;
+  /**
+   * The arr's own quality name, e.g. "Bluray-1080p", or null.
+   *
+   * Null for a SERIES and that is honest rather than missing: Sonarr holds one quality per
+   * episode file and has no single answer for the series. Safe to forward for the reason
+   * `ArrHistoryRecord` gives -- it is a profile name from a closed list the operator
+   * configured, with no path and no free text in it.
+   */
+  quality: string | null;
+}
+
+/**
+ * The two arr capabilities REMOVING media needs: look at what is there, then take it out.
+ *
+ * A separate interface from `ArrUnmonitor` rather than more methods on it, and the split is
+ * the safety property. `withdrawRequest` depends on `ArrUnmonitor` and therefore CANNOT
+ * reach a delete however it is edited later; `removeMedia` depends on this one and is the
+ * only caller in the tree that can. Two names for two authorities, checked by the compiler
+ * rather than remembered.
+ */
+export interface ArrRemoval {
+  /** `arrId` is the arr's OWN row id. Null when the arr no longer holds that row. */
+  holdings(arrId: number): Promise<ArrHoldings | null>;
+  /**
+   * Remove the library item. `deleteFiles` decides whether the files go with it -- the arr
+   * forgets the title either way.
+   */
+  remove(arrId: number, opts: { deleteFiles: boolean }): Promise<unknown>;
+}
+
 export class ArrError extends Error {
   constructor(
     readonly service: string,
@@ -225,6 +270,37 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
   }
 
   /**
+   * The call itself, up to and including "did it fail". Split out from `request` so the
+   * streaming reader below shares the URL, the credential and the failure vocabulary rather
+   * than growing a second copy of them.
+   *
+   * A failure body is read WHOLE here even on the streaming path, and that is deliberate:
+   * an arr's error is a sentence, and `ArrError` is what turns it into something a person
+   * can act on. Only the SUCCESS body is ever large.
+   */
+  private async send(
+    method: string,
+    path: string,
+    opts: {
+      query?: Record<string, string | number | undefined>;
+      body?: unknown;
+      timeoutMs?: number;
+    },
+  ): Promise<Response> {
+    const res = await fetch(this.url(path, opts.query), {
+      method,
+      headers: {
+        "X-Api-Key": this.svc.apiKey,
+        ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+    });
+    if (!res.ok) throw new ArrError(this.name, res.status, await res.text());
+    return res;
+  }
+
+  /**
    * Every arr DELETE is a void controller action: HTTP 200 with a zero-byte body.
    * Calling res.json() unconditionally makes a SUCCESSFUL delete throw
    * "Unexpected end of JSON input". Handle the empty body explicitly.
@@ -238,18 +314,7 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
       timeoutMs?: number;
     } = {},
   ): Promise<T | null> {
-    const res = await fetch(this.url(path, opts.query), {
-      method,
-      headers: {
-        "X-Api-Key": this.svc.apiKey,
-        ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      },
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
-    });
-
-    const text = await res.text();
-    if (!res.ok) throw new ArrError(this.name, res.status, text);
+    const text = await (await this.send(method, path, opts)).text();
     if (text.length === 0) return null;
     try {
       return JSON.parse(text) as T;
@@ -260,6 +325,23 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
 
   get<T>(path: string, query?: Record<string, string | number | undefined>) {
     return this.request<T>("GET", path, { query });
+  }
+
+  /**
+   * A GET whose answer is a JSON ARRAY, handed over one element at a time.
+   *
+   * For the endpoints that answer with a whole library and cannot be paged -- see
+   * `streamJsonArray` for the measurement, and for why the page parameters an arr accepts
+   * are worse than none at all. A caller that projects each record down to the few fields
+   * it keeps has a peak that does not grow with the library.
+   *
+   * The timeout is generous compared to `get`'s twenty seconds because it now has to cover
+   * the whole transfer rather than a small answer, and the libraries these serve are the
+   * ones expected to get much larger. It is still a timeout: a wedged arr does not hold a
+   * mirror pass open forever.
+   */
+  getStream<T>(path: string, query?: Record<string, string | number | undefined>): AsyncGenerator<T> {
+    return streamResponseArray<T>(this.send("GET", path, { query, timeoutMs: 120_000 }));
   }
   post<T>(path: string, body: unknown) {
     return this.request<T>("POST", path, { body });
@@ -341,22 +423,103 @@ export class ArrClient extends ServarrHttp<ArrService> {
   protected unmonitorVia(path: string, idsField: string, arrId: number): Promise<unknown> {
     return this.put<unknown>(path, { [idsField]: [arrId], monitored: false });
   }
+
+  /**
+   * Take one library item out of the arr, optionally with its files.
+   *
+   * > [!CAUTION] THE IMPORT EXCLUSION IS SENT EXPLICITLY FALSE, and never left to default
+   * > `addImportExclusion` (Radarr) / `addImportListExclusion` (Sonarr) adds the title to a
+   * > permanent block list, so a later import list -- or a person re-requesting it here --
+   * > silently gets nothing. That is a much bigger decision than "take this back out", it is
+   * > invisible from finderr, and it is undone only in the arr's own settings. Both arrs
+   * > currently default it to false; sending it says we MEAN false rather than that we did
+   * > not think about it, and the pair of tests in `arr.test.ts` is what keeps it that way.
+   *
+   * The two services spell that parameter differently, which is why the field NAME is an
+   * argument here in the same shape `unmonitorVia` takes `idsField`: one implementation, and
+   * the per-service difference stays a value rather than a second copy of the method.
+   */
+  protected removeVia(
+    path: string,
+    exclusionField: string,
+    arrId: number,
+    deleteFiles: boolean,
+  ): Promise<unknown> {
+    return this.del<unknown>(`${path}/${arrId}`, {
+      deleteFiles: String(deleteFiles),
+      [exclusionField]: "false",
+    });
+  }
+
+  /**
+   * One library item as the arr describes it right now, reduced to `ArrHoldings`.
+   *
+   * The FETCH and the missing-row rule live here; the per-service READ is the callback,
+   * because that is the only part Radarr and Sonarr genuinely disagree about. A 404 is not
+   * an error to report: it means the arr does not hold that row, which is exactly what
+   * `null` says and what a caller about to remove it needs to know.
+   */
+  protected async holdingsOf(
+    path: string,
+    arrId: number,
+    read: (body: Record<string, unknown>) => ArrHoldings,
+  ): Promise<ArrHoldings | null> {
+    try {
+      const body = await this.get<Record<string, unknown>>(`${path}/${arrId}`);
+      return body ? read(body) : null;
+    } catch (err) {
+      if (err instanceof ArrError && err.status === 404) return null;
+      throw err;
+    }
+  }
+}
+
+/** `movieFile.quality.quality.name` off an untyped Radarr body, or null at any missing step. */
+function radarrFileQuality(body: Record<string, unknown>): string | null {
+  const file = body.movieFile as { quality?: { quality?: { name?: unknown } } } | undefined;
+  const name = file?.quality?.quality?.name;
+  return typeof name === "string" && name !== "" ? name : null;
 }
 
 // ---------------------------------------------------------------------------
 
-export class RadarrClient extends ArrClient implements ArrUnmonitor {
+export class RadarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval {
   constructor(svc: ArrService) {
     super("radarr", svc);
   }
 
-  movies() {
-    return this.get<RadarrMovie[]>("/movie");
+  /**
+   * The whole movie library, one film at a time.
+   *
+   * Streamed rather than returned as an array because Radarr answers with everything and
+   * cannot be paged, and each record is ~5.5 KB of which the mirror keeps about six fields.
+   * Project inside the loop and the peak stops tracking the library's size -- see
+   * `getStream` and `streamJsonArray`.
+   */
+  movies(): AsyncGenerator<RadarrMovie> {
+    return this.getStream<RadarrMovie>("/movie");
   }
 
   /** Stop Radarr looking for one movie. The file, if there is one, is untouched. */
   unmonitor(movieId: number) {
     return this.unmonitorVia("/movie/editor", "movieIds", movieId);
+  }
+
+  /**
+   * What Radarr holds for one movie. A film is one file, so `files` is 0 or 1 and the
+   * quality is the single answer `movieFile` carries.
+   */
+  holdings(movieId: number) {
+    return this.holdingsOf("/movie", movieId, (body) => ({
+      files: body.hasFile === true ? 1 : 0,
+      bytes: typeof body.sizeOnDisk === "number" ? body.sizeOnDisk : null,
+      quality: radarrFileQuality(body),
+    }));
+  }
+
+  /** Take one movie out of Radarr, with its file when asked. See `removeVia`. */
+  remove(movieId: number, opts: { deleteFiles: boolean }) {
+    return this.removeVia("/movie", "addImportExclusion", movieId, opts.deleteFiles);
   }
 
   /**
@@ -440,13 +603,36 @@ export function seasonSelection(
   };
 }
 
-export class SonarrClient extends ArrClient implements ArrUnmonitor {
+export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval {
   constructor(svc: ArrService) {
     super("sonarr", svc);
   }
 
-  series() {
-    return this.get<SonarrSeries[]>("/series");
+  /** The whole series library, one show at a time. Same shape and same reason as `RadarrClient.movies`. */
+  series(): AsyncGenerator<SonarrSeries> {
+    return this.getStream<SonarrSeries>("/series");
+  }
+
+  /**
+   * What Sonarr holds for one series, from the `statistics` block it already computes.
+   *
+   * The quality is NULL by construction: a series holds one quality per episode file, and
+   * picking one of them to print would be inventing a fact about the other ninety.
+   */
+  holdings(seriesId: number) {
+    return this.holdingsOf("/series", seriesId, (body) => {
+      const stats = body.statistics as { episodeFileCount?: unknown; sizeOnDisk?: unknown } | undefined;
+      return {
+        files: typeof stats?.episodeFileCount === "number" ? stats.episodeFileCount : 0,
+        bytes: typeof stats?.sizeOnDisk === "number" ? stats.sizeOnDisk : null,
+        quality: null,
+      };
+    });
+  }
+
+  /** Take one series out of Sonarr, with its files when asked. See `removeVia`. */
+  remove(seriesId: number, opts: { deleteFiles: boolean }) {
+    return this.removeVia("/series", "addImportListExclusion", seriesId, opts.deleteFiles);
   }
 
   /**
@@ -475,9 +661,16 @@ export class SonarrClient extends ArrClient implements ArrUnmonitor {
     return this.get<SonarrCalendarEntry[]>("/calendar", { start, end, includeSeries: "true" });
   }
 
-  /** Every episode Sonarr lists for one series, aired or not. */
-  episodes(seriesId: number) {
-    return this.get<SonarrEpisode[]>("/episode", { seriesId });
+  /**
+   * Every episode Sonarr lists for one series, aired or not, one at a time.
+   *
+   * Bounded by one series rather than by the library, so this is the least urgent of the
+   * three walks -- but a long-running anime is thousands of episodes, and reading it the
+   * same way as the other two means there is one answer to "how does finderr read an arr
+   * list" rather than two that must be kept in step.
+   */
+  episodes(seriesId: number): AsyncGenerator<SonarrEpisode> {
+    return this.getStream<SonarrEpisode>("/episode", { seriesId });
   }
 
   /**

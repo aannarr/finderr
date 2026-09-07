@@ -15,6 +15,13 @@ import { startAuthentication, startRegistration } from "@simplewebauthn/browser"
  * pure (no SQLite, no fetch, no clock it was not handed), so importing it costs the sign-in
  * bundle nothing but the type.
  */
+import type {
+  AddonConfigFieldReport,
+  AddonConfigReport,
+  AddonConfigSource,
+  AddonConfigType,
+  AddonConfigValue,
+} from "../../../src/lib/addon-config";
 import type { AdminQuotaState, QuotaState } from "../../../src/lib/request-quota";
 
 export type { AdminQuotaState, QuotaState };
@@ -545,4 +552,47 @@ export function getSiteSettings(): Promise<{ settings: SiteSettings }> {
 /** An absent field is left alone, the same shape as `patchUser`. */
 export function patchSiteSettings(changes: Partial<SiteSettings>): Promise<{ settings: SiteSettings }> {
   return patch("/api/admin/settings", changes, "that setting could not be saved");
+}
+
+/**
+ * What each installed addon needs from whoever runs it, and what it has.
+ *
+ * The shapes are the SERVER's and are imported rather than mirrored, the same arrangement the
+ * quota types have at the top of this file: `src/lib/addon-config.ts` owns what a field is,
+ * which of its two sources won, and the rule that a `secret` carries no value. A second copy
+ * here would be the one that forgot the last part.
+ *
+ * These live in this file rather than in an `addon-api.ts` of their own because every other
+ * `/api/admin/*` call is here and uses the same `get`/`patch` -- and those two own the error
+ * convention this surface depends on, that a refusal reaches the control that provoked it in
+ * the SERVER's own words.
+ */
+export type {
+  AddonConfigFieldReport,
+  AddonConfigReport,
+  AddonConfigSource,
+  AddonConfigType,
+  AddonConfigValue,
+};
+
+export function listAddons(): Promise<{ addons: AddonConfigReport[] }> {
+  return get("/api/admin/addons");
+}
+
+/**
+ * Save the named fields of one addon and leave the rest alone. `null` clears a field.
+ *
+ * A PATCH of the fields that changed, never the whole declaration: a form that wrote every
+ * field back would revert whatever somebody else had just changed, and it could not write a
+ * `secret` at all -- nothing can read one back to send it again.
+ */
+export function patchAddonConfig(
+  pluginId: string,
+  changes: Record<string, AddonConfigValue | null>,
+): Promise<{ addon: AddonConfigReport; restartRequired: boolean }> {
+  return patch(
+    `/api/admin/addons/${encodeURIComponent(pluginId)}`,
+    changes,
+    "that setting could not be saved",
+  );
 }

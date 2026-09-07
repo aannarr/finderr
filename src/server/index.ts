@@ -15,6 +15,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
+import { AddonConfigStore, redactingLog } from "../lib/addon-config";
 import { RadarrClient, SonarrClient } from "../lib/arr";
 import { arrLink } from "../lib/arr-links";
 import { attributedRequest, isoIn, type Principal, publicOrigin, visibleRequest } from "../lib/auth";
@@ -38,6 +39,7 @@ import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } f
 import { rollback } from "../lib/index-builder";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
+import type { RequestRemovalView } from "../lib/media-removal";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
 import { PlexClient, type PlexLinks, plexLinks, syncPlex } from "../lib/plex";
@@ -48,7 +50,7 @@ import { RateLimiter } from "../lib/rate-limit";
 import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaLimitFor, quotaStateFor, quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
-import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
+import { PeakMemory, ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, languageFilter, type TitleRow } from "../lib/search";
 import {
   NO_SEARCH_LOG,
@@ -59,10 +61,18 @@ import {
   type SearchLogger,
 } from "../lib/search-log";
 import { decodeSeasons, parseSeasonsInput } from "../lib/seasons";
+import {
+  applyShelfPreference,
+  parseShelfChoices,
+  type ShelfChoice,
+  type ShelfPreferencePayload,
+  ShelfPreferenceStore,
+  shelfCatalogue,
+} from "../lib/shelf-preferences";
 import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
-import { Store, syncLibrary } from "../lib/store";
+import { createsNewRequest, type MediaRemoval, Store, syncLibrary } from "../lib/store";
 import {
   isTermDimension,
   TERM_DIMENSIONS,
@@ -74,8 +84,10 @@ import {
 } from "../lib/terms";
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
+import { TmdbSettingsStore } from "../lib/tmdb-settings";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
+import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
 import { makeChatHandler, makeChatProbe } from "./agent-chat";
 import { ARR_WEBHOOK_PATH, ArrWebhookService } from "./arr-webhook";
@@ -110,6 +122,7 @@ import {
 } from "./preview-resolver";
 import { PushNotifier } from "./push";
 import { relatedTconsts } from "./related-crosswalk";
+import { type RemoveMediaDeps, removalPreview, removeMedia } from "./remove-media";
 import { withTiming } from "./request-timing";
 import { RequestWorker } from "./request-worker";
 import {
@@ -213,7 +226,19 @@ const sonarr = cfg.sonarr ? new SonarrClient(cfg.sonarr) : undefined;
   verdict, nothing else. See `src/lib/prowlarr.ts`.
 */
 const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
-const images = new ImageCache(cfg);
+
+/*
+  Addon configuration, and the one TMDB key this instance uses.
+
+  BEFORE the poster proxy and long before the plugin loader, because three things read it:
+  the `tmdb` addon through `c.config`, `refreshTmdbLists` below, and `ImageCache`. One store,
+  one `kv` row per setting, one precedence rule -- see `src/lib/tmdb-settings.ts` for why the
+  key stopped being a `cfg` field.
+*/
+const addonConfig = new AddonConfigStore(store);
+const tmdbSettings = new TmdbSettingsStore(addonConfig);
+
+const images = new ImageCache(cfg, tmdbSettings);
 const artwork = new ArtworkService(cfg, store, { radarr, sonarr }, log);
 // Cast headshots, season posters and episode stills, served from our own origin. Reuses
 // the artwork service for the bytes -- a face is not a different kind of JPEG.
@@ -238,6 +263,15 @@ const authStore = new AuthStore(store.db, () => siteSettings.read().assistantAll
   path is not reachable from any route below that touches it. See `src/lib/watchlist.ts`.
 */
 const watchlistStore = new WatchlistStore(store.db);
+
+/*
+  Each reader's own order for the front page, on the same connection and for the same reason.
+
+  It stores an ORDER AND A FILTER and nothing else -- it cannot add a shelf or change what is
+  on one -- which is what keeps `/api/discover` a held page plus one indexed read. See
+  `src/lib/shelf-preferences.ts`.
+*/
+const shelfPrefs = new ShelfPreferenceStore(store.db);
 
 /*
   Web push, and it is constructed BEFORE the request worker on purpose.
@@ -403,14 +437,26 @@ const logos = await loadLogoIndex(undefined, log);
 
 // Facet providers. A plugin supplies facts core does not know how to fetch; the resolver
 // keeps them in SQLite so no handler ever waits on one. Two ways in, one loader: files in
-// the plugins directory, and installed packages named in `pluginModules`.
+// the plugins directory, and installed packages named in `pluginModules`. `addonConfig` is
+// built up with the state clients, because the poster proxy reads it too.
+/*
+  The one log sink an addon's own words reach, and therefore the one that redacts.
+
+  Two paths carry text an addon wrote: its `c.log` calls, and the `err.message` FacetResolver
+  prints when a provider throws. Both are wrapped here, so a plugin that puts its own API key
+  into an error message -- which nothing can stop it doing -- cannot put it in the container
+  log. The rest of the server's log stays unwrapped deliberately: it never carries plugin
+  text, and one narrow wrapper is easier to keep honest than a global one.
+*/
+const pluginLog = redactingLog(log, () => addonConfig.secrets());
 const plugins = await loadPlugins({
   dir: cfg.pluginsDir || undefined,
   modules: cfg.pluginModules,
   kv: store,
-  log,
+  config: addonConfig,
+  log: pluginLog,
 });
-const facets = new FacetResolver({ store, registry: plugins, log });
+const facets = new FacetResolver({ store, registry: plugins, log: pluginLog });
 log(`plugins: ${plugins.list().length} loaded`);
 
 /*
@@ -508,22 +554,35 @@ function indexHasRow(tconst: string): boolean {
   return live.current.byTconst(tconst) !== null;
 }
 
+/*
+  The high-water mark the mirror walks are measured against, reported as `runtime.peak`.
+
+  These two walks are the largest transient allocation this process makes on a schedule, and
+  they are the ones a thirty-second health probe structurally cannot see -- read `PeakMemory`
+  for the sixteen days of green health checks that motivated it. Wrapped SEPARATELY rather
+  than around `refreshLibrary` as a whole, so the field names which walk set the record; the
+  two are bounded by different mechanisms and can regress independently.
+*/
+const mirrorPeak = new PeakMemory();
+
 // Mirror the arr libraries on a timer so "do we have it?" is a local lookup.
 async function refreshLibrary(): Promise<void> {
   // The episode half is SLICED rather than swept: it costs one Sonarr call per series, so
   // walking the whole library on this 60s timer would be hundreds of requests a minute.
   // `syncEpisodes` in `../lib/store` has the arithmetic.
-  const res = await syncLibrary(
-    store,
-    { radarr, sonarr },
-    { batch: cfg.episodeRefreshBatch, staleSeconds: cfg.episodeRefreshSeconds },
-    log,
+  const res = await mirrorPeak.during("arr-library", () =>
+    syncLibrary(
+      store,
+      { radarr, sonarr },
+      { batch: cfg.episodeRefreshBatch, staleSeconds: cfg.episodeRefreshSeconds },
+      log,
+    ),
   );
   for (const e of res.errors) log(`library sync error -- ${e}`);
   // Same cadence, one function: "can I request it" and "can I play it" go stale together.
   // A failed walk leaves the previous mirror in place rather than emptying it -- a
   // ratingKey is stable, so stale beats absent for the one thing this feeds.
-  const mirrored = await syncPlex(store, plex, log);
+  const mirrored = await mirrorPeak.during("plex-mirror", () => syncPlex(store, plex, log));
   if (mirrored.error) log(`library sync error -- ${mirrored.error}`);
 
   /*
@@ -617,8 +676,38 @@ function currentShelves(): DiscoveryShelf[] {
 }
 
 /**
+ * The arrangement this request's reader has saved, or none for anybody without an account.
+ *
+ * An anonymous caller costs ZERO reads here, which is the ordinary case for the sign-in page
+ * and for the container's own probes.
+ */
+function preferenceOf(req: Request): ShelfChoice[] {
+  const me = readerId(req);
+  return me ? shelfPrefs.read(me) : [];
+}
+
+/**
+ * What the preference routes all answer with: the whole catalogue, in this reader's order.
+ *
+ * ONE PAYLOAD FOR ALL THREE VERBS -- read it, save it, reset it -- so a client never has to
+ * guess how the server resolved what it sent. It is built from `currentShelves()` rather than
+ * from the stored rows, which is what makes a retired shelf disappear from the screen and a
+ * newly shipped one appear on it without either being a special case.
+ */
+function preferencePayload(userId: string | null): ShelfPreferencePayload {
+  const pref = userId ? shelfPrefs.read(userId) : [];
+  return { customised: pref.length > 0, shelves: shelfCatalogue(currentShelves(), pref) };
+}
+
+/**
  * Warm everything reachable in ONE CLICK from a cold front page, so nothing on screen
  * is ever fetched while somebody waits.
+ *
+ * IT WARMS THE SHIPPED PAGE, AND THAT COVERS EVERY READER'S. A preference can only reorder
+ * and hide, never add -- `orderShelves` picks from the list it is handed -- so the union of
+ * what readers actually see is a SUBSET of `currentShelves()`, and warming the superset warms
+ * all of it. `shelf-preferences.test.ts` pins that property, because the day a preference can
+ * SELECT a shelf rather than order one, somebody gets a cold shelf and nothing here says so.
  *
  * Two halves, in the order the eye needs them. Artwork is materialised completely --
  * resolve AND pull the bytes -- and pinned so eviction can never take it, because a
@@ -727,21 +816,24 @@ function backfillPersonImages(): void {
   "a shelf is not published until its titles are warm" needs in order to hold.
 
   No key means no shelves, quietly, the same way the `tmdb` plugin goes dark: three rows
-  fewer and nothing else changes.
+  fewer and nothing else changes. LITERALLY the same key -- both read the one setting
+  `src/lib/tmdb-settings.ts` owns, read fresh here so a key saved on the admin page reaches
+  the next six-hourly run rather than the next restart.
 
   THE TWO SYNCS FAIL INDEPENDENTLY, in their own try blocks, for the reason
   `replaceUpcoming` is scoped per source: trending being unreachable must not also stop
   the upcoming rows that were one await away from landing.
 */
 async function refreshTmdbLists(): Promise<void> {
-  if (!cfg.tmdb.apiKey) return;
+  const { apiKey } = tmdbSettings.read();
+  if (!apiKey) return;
   const api = new TmdbApi(
     createPluginFetch({
       pluginId: "upcoming-sync",
       hosts: [TMDB_HOST],
       pacer: new HostPacer(DEFAULT_OUTBOUND_POLICY.minIntervalMsPerHost),
     }),
-    cfg.tmdb.apiKey,
+    apiKey,
   );
   const deps = { store, hasRow: indexHasRow, log };
   try {
@@ -843,6 +935,18 @@ const HTML_HEADERS = {
 } as const;
 
 const bad = (msg: string, status = 400) => json({ error: msg }, { status });
+
+/**
+ * Whose request this is, or null for a caller with no account behind them.
+ *
+ * A PRINCIPAL IS NOT ALWAYS A PERSON: the admin API key is one, and it has no `user`. Every
+ * per-reader route wants the person and not the principal, so the two optional hops are
+ * spelled once here rather than at each of them -- seven copies of the same chain is seven
+ * chances to drop a `?.` and hand one reader another's list.
+ */
+function readerId(req: Request): string | null {
+  return auth.principal(req)?.user?.id ?? null;
+}
 
 /** The width an image route was asked for. One reader, so both routes accept the same thing. */
 function sizeOf(req: Request): string {
@@ -1134,6 +1238,40 @@ function plexLinker(): (tconst: string) => PlexLinks | null {
 }
 
 /**
+ * One stored removal as the log renders it, with the actor's name resolved.
+ *
+ * Takes the SAME name table `attributedRequest` is given, so a person is worded identically
+ * wherever the log names them -- "(removed)" for a deleted account, and never a bare id.
+ * Undefined in, undefined out: a `removed` row with no audit record predates the record or was
+ * moved by hand, and inventing an actor for it would be the one lie an audit may not tell.
+ */
+function removalView(
+  removal: MediaRemoval | undefined,
+  names: ReadonlyMap<string, string> | null,
+): RequestRemovalView | undefined {
+  if (!removal) return undefined;
+  return {
+    by: removal.removed_by,
+    byName: removal.removed_by ? (names?.get(removal.removed_by) ?? "(removed)") : null,
+    at: removal.removed_at,
+    deletedFiles: removal.deleted_files === 1,
+    bytes: removal.bytes,
+  };
+}
+
+/**
+ * Everything `./remove-media.ts` needs, assembled per call rather than held.
+ *
+ * Per call because it closes over nothing that outlives one: `plexHolds` reads the Plex
+ * mirror, which the sync rewrites, and a captured map would answer a question about a moment
+ * that has passed. It costs one query and is only ever built when an admin presses a button.
+ */
+function removalDeps(): RemoveMediaDeps {
+  const inPlex = store.plexMap();
+  return { store, radarr, sonarr, plexHolds: (tconst) => inPlex.has(tconst), log };
+}
+
+/**
  * Per-season progress for each request in one response -- a lookup resolved once, like
  * `plexLinker`.
  *
@@ -1393,6 +1531,11 @@ function titleTerms(tconst: string, country: string | undefined): Term[] {
  * cache would only ever be reporting on itself. It costs one indexed SQLite lookup per
  * shelf title on top of the shelf queries, which is why it lives on `/api/health` and
  * on no path a user is waiting on.
+ *
+ * IT REPORTS THE SHIPPED PAGE, not any one reader's, and that is the whole page rather than a
+ * sample of it: a preference can only reorder and hide, so every reader's page is a subset of
+ * this one. Reporting per reader would also be a coverage figure that named who had arranged
+ * what, which is not a thing to publish about a private choice. See `warmShelves`.
  */
 const shelfCoverage = () => facetCoverage(currentShelves(), (row) => facets.isWarm(entityFor(row)));
 
@@ -1661,6 +1804,7 @@ const appRoutes = {
               : null,
             cpuSeconds: Math.round(rt.cpu.totalSeconds),
             gcSeconds: rt.cpu.gcSeconds === null ? null : Math.round(rt.cpu.gcSeconds),
+            peak: mirrorPeak.highest,
             // Through the holder, because this payload is built for EVERY health request
             // including the anonymous one, and the container probes it while the boot-time
             // build is still running. `current` throws then -- see `LiveIndex.poolStats`.
@@ -2398,7 +2542,7 @@ const appRoutes = {
      * they just put on it.
      */
     GET: (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Nobody signed in keeps nothing. Not an error -- an empty list is the true answer.
       if (!me) return json({ titles: [] });
       const rows = watchlistStore.list(me).flatMap((e) => live.current.byTconst(e.tconst) ?? []);
@@ -2419,7 +2563,7 @@ const appRoutes = {
      * reason.
      */
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       if (!me) return bad("sign in to keep a watchlist", 401);
 
       let body: { tconst?: unknown };
@@ -2446,30 +2590,12 @@ const appRoutes = {
    */
   "/api/watchlist/:tconst": {
     DELETE: (req: Bun.BunRequest<"/api/watchlist/:tconst">) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       if (!me) return bad("sign in to keep a watchlist", 401);
       return json({ removed: watchlistStore.remove(me, req.params.tconst) });
     },
   },
 
-  /**
-   * The discovery shelves, decorated with local library and request state.
-   *
-   * `discoveryShelves()` owns which titles are on the front page; this handler only
-   * turns index rows into cards. The warm loop reads the same function, which is what
-   * makes "every shelf title is already warm" true by construction.
-   *
-   * > [!IMPORTANT] NOT storable by the browser, and it used to be `private, max-age=600`
-   * > A ten-minute window here outlives every reason the page is rebuilt: the arr tier
-   * > refreshes every 60 seconds and `POST /api/requests` primes it immediately, so the
-   * > browser could answer the asker's own refetch out of its cache with a body assembled
-   * > before they clicked. The window was buying nothing either -- the client holds this
-   * > page in memory for the session and persists it to IndexedDB for the next one (see
-   * > `web/src/lib/api.ts`), so a repeat visit was already free, and a RELOAD is exactly
-   * > the moment the reader is asking to be told again.
-   * >
-   * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
-   */
   /**
    * The assistant. One turn in, one answer out.
    *
@@ -2483,8 +2609,113 @@ const appRoutes = {
     POST: (req: Request) => chat(req, auth.principal(req)),
   },
 
-  "/api/discover": () =>
-    json({ shelves: currentShelves().map(({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) })) }),
+  /*
+    ---------------------------------------------------------------------------
+    Your own front page: the order you arranged, and the shelves you hid.
+
+    An ORDER AND A FILTER over the page finderr already assembled -- never a per-reader
+    assembly. `src/lib/shelf-preferences.ts` owns what a preference means and why it is
+    shaped that way; these three routes are storage plus the one read the render path makes.
+    ---------------------------------------------------------------------------
+  */
+
+  "/api/shelves/preference": {
+    /**
+     * Every shelf this reader could arrange, in their order, hidden ones marked.
+     *
+     * THE FULL CATALOGUE AND NOT JUST THE VISIBLE ONES: `/api/discover` has already dropped
+     * what they hid, so a settings screen built on that answer could hide a shelf and never
+     * offer it back. It is the same one-endpoint-rather-than-two call `/api/watchlist` makes.
+     *
+     * It reads the SHELVES THAT DREW TODAY, so a shelf that came back empty is not on it --
+     * which is honest rather than lossy: you cannot arrange a row that does not render, and
+     * a preference that no longer names it degrades by the same rule as a retired one.
+     *
+     * Nobody signed in has arranged nothing. Not an error -- the shipped page is the true
+     * answer, and it is what an anonymous caller is about to be served anyway.
+     */
+    GET: (req: Request) => json(preferencePayload(readerId(req))),
+
+    /**
+     * Save an arrangement: the shelves in the order you want them, each marked hidden or not.
+     *
+     * PUT rather than POST because the body IS the whole preference -- sending it twice
+     * leaves the same page, and there is no partial edit to merge. Answers with the same
+     * payload as the GET, so a client never has to guess how the server resolved what it
+     * sent (a retired id is dropped, a shelf the reader never mentioned reappears).
+     *
+     * UNKNOWN SHELF IDS ARE ACCEPTED, deliberately, unlike the tconst check on
+     * `POST /api/watchlist`. The genre shelves rotate with the nightly index build, so an id
+     * that is real when the browser reads it can be gone by the time it saves -- refusing
+     * here would turn a routine rotation into a failed save. They are ignored on the way out
+     * instead, which is the rule the whole feature already follows.
+     */
+    PUT: async (req: Request) => {
+      const me = readerId(req);
+      if (!me) return bad("sign in to arrange your front page", 401);
+
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return bad("body must be JSON");
+      }
+      const parsed = parseShelfChoices(body);
+      if ("error" in parsed) return bad(parsed.error);
+
+      shelfPrefs.replace(me, parsed.choices);
+      return json(preferencePayload(me));
+    },
+
+    /**
+     * Put the front page back to the shipped default.
+     *
+     * The way out, and the reason the feature is safe to experiment with. Resetting something
+     * you never arranged answers the default page rather than a 404: the state asked for is
+     * already true, which is the same answer `DELETE /api/watchlist/:tconst` gives.
+     */
+    DELETE: (req: Request) => {
+      const me = readerId(req);
+      if (!me) return bad("sign in to arrange your front page", 401);
+      shelfPrefs.clear(me);
+      return json(preferencePayload(me));
+    },
+  },
+
+  /**
+   * The discovery shelves, decorated with local library and request state.
+   *
+   * `discoveryShelves()` owns which titles are on the front page; this handler only
+   * turns index rows into cards. The warm loop reads the same function, which is what
+   * makes "every shelf title is already warm" true by construction.
+   *
+   * WHAT PERSONALISATION COSTS HERE: one indexed read of `shelf_pref` for a signed-in
+   * reader, zero for anybody else, and a reorder of an array that is already in memory. A
+   * reader who has never arranged their page is handed `currentShelves()` unchanged --
+   * `applyShelfPreference` returns the same shelves in the same order for an empty
+   * preference, which `shelf-preferences.test.ts` pins.
+   *
+   * > [!IMPORTANT] NOT storable by the browser, and it used to be `private, max-age=600`
+   * > A ten-minute window here outlives every reason the page is rebuilt: the arr tier
+   * > refreshes every 60 seconds and `POST /api/requests` primes it immediately, so the
+   * > browser could answer the asker's own refetch out of its cache with a body assembled
+   * > before they clicked. The window was buying nothing either -- the client holds this
+   * > page in memory for the session and persists it to IndexedDB for the next one (see
+   * > `web/src/lib/api.ts`), so a repeat visit was already free, and a RELOAD is exactly
+   * > the moment the reader is asking to be told again.
+   * >
+   * > It is also PER-READER now, which the missing store directive already covered: a
+   * > shared cache must never hand one reader the page another arranged.
+   * >
+   * > What it costs to answer is the held page plus `decorate()`, measured at 2.2ms.
+   */
+  "/api/discover": (req: Request) =>
+    json({
+      shelves: applyShelfPreference(currentShelves(), preferenceOf(req)).map(({ rows, ...shelf }) => ({
+        ...shelf,
+        titles: decorate(rows),
+      })),
+    }),
 
   "/api/requests": {
     /**
@@ -2556,6 +2787,16 @@ const appRoutes = {
       */
       const names =
         role === "admin" ? new Map(authStore.listUsers().map((u) => [u.id, u.displayName])) : null;
+      /*
+        WHO TOOK IT BACK OUT -- admin-only, on the same terms as `names` above and for the
+        same reason. "Who removed what" is the same class of fact as "who requested what",
+        which aannarr ruled stays with the admins, so an ordinary reader's JSON must not
+        carry it at all rather than a component declining to draw it.
+
+        One map for the whole page, like `requestDiagnosticMap`: this route serves up to 200
+        rows and the shell polls it.
+      */
+      const removals = role === "admin" ? store.removalMap() : null;
       const playLink = plexLinker();
       const seasonsOf = seasonProgressLinker(rows);
       return json({
@@ -2618,6 +2859,20 @@ const appRoutes = {
             a single key would have silently overwritten the request's own selection.
           */
           seasonProgress: seasonsOf(r),
+          /*
+            WHO REMOVED THIS AND WHEN, on the row that says it was removed.
+
+            Attached ONLY to a `removed` row, deliberately. The audit record is keyed on the
+            title and survives a later re-request -- it is the record of a decision, not of a
+            row -- so a re-requested title would otherwise carry a removal note above a
+            "Queued" verdict and read as if it had just been deleted.
+
+            The name is resolved the same way `attributedRequest` resolves a requester's, and
+            through the same `names` table: an admin whose account has since been deleted
+            shows as "(removed)" rather than as a dangling id.
+          */
+          removal:
+            removals && r.status === "removed" ? removalView(removals.get(r.tconst), names) : undefined,
         })),
         queue: worker.stats(),
         /*
@@ -2712,13 +2967,23 @@ const appRoutes = {
 
         Two things follow from where this sits. An invalid or impossible request never gets
         a quota-shaped error, so "you asked for a title that does not exist" is never
-        reported as "you have asked for too many"; and a title that ALREADY has a request row
-        is exempt, because `createRequest` upserts and this POST will not write a new one.
-        The quota is spent by rows, so only a POST that creates one is charged -- which is
-        what lets somebody at their limit still change the season selection on a series they
-        asked for this morning.
+        reported as "you have asked for too many"; and a title that ALREADY has a live request
+        row is exempt, because `createRequest` upserts onto it and this POST will not write a
+        new one. The quota is spent by rows, so only a POST that creates one is charged --
+        which is what lets somebody at their limit still change the season selection on a
+        series they asked for this morning.
+
+        `createsNewRequest` and not a null check of our own: a `removed` row is dropped and
+        re-inserted by `createRequest`, so asking again for a title an admin took back out
+        DOES write a new row and DOES cost a request. Two spellings of that rule would have
+        made an admin's removal a permanent free request on that title for everybody.
+
+        A `failed` or `no_release` row is the other way round -- FREE, because `createRequest`
+        revives it in place rather than writing a row, and because "Try again" on `/requests`
+        has always been free for exactly the same title. The reasoning is on
+        `revivesHeldRequest`, which is where a decision to start charging for it would go.
       */
-      if (!store.getRequest(row.tconst)) {
+      if (createsNewRequest(store.getRequest(row.tconst))) {
         const refused = quotaRefusal(asker);
         if (refused) return refused;
       }
@@ -2951,7 +3216,7 @@ const appRoutes = {
    */
   "/api/requests/seen": {
     POST: (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Nobody signed in owns nothing, so there is nothing to mark. Not an error: the
       // desired state -- "no unread arrivals for you" -- is already true.
       if (!me) return json({ seen: 0 });
@@ -2992,7 +3257,7 @@ const appRoutes = {
 
   "/api/push/subscribe": {
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // A subscription belongs to a PERSON, because what it delivers is news about their
       // own requests. There is nothing an anonymous caller could be told.
       if (!me) return bad("sign in to enable notifications", 401);
@@ -3039,7 +3304,7 @@ const appRoutes = {
 
   "/api/push/unsubscribe": {
     POST: async (req: Request) => {
-      const me = auth.principal(req)?.user?.id ?? null;
+      const me = readerId(req);
       // Already true for an anonymous caller: they have no subscriptions to remove.
       if (!me) return json({ removed: false });
 
@@ -3112,6 +3377,60 @@ const appRoutes = {
     },
   },
 
+  /**
+   * Take the media back out: what would go (GET), and then take it (DELETE).
+   *
+   * ONE PATH FOR BOTH, because they are one operation seen twice -- the question and the
+   * answer -- and they must agree about every refusal. `resolveTarget` in `./remove-media.ts`
+   * is what makes them agree; two paths would have been two chances for a confirmation to
+   * open on something the delete then declines.
+   *
+   * Under `/api/admin/` and therefore ADMIN-ONLY, which is the whole shape of this feature:
+   * a reader browsing the library is never offered a delete button, an operator reviewing what
+   * has landed is. The rule is `auth.requireAdmin` -- anonymous gets 401, a signed-in
+   * non-admin gets the same 404 the rest of the admin surface gives, and an agent key is
+   * refused by the `/api/admin/` prefix in `./agent-api.ts` before it reaches here.
+   *
+   * Declared HERE rather than in `./auth-routes.ts` for the reason `/api/admin/index/refresh`
+   * is: the thing it drives -- the arr clients, the store, the shelves -- lives in this file,
+   * and wiring them back through the identity module as callbacks would make it import the
+   * arr vocabulary. The AUTHORISATION stays owned there.
+   *
+   * `deleteFiles` rides in the QUERY and not in a body, because a DELETE carrying a body is
+   * the shape half the HTTP stack in the world drops. It is REQUIRED and has no default: it is
+   * the difference between forgetting a title and deleting a household's file, and a default
+   * would be this endpoint choosing for whoever forgot to say.
+   */
+  "/api/admin/requests/:tconst/media": {
+    GET: async (req: Bun.BunRequest<"/api/admin/requests/:tconst/media">) => {
+      const refused = auth.requireAdmin(req);
+      if (refused) return refused;
+      const outcome = await removalPreview(removalDeps(), req.params.tconst);
+      return outcome.ok ? json({ preview: outcome.value }) : bad(outcome.error, outcome.status);
+    },
+    DELETE: async (req: Bun.BunRequest<"/api/admin/requests/:tconst/media">) => {
+      const refused = auth.requireAdmin(req);
+      if (refused) return refused;
+      const deleteFiles = new URL(req.url).searchParams.get("deleteFiles");
+      if (deleteFiles !== "true" && deleteFiles !== "false") {
+        return bad("deleteFiles must be true or false");
+      }
+      const admin = auth.principal(req);
+      const outcome = await removeMedia(
+        removalDeps(),
+        req.params.tconst,
+        { deleteFiles: deleteFiles === "true" },
+        { userId: admin?.user?.id ?? null },
+      );
+      if (!outcome.ok) return bad(outcome.error, outcome.status);
+      // The library mirror and the request row both moved, and "Recently added" and "Recently
+      // requested" are built from them -- so the held page is rebuilt now rather than up to 60
+      // seconds from now, the same reason and the same call the request routes make.
+      primeShelves("arr");
+      return json({ removed: outcome.value });
+    },
+  },
+
   "/api/requests/:tconst/retry": {
     // POST only, which the client already sends. A bare function answers GET too, and a
     // state-changing GET rides a `SameSite=Lax` cookie on any cross-site navigation --
@@ -3119,7 +3438,9 @@ const appRoutes = {
     POST: (req: Bun.BunRequest<"/api/requests/:tconst/retry">) => {
       const r = store.getRequest(req.params.tconst);
       if (!r) return bad("unknown request", 404);
-      store.updateRequest(r.tconst, { status: "queued", error: null });
+      // The same store method a fresh ask on a dead-end row goes through, so this button and
+      // the Request button cannot drift about what a second attempt resets.
+      store.requeueRequest(r.tconst);
       worker.enqueue(r.tconst);
       return json({ ok: true });
     },
@@ -3216,7 +3537,16 @@ const appRoutes = {
  * DESCRIBES this table. "A route added later appears in the manifest by having been added"
  * is only true while there is exactly one table and one place that owns it.
  */
-const allRoutes = { ...appRoutes, ...auth.routes() };
+const allRoutes = {
+  ...appRoutes,
+  ...auth.routes(),
+  ...addonConfigRoutes({
+    registry: plugins,
+    config: addonConfig,
+    asAdmin: (req, fn) => auth.asAdmin(req, fn),
+    log: pluginLog,
+  }),
+};
 
 /**
  * The table, read at CALL time rather than closed over.

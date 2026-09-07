@@ -1081,6 +1081,135 @@ describe("signing in with Plex", () => {
     expect(res.status).toBe(200);
   });
 
+  /*
+    THE THIRD BRANCH: with `plex.openSignup` on, access to our server is sufficient on its
+    own and no invite is minted for anybody. `config.test.ts` owns whether the flag may be
+    live at all; these own what the route does once it is.
+  */
+  describe("open signup for our own Plex server's users", () => {
+    /** A server that has opted in, with somebody already on it so first-run is shut. */
+    function openSignupHarness(opts: {
+      machineIds: string[];
+      openSignup?: boolean;
+      machineId?: string | undefined;
+    }) {
+      const cfg = config();
+      cfg.plex = { ...cfg.plex, openSignup: opts.openSignup ?? true, machineIdentifier: opts.machineId };
+      const p = harness({
+        cfg,
+        fetchImpl: plexFetch({ token: "plex-token", accountId: "999", machineIds: opts.machineIds }),
+      });
+      p.auth.createUser({ displayName: "Somebody", role: "admin" });
+      return p;
+    }
+
+    /** Begin and finish in one step, since no test here needs anything in between. */
+    async function signIn(p: Harness): Promise<Response> {
+      const begin = (await (await p.call("/api/auth/plex/begin", { method: "POST" })).json()) as {
+        pinId: string;
+      };
+      return p.call("/api/auth/plex/finish", {
+        method: "POST",
+        body: JSON.stringify({ pinId: begin.pinId }),
+      });
+    }
+
+    /*
+      THE FENCE, at the route rather than at the boot. `loadConfig` refuses this combination
+      outright -- config.test.ts proves it -- but this harness builds a Config by hand and
+      never calls `validate`, which is exactly the position a future caller could end up in.
+      A flag with no server to check against must open NOTHING.
+    */
+    test("the flag with no machine identifier opens no door at all", async () => {
+      const p = openSignupHarness({ machineIds: ["our-server"], machineId: undefined });
+      expect((await signIn(p)).status).toBe(403);
+      expect(p.auth.userCount()).toBe(1);
+    });
+
+    test("an account shared our server signs itself in, with no invite anywhere", async () => {
+      const p = openSignupHarness({ machineIds: ["our-server"], machineId: "our-server" });
+      const res = await signIn(p);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("set-cookie")).toContain("fdr_sid=");
+      const user = p.auth.getUserByPlexId("999");
+      // Always `user`. The open door is not a way to become an admin of a process holding
+      // the Radarr and Sonarr keys.
+      expect(user?.role).toBe("user");
+      expect(user?.displayName).toBe("guest");
+      expect(p.auth.listInvites()).toHaveLength(0);
+    });
+
+    test("it does not bypass gate two -- a stranger's Plex account is still refused", async () => {
+      const p = openSignupHarness({ machineIds: ["someone-elses"], machineId: "our-server" });
+      expect((await signIn(p)).status).toBe(403);
+      expect(p.auth.userCount()).toBe(1);
+    });
+
+    /*
+      A carried invite still decides the role, so an admin invite is not quietly downgraded
+      by the door being open. The open branch is the FALLBACK, never the rule.
+    */
+    test("a live invite still wins, and keeps its own role", async () => {
+      const cfg = config();
+      cfg.plex = { ...cfg.plex, openSignup: true, machineIdentifier: "our-server" };
+      const p = harness({
+        cfg,
+        fetchImpl: plexFetch({ token: "plex-token", accountId: "999", machineIds: ["our-server"] }),
+      });
+      p.auth.createUser({ displayName: "Somebody", role: "admin" });
+      const { token } = p.auth.createInvite({
+        role: "admin",
+        displayName: "Deputy",
+        expiresAt: isoIn(60_000),
+      });
+      const begin = (await (
+        await p.call("/api/auth/plex/begin", { method: "POST", body: JSON.stringify({ token }) })
+      ).json()) as { pinId: string };
+
+      const res = await p.call("/api/auth/plex/finish", {
+        method: "POST",
+        body: JSON.stringify({ pinId: begin.pinId }),
+      });
+      expect(res.status).toBe(200);
+      const user = p.auth.getUserByPlexId("999");
+      expect(user?.role).toBe("admin");
+      expect(user?.displayName).toBe("Deputy");
+      expect(p.auth.getInvite(hashToken(token))?.redeemedBy).toBe(user?.id);
+    });
+
+    /*
+      An EXPIRED link is not a revocation while the door is open -- the same person could
+      have signed in without ever having a link -- so it falls through to the open branch
+      and gets the ordinary `user` role rather than a 403 that would depend on which page
+      they happened to arrive from. Disabling the row is what revokes; see plex-auth.ts.
+    */
+    test("a dead invite falls through to the open door, as a plain user", async () => {
+      const cfg = config();
+      cfg.plex = { ...cfg.plex, openSignup: true, machineIdentifier: "our-server" };
+      const p = harness({
+        cfg,
+        fetchImpl: plexFetch({ token: "plex-token", accountId: "999", machineIds: ["our-server"] }),
+      });
+      p.auth.createUser({ displayName: "Somebody", role: "admin" });
+      const { token } = p.auth.createInvite({
+        role: "admin",
+        displayName: "Deputy",
+        expiresAt: isoIn(-60_000),
+      });
+      const begin = (await (
+        await p.call("/api/auth/plex/begin", { method: "POST", body: JSON.stringify({ token }) })
+      ).json()) as { pinId: string };
+
+      const res = await p.call("/api/auth/plex/finish", {
+        method: "POST",
+        body: JSON.stringify({ pinId: begin.pinId }),
+      });
+      expect(res.status).toBe(200);
+      expect(p.auth.getUserByPlexId("999")?.role).toBe("user");
+      expect(p.auth.getInvite(hashToken(token))?.redeemedBy).toBeNull();
+    });
+  });
+
   test("a disabled user cannot come back in through Plex", async () => {
     const p = harness({ fetchImpl: plexFetch({ token: "plex-token", accountId: "42" }) });
     const u = p.auth.createUser({ displayName: "Known", role: "user", plexId: "42" });

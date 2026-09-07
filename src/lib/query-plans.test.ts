@@ -88,8 +88,8 @@ function fixture(n = 1_000): Database {
     to remember this file.
   */
   for (const sql of allIndexes()) db.run(sql);
-  // The planner consults `sqlite_stat1` when it exists, and the real index has it (the build
-  // ends on `pragma optimize`). Without it here the fixture would be choosing indexes on
+  // The planner consults `sqlite_stat1` when it exists, and the real index has it -- the build
+  // ends on this same statement. Without it here the fixture would be choosing indexes on
   // heuristics while production chooses on statistics, which is the other way this file
   // could quietly stop modelling the thing it claims to model.
   db.run("analyze");

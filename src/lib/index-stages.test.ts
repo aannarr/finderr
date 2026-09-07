@@ -8,6 +8,8 @@ import {
   currentStages,
   describeStale,
   INDEX_STAGES,
+  ORIGIN_WIDENED_CROSSWALK,
+  recipeVersion,
   STAGES_META_KEY,
   stagesOf,
   staleStagesOf,
@@ -134,5 +136,31 @@ describe("index stages", () => {
 
   test("currentStages covers every declared stage", () => {
     expect(Object.keys(currentStages(loadConfig())).sort()).toEqual(Object.keys(INDEX_STAGES).sort());
+  });
+
+  describe("reading a version out of one recipe", () => {
+    test("answers the number a stamped recipe carries", () => {
+      // `origin` takes no config -- which language a reader wants is a runtime preference and
+      // never a property of the file, so its recipe is the version and nothing else.
+      expect(recipeVersion(INDEX_STAGES.origin())).toBe(JSON.parse(INDEX_STAGES.origin()).v);
+      expect(recipeVersion('{"v":4,"floor":1000}')).toBe(4);
+    });
+
+    test("answers null for anything it cannot read, rather than throwing", () => {
+      // Its callers are handed a file that may be older than this code, so every one of these
+      // is a shape that has actually reached disk or will: an unstamped stage, a stage whose
+      // recipe carries no version, and a value written by a build that predates JSON stamps.
+      for (const recipe of [undefined, "{}", "not json", "null", '["cast"]', '{"v":"6"}']) {
+        expect(recipeVersion(recipe)).toBeNull();
+      }
+    });
+
+    test("the widening floor is at or below what a build writes today", () => {
+      // A floor ABOVE the current recipe would refuse to measure every index this code can
+      // build, which is a check that never runs while reporting that it did.
+      const now = recipeVersion(INDEX_STAGES.origin());
+      expect(now).not.toBeNull();
+      expect(ORIGIN_WIDENED_CROSSWALK).toBeLessThanOrEqual(now as number);
+    });
   });
 });

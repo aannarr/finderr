@@ -24,6 +24,7 @@ import {
 } from "./lib/easter-eggs";
 import { validatePeopleSearch, validateSearch } from "./lib/search-params";
 import { AccountRoute } from "./routes/AccountRoute";
+import { AdminAddonsRoute } from "./routes/AdminAddonsRoute";
 import { AdminInvitesRoute } from "./routes/AdminInvitesRoute";
 import { AdminLayout } from "./routes/AdminLayout";
 import { AdminOverviewRoute } from "./routes/AdminOverviewRoute";
@@ -201,16 +202,16 @@ const accountRoute = createRoute({
 });
 
 /**
- * `/admin` and everything under it -- a LAYOUT route with four children.
+ * `/admin` and everything under it -- a LAYOUT route with five children.
  *
  * The route exists for everybody; the DATA does not. Every endpoint behind it answers 404
  * to a non-admin, so this is a convenience rather than the boundary -- putting the check
  * in the router would be a second owner of a rule the server already enforces, and the
  * weaker of the two.
  *
- * Nested rather than four siblings, because they SHARE chrome: `AdminLayout` draws the
- * heading and the tabs once and renders whichever child the URL names. Four sibling routes
- * would each have had to import that nav, which is how a fifth one ships without it.
+ * Nested rather than siblings, because they SHARE chrome: `AdminLayout` draws the heading and
+ * the tabs once and renders whichever child the URL names. Sibling routes would each have had
+ * to import that nav, which is how the next one ships without it.
  */
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -249,6 +250,13 @@ const adminInvitesRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: "invites",
   component: AdminInvitesRoute,
+});
+
+/** `/admin/addons` -- what is installed, and the settings each one declared it needs. */
+const adminAddonsRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "addons",
+  component: AdminAddonsRoute,
 });
 
 /**
@@ -326,7 +334,13 @@ const routeTree = rootRoute.addChildren([
   requestsRoute,
   logRoute,
   accountRoute,
-  adminRoute.addChildren([adminOverviewRoute, adminUsersRoute, adminUserRoute, adminInvitesRoute]),
+  adminRoute.addChildren([
+    adminOverviewRoute,
+    adminUsersRoute,
+    adminUserRoute,
+    adminInvitesRoute,
+    adminAddonsRoute,
+  ]),
   sourcesRoute,
 ]);
 

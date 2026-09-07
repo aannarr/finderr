@@ -133,12 +133,61 @@ function reloadLine(reload: IndexReload | null): {
 }
 
 /**
+ * Where the page-cache prefault got to, in one sentence, per state.
+ *
+ * The same shape as `reloadLine` and for the same reason: the states fail differently and
+ * each deserves its own words. `failed` and `partial` are the two this page exists for --
+ * a prefault that ran and did not deliver leaves the container serving off the disk at 224x
+ * on the NAS array, and it used to read here as "it has not finished yet".
+ */
+function warmLine(warm: IndexWarm): { value: string; hint?: string } {
+  const last = warm.last;
+  const read = last ? `${last.readMb} MB in ${(last.ms / 1000).toFixed(1)}s` : "nothing";
+  switch (warm.state) {
+    case "off":
+      return {
+        value: "off",
+        hint: "Nothing warms the page cache at boot, so the first reads after a restart come off the disk.",
+      };
+    case "pending":
+      return {
+        value: "waiting for an index",
+        hint: "No index is open yet -- a build is probably running. The prefault runs when one is adopted.",
+      };
+    case "running":
+      return { value: "reading the index now" };
+    case "partial":
+      return {
+        value: `PARTIAL -- read ${read}, then the read failed`,
+        hint: `${last?.error ?? "The read stopped part-way."} What it got through is still cached; the rest is being served off the disk. Check the index file and restart.`,
+      };
+    case "failed":
+      return {
+        value: "FAILED -- read nothing",
+        hint: `${last?.error ?? "The read threw."} Every query is being served off the disk, which costs seconds each on a spinning array. Check the index file and restart.`,
+      };
+    case "done": {
+      const kept = last?.residentMb ?? null;
+      // Two thirds is a judgement, not a measurement: below it, enough of the index was taken
+      // back that first reads are hitting the disk again, which is the condition worth naming.
+      const reclaimed = last !== null && kept !== null && kept < last.readMb * 0.67;
+      return {
+        value: `read ${read}, ${kept === null ? "resident unknown" : `${kept} MB resident`}`,
+        hint: reclaimed
+          ? "Most of what was read has been reclaimed -- the container's memory cap is below the index, so queries are going back to the disk."
+          : undefined,
+      };
+    }
+  }
+}
+
+/**
  * Whether the page-cache prefault ran, and whether what it read survived.
  *
- * Three numbers because three things fail independently: it can be off, it can run and be
- * reclaimed by the container's memory cap, or it can be told to map more than the box has.
- * `residentMb` well below `readMb` is the deployment that looks healthy and is serving half
- * its index off the disk -- worth 224x on the NAS array, and invisible before this page.
+ * Three facts because three things fail independently: it can be off or broken, it can run
+ * and be reclaimed by the container's memory cap, or it can be told to map more than the box
+ * has. `residentMb` well below `readMb` is the deployment that looks healthy and is serving
+ * half its index off the disk -- worth 224x on the NAS array, and invisible before this page.
  */
 function Warm({ warm }: { warm: IndexWarm | null }) {
   if (!warm) {
@@ -146,44 +195,17 @@ function Warm({ warm }: { warm: IndexWarm | null }) {
       <Facts>
         <Fact
           label="Prefault"
-          value="unknown"
-          hint="No index is open to ask -- a build is probably running."
+          value="not reported"
+          hint="This container is older than the field. Nothing is wrong that this page can see."
           tone="info"
         />
       </Facts>
     );
   }
-  if (!warm.prefault) {
-    return (
-      <Facts>
-        <Fact
-          label="Prefault"
-          value="off"
-          hint="Nothing warms the page cache at boot, so the first reads after a restart come off the disk."
-        />
-      </Facts>
-    );
-  }
-  const last = warm.last;
-  const kept = last?.residentMb ?? null;
-  // Two thirds is a judgement, not a measurement: below it, enough of the index was taken
-  // back that first reads are hitting the disk again, which is the condition worth naming.
-  const reclaimed = last !== null && kept !== null && kept < last.readMb * 0.67;
+  const line = warmLine(warm);
   return (
     <Facts>
-      <Fact
-        label="Prefault"
-        value={
-          last
-            ? `read ${last.readMb} MB in ${(last.ms / 1000).toFixed(1)}s, ${kept === null ? "resident unknown" : `${kept} MB resident`}`
-            : "on, but it has not finished in this process"
-        }
-        hint={
-          reclaimed
-            ? "Most of what was read has been reclaimed -- the container's memory cap is below the index, so queries are going back to the disk."
-            : undefined
-        }
-      />
+      <Fact label="Prefault" value={line.value} hint={line.hint} />
       {warm.tuning && (
         <Fact
           label="Tuning"

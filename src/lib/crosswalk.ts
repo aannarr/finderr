@@ -584,6 +584,20 @@ export const ORIGIN_SCHEMA = `
 -- THINNEST catalogues cost the most, which is the wrong way round and is what kept the
 -- shipped list to twelve. See LIST_LANGUAGES and INDEXES.origin for the measurements.
 --
+-- year and votes are the fourth and fifth denormalised columns, added 2026-09-07 for the
+-- reason title_genre gained its own year and votes: a browse that CROSSES a language with a
+-- year or a decade, or that sorts by votes, had to name title.year or title.votes -- which
+-- put title back in the query and took the covering count away, and for the votes sort left
+-- no column here that could serve the ORDER at all. Measured on a copy of the real index,
+-- ?lang=en&kind=movie&decade=2010&sort=rank 280.9 ms -> 3.2 and ?lang=fr&kind=movie&sort=votes
+-- 18.8 -> 0.2. See INDEXES.origin for the index each one needs and langIndexServesAlone for
+-- what they let English do.
+--
+-- Each copies its source's nullability rather than picking its own: title.year is nullable
+-- because an unreleased title has no year, and title.votes is NOT NULL default 0 because
+-- nobody having voted IS a count and it is zero. A copy that disagreed with its source about
+-- what an absent value means is a filter that disagrees about which titles are in the list.
+--
 -- non_english is a property of the TITLE copied onto each of its rows, not of the row:
 -- every row of a title carrying an en row is 0, including that en row itself. It defaults
 -- to 1 so the backfill below -- titles no source has a language for -- is correct without
@@ -594,7 +608,9 @@ create table title_lang (
   lang        text not null,
   kind        text not null default '',
   rank        real,
-  non_english integer not null default 1
+  non_english integer not null default 1,
+  year        integer,
+  votes       integer not null default 0
 );
 `;
 
@@ -683,14 +699,15 @@ export function loadOrigin(
   // Scans `lang_in` and seeks `title.tconst`'s unique index, which is the right way round:
   // the source is a quarter the size of the title table.
   //
-  // `kind` and `rank` are copied here rather than by a later UPDATE for the reason
-  // `EXPLODE_GENRES` copies them at insert time: the row is already in hand, and a second
-  // pass over 1.29M rows to fill columns the insert could have written is pure build time.
-  // THIS RUNS AFTER `applyRank` -- see `originStage`'s position in the build -- so every
+  // `kind`, `rank`, `year` and `votes` are copied here rather than by a later UPDATE, for the
+  // reason `EXPLODE_GENRES` copies them at insert time: the row is already in hand, and a
+  // second pass over 1.29M rows to fill columns the insert could have written is pure build
+  // time. THIS RUNS AFTER `applyRank` -- see `originStage`'s position in the build -- so every
   // rank read here is the final one rather than a NULL.
   db.run(`
-    insert into title_lang (title_rowid, lang, kind, rank)
-    select distinct t.rowid_, i.code, t.kind, t.rank from title t join lang_in i on i.imdb = t.tconst
+    insert into title_lang (title_rowid, lang, kind, rank, year, votes)
+    select distinct t.rowid_, i.code, t.kind, t.rank, t.year, t.votes
+      from title t join lang_in i on i.imdb = t.tconst
   `);
   const withLang = (db.query("select count(distinct title_rowid) c from title_lang").get() as { c: number })
     .c;
@@ -754,8 +771,8 @@ export function loadOrigin(
   */
   db.run("create index ix_lang_backfill on title_lang(title_rowid)");
   db.run(`
-    insert into title_lang (title_rowid, lang, kind, rank)
-    select t.rowid_, '', t.kind, t.rank from title t
+    insert into title_lang (title_rowid, lang, kind, rank, year, votes)
+    select t.rowid_, '', t.kind, t.rank, t.year, t.votes from title t
      where not exists (select 1 from title_lang l where l.title_rowid = t.rowid_)
   `);
   db.run("drop index ix_lang_backfill");

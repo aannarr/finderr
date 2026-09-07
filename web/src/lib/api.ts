@@ -18,6 +18,7 @@ import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
+import type { MediaRemovalPreview, RequestRemovalView } from "../../../src/lib/media-removal";
 import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { PersonLeaderboard } from "../../../src/lib/people-leaderboard";
@@ -25,6 +26,11 @@ import type { PlexLinks } from "../../../src/lib/plex";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { QuotaState } from "../../../src/lib/request-quota";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
+import type {
+  ShelfChoice,
+  ShelfChoiceView,
+  ShelfPreferencePayload,
+} from "../../../src/lib/shelf-preferences";
 import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
@@ -48,6 +54,9 @@ export type {
   PaneBlock,
   PersonLinks,
   RenderedPane,
+  ShelfChoice,
+  ShelfChoiceView,
+  ShelfPreferencePayload,
   Term,
   TermDimension,
 };
@@ -237,6 +246,15 @@ export interface MediaRequest extends RequestStateView {
    */
   requested_by?: string | null;
   requestedByName?: string | null;
+  /**
+   * WHO TOOK THIS BACK OUT, and when. Present only on a `removed` row, and only for an admin.
+   *
+   * The same absence-is-the-permission rule as `requestedByName` above -- "who removed what"
+   * is the same class of fact as "who asked for what", so the server omits the key rather
+   * than sending it for a component to decline to draw. The shape is
+   * `src/lib/media-removal.ts`'s, imported rather than re-declared here.
+   */
+  removal?: RequestRemovalView;
   /**
    * This arrived and YOU have not been shown it yet.
    *
@@ -1321,6 +1339,74 @@ function staleDiscover(): void {
   discoverCache.stale(DISCOVER_KEY);
 }
 
+/**
+ * Read the shelves this reader could arrange, in their order, hidden ones marked.
+ *
+ * NOT CACHED, unlike everything else in this file. It is read by one screen the reader
+ * opened in order to change it, so a hit would be a stale answer at exactly the moment
+ * freshness is the point -- and a cache entry that has to be invalidated by both writes
+ * below is a third thing to keep true for no gain.
+ */
+export async function getShelfPreference(): Promise<ShelfPreferencePayload> {
+  const res = await fetch(SHELF_PREFERENCE_PATH);
+  return readShelfPreference(res, `shelf preference failed: ${res.status}`);
+}
+
+/**
+ * Save an arrangement, and answer with the page the SERVER resolved it to.
+ *
+ * The answer is what the caller must draw, never the list it sent: an id that stopped
+ * naming a shelf while the screen was open is dropped, and a shelf shipped since is added
+ * back where the release put it. Both are ordinary (the genre rows rotate with the nightly
+ * index build), so the round trip is the only thing that knows what a save meant.
+ */
+export function saveShelfPreference(shelves: readonly ShelfChoice[]): Promise<ShelfPreferencePayload> {
+  return writeShelfPreference({
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shelves }),
+  });
+}
+
+/** Put the front page back to the shipped default. */
+export function resetShelfPreference(): Promise<ShelfPreferencePayload> {
+  return writeShelfPreference({ method: "DELETE" });
+}
+
+const SHELF_PREFERENCE_PATH = "/api/shelves/preference";
+
+/**
+ * One write, and one owner for what a write does to the front page already on screen.
+ *
+ * `staleDiscover` is the whole reason these two live in this file rather than beside the
+ * screen that calls them: the page the reader is about to go back to was assembled under
+ * the OLD arrangement, and without this it would be served from the session cache -- so
+ * arranging your shelves would appear to do nothing until the next reload. Which mutations
+ * move a shelf is a fact about the shelves, exactly as `withdrawRequest` says.
+ */
+async function writeShelfPreference(init: RequestInit): Promise<ShelfPreferencePayload> {
+  const res = await fetch(SHELF_PREFERENCE_PATH, init);
+  const payload = await readShelfPreference(res, `shelf preference write failed: ${res.status}`);
+  staleDiscover();
+  return payload;
+}
+
+/**
+ * The payload, or the SERVER's own sentence for why there is not one.
+ *
+ * "sign in to arrange your front page" is a fact the reader can act on and a status code is
+ * not, which is the same rule `postRequestGrain` and `withdrawRequest` follow. `fallback`
+ * covers the answer that carried no message at all -- a proxy page, or a network the
+ * request never left.
+ */
+async function readShelfPreference(res: Response, fallback: string): Promise<ShelfPreferencePayload> {
+  const body = (await res.json().catch(() => ({}))) as Partial<ShelfPreferencePayload> & {
+    error?: string;
+  };
+  if (!res.ok) throw new Error(body.error ?? fallback);
+  return { customised: body.customised === true, shelves: body.shelves ?? [] };
+}
+
 export interface BrowseResponse {
   rows: Title[];
   /** Total matching the filter, not the page -- drives "showing N of M". */
@@ -1630,6 +1716,40 @@ export async function withdrawRequest(tconst: string): Promise<void> {
   // A request row that fed "Recently requested" has gone, so the held front page is now
   // describing a state that no longer exists -- the same reason `postRequest` marks it
   // stale for the opposite change.
+  staleDiscover();
+}
+
+/** Where the two halves of a removal live. One path, two verbs -- see the route's own doc. */
+const removalPath = (tconst: string) => `/api/admin/requests/${tconst}/media`;
+
+/**
+ * What removing this would actually delete. ADMIN ONLY -- anybody else gets the 404 the whole
+ * `/api/admin/*` surface gives, which is not an error worth showing.
+ *
+ * Asked when the reader ARMS the control and never on render: it costs the arr a lookup, and
+ * a page of arrived requests would otherwise fire one per row for a button nobody pressed.
+ */
+export async function getRemovalPreview(tconst: string): Promise<MediaRemovalPreview> {
+  const res = await fetch(removalPath(tconst));
+  const body = (await res.json().catch(() => ({}))) as { preview?: MediaRemovalPreview; error?: string };
+  if (!res.ok || !body.preview) throw new Error(body.error ?? `removal preview failed: ${res.status}`);
+  return body.preview;
+}
+
+/**
+ * Take the media back out of Radarr or Sonarr. ADMIN ONLY, and irreversible for the files.
+ *
+ * `deleteFiles` is REQUIRED and travels in the query, because the server refuses the call
+ * without it: the difference between forgetting a title and deleting a household's file is
+ * not something to default. See `src/server/remove-media.ts` for the whole rule.
+ */
+export async function removeMedia(tconst: string, opts: { deleteFiles: boolean }): Promise<void> {
+  const res = await fetch(`${removalPath(tconst)}?deleteFiles=${opts.deleteFiles}`, { method: "DELETE" });
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `removal failed: ${res.status}`);
+  // The library mirror lost a title and the request row moved to a terminal state, so every
+  // shelf built from either is now describing something that is gone -- the same reason
+  // `withdrawRequest` above marks the held page stale.
   staleDiscover();
 }
 

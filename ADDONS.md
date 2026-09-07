@@ -172,6 +172,7 @@ registers by side effect, so there is no capability to withhold.
 |---|---|
 | `c.fetch(url, init?)` | The only way to the network. Refuses undeclared hosts and plain http, sets an honest `User-Agent`, applies a 15 s timeout, and paces calls per host across every addon. |
 | `c.kv` | Permanent per-addon key/value storage, namespaced `plugin:<id>:<key>` so two addons cannot collide. |
+| `c.config` | What the operator configured, for the fields you declared in `meta.config`. See [Configuring your addon](#configuring-your-addon). |
 | `c.log(msg)` | Prefixed with the addon id, straight to the server log. |
 | `c.pluginId` | Your own id, for when a message needs it. |
 
@@ -179,6 +180,127 @@ registers by side effect, so there is no capability to withhold.
 `emsId`, a `tconst -> tvdbId` crosswalk: identifiers that never change and must survive a
 facet expiring, so a refresh re-fetches against a known id instead of re-running a fuzzy
 match. Facet values belong in the facet cache, which core manages for you.
+
+---
+
+## Configuring your addon
+
+An addon that needs an API key, a region list or a switch **declares what it needs in
+`meta.config`** and reads the values back through `c.config`. Declared rather than
+discovered: an admin form is generated from this, and it has to be drawable for an addon
+whose `init` has not run and may never run successfully.
+
+```ts
+export const meta = {
+  id: "my-ratings",
+  entities: ["movie"],
+  config: [
+    {
+      key: "apiKey",
+      type: "secret",
+      label: "API key",
+      description: "Get one at example.com/developers. Without it this addon stays quiet.",
+      env: "MY_RATINGS_API_KEY",
+      required: true,
+    },
+    { key: "region", type: "string", label: "Region", default: "US" },
+  ],
+};
+
+export function init(c) {
+  const apiKey = c.config.string("apiKey");
+  if (!apiKey) {
+    c.log("no API key configured -- ratings stay unanswered");
+    return { facets: {} };          // go dark, do NOT throw
+  }
+  ...
+}
+```
+
+| Field | Means |
+|---|---|
+| `key` | Letters, digits and `_`. Namespaces the stored value under your addon id. |
+| `type` | `string`, `secret`, `number` or `boolean`. `secret` is a string that is handled differently -- see below. |
+| `label` | What the admin form calls it. Required. |
+| `description` | One sentence under the control: what it is for and where to get one. |
+| `env` | An environment variable that SEEDS the field. Name the one you want; nothing is derived from your id. |
+| `default` | What you get when nobody has configured anything. |
+| `required` | The admin surface reports the addon as unconfigured until it has a value. |
+
+Read it back with `c.config.string(key)`, `.number(key)` or `.boolean(key)` -- one accessor
+per kind, so you get a typed value without a cast. A `secret` reads through `string`. A key
+you never declared, or one of another kind, reads `undefined`; to a provider that is the
+same thing as "not configured", which is the state you have to handle anyway.
+
+### Env is the seed, the saved value is the truth
+
+A value SAVED through the admin API wins outright. Your `env` variable applies only while
+nobody has ever saved one, and `default` is the floor under both. The consequence worth
+knowing: **once an operator saves a value, editing the environment variable stops doing
+anything for your addon.** That is the intended trade -- a setting somebody can change from
+a page cannot also be one a container restart silently overrules.
+
+**Clearing a field does not bring the environment variable back.** It falls to your
+`default`, or to nothing. Same rule: cleared is a value somebody chose.
+
+### A secret is not a setting
+
+Declare `type: "secret"` and core gives you two guarantees you cannot give yourself:
+
+- **It is never read back.** The admin GET says whether it is set and where the value came
+  from. Nothing returns the value -- not that endpoint, not `/api/health`, not any error
+  body. Clearing it is how it is removed, because nothing can read it to send it again.
+- **It is redacted out of the log.** Including out of an error you threw. Core logs
+  `err.message` for every provider that throws, so an upstream client that builds its error
+  out of a URL carrying `?api_key=` would put a live credential in the container log with
+  nobody having written a log call at all. Any occurrence of a configured secret is replaced
+  with `[redacted]` on the way out.
+
+A secret shorter than four characters is refused on the way in, because it could not be
+redacted without rewriting every log line the server prints.
+
+Do your own part anyway: strip the query string off any URL you put in a message
+(`safeUrl` in `src/lib/plugin-fetch.ts` is what core uses), and never write a real key into
+a test fixture.
+
+### Going dark is the failure mode, not an error
+
+An unconfigured addon must be QUIET, never broken and never a boot failure. Return
+`{ facets: {} }` and log why, as the example above does -- the returned keys ARE your
+declaration, so declaring nothing is how you say "I cannot answer today". The facets you
+would have provided simply resolve empty, exactly as they did before you were installed.
+
+### Configuring an addon invalidates its cache, at the next restart
+
+Your `configVersion` covers your configuration as well as your source, so a new API key
+does not go on serving what the old one bought. It moves when the addon is LOADED, never
+when somebody types into a form -- which is also when a change starts being used, since
+`init` reads its configuration once. **So a config change needs a restart to take effect**,
+the same as an edit to your source.
+
+### Where an operator sets it
+
+**Administration → Addons** (`/admin/addons`) lists every loaded addon and draws a form from
+the declaration above -- your labels, your descriptions, your defaults, and a status line
+saying which of the two sources won. You write no UI to get one, and nothing in `web/` is
+edited to add your addon to it.
+
+A `secret` is the one field that is not drawn: the box is empty however long a value has been
+stored, because the report carries none to draw. What the page says instead is whether it is
+set and where it came from.
+
+### Driving it without the form
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" localhost:7979/api/admin/addons | jq
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"apiKey":"...","region":"TH"}' \
+  localhost:7979/api/admin/addons/my-ratings | jq
+```
+
+`null` clears a field. An absent field is left alone, so two people editing different
+settings cannot revert each other.
 
 ---
 
@@ -210,7 +332,7 @@ the reason the surface is shaped this way.
 | `watchProviders` | movie, series | list | JustWatch-shaped streaming availability |
 | `externalIds` | movie, series, episode | object | any id space core does not already hold |
 | `links` | movie, series, episode | list | an official site, a wiki, a fan page -- see the note below |
-| `availability` | movie, series | single | **core-only.** Comes from the local library mirror; an addon could only make it wrong. |
+| `availability` | movie, series | single | **core-only, and nothing else is** -- see the note below |
 
 > [!IMPORTANT] `cast` is the one facet where contributions COMPETE, so put ids on your credits
 > Every other list facet concatenates: RT's audience score lands beside IMDb's and both are
@@ -231,6 +353,26 @@ the reason the surface is shaped this way.
 >   provider's coverage you are adding duplicates rather than replacing anything.
 > - **Losing is not failing.** Your contribution is still fetched, still cached under your own
 >   plugin id, and starts rendering the moment the provider above you goes dark.
+
+> [!IMPORTANT] `availability` is closed to addons, and that is DECIDED rather than pending
+> Declare it and core drops that one key at load time with a log line; the rest of your addon
+> registers as usual. It is the only facet this applies to, and it is not a placeholder for a
+> rule nobody has got round to: **the ruling, the two alternatives it refused and the
+> condition that re-opens it are written beside `FACETS.availability` in
+> `src/lib/facets.ts`**, which is the one place they live.
+>
+> The short version for you as an author: `availability` answers "does this finderr's own
+> library already hold this title", so the library mirror is the only thing that can know, and
+> the surface has no way yet to say *this facet has exactly one legitimate provider*. It also
+> drives the Request button, so a wrong answer is a download that never starts rather than a
+> wrong pane. If what you actually want is "where can I stream this", that is
+> `watchProviders` and it is wide open.
+>
+> Replacing the mirror itself -- running Jellyfin instead of Plex, say -- is a real case and
+> not a refused one. It needs a flag the OPERATOR sets and the addon never can, which is now
+> a thing this surface can express -- see [Configuring your addon](#configuring-your-addon).
+> What is still missing is core's side of it: a way for one addon to be named as the single
+> legitimate provider of `availability`. Nobody has built that, so the facet stays closed.
 
 > [!IMPORTANT] `language` is a CODE, and core folds whichever ISO you send
 > Send `{ code: "hi" }` or `{ code: "hin" }` -- `languageCode` in `src/lib/facets.ts` folds
@@ -329,6 +471,8 @@ Every one of these is a log line and a skipped addon, never a crash:
 | a facet key core does not declare | **that key dropped**, its siblings still register |
 | `availability` (core-owned) | that key dropped |
 | a facet key whose value is not a function | that key dropped |
+| a `meta.config` field with no key, no label, an unknown type, a default of the wrong kind, or a key declared twice | **that field dropped**, its siblings still register |
+| a `meta.config` that is not an array | every field dropped, the addon still loads with no settings |
 | an unknown top-level group (`on`, `panes`, ...) | logged and ignored, the rest loads |
 
 The split in that table is the rule: a broken **addon** is skipped whole, a broken **key**
@@ -342,8 +486,9 @@ process. Adding and deleting do not need one.
 
 **Your `configVersion` is content-addressed, and it invalidates your own cache.** A
 directory addon hashes its entry file plus its sibling directory; an installed module
-hashes `name@version` plus its entry file. So correcting a mapping takes effect on the next
-view instead of at the end of a 90-day TTL. The gap worth knowing: an unbundled package
+hashes `name@version` plus its entry file; both hash your resolved `meta.config` values as
+well. So correcting a mapping -- or being given a different API key -- takes effect on the
+next view instead of at the end of a 90-day TTL. The gap worth knowing: an unbundled package
 edited in place under a version that does not move hashes the same -- bump the version, or
 work on it as a directory addon.
 
@@ -469,8 +614,11 @@ nothing appearing. It draws on the next read once the facet lands.
 
 **There are two extension groups: `facets` and `panes`.** Everything below is designed in an
 internal planning card, `finderr-plugin-system-with-lifecycle-hooks`, and **none of it is
-built**. `on`, `shelves`, `routes`, `config` and `c.dataDir` do not
-exist.
+built**. `on`, `shelves`, `routes` and `c.dataDir` do not exist.
+
+(`config` used to be on this list. It is built -- see
+[Configuring your addon](#configuring-your-addon) -- and it landed in `meta` rather than as
+an extension group, because a form has to be drawable for an addon whose `init` has not run.)
 
 Returning one anyway is safe, and deliberately so: an unknown group is a log line, your
 `facets` still register, and the addon still loads. So an addon written against a finderr
@@ -485,28 +633,31 @@ ask for:
 | `on` -- request lifecycle | `itemWillQueue`, `itemWasSent`, `itemDidBecomeAvailable`, `itemDidFail` | **notifications** -- Discord, WhatsApp, ntfy, webhooks, all as addons instead of four core features; quotas and profile rules as policy |
 | `on` -- search | `searchWillRun`, `searchDidRun`, `resultsWillRender`, `searchDidReturnNothing` | query rewriting, "did you mean", badge injection |
 | `on` -- entities | `willBuildPersonDetails`, `willBuildRelated`, `entityWillLink` | person bios, a real recommender, suppressing a link that would dead-end |
-| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | search tuning against real queries rather than invented ones |
+| `on` -- signals | `resultWasClicked`, `searchWasAbandoned` | nothing that is still unserved -- see below |
 | `on` -- system | `periodic`, `indexWasRebuilt`, `libraryDidSync` | anything cron-shaped, cache invalidation |
 | `shelves` | a built shelf | an addon putting its own row on the front page |
-| `routes`, `config` | a page, a settings screen | addon-authored pages and settings |
+| `routes` | a page of its own | addon-authored pages |
 
 Facet names and event names are two vocabularies, which is why they would land in separate
 groups rather than one flat object. Astro's `astro:config:setup` prefixes are what merging
 them costs.
 
-Two of these are the ones people actually hit first:
+The signals row is worth reading as an example of how a would-be hook earns its place,
+because it is the one that lost its user. Search tuning was the only consumer ever named
+for `on` -- signals, and it shipped in CORE instead: a click posts to `/api/search/click`
+and settles into `search_log` (`src/lib/search-log.ts`), carrying no identity. The second
+half of the argument for making it a hook -- "no addon installed, no logging" -- is served
+by `NO_SEARCH_LOG`, a null logger chosen once at boot, so the off switch exists without an
+extension surface behind it. A hook is worth building when a consumer cannot be served any
+other way; this one could be, and was.
 
-**No per-addon configuration.** An addon needing an API key has nowhere to put it. `c.kv`
-is storage, not configuration -- there is no way to set a value before first run, no UI, no
-ENV convention, and a `type: "secret"` field that is write-only in the API does not exist.
-Today's answer is that an addon reads `process.env` itself, which works and is ugly: it
-puts the addon's secrets in finderr's own namespace with no validation and no `test`
-button. **This is the largest single gap** and it is what blocks every addon that is not
-keyless.
+The one people hit first:
 
-**Addon-authored UI is HALF built.** `panes` shipped, so an addon can draw its own block on
-the title page (see the section above). `routes` and `config` did not, so an addon still has
-no page of its own and no settings screen.
+**Addon-authored UI is PART built.** `panes` shipped, so an addon can draw its own block on
+the title page (see the section above), and `config` shipped -- declared, stored, and drawn
+as a real form on **Administration → Addons**. What is missing is `routes`: an addon still has
+no page of its own. Everything it puts on screen goes through a pane or through the settings
+form core generates from its declaration.
 
 ---
 
@@ -538,6 +689,7 @@ const registry = await loadPlugins({
 |---|---|
 | [`src/plugins/servarr-metadata.ts`](src/plugins/servarr-metadata.ts) | Thirteen facets from two keyless Servarr proxies. Read it for the multi-file layout and for how a provider serving many facets from ONE upstream document must **coalesce its own in-flight fetches** -- the resolver starts every provider in one synchronous burst, so thirteen facets means thirteen identical calls otherwise. |
 | [`src/plugins/rotten-tomatoes.ts`](src/plugins/rotten-tomatoes.ts) | One facet, and the shorter read. A scored fuzzy matcher tested entirely against fixtures, and an identity parked in `c.kv` permanently so a refresh re-fetches scores against a known id. |
+| [`src/plugins/tmdb.ts`](src/plugins/tmdb.ts) | The CONFIGURED one: a `secret` API key, a plain string and a default, all declared in `meta.config` and read through `c.config` -- and it shows what going dark looks like when the key is missing. Copy the declaration shape, not the imports: two of its three fields come from [`src/lib/tmdb-settings.ts`](src/lib/tmdb-settings.ts) because **core reads the same key and the same image base**, and one declaration is what stops an admin override moving only the addon. An addon of your own declares every field inline. |
 
 Two properties of the ratings row that catch out a second provider of an existing source:
 contributions dedupe on `source|kind` and **the richer one wins** (a `url` beats none, then

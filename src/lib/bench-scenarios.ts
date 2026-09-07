@@ -4,6 +4,10 @@
  * This is the maintainable half of the speed harness (`src/jobs/bench-index.ts` is the
  * runner). A scenario is a NAME, an example ARGUMENT set, and a call into the real code.
  *
+ * `countRows` lives here rather than in the runner because it is knowledge about what the
+ * calls below RETURN: adding a scenario whose result has a new shape and teaching the harness
+ * to count it are one edit, in one file, or the count silently reads 1.
+ *
  * > [!IMPORTANT] A scenario names a QUESTION; it never restates the SQL
  * > The obvious way to build a query benchmark is a list of SQL strings with example
  * > parameters. It is also wrong here, for the reason this repo keeps re-learning: a copy of
@@ -54,6 +58,54 @@ export interface BenchFixtures {
   nconst: string;
   /** The genre the index actually has most of. */
   genre: string;
+}
+
+/**
+ * Every property name a scenario result carries its rows under, most specific first.
+ *
+ * ONE list rather than a chain of `if`s in the runner, because `countRows` reads it TWICE --
+ * once to find the rows and once to notice a shape it does not know -- and two hand-written
+ * copies of "which key holds the rows" would disagree the first time one of them was extended.
+ *
+ * `hits` was missing until 2026-09-07 and the cost is the reason this list is documented: a
+ * `SearchResult` fell through to the runner's `return 1`, so all six `search.*` scenarios
+ * reported exactly one row whatever came back -- including a fuzzy tier that returned zero.
+ * The column exists precisely because a query that got faster by returning less is not faster,
+ * and it was blind for a sixth of the suite.
+ */
+const ROW_KEYS = ["hits", "rows", "results", "credits"] as const;
+
+/**
+ * How many rows a scenario produced, for anything shaped like a result.
+ *
+ * Throws on a result shape it cannot count rather than guessing. A benchmark's `rows` column
+ * is only worth having if it is right, and the failure mode it replaces -- silently reporting
+ * `1` for a shape nobody taught it -- is green, plausible and permanent. Adding a result type
+ * is adding its key to `ROW_KEYS`; the throw is what makes that a step you cannot skip.
+ *
+ * An object with NO array in it genuinely is one row: `byTconst` returns a title, `idsFor`
+ * returns one title's ids. That is the case the guard below must not mistake for a new shape.
+ */
+export function countRows(v: unknown): number {
+  if (Array.isArray(v)) return v.length;
+  if (v === null || v === undefined) return 0;
+  if (typeof v !== "object") return 1;
+
+  const o = v as Record<string, unknown>;
+  for (const key of ROW_KEYS) {
+    const rows = o[key];
+    if (Array.isArray(rows)) return rows.length;
+  }
+
+  const unnamed = Object.keys(o).filter((k) => Array.isArray(o[k]));
+  if (unnamed.length > 0) {
+    throw new Error(
+      `countRows: result carries array field(s) '${unnamed.join("', '")}' that ROW_KEYS does not name. ` +
+        "Add the one holding the rows to ROW_KEYS in bench-scenarios.ts -- otherwise this scenario " +
+        "reports 1 row forever, whatever it returned.",
+    );
+  }
+  return 1;
 }
 
 export function scenarios(f: BenchFixtures): Scenario[] {
@@ -189,12 +241,56 @@ export function scenarios(f: BenchFixtures): Scenario[] {
       run: (e) => e.browse({ genre: f.genre, kind: "movie", limit: 40 }),
     },
 
+    /*
+      --- browse, by LANGUAGE. `/lists` links `?lang=<code>` for forty-five of them.
+
+      A language browse is the one filter whose cost depends on HOW SELECTIVE THE PLANNER
+      BELIEVES THE VALUE IS, because `title_lang` holds a row per title per language and the
+      codes are wildly uneven -- `en` is most of the corpus and `fr` is a few percent of it.
+      That makes this pair the scenarios a STATISTICS change shows up in, and the set had
+      none until the `pragma optimize`-vs-`analyze` card needed to measure one.
+
+      The codes are hardcoded where an id would be a fixture: `fr` and `en` are ISO 639-1
+      constants, not rows that can vanish from a dump. `Horror` is likewise a member of
+      IMDb's closed genre vocabulary rather than the largest genre -- crossing a selective
+      language with a mid-sized genre is the shape, and `f.genre` would give the largest of
+      both and hide it. An index built before the origin stage returns no rows for all four
+      (see `SearchEngine.browse`), which the report's `rows` column makes visible.
+    */
+    {
+      id: "browse.langVotes",
+      surface: "browse",
+      args: "lang=fr kind=movie sort=votes",
+      run: (e) => e.browse({ lang: "fr", kind: "movie", sort: "votes", limit: 40 }),
+    },
+    {
+      id: "browse.langGenre",
+      surface: "browse",
+      args: "lang=fr genre=Horror kind=movie sort=votes",
+      run: (e) => e.browse({ lang: "fr", genre: "Horror", kind: "movie", sort: "votes", limit: 40 }),
+    },
+    // The unselective language over a RANGE: `en` is most of the corpus, so this is the case
+    // where believing a language is rare costs the most.
+    {
+      id: "browse.langDecade",
+      surface: "browse",
+      args: "lang=en kind=movie decade=2010 sort=votes",
+      run: (e) => e.browse({ lang: "en", kind: "movie", decade: 2010, sort: "votes", limit: 40 }),
+    },
+
     // --- lists. `/lists` asks for the head of every computed list at once.
     {
       id: "lists.rankedMembers",
       surface: "lists",
       args: `genre=${f.genre} size=250`,
       run: (e) => e.rankedMembers({ genre: f.genre }, 250),
+    },
+    // The same head, for a language row -- `/lists` draws forty-five of these.
+    {
+      id: "lists.langMembers",
+      surface: "lists",
+      args: "lang=fr size=250",
+      run: (e) => e.rankedMembers({ lang: "fr" }, 250),
     },
 
     // --- the title page's local half: everything on screen at t=0.

@@ -109,3 +109,41 @@ describe("reconcile finishes what a webhook started", () => {
     expect(store.getRequest("tt1375666")?.status).toBe("downloading");
   });
 });
+
+describe("a dead-end request asked for again is picked up rather than dropped", () => {
+  /**
+   * Wait for the queue to go quiet. `enqueue` starts the drain without returning it, so a
+   * test has no promise to await; the alternative is a fixed sleep, which is either slower
+   * than it needs to be or flaky.
+   */
+  async function drained(w: RequestWorker): Promise<void> {
+    for (let i = 0; i < 400 && (w.stats().pending > 0 || w.stats().running); i++) await Bun.sleep(5);
+  }
+
+  /*
+    THE WHOLE OF THE SILENT NO-OP, from the worker's side. `process` opens with
+    `if (req.status !== "queued") return`, so before `createRequest` revived the row this job
+    was taken off the queue and thrown away -- the reader got a 202 and nothing ever happened.
+
+    Neither arr is configured here, which is the point: the request comes back `failed` with
+    an error rather than sitting on its old status, and only a job that actually RAN can do
+    that. What a configured Radarr would have been sent is `../lib/arr.test.ts`'s business.
+  */
+  test("re-asking a no_release title enqueues a job the worker actually runs", async () => {
+    const film = { tconst: "tt1375666", title: "Inception", year: 2010, kind: "movie" };
+    store.createRequest({ ...film, service: "radarr" });
+    store.updateRequest(film.tconst, { status: "no_release" });
+
+    store.createRequest({ ...film, service: "radarr" });
+    const w = worker();
+    w.enqueue(film.tconst);
+    await drained(w);
+
+    expect(store.getRequest(film.tconst)).toMatchObject({
+      status: "failed",
+      // Sanitised by `safeArrMessage`, which is what makes this a browser-safe column.
+      error: "the request could not be sent",
+    });
+    expect(w.stats().failed).toBe(1);
+  });
+});

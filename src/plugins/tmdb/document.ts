@@ -73,10 +73,10 @@ export const SERIES_APPEND = "keywords,watch/providers,aggregate_credits,videos,
 
 /** The operator's settings a parser needs, gathered once at plugin init. */
 export interface TmdbDocumentOptions {
-  /** `tmdb.imageBase` -- where a headshot path becomes a URL. */
+  /** The `imageBase` setting -- where a headshot path becomes a URL. */
   imageBase: string;
   /**
-   * The operator's `tmdb.watchProviderRegions`, undefined in the ordinary case. It narrows
+   * The `watchProviderRegions` setting, undefined in the ordinary case. It narrows
    * what is KEPT rather than what is asked for -- TMDB returns every country whatever we
    * do, and the appended form has no per-country parameter at all, so this is a cache-size
    * lever and never a call-count one.

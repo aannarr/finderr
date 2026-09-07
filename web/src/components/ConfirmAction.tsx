@@ -26,6 +26,7 @@ export function ConfirmAction({
   confirmLabel,
   busyLabel,
   cancelLabel = "Cancel",
+  onAsk,
   onConfirm,
   danger = false,
   variant = "panel",
@@ -34,13 +35,30 @@ export function ConfirmAction({
 }: {
   /** The verb, as it reads before anybody has pressed anything: "Remove", "Revoke". */
   label: string;
-  /** What is asked once they have: "Remove this account?" */
-  question: string;
+  /**
+   * What is asked once they have: "Remove this account?"
+   *
+   * A NODE and not a string, because one caller has to show WHAT it is about to delete --
+   * the file count, the size, whether Plex still holds it, and the choice of whether the
+   * files go. A confirmation that can only say "are you sure" is not a confirmation for a
+   * destructive act against a real filesystem. Six of the seven callers pass a sentence and
+   * are unaffected; widening the prop was the alternative to a second confirmation component
+   * that would have re-implemented the guard, the busy lock and the error slot.
+   */
+  question: ReactNode;
   /** The way OUT of the question, and it repeats the verb: "Yes, remove". */
   confirmLabel: string;
   /** While the work is in flight. Present tense: "Removing…". */
   busyLabel: string;
   cancelLabel?: string;
+  /**
+   * Called when the reader ARMS the control, before they have confirmed anything.
+   *
+   * For a question whose facts have to be fetched: asking is the first moment the answer is
+   * wanted, and gathering it on mount would cost every row on the page a request nobody asked
+   * for. It must not do anything destructive -- the reader has said "tell me more", not "yes".
+   */
+  onAsk?: () => void;
   /** Rejecting shows the message and returns to the unasked state, so it can be retried. */
   onConfirm: () => Promise<void>;
   /**
@@ -92,6 +110,10 @@ export function ConfirmAction({
   const ask = (next: boolean) => {
     setAsking(next);
     onAskingChange?.(next);
+    // ARMING is where `onAsk` fires, and it is here rather than on the resting button so
+    // every path that arms this control reports it. It must do nothing destructive: the
+    // reader has said "tell me more", not "yes".
+    if (next) onAsk?.();
   };
 
   const confirm = async () => {
@@ -161,7 +183,17 @@ export function ConfirmAction({
           danger ? "border-danger/40 bg-danger/5" : "border-line bg-surface-2/40"
         }`}
       >
-        <p className="text-sm text-ink">{question}</p>
+        {/*
+          A rich question is a BLOCK and a sentence is a line. One caller shows what it is
+          about to delete -- the file count, the size, whether Plex still holds it -- and that
+          needs its own room; `typeof` rather than a second prop, because the layout follows
+          from what was passed and there is nothing for a caller to get wrong.
+        */}
+        {typeof question === "string" ? (
+          <p className="text-sm text-ink">{question}</p>
+        ) : (
+          <div className="text-sm text-ink">{question}</div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"

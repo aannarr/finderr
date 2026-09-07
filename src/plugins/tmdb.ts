@@ -1,9 +1,18 @@
 /**
  * TMDB: streaming availability, and the five facts a series cannot get anywhere else.
  *
- * The only plugin in the tree that needs an API key, and the only one that goes dark
- * without one -- `init` registers nothing when `tmdb.apiKey` is unset, so a checkout with
- * no key loads a finderr that simply knows six fewer facts. Nothing else changes.
+ * The only plugin in the tree that needs an API key, and therefore the worked example for
+ * per-addon configuration: it declares what it needs in `meta.config` and reads the values
+ * back through `c.config`, reaching into neither `process.env` nor core's own `loadConfig()`.
+ * An addon written outside this repo can do exactly what this one does.
+ *
+ * The one thing it does that a third-party addon would not: two of its three fields are
+ * declared by `src/lib/tmdb-settings.ts` and spread in, because core reads the same key and
+ * the same image base. See that file for why there is only one declaration of them.
+ *
+ * It goes dark without a key -- `init` declares no facets when `apiKey` is unset, so a
+ * checkout with no key loads a finderr that simply knows six fewer facts. Nothing else
+ * changes, and that stays true however the key is configured.
  *
  * Six facets, chosen because nothing keyless can serve them:
  *
@@ -20,20 +29,58 @@
  *
  * THE KEY IS A SECRET AND TMDB TAKES IT AS A QUERY PARAMETER. It is never logged, never
  * put in an error and never written into a fixture; `src/lib/tmdb-api.ts` is the only module
- * that holds it and `getJson` redacts the query string from anything it reports.
+ * that holds it and `getJson` redacts the query string from anything it reports. Declaring
+ * it `type: "secret"` adds the two guarantees an addon author cannot make for themselves:
+ * the admin API never reads it back, and anything a log line would print it in is redacted.
  */
 
 import { AsyncCache } from "../lib/async-cache";
-import { loadConfig } from "../lib/config";
 import type { FacetEntity, FreshnessClass } from "../lib/facets";
 import type { FacetProvider, PluginContext, PluginExports, PluginKv, PluginMeta } from "../lib/plugins";
 import { TMDB_HOST, TmdbApi, type TmdbMediaType } from "../lib/tmdb-api";
+import { TMDB_ADDON_ID, TMDB_DEFAULT_IMAGE_BASE, TMDB_SHARED_CONFIG } from "../lib/tmdb-settings";
 import { fetchDocument, type TmdbDocument } from "./tmdb/document";
 
+/**
+ * What an operator configures, declared rather than read out of `process.env`.
+ *
+ * Each field keeps the `FINDERR_TMDB_*` variable it already had as its `env` SEED, so an
+ * existing deployment behaves identically until somebody saves a value -- see
+ * `src/lib/addon-config.ts` for the rule.
+ *
+ * THE FIRST TWO FIELDS ARE CORE'S, spread in from `src/lib/tmdb-settings.ts` rather than
+ * restated. The key and the image base are read by the upcoming-and-trending sync and by the
+ * poster proxy as well as by this addon, and one declaration is what makes an override on
+ * the admin page move all of them at once. `watchProviderRegions` is this addon's alone and
+ * is declared here, which is what an addon written outside this repo does with every field.
+ */
 export const meta = {
-  id: "tmdb",
+  id: TMDB_ADDON_ID,
   entities: ["movie", "series"],
   hosts: [TMDB_HOST],
+  config: [
+    ...TMDB_SHARED_CONFIG,
+    /*
+      DELIBERATELY NOT core's `regions`, and that is the whole reason this setting exists.
+      `regions` answers a different question -- "which countries is this instance FOR", for
+      the upcoming sync -- and DEFAULTS TO ["US"], so reusing it would trim every existing
+      deployment to US-only availability without anybody asking, and a reader outside those
+      countries would silently lose the "Where to watch" pane entirely (`pickWatchProviders`
+      has no fallback to "whatever country we do have"). Unset means today's behaviour
+      exactly, which is what makes it safe to ship to a running instance.
+    */
+    {
+      key: "watchProviderRegions",
+      type: "string",
+      label: "Watch provider countries",
+      // "This addon's alone" is said out loud because the two fields ABOVE it on the same
+      // form are not, and an operator reading three settings under one heading has no other
+      // way to tell which of them reaches the rest of finderr.
+      description:
+        "This addon's alone: which countries its Where to watch pane covers. Comma-separated ISO 3166-1 alpha-2 codes. Empty keeps every country, which is ~25 KB a title.",
+      env: "FINDERR_TMDB_WATCH_PROVIDER_REGIONS",
+    },
+  ],
 } as const satisfies PluginMeta;
 
 /**
@@ -80,7 +127,9 @@ const FRESHNESS = {
  * existed. There is no `meta.provides` to disagree with, which is the point of the shape.
  */
 export function init(c: PluginContext): PluginExports {
-  const { apiKey, imageBase, watchProviderRegions } = loadConfig().tmdb;
+  const apiKey = c.config.string("apiKey");
+  const imageBase = c.config.string("imageBase") ?? TMDB_DEFAULT_IMAGE_BASE;
+  const watchProviderRegions = regionList(c.config.string("watchProviderRegions"));
   if (!apiKey) {
     c.log(
       "no TMDB API key configured -- watchProviders, and a series' keywords, cast, trailer, " +
@@ -149,6 +198,25 @@ export function init(c: PluginContext): PluginExports {
  * and everything else in the table is by definition series-only.
  */
 type SeriesOnlyFacet = Exclude<keyof typeof FRESHNESS, "watchProviders">;
+
+/**
+ * The countries setting as `parseWatchProviders` wants it: a list, upper-cased.
+ *
+ * A config field is a SCALAR, the same trade site settings make -- every one of them has to
+ * render as one control -- so the comma-splitting `loadConfig` used to do lives here now.
+ * Upper-cased because the codes are matched against TMDB's own ISO 3166-1 alpha-2 keys,
+ * which are upper case, and `th` would silently match nothing.
+ */
+function regionList(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const codes = raw
+    .split(",")
+    .map((code) => code.trim().toUpperCase())
+    .filter(Boolean);
+  // Undefined and empty mean the same thing to `parseWatchProviders` -- keep every country --
+  // and one spelling of that is one fewer thing for a reader of this file to check.
+  return codes.length > 0 ? codes : undefined;
+}
 
 /** Core's entity kinds, in TMDB's vocabulary. `episode` never reaches here -- see `meta`. */
 function mediaTypeOf(entity: FacetEntity): TmdbMediaType {

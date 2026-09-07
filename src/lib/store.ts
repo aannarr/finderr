@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
-import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
+import type { RadarrClient, SonarrClient } from "./arr";
 import { applyAuthSchema } from "./auth-store";
 import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
 import type { Config } from "./config";
@@ -23,6 +23,7 @@ import {
   type SearchRow,
 } from "./search-log";
 import { encodeSeasons } from "./seasons";
+import { applyShelfPreferenceSchema } from "./shelf-preferences";
 import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 import type { TermPair } from "./terms";
 import { applyWatchlistSchema } from "./watchlist";
@@ -69,7 +70,21 @@ export type RequestStatus =
    * watching it, so the moment somebody sorts the import out by hand the library mirror
    * takes the row to `available` exactly as it would have anyway.
    */
-  | "manual_import";
+  | "manual_import"
+  /**
+   * An admin took the media back out of the arr. TERMINAL, and the record of a decision.
+   *
+   * The row survives the removal instead of being deleted, so `/log` can still say what was
+   * asked for and what became of it -- a deleted row would make an admin's deliberate act
+   * indistinguishable from a request that was never made. `media_removal` carries who did it.
+   *
+   * NOTHING moves it: no move set in `./arr-webhook.ts` contains it, and `reconcile` does not
+   * list it among the open statuses. The way back is a FRESH ASK -- `createRequest` revives a
+   * removed row to `queued`, so the ordinary Request button works and is quota-counted, while
+   * the one-click "Try again" on `/requests` is deliberately not offered (it would let anybody
+   * undo an admin's removal without asking for it again).
+   */
+  | "removed";
 
 export interface MediaRequest {
   id: number;
@@ -147,6 +162,71 @@ export interface MediaRequest {
 }
 
 /**
+ * Will a fresh ask for this title WRITE A NEW request row, rather than amending the one
+ * already there?
+ *
+ * True when nothing is held, and true for a `removed` row -- which `createRequest` drops
+ * before inserting, so the new ask is a new row in every column that matters.
+ *
+ * ONE OWNER, because two places have to agree and the failure of disagreeing is silent.
+ * `POST /api/requests` exempts a re-ask from the daily quota exactly when the POST writes no
+ * new row; if it kept its own `getRequest(...) === null` test, an admin's removal would hand
+ * every reader one free request each, forever, on that title.
+ */
+export function createsNewRequest(held: Pick<MediaRequest, "status"> | null): boolean {
+  return held === null || held.status === "removed";
+}
+
+/**
+ * The dead ends a fresh ask REVIVES IN PLACE. Both of them are "we looked and came back
+ * empty-handed", which is a thing that stops being true on its own as indexers gain releases.
+ */
+const REVIVED_BY_A_FRESH_ASK: ReadonlySet<RequestStatus> = new Set(["failed", "no_release"]);
+
+/**
+ * Does a fresh ask for this title put the row ALREADY THERE back on the worker's queue?
+ *
+ * The other half of `createsNewRequest`, and deliberately its opposite for these two statuses:
+ * a `removed` title was taken out by an admin and asking again is a NEW ask that writes a new
+ * row and spends a quota slot, while a `failed` or `no_release` title is the SAME ask that
+ * never delivered anything. Charging somebody a second time for an indexer having had nothing
+ * is a quota that punishes bad luck, so a re-ask here is free and keeps its `created_at` --
+ * which is also exactly what `POST /api/requests/:tconst/retry` has always done, and two
+ * prices for one act decided by which button the reader found is the drift this pair exists to
+ * prevent. (Werk-master ruling, 2026-09-07. If a failed re-ask should ever cost a quota row,
+ * this function and `retry` move TOGETHER or the disagreement comes straight back.)
+ *
+ * Without it the ask is a SILENT NO-OP: `createRequest`'s conflict arm never rewrites `status`,
+ * `RequestWorker.process` opens with `if (req.status !== "queued") return`, and the reader gets
+ * a `202` echoing the old dead-end status back at them.
+ */
+export function revivesHeldRequest(held: Pick<MediaRequest, "status"> | null): boolean {
+  return held !== null && REVIVED_BY_A_FRESH_ASK.has(held.status);
+}
+
+/**
+ * One removal, as it happened. Mirrors the `media_removal` table exactly.
+ *
+ * EVERY FIELD IS A FACT AT THE MOMENT OF REMOVAL and none of them is re-derived later: the
+ * arr no longer holds the title, so `bytes` and `arr_id` can never be looked up again. That
+ * is what makes this an audit record rather than a cache of one.
+ */
+export interface MediaRemoval {
+  tconst: string;
+  title: string;
+  service: "radarr" | "sonarr";
+  /** The arr row id the item was removed under, kept because the arr no longer has it. */
+  arr_id: number;
+  /** 1 when the files went with it, 0 when only the arr entry did. SQLite has no boolean. */
+  deleted_files: number;
+  /** Bytes the arr reported holding, or null when it reported none. */
+  bytes: number | null;
+  /** The admin who did it, or null for the system key -- which is not a person. */
+  removed_by: string | null;
+  removed_at: string;
+}
+
+/**
  * The three overrides an admin may attach to a request, in the API's vocabulary.
  *
  * Named because it travels through four layers -- request body, store, row, arr client --
@@ -220,6 +300,19 @@ export interface LibraryEntry {
   title_slug: string | null;
   updated_at: string;
 }
+
+/**
+ * One library row as a MIRROR WALK offers it -- the stored shape minus what the store fills in.
+ *
+ * Named rather than spelled inline on `replaceLibrary` because it is now the unit a walk
+ * accumulates, and it is what `syncEpisodes` reads its candidates from. That the walk's
+ * intermediate list is THIS narrow, and never the arr's own ~5.5 KB record, is the whole memory
+ * property of `syncLibrary` -- so the type is worth being able to point at.
+ */
+export type LibraryMirrorRow = Omit<LibraryEntry, "service" | "updated_at" | "title_slug"> & {
+  added_at?: string | null;
+  title_slug?: string | null;
+};
 
 /** What Sonarr knows about ONE episode of one series we mirror. */
 export interface EpisodeEntry {
@@ -371,6 +464,35 @@ create table if not exists request_diagnostic (
   indexers_searched integer,
   releases_seen     integer,
   updated_at        text not null
+);
+
+-- WHO TOOK WHAT BACK OUT OF THE LIBRARY, and when.
+--
+-- NOTE: no backticks anywhere in this comment -- SCHEMA is a template literal.
+--
+-- The one destructive act finderr can perform against somebody else's disk, so it is the one
+-- act that keeps a record of itself. A deletion nobody can attribute is worse than no
+-- deletion: the request row alone says the media went, and says nothing about who decided.
+--
+-- Its own table rather than columns on request, for the reason request_diagnostic is its own
+-- table: the two have different owners and different lifetimes. A request row is rewritten by
+-- the worker on every status change and is deleted outright by a withdraw; this is written
+-- once, by a person, and is never rewritten. Keyed on tconst because a title can only be
+-- removed once before it has to be asked for again, and the fresh ask overwrites the record
+-- of the last removal exactly when it stops describing the present.
+--
+-- removed_by is a WEAK reference to app_user, with no foreign key, for the same reason
+-- request.requested_by declines one: deleting a user must not erase the log of what they did.
+-- The name is resolved at read time and shows as (removed) when the account is gone.
+create table if not exists media_removal (
+  tconst        text primary key,
+  title         text not null,
+  service       text not null,
+  arr_id        integer not null,
+  deleted_files integer not null,
+  bytes         integer,
+  removed_by    text,
+  removed_at    text not null
 );
 
 create table if not exists kv (key text primary key, value text not null);
@@ -879,6 +1001,9 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     // resolves a foreign key at INSERT time -- so the wrong order here fails on somebody's
     // first save rather than here. See `WATCHLIST_SCHEMA`.
     applyWatchlistSchema(this.db);
+    // Same rule, same reason: `shelf_pref` cascades off `app_user`. See
+    // `SHELF_PREFERENCE_SCHEMA`.
+    applyShelfPreferenceSchema(this.db);
     addMissingColumns(this.db, ADDED_COLUMNS);
   }
 
@@ -907,13 +1032,7 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    * here too, and a full swap is the only way to notice a deletion without a
    * second round trip.
    */
-  replaceLibrary(
-    service: "radarr" | "sonarr",
-    rows: (Omit<LibraryEntry, "service" | "updated_at" | "title_slug"> & {
-      added_at?: string | null;
-      title_slug?: string | null;
-    })[],
-  ): number {
+  replaceLibrary(service: "radarr" | "sonarr", rows: readonly LibraryMirrorRow[]): number {
     const now = new Date().toISOString();
     const ins = this.db.prepare(
       "insert or replace into library (imdb_id, service, arr_id, has_file, monitored, progress, updated_at, added_at, title_slug) values (?,?,?,?,?,?,?,?,?)",
@@ -960,6 +1079,19 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
         )
         .all(limit) as { imdb_id: string }[]
     ).map((r) => r.imdb_id);
+  }
+
+  /**
+   * Drop ONE title from the mirror, because the arr has just stopped holding it.
+   *
+   * The mirror is otherwise swapped wholesale by `replaceLibrary` on a 60-second timer, and
+   * waiting for that timer after a removal would leave every card, every shelf and the
+   * "already in your library" refusal claiming a file that has been deleted -- for a minute,
+   * on a page the person who deleted it is looking at. This is not a second owner of the
+   * mirror: the next full sync still decides, and it will agree.
+   */
+  forgetLibraryEntry(imdbId: string): void {
+    this.db.run("delete from library where imdb_id = ?", [imdbId]);
   }
 
   /** The whole mirror as a lookup map. Small enough to hold; ~1400 rows here. */
@@ -1322,6 +1454,30 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       the ask arrived, and re-asking from a browser did not change how it arrived the first
       time.
     */
+    /*
+      A REMOVED TITLE IS ASKED FOR AFRESH, so its old row goes rather than being amended.
+
+      This is what makes an admin's removal reversible at all. `RequestWorker.process` refuses
+      to run for anything that is not `queued`, so an upsert onto a `removed` row would enqueue
+      a job that is silently dropped -- the reader presses Request and nothing ever happens.
+      And amending it in place would leave a row that is half the old ask: a stale `arr_id`
+      pointing at a library row the arr no longer has, a `search_attempts` count that sends the
+      reconcile pass straight to `no_release`, and somebody else's name on a request they did
+      not make this time.
+
+      The AUDIT of the removal is not in this row and does not go with it -- `media_removal`
+      keeps who removed what, and is written once and never by this method.
+
+      No other terminal state is dropped here, because every other one already has the "Try
+      again" control on `/requests` reaching `POST /api/requests/:tconst/retry`. `removed` is
+      deliberately the one that does not: undoing an admin's decision should cost a real,
+      quota-counted request rather than one click. See `RequestStatus.removed`.
+
+      The other two dead ends are REVIVED rather than dropped, below the upsert -- see
+      `revivesHeldRequest` for why the treatment differs.
+    */
+    const held = this.getRequest(r.tconst);
+    if (held && createsNewRequest(held)) this.deleteRequest(r.tconst);
     this.db.run(
       "insert into request (tconst,title,year,kind,service,status,seasons,requested_by,via_agent_key," +
         "quality_profile_id,root_folder_path,search_on_add,created_at,updated_at) " +
@@ -1346,7 +1502,32 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
         now,
       ],
     );
+    // AFTER the upsert, because the conflict arm deliberately leaves `status` alone -- see
+    // the comment on it. This is the one status a second ask is allowed to move, and moving
+    // it is what stops the ask being a silent no-op.
+    if (revivesHeldRequest(held)) this.requeueRequest(r.tconst);
     return this.getRequest(r.tconst) as MediaRequest;
+  }
+
+  /**
+   * Put a request that already exists back on the worker's queue for another attempt.
+   *
+   * ONE OWNER of what a second attempt resets, because there are two doors into it -- a fresh
+   * ask on a `failed`/`no_release` row (`createRequest` above) and the "Try again" button
+   * (`POST /api/requests/:tconst/retry`) -- and they must not be able to disagree about it.
+   *
+   * `search_attempts` goes back to zero, and that is the half a caller would forget. The
+   * counter is how many times we have looked for a release for the attempt IN PROGRESS, and
+   * `RequestWorker.reconcile` gives up once it passes nine on a row older than a day. Leaving
+   * a revived row on the old count means the very next reconcile pass -- about thirty seconds
+   * later -- takes it straight back to `no_release`, so the re-queue would be true for half a
+   * minute and then undone, which is the same silent nothing from the reader's side.
+   *
+   * `created_at` and `requested_by` are untouched: this is the SAME ask trying again, so it
+   * keeps its place in `/log` and the name of whoever made it.
+   */
+  requeueRequest(tconst: string): void {
+    this.updateRequest(tconst, { status: "queued", error: null, search_attempts: 0 });
   }
 
   getRequest(tconst: string): MediaRequest | null {
@@ -1553,6 +1734,60 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       .query("select count(*) c from request where requested_by = ? and created_at >= ?")
       .get(userId, sinceIso) as { c: number };
     return row.c;
+  }
+
+  // --- what was taken back out ---------------------------------------------
+  //
+  // The audit half of `../server/remove-media.ts`. Written once per removal, by a person,
+  // and never rewritten -- see the `media_removal` comment in SCHEMA for why it is its own
+  // table rather than columns on `request`.
+
+  /**
+   * Record that an admin removed one title's media.
+   *
+   * An UPSERT rather than an insert, because the key is the title and a title can be removed,
+   * asked for again and removed again. Only the latest removal is kept: the earlier one
+   * describes media that was replaced by a request anybody can see in the log, and an
+   * append-only history here would be a second, unbounded log of an event that already has one.
+   */
+  recordMediaRemoval(r: Omit<MediaRemoval, "removed_at"> & { removed_at?: string }): void {
+    this.db.run(
+      "insert into media_removal (tconst,title,service,arr_id,deleted_files,bytes,removed_by,removed_at) " +
+        "values (?,?,?,?,?,?,?,?) on conflict(tconst) do update set title=excluded.title, " +
+        "service=excluded.service, arr_id=excluded.arr_id, deleted_files=excluded.deleted_files, " +
+        "bytes=excluded.bytes, removed_by=excluded.removed_by, removed_at=excluded.removed_at",
+      [
+        r.tconst,
+        r.title,
+        r.service,
+        r.arr_id,
+        r.deleted_files,
+        r.bytes,
+        r.removed_by,
+        r.removed_at ?? new Date().toISOString(),
+      ],
+    );
+  }
+
+  getMediaRemoval(tconst: string): MediaRemoval | null {
+    return (
+      (this.db.query("select * from media_removal where tconst = ?").get(tconst) as
+        | MediaRemoval
+        | undefined) ?? null
+    );
+  }
+
+  /**
+   * Every removal as a lookup map, for a whole page of request rows at once.
+   *
+   * The same shape and the same reason as `requestDiagnosticMap`: `/api/requests` serves up
+   * to 200 rows on a route the shell polls, so a per-row read would be 200 statements every
+   * eight seconds. The table holds one row per title ever removed, which is far smaller than
+   * the request log it annotates.
+   */
+  removalMap(): Map<string, MediaRemoval> {
+    const rows = this.db.query("select * from media_removal").all() as MediaRemoval[];
+    return new Map(rows.map((r) => [r.tconst, r]));
   }
 
   // --- the AI ledger -------------------------------------------------------
@@ -2712,11 +2947,64 @@ export function posterFrom(images: unknown): string | null {
 
 // ---------------------------------------------------------------------------
 
+/** What `seedArtwork` takes for one title, lifted off the library record that carried it. */
+interface ArtworkSeed {
+  imdb_id: string;
+  url: string | null;
+  studio: string | null;
+}
+
+/**
+ * The poster and studio an arr's library record carries for free.
+ *
+ * Both services put them in the same two places, so this is one projection rather than a copy
+ * per service -- and it is where the `images` cast lives, once, instead of at each call site.
+ */
+function artworkSeed(record: { imdbId?: string; images?: unknown }): ArtworkSeed {
+  return {
+    imdb_id: record.imdbId ?? "",
+    url: posterFrom(record.images),
+    studio: studioFrom(record),
+  };
+}
+
+/**
+ * Drain a library walk into the two narrow lists the mirror actually stores.
+ *
+ * > [!IMPORTANT] What this function does NOT do is the reason it exists
+ * > It never builds an array of the arr's own records. A Radarr movie is ~5.5 KB of JSON --
+ * > `images`, `alternateTitles`, `ratings`, a full `movieFile` -- and the mirror keeps seven
+ * > fields of it plus a poster URL. Projecting inside the loop lets each fat record be
+ * > collected as soon as the next one is parsed, so the peak is set by the projection ratio
+ * > rather than by the library's size. Seerr's #3307 is what the other shape costs at 16k
+ * > items: a +335 MB heap step and ~450 MB never given back.
+ *
+ * The narrow lists ARE accumulated in full, on purpose: `replaceLibrary` and `seedArtwork` are
+ * swaps, and streaming rows straight into them would let a walk that failed halfway leave the
+ * mirror holding half a library. Collecting first means a throw anywhere in the walk reaches
+ * the caller before the store is touched at all.
+ */
+async function collectLibraryWalk<T extends { imdbId?: string; images?: unknown }>(
+  records: AsyncIterable<T>,
+  toRow: (record: T) => LibraryMirrorRow,
+): Promise<{ rows: LibraryMirrorRow[]; artwork: ArtworkSeed[] }> {
+  const rows: LibraryMirrorRow[] = [];
+  const artwork: ArtworkSeed[] = [];
+  for await (const record of records) {
+    rows.push(toRow(record));
+    artwork.push(artworkSeed(record));
+  }
+  return { rows, artwork };
+}
+
 /**
  * Pull both libraries into the mirror.
  *
  * Failures are per-service and non-fatal: if Sonarr is down we still want an accurate
  * picture of Radarr rather than a stale picture of both.
+ *
+ * Both walks STREAM -- see `collectLibraryWalk` for what that buys and what it deliberately
+ * still buffers.
  */
 export async function syncLibrary(
   store: Store,
@@ -2731,29 +3019,20 @@ export async function syncLibrary(
 
   if (clients.radarr) {
     try {
-      const movies = (await clients.radarr.movies()) ?? [];
-      out.radarr = store.replaceLibrary(
-        "radarr",
-        movies.map((m) => ({
-          imdb_id: m.imdbId ?? "",
-          arr_id: m.id,
-          has_file: m.hasFile ? 1 : 0,
-          monitored: m.monitored ? 1 : 0,
-          progress: m.hasFile ? 1 : 0,
-          added_at: addedFrom(m),
-          title_slug: m.titleSlug ?? null,
-        })),
-      );
+      const walk = await collectLibraryWalk(clients.radarr.movies(), (m) => ({
+        imdb_id: m.imdbId ?? "",
+        arr_id: m.id,
+        has_file: m.hasFile ? 1 : 0,
+        monitored: m.monitored ? 1 : 0,
+        progress: m.hasFile ? 1 : 0,
+        added_at: addedFrom(m),
+        title_slug: m.titleSlug ?? null,
+      }));
+      out.radarr = store.replaceLibrary("radarr", walk.rows);
       // Every owned title already carries its artwork AND its studio in the same
       // response -- seeding here costs nothing extra and covers the whole library
       // instantly, so an owned title never waits on an on-demand lookup for either.
-      const seeded = store.seedArtwork(
-        movies.map((m) => ({
-          imdb_id: m.imdbId ?? "",
-          url: posterFrom((m as unknown as { images?: unknown }).images),
-          studio: studioFrom(m),
-        })),
-      );
+      const seeded = store.seedArtwork(walk.artwork);
       log(`library: ${out.radarr} movies mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
     } catch (err) {
       errors.push(`radarr: ${(err as Error).message}`);
@@ -2762,30 +3041,23 @@ export async function syncLibrary(
 
   if (clients.sonarr) {
     try {
-      const series = (await clients.sonarr.series()) ?? [];
-      out.sonarr = store.replaceLibrary(
-        "sonarr",
-        series.map((s) => ({
-          imdb_id: s.imdbId ?? "",
-          arr_id: s.id,
-          has_file: (s.statistics?.episodeFileCount ?? 0) > 0 ? 1 : 0,
-          monitored: s.monitored ? 1 : 0,
-          progress: s.statistics ? s.statistics.percentOfEpisodes / 100 : null,
-          added_at: addedFrom(s),
-          title_slug: s.titleSlug ?? null,
-        })),
-      );
-      const seeded = store.seedArtwork(
-        series.map((s) => ({
-          imdb_id: s.imdbId ?? "",
-          url: posterFrom((s as unknown as { images?: unknown }).images),
-          studio: studioFrom(s),
-        })),
-      );
+      const walk = await collectLibraryWalk(clients.sonarr.series(), (s) => ({
+        imdb_id: s.imdbId ?? "",
+        arr_id: s.id,
+        has_file: (s.statistics?.episodeFileCount ?? 0) > 0 ? 1 : 0,
+        monitored: s.monitored ? 1 : 0,
+        progress: s.statistics ? s.statistics.percentOfEpisodes / 100 : null,
+        added_at: addedFrom(s),
+        title_slug: s.titleSlug ?? null,
+      }));
+      out.sonarr = store.replaceLibrary("sonarr", walk.rows);
+      const seeded = store.seedArtwork(walk.artwork);
       log(`library: ${out.sonarr} series mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
 
-      // A SLICE of the stale series, never all of them -- see `syncEpisodes`.
-      const eps = await syncEpisodes(store, clients.sonarr, series, episodePolicy, log);
+      // A SLICE of the stale series, never all of them -- see `syncEpisodes`. It reads the
+      // MIRROR ROWS rather than Sonarr's records, which is all it ever needed: `arr_id` is the
+      // series id its endpoint takes, and `imdb_id` is how the slice is chosen.
+      const eps = await syncEpisodes(store, clients.sonarr, walk.rows, episodePolicy, log);
       out.episodes = eps.episodes;
       errors.push(...eps.errors);
     } catch (err) {
@@ -2831,7 +3103,13 @@ export interface EpisodeRefreshPolicy {
 export async function syncEpisodes(
   store: Store,
   sonarr: SonarrClient,
-  series: readonly SonarrSeries[],
+  /**
+   * The series to consider, as the MIRROR holds them -- `imdb_id` picks the slice, `arr_id` is
+   * the series id Sonarr's endpoint takes. Narrowed from `SonarrSeries[]` to the two fields
+   * this actually reads, so a caller may hand over the rows it already built instead of
+   * keeping the arr's own records alive for a second reader.
+   */
+  series: readonly Pick<LibraryMirrorRow, "imdb_id" | "arr_id">[],
   policy: EpisodeRefreshPolicy,
   log: (m: string) => void = () => {},
 ): Promise<{ episodes: number; series: number; errors: string[] }> {
@@ -2846,26 +3124,28 @@ export async function syncEpisodes(
   if (due.size === 0) return { episodes, series: walked, errors };
 
   for (const s of series) {
-    const imdbId = s.imdbId;
     // The slice is chosen from the MIRROR rather than from this list, so a series Sonarr
     // just dropped cannot be walked and one with no IMDb id was never a candidate.
-    if (!imdbId || !due.has(imdbId)) continue;
+    if (!s.imdb_id || !due.has(s.imdb_id)) continue;
     try {
-      const rows = (await sonarr.episodes(s.id)) ?? [];
-      episodes += store.replaceEpisodes(
-        imdbId,
-        rows.map((e) => ({
+      // Streamed and projected in the loop, for the reason `collectLibraryWalk` gives: one
+      // series is bounded, but a long-running show is thousands of episodes and there is no
+      // reason for the fat records to coexist with the narrow ones.
+      const rows: Omit<EpisodeEntry, "imdb_id" | "updated_at">[] = [];
+      for await (const e of sonarr.episodes(s.arr_id)) {
+        rows.push({
           season: e.seasonNumber,
           episode: e.episodeNumber,
           arr_episode_id: e.id,
           has_file: e.hasFile ? 1 : 0,
           monitored: e.monitored ? 1 : 0,
           air_date: e.airDate ?? null,
-        })),
-      );
+        });
+      }
+      episodes += store.replaceEpisodes(s.imdb_id, rows);
       walked += 1;
     } catch (err) {
-      errors.push(`sonarr episodes ${imdbId}: ${(err as Error).message}`);
+      errors.push(`sonarr episodes ${s.imdb_id}: ${(err as Error).message}`);
     }
   }
 

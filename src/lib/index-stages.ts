@@ -297,8 +297,18 @@ export const INDEX_STAGES = {
    * one of them correctly; what it cannot do is serve English in 2 ms rather than 78, because
    * its sort column sits behind a column that browse cannot constrain. Same argument as v2:
    * an index-only bump is still a bump when nothing on screen would say which shape drew it.
+   *
+   * **v6 (2026-09-07) denormalises `year` and `votes` onto `title_lang`**, widens
+   * `ix_lang_rank` with `year` and adds `ix_lang_votes` -- so a browse that CROSSES a named
+   * language with a year, a decade or a votes sort stops reaching back into `title`. Like v3
+   * this is a bump for both reasons: the output changes shape and the answers do not.
+   *
+   * It is also the version with the sharpest failure if the stamp is skipped, and that is why
+   * `hasLangYear` and `hasLangVotes` exist beside it: a v5 file has no such columns, so the
+   * widened predicate on it is a `no such column` rather than a slower plan. The stamp orders
+   * the rebuild; the probes keep the file serving until it lands.
    */
-  origin: () => JSON.stringify({ v: 5 }),
+  origin: () => JSON.stringify({ v: 6 }),
 
   /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it
@@ -415,6 +425,45 @@ export function staleStagesOf(path: string, cfg: Config): StaleStage[] {
     return staleStages(path, cfg);
   } catch {
     return [];
+  }
+}
+
+/**
+ * The `origin` recipe version at which `LANGUAGE_CROSSWALK` widened past P218.
+ *
+ * A file below it has a `title_lang` that is complete by its own lights and undercounts some
+ * languages by an order of magnitude -- `zh` 833 titles rather than 5,468, `el` 8 rather than
+ * 1,361. No capability probe can see that, which is why the STAMP is the only signal, and
+ * `auditListLanguages` is the reader that needs it: on such a file a listed language falls
+ * short of the floor for the file's reasons rather than the array's.
+ *
+ * Named for the widening rather than for `4` so a later reader can tell which bump mattered
+ * to whom. v5 and v6 reorder and widen indexes without touching the counts, so this is a
+ * FLOOR and not an equality: pinning to the current recipe would refuse to measure the live
+ * index every time a shape-only bump landed ahead of a rebuild.
+ */
+export const ORIGIN_WIDENED_CROSSWALK = 4;
+
+/**
+ * The version out of one stage recipe, or `null` when there is no recipe or no `v` in it.
+ *
+ * Lives here because this file OWNS the encoding: `stagesOf` hands back the recipe as the
+ * opaque string it was stamped as, and a caller parsing `{"v":n}` for itself would be a
+ * second reader of a shape only `INDEX_STAGES` gets to decide.
+ *
+ * Never throws, for the reason `stagesOf` never throws: its callers are handed a file that
+ * may be older than this code, and a check that takes the process down is worse than the
+ * drift it was added to notice.
+ */
+export function recipeVersion(recipe: string | undefined): number | null {
+  if (recipe === undefined) return null;
+  try {
+    const parsed = JSON.parse(recipe) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const v = (parsed as { v?: unknown }).v;
+    return typeof v === "number" ? v : null;
+  } catch {
+    return null;
   }
 }
 

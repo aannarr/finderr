@@ -49,9 +49,10 @@ import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
 import { dirname, join } from "node:path";
+import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
-import { type BenchFixtures, type Scenario, scenarios } from "../lib/bench-scenarios";
+import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import {
   allIndexes,
@@ -61,6 +62,15 @@ import {
   SHELF_GENRES_META_KEY,
 } from "../lib/index-builder";
 import { SearchEngine } from "../lib/search";
+import { prepareSqlite } from "../lib/spellfix";
+
+// AT IMPORT TIME, above `main()`, for the reason `src/lib/spellfix.ts` documents as TRAP 1:
+// `setCustomSQLite` is a process-global one-shot that throws once ANY Database exists, and
+// this file opens one in `reindex()` and another in `openEngine()`. Called from inside
+// `main()` it would always be too late on macOS, and the only symptom is `search.fuzzy`
+// coming back in microseconds because the tier is not there -- which is what this harness
+// did until 2026-09-07. `build-index.ts` and `build-vocab.ts` call it in the same position.
+prepareSqlite((m) => console.log(`# ${m}`));
 
 interface Args {
   runs: number;
@@ -373,19 +383,6 @@ interface Row {
   plans: string[];
 }
 
-/** How many rows a scenario produced, for anything shaped like a result. */
-function countRows(v: unknown): number {
-  if (Array.isArray(v)) return v.length;
-  if (v && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    if (Array.isArray(o.rows)) return o.rows.length;
-    if (Array.isArray(o.results)) return o.results.length;
-    if (Array.isArray(o.credits)) return o.credits.length;
-    return 1;
-  }
-  return v === null || v === undefined ? 0 : 1;
-}
-
 /**
  * Open an engine, optionally overriding the two pragmas that decide how it reads.
  *
@@ -414,7 +411,9 @@ function openEngine(
     engine.rawDb.run(`pragma cache_size = -${pragmas.cache}`);
   }
   // Without this the fuzzy tier silently does not load and `search.fuzzy` measures an absent
-  // feature -- it comes back in microseconds because it finds nothing.
+  // feature -- it comes back in microseconds because it finds nothing. Suppressed on purpose:
+  // the answer belongs in the report's `# caps:` line, not in noise before it. `prepareSqlite`
+  // at the top of this file is the other half; without it this call cannot succeed on macOS.
   engine.prepareFuzzy(() => {});
   return engine;
 }
@@ -480,9 +479,8 @@ async function main(): Promise<void> {
   console.log(
     `# built_at=${meta.built_at ?? "?"} rows=${meta.rows ?? "?"} episodes=${meta.episode_rows ?? "0"}`,
   );
-  console.log(
-    `# caps: rank=${engine.hasRank} people=${engine.hasPeople} ids=${engine.hasIds} episodes=${engine.hasEpisodes}`,
-  );
+  const { caps, lines } = readCapabilities(engine);
+  for (const line of lines) console.log(line);
 
   // Fixtures from the index itself, never hardcoded -- a benchmark that measures a MISS is
   // fast for the wrong reason and reports it as good news.
@@ -522,6 +520,10 @@ async function main(): Promise<void> {
           // with another is worse than an ugly name.
           label: args.label ?? `${stamp.host}/${profile?.name ?? "as-is"}${args.prefault ? "/pf" : ""}`,
           stamp,
+          // Travels with the numbers, so a JSON diffed months later still says whether the
+          // fuzzy tier was there. A `search.fuzzy` cell is not comparable across two runs that
+          // disagree about this, and nothing else in the file records it.
+          caps,
           profile: profile?.name ?? null,
           pragmas: { mmap: args.mmap, cache: args.cache },
           prefault: args.prefault,

@@ -3,7 +3,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { loadConfig } from "./config";
-import { posterFrom, Store, searchOnAddOf, studioFrom } from "./store";
+import {
+  createsNewRequest,
+  posterFrom,
+  type RequestStatus,
+  revivesHeldRequest,
+  Store,
+  searchOnAddOf,
+  studioFrom,
+} from "./store";
 
 let dir: string;
 let store: Store;
@@ -670,6 +678,95 @@ function requestAt(tconst: string, userId: string | null, createdAt: string): vo
     tconst,
   ]);
 }
+
+describe("asking again for a title that already failed or found nothing", () => {
+  const FILM = { ...ASKED, tconst: "tt1375666", title: "Inception" };
+
+  /** Ask once, then put the row into a terminal state the way the worker would. */
+  const asked = (status: RequestStatus, by = "u-a") => {
+    store.createRequest({ ...FILM, requestedBy: by });
+    store.updateRequest(FILM.tconst, { status, error: "the arr said no", search_attempts: 10 });
+  };
+
+  /*
+    THE BUG THIS PINS. `createRequest` upserts, and its conflict arm deliberately never rewrote
+    `status`; `RequestWorker.process` opens with `if (req.status !== "queued") return`. So
+    pressing Request on a dead-end title answered 202, enqueued a job, and dropped it -- with
+    the response echoing the OLD status back at the reader as if something had happened.
+  */
+  test.each(["failed", "no_release"] as const)("a fresh ask puts a %s row back on the queue", (s) => {
+    asked(s);
+    expect(store.createRequest(FILM).status).toBe("queued");
+    expect(store.getRequest(FILM.tconst)?.error).toBeNull();
+  });
+
+  /*
+    And the re-queue has to SURVIVE a reconcile pass. `reconcile` gives up on a `sent` row once
+    `search_attempts` passes nine and the row is a day old, so a revived row still carrying the
+    old count goes back to `no_release` about thirty seconds later -- which is the same silent
+    nothing from the reader's side, just slower.
+  */
+  test("the attempt counter starts again, so the revived row is not aged straight back out", () => {
+    asked("no_release");
+    expect(store.createRequest(FILM).search_attempts).toBe(0);
+  });
+
+  test("it is free: the same row, in place, so no quota slot is spent", () => {
+    asked("failed", "u-a");
+    const before = store.getRequest(FILM.tconst);
+    expect(store.countRequestsSince("u-a", "1970-01-01T00:00:00.000Z")).toBe(1);
+
+    store.createRequest({ ...FILM, requestedBy: "u-a" });
+
+    const after = store.getRequest(FILM.tconst);
+    expect(store.countRequestsSince("u-a", "1970-01-01T00:00:00.000Z")).toBe(1);
+    // The SAME row: `/log` ordering is by `created_at`, so a revived request keeps its place
+    // rather than jumping to the top of a list of things nobody asked for again.
+    expect(after?.id).toBe(before?.id as number);
+    expect(after?.created_at).toBe(before?.created_at as string);
+  });
+
+  /*
+    Only the two dead ends move. A blanket `status=queued` in the conflict arm would knock a
+    downloading title back to the start of its own lifecycle and re-add it to the arr, and
+    would re-announce an `available` one as news.
+  */
+  test.each(["sent", "grabbed", "downloading", "manual_import", "available"] as const)(
+    "a second ask leaves a %s request exactly where it is",
+    (s) => {
+      asked(s);
+      expect(store.createRequest(FILM).status).toBe(s);
+    },
+  );
+
+  /*
+    Exhaustive on purpose. These two functions are the single owner of what a second ask costs,
+    and a status added later must be given an answer here rather than inheriting one by
+    accident -- the failure of getting it wrong is silent in both directions (a free request
+    forever, or a household member charged twice for an indexer having had nothing).
+  */
+  test("every status is either a new row or a revival, never both and never neither by accident", () => {
+    const expected: Record<RequestStatus, "new" | "revive" | "amend"> = {
+      queued: "amend",
+      sent: "amend",
+      grabbed: "amend",
+      downloading: "amend",
+      manual_import: "amend",
+      available: "amend",
+      failed: "revive",
+      no_release: "revive",
+      removed: "new",
+    };
+    for (const [status, want] of Object.entries(expected) as [RequestStatus, string][]) {
+      expect([createsNewRequest({ status }), revivesHeldRequest({ status })], status).toEqual([
+        want === "new",
+        want === "revive",
+      ]);
+    }
+    // Nothing held is a new row and nothing to revive -- the case the null argument exists for.
+    expect([createsNewRequest(null), revivesHeldRequest(null)]).toEqual([true, false]);
+  });
+});
 
 describe("recentlyRequestedIds", () => {
   const ask = (tconst: string) =>

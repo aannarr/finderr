@@ -26,6 +26,8 @@
  * once finderr is internet-facing.
  */
 
+import type { AddonConfig, AddonConfigDeclaration, AddonConfigField, AddonConfigType } from "./addon-config";
+import { AddonConfigStore, configFingerprint } from "./addon-config";
 import type { EntityKind, FacetContribution, FacetEntity, FacetName } from "./facets";
 import { FACETS, isFacetName } from "./facets";
 import { isPaneSlot, type PaneDeclaration, type RegisteredPane } from "./panes";
@@ -56,6 +58,15 @@ export interface PluginContext {
    * is for the identifiers that never change and must survive a facet expiring.
    */
   readonly kv: PluginKv;
+  /**
+   * What the operator configured, for the fields this plugin declared in `meta.config`.
+   *
+   * The ONLY way a plugin should reach a setting: `process.env` puts an addon's secrets in
+   * finderr's namespace with no validation and no way to change one without a redeploy, and
+   * `loadConfig()` is core code no addon outside this repo can reach at all. See
+   * `./addon-config.ts` for which of the store and the env seed wins.
+   */
+  readonly config: AddonConfig;
   log(message: string): void;
 }
 
@@ -114,6 +125,14 @@ export interface PluginMeta {
   entities: readonly EntityKind[];
   /** Hosts this plugin may fetch. Anything else is refused by core. */
   hosts?: readonly string[];
+  /**
+   * What this plugin needs an operator to configure, read back through `ctx.config`.
+   *
+   * IN `meta` rather than in the object `init` returns, unlike `facets` and `panes`: an
+   * admin form has to be drawn for an addon whose `init` has not run and may never run
+   * successfully, so the declaration must be readable without executing the plugin.
+   */
+  config?: AddonConfigDeclaration;
 }
 
 export interface PluginModule {
@@ -136,6 +155,13 @@ export interface LoadedPlugin {
    * See `configVersionFor`, including why it hashes the plugin's directory too.
    */
   configVersion: string;
+  /**
+   * The config fields that SURVIVED validation, which is what the admin surface must draw.
+   *
+   * Kept beside `meta` rather than read back off it because `meta.config` is whatever the
+   * author wrote, malformed entries and all; this is what core actually honours.
+   */
+  config: AddonConfigDeclaration;
 }
 
 /**
@@ -263,6 +289,12 @@ export interface LoadPluginsOptions {
    */
   resolveFrom?: string;
   kv: KeyValueStore;
+  /**
+   * Where every addon's declared settings are resolved. Omitted, one is built over `kv` and
+   * the real environment -- so a caller that does not care about configuration gets working
+   * env seeding rather than an addon that reads nothing.
+   */
+  config?: AddonConfigStore;
   log?: (message: string) => void;
   policy?: Partial<OutboundPolicy>;
   /** Injected so tests never touch the network. */
@@ -297,6 +329,7 @@ interface PluginOrigin {
 export async function loadPlugins(opts: LoadPluginsOptions): Promise<PluginRegistry> {
   const dir = opts.dir ?? BUILTIN_PLUGINS_DIR;
   const log = opts.log ?? (() => {});
+  const config = opts.config ?? new AddonConfigStore(opts.kv);
   const registry = new PluginRegistry();
   const pacer = new HostPacer(
     opts.policy?.minIntervalMsPerHost ?? DEFAULT_OUTBOUND_POLICY.minIntervalMsPerHost,
@@ -310,7 +343,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<PluginRegis
   for (const origin of origins) {
     try {
       const mod = (await import(origin.path)) as Partial<PluginModule>;
-      const loaded = await loadOne(mod, origin, { ...opts, log, pacer });
+      const loaded = await loadOne(mod, origin, { ...opts, config, log, pacer });
       if (!loaded) continue;
 
       const incumbent = registry.add(loaded.plugin, loaded.providers, loaded.panes);
@@ -351,9 +384,15 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<PluginRegis
  * Cost of a false positive: a whitespace change re-fetches that plugin's facets on next
  * view. Paced, one click deep, and self-limiting. Cost of a false negative is a wrong
  * value served for three months. Not a close call.
+ *
+ * **The plugin's CONFIGURATION is part of the hash too**, which is the whole of this
+ * module's cache-invalidation rule: a different API key may buy different data, so the rows
+ * a previous key bought must not be served under a new one. It fires at load and never on a
+ * keystroke -- see `configFingerprint` in `./addon-config.ts` for why that is the safe half.
  */
-async function configVersionFor(origin: PluginOrigin): Promise<string> {
+async function configVersionFor(origin: PluginOrigin, config: string): Promise<string> {
   const hash = new Bun.CryptoHasher("sha256");
+  hash.update(config);
   try {
     for (const part of await sourceParts(origin)) {
       // The RELATIVE name, never the absolute path: the same plugin lives at
@@ -490,6 +529,7 @@ async function loadOne(
   origin: PluginOrigin,
   deps: {
     kv: KeyValueStore;
+    config: AddonConfigStore;
     log: (m: string) => void;
     policy?: Partial<OutboundPolicy>;
     fetchImpl?: PluginFetch;
@@ -512,6 +552,10 @@ async function loadOne(
     return null;
   }
 
+  // Declared BEFORE `init` runs, because `init` is the first thing that reads a value back.
+  const declaration = configFields(meta.id, meta.config, deps.log);
+  deps.config.declare(meta.id, declaration);
+
   const ctx: PluginContext = {
     pluginId: meta.id,
     fetch: createPluginFetch({
@@ -522,6 +566,7 @@ async function loadOne(
       fetchImpl: deps.fetchImpl,
     }),
     kv: namespacedKv(deps.kv, meta.id),
+    config: deps.config.reader(meta.id),
     log: (message: string) => deps.log(`plugin ${meta.id}: ${message}`),
   };
 
@@ -548,11 +593,99 @@ async function loadOne(
     deps.log(`plugin ${meta.id} ignored: init() returned nothing to register`);
     return null;
   }
+  const fingerprint = configFingerprint(deps.config.values(meta.id));
   return {
-    plugin: { meta, file: origin.path, configVersion: await configVersionFor(origin) },
+    plugin: {
+      meta,
+      file: origin.path,
+      configVersion: await configVersionFor(origin, fingerprint),
+      config: declaration,
+    },
     providers,
     panes,
   };
+}
+
+/** The value kinds a config field may declare. Anything else is an author's typo. */
+const CONFIG_TYPES: readonly AddonConfigType[] = ["string", "secret", "number", "boolean"];
+
+/** A field key namespaces a stored row, so it is held to the same shape as a plugin id. */
+const CONFIG_KEY = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * `meta.config`, checked field by field.
+ *
+ * Same rule as `declaredPanes` and `facetProviders`: a bad FIELD costs itself and nothing
+ * else, so an addon declaring three settings and fumbling one still gets the other two and
+ * still loads. A non-array `config` costs every field and still not the addon -- an addon
+ * with no readable settings goes quiet, which is the failure mode configuration is required
+ * to preserve.
+ */
+function configFields(
+  pluginId: string,
+  fields: PluginMeta["config"],
+  log: (m: string) => void,
+): AddonConfigDeclaration {
+  if (fields === undefined) return [];
+  if (!Array.isArray(fields)) {
+    log(`plugin ${pluginId}: meta.config is not an array -- dropped`);
+    return [];
+  }
+
+  const out: AddonConfigField[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of fields) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const field = raw as Partial<AddonConfigField>;
+
+    if (typeof field.key !== "string" || !CONFIG_KEY.test(field.key)) {
+      log(`plugin ${pluginId}: config field ${JSON.stringify(field.key)} has no usable key -- dropped`);
+      continue;
+    }
+    if (!CONFIG_TYPES.includes(field.type as AddonConfigType)) {
+      log(`plugin ${pluginId}: config '${field.key}' has unknown type '${String(field.type)}' -- dropped`);
+      continue;
+    }
+    if (typeof field.label !== "string" || field.label.length === 0) {
+      log(`plugin ${pluginId}: config '${field.key}' has no label -- dropped`);
+      continue;
+    }
+    // Two fields sharing a key would write over each other in one namespace, and the second
+    // is the author's mistake rather than a state to represent -- the judgement `add()` makes
+    // about two plugins claiming one id, and `declaredPanes` about two panes claiming one.
+    if (seen.has(field.key)) {
+      log(`plugin ${pluginId}: config key '${field.key}' is declared twice -- second dropped`);
+      continue;
+    }
+
+    const type = field.type as AddonConfigType;
+    if (field.default !== undefined && !fitsConfigType(field.default, type)) {
+      log(`plugin ${pluginId}: config '${field.key}' has a default that is not a ${type} -- dropped`);
+      continue;
+    }
+
+    seen.add(field.key);
+    // Built field by field rather than passed through, so nothing an author wrote that this
+    // host does not understand can reach the store or the admin form unexamined.
+    out.push({
+      key: field.key,
+      type,
+      label: field.label,
+      ...(typeof field.description === "string" ? { description: field.description } : {}),
+      ...(typeof field.env === "string" ? { env: field.env } : {}),
+      ...(field.default === undefined ? {} : { default: field.default }),
+      ...(field.required === true ? { required: true } : {}),
+    });
+  }
+  return out;
+}
+
+/** Whether a declared default is the kind its field says it is. A `secret` is a string. */
+function fitsConfigType(value: unknown, type: AddonConfigType): boolean {
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "boolean") return typeof value === "boolean";
+  return typeof value === "string";
 }
 
 /**
@@ -635,8 +768,8 @@ function facetProviders(
       log(`plugin ${pluginId}: '${facet}' is not a facet core declares -- dropped`);
       continue;
     }
-    // `availability` comes from the local library mirror and is already live. A plugin
-    // supplying it could only ever make it wrong.
+    // WHY a facet is core-owned is written beside the facet, not here -- see `coreOnly` and
+    // the `availability` entry in `facets.ts`. This is the enforcement, and it reads the flag.
     if (FACETS[facet].coreOnly) {
       log(`plugin ${pluginId}: '${facet}' is core-owned and cannot be provided -- dropped`);
       continue;

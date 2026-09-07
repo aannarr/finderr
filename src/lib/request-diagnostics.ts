@@ -43,7 +43,8 @@ export type RequestVerdict =
   | "needs_manual_import"
   | "nothing_accepted"
   | "no_releases"
-  | "failed";
+  | "failed"
+  | "removed";
 
 /**
  * How a verdict should FEEL, which is a different question from what it says.
@@ -114,6 +115,22 @@ export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: str
     label: "Request failed",
     tone: "dead_end",
     sentence: "The request could not be sent.",
+  },
+  removed: {
+    label: "Removed",
+    /*
+      `done` and NOT `dead_end`, which is the one judgement in this entry.
+
+      A dead end says "nothing further will happen on its own, so go and do something", and
+      `/requests` draws its "Try again" control on exactly that tone. Removing was a decision
+      somebody made on purpose, and a one-click undo beside it would let any reader reverse an
+      admin without asking for the title again. So this reads as finished: stop waiting, and
+      press Request if you want it back.
+    */
+    tone: "done",
+    // Says nothing about WHY. finderr does not know -- a wrong version, a duplicate, a
+    // clear-out -- and the log carries who did it, which is the fact worth having.
+    sentence: "An administrator took this back out of the library. Request it again if you still want it.",
   },
 };
 
@@ -186,6 +203,10 @@ export function verdictFor(
     // finderr can poll would have told us. See `RequestStatus.manual_import`.
     case "manual_import":
       return "needs_manual_import";
+    // Terminal, and no evidence refines it either: `request_diagnostic` is an observation of
+    // the arrs' queues, and the arr no longer holds this title to have an opinion about.
+    case "removed":
+      return "removed";
     case "no_release":
       // A positive count is the only thing that earns the confident answer. No diagnostic,
       // or a count we never got, both fall back to the narrower verdict.

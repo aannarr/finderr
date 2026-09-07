@@ -283,7 +283,16 @@ carries Withdraw: it drops finderr's record of the ask, gives you back the daily
 spent, and tells Radarr or Sonarr to stop monitoring the title so nothing keeps searching for
 it. It deletes no movie, no series and no file, ever. A request that has already arrived
 offers no Withdraw at all, because at that point the only thing left to undo is the media
-itself and that belongs in the arr.
+itself.
+
+Undoing that is a separate button, and it belongs to an administrator. On `/requests` and on
+the request log, an admin looking at something that has arrived gets Remove. It asks the arr
+what is actually on disk first and says so -- how many files, how big, what quality, and
+whether Plex is still serving it -- and it makes deleting the files a deliberate tick rather
+than a side effect: leave it and the title simply stops being in Radarr or Sonarr. The row is
+not deleted afterwards, it turns into "Removed", so the log still explains where a film went
+and records who took it out. Asking for it again works, and costs a request like any other.
+The control appears nowhere else -- not on a title page, not on a card, not in search.
 
 With a Plex token, a title you already own gets a Play button that deep-links into the
 Plex app or web player, instead of a line of text saying you have it.
@@ -325,7 +334,9 @@ that needs the installed app over HTTPS -- Safari does not offer push to a tab, 
 says so rather than showing a button that cannot work.
 
 Sign-in is invite-only, with passkeys or a Plex account. No sign-up page, no password
-table. On a server with no accounts the first visitor creates the admin — a window that
+table. One deployment-wide exception, off unless you turn it on: point finderr at your Plex
+server and [everyone it is shared with](#letting-everyone-your-plex-server-is-shared-with-in)
+can sign in without an invitation. On a server with no accounts the first visitor creates the admin — a window that
 shuts permanently once anybody has, and never reopens — and the first boot also prints an
 invite link, which keeps working afterwards. Admins mint invites, manage users and roles,
 and can reset anyone's access. Everybody gets an account page to
@@ -476,6 +487,40 @@ cannot bootstrap from a shell.
 
 `/api/health` tells you where you stand: `auth.users: 0` means nobody has an account yet,
 so both doors above are still open.
+
+#### Letting everyone your Plex server is shared with in
+
+Invitations do not scale to a household that already exists somewhere else. If you share a
+Plex server with twenty people, you can let finderr take that as the membership list:
+
+```yaml
+environment:
+  FINDERR_PLEX_MACHINE_ID: <your server's machineIdentifier>
+  FINDERR_PLEX_OPEN_SIGNUP: 1
+```
+
+Anybody whose Plex account can see that server then signs in with "Continue with Plex" and
+gets an ordinary user account on the spot. No invitation, nothing for you to mint, and
+never more than the `user` role — an admin is still something you have to make on purpose.
+
+The machine id is not optional here and finderr refuses to start without it, because a
+Plex account on its own proves only that somebody spent a minute making one. It is the
+`machineIdentifier` of your server; the quickest way to read it is
+`curl -s -H "X-Plex-Token: $PLEX_TOKEN" http://<plex>:32400/identity`. Setting it also
+turns on the second gate for everybody else, so an already-invited user who was later
+un-shared stops being able to sign in — that is the gate working.
+
+Un-sharing on Plex is how you take access away, and it applies at their next sign-in: the
+finderr account outlives the share, so disable the user on `/admin` if you need it gone
+now. Re-checking with plex.tv on every page load would put a network call on the render
+path, which is a trade this app does not make anywhere.
+
+> [!CAUTION]
+> This changes who can reach a process holding your Radarr and Sonarr API keys — from
+> people you invited one at a time to everybody on your Plex server, including anybody they
+> hand a Plex login to. It is a good trade for a household; read
+> [Putting it on the internet](#putting-it-on-the-internet) again before making it on a
+> public hostname.
 
 #### Running without any login at all
 
@@ -639,9 +684,12 @@ rebuild.
 | `FINDERR_SONARR_*` | | The same five keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
 | `FINDERR_EPISODE_REFRESH_SECONDS` | `21600` | How stale one series' episode list may get before it is walked again. Sonarr answers per series, so this is a load dial, not a freshness one |
 | `FINDERR_EPISODE_REFRESH_BATCH` | `25` | Series walked per library refresh, neediest first. `0` turns the episode mirror off, and with it the per-episode marks and requests |
-| `FINDERR_TMDB_API_KEY` | | Optional. Only the `tmdb` addon uses it: streaming availability, and a series' keywords, cast, trailer, "more like this" and official site |
+| `FINDERR_TMDB_API_KEY` | | Optional. **The SEED for one setting, not the setting.** It is the key the `tmdb` addon uses (streaming availability, and a series' keywords, cast, trailer, "more like this" and official site) **and** the one the upcoming and trending sync uses -- one value, one place it is stored. Save a key on **Administration → Addons** and it wins over this variable for both from then on, so rotating it rotates the whole product |
+| `FINDERR_TMDB_IMAGE_BASE` | `https://image.tmdb.org/t/p` | Where a TMDB image path becomes a URL, for the poster proxy and for cast headshots. The same shape as the key above: a seed for a setting the admin page can take over. Change it only for a TMDB mirror |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
+| `FINDERR_PLEX_MACHINE_ID` | | Your Plex server's `machineIdentifier`. Set it and a Plex sign-in additionally requires that the account can see that server — a second gate on top of the invitation, never instead of it. It does not feed the Play links, which read the id from the server itself |
+| `FINDERR_PLEX_OPEN_SIGNUP` | `false` | Let anybody your Plex server is shared with sign in with no invitation, as a `user`. Refused at boot without the id above, since without a server to belong to it would admit every Plex account there is. See [Letting everyone your Plex server is shared with in](#letting-everyone-your-plex-server-is-shared-with-in) |
 | `FINDERR_AUTH_RP_ID` | `localhost` | The bare domain passkeys are bound to. Permanent, see above |
 | `FINDERR_AUTH_RP_NAME` | `finderr` | What the OS prompt shows |
 | `FINDERR_AUTH_ORIGINS` | `http://localhost:7979,http://localhost:7980` | Comma-separated. Every origin that may complete a sign-in |
@@ -862,6 +910,25 @@ Five of its cases can only be answered by the fuzzy tier, so on a checkout with 
 score stays honest about what it measured, and the output says which capability is missing
 and how to get it.
 
+A second check needs the same thing. The language lists on `/lists` follow one mechanical
+rule -- a language gets a list when the index holds at least 250 ranked films in it that
+are not also in English -- and no unit test can evaluate that, because a unit test has no
+corpus. So the array of languages and the corpus drifted apart twice, both times found by
+somebody noticing rather than by anything failing:
+
+```bash
+bun run lists:audit                       # the index this machine has
+bun run lists:audit path/to/titles.db     # some other one
+```
+
+It reports both directions: a language over the floor with no list, and a list whose
+language has fallen under it. Against an index built before the language crosswalk widened,
+the second direction is reported as not measured rather than as a failure -- on such a file
+a listed language can fall short for the file's reasons rather than the array's.
+
+`bun run gate` runs the four green commands, then the canary, then this. The last two
+tolerate having no index to read, and say so loudly instead of passing quietly.
+
 The build also pulls a fifth file that is not IMDb's: an id crosswalk, `tconst` to TMDB
 and TheTVDB id, queried in bulk out of Wikidata through
 [QLever](https://qlever.cs.uni-freiburg.de/). It covers 95% of films and 92% of series at
@@ -1057,7 +1124,10 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/search?q=&genre=&decade=&year=&kind=&limit=` | hits, facets, parsed intent, the tier that answered, plus `people` — matching names, best known first. The facet chips narrow the titles only. `people` is absent, not empty, on an index built before it carried a people index |
 | `GET` | `/api/title/:tconst` | the local row at once, facets as they land, plus `work` saying what is still owed |
 | `GET` | `/api/browse?genre=&decade=&year=&kind=&sort=&offset=` | paginated. `sort=rank` is the weighted list order, anything else is votes |
-| `GET` | `/api/discover` | the front-page shelves, pure index queries |
+| `GET` | `/api/discover` | the front-page shelves, pure index queries, in the order the caller arranged them and without the ones they hid |
+| `GET` | `/api/shelves/preference` | every shelf you could arrange, in your order, hidden ones included and marked -- a page that omitted them would make hiding a one-way door. `customised` says whether any of it is yours |
+| `PUT` | `/api/shelves/preference` `{shelves:[{id,hidden?}]}` | save an arrangement. The body is the whole preference, so saving twice leaves the same page. Answers with the same payload the `GET` does, already resolved: an id no shelf carries any more is dropped, and a shelf you never mentioned is back where the release put it |
+| `DELETE` | `/api/shelves/preference` | back to the shipped default. Resetting something you never arranged answers the default page rather than a `404` |
 | `GET` | `/api/agent/chat` | whether the assistant is available to you and which model answers. `404` when no key is configured and `404` when you are not signed in, because a surface you may not use does not announce itself |
 | `POST` | `/api/agent/chat` | one turn. Streams the run as SSE when `Accept` asks for it and returns plain JSON otherwise, from one route, because they are one operation with one gate, one ledger and one memory |
 | `GET` | `/api/person/:nconst` | filmography, plus that person's nominations |
@@ -1066,12 +1136,14 @@ than by a session, because Radarr and Sonarr have no cookie.
 | `GET` | `/api/awards/:award/:edition` | one edition, categories in their canonical order. The edition is the ceremony number where the source numbers them and the year where it does not |
 | `GET` | `/api/requests` | the request log; who asked is admin-only and stripped server-side. An admin's rows also carry `requestedByName`, and a non-admin's carry neither that nor the id it resolves -- the absence is the permission, which is what `/log` reads to decide whether it has a Who column. Also carries `unseen`, your own count of arrivals you have not been shown |
 | `GET` | `/api/requests?mine=1` | the same shape, narrowed to the caller. A server-side filter, because `requested_by` is stripped before a non-admin ever sees it |
-| `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only |
+| `POST` | `/api/requests` `{tconst, seasons?, profileId?, rootFolder?}` | returns `202`, queued in the background. The two overrides are admin-only. Asking again for a title that already `failed` or found nothing puts that same row back on the queue -- free, keeping its original place in the log and the name of whoever asked first. Asking again for one an admin REMOVED writes a new row and costs a quota slot, because that is a new ask for something nobody currently has |
 | `POST` | `/api/requests/episode` `{tconst, season, episode}` | one episode of a series Sonarr already holds |
 | `POST` | `/api/requests/season` `{tconst, season}` | every aired episode of that season we hold no file for, including any Sonarr is already searching for. The server picks them off the mirror; the client never sends a list |
 | `POST` | `/api/requests/seen` | clears your unread arrivals. Takes no body: the caller is the session and the set is everything of theirs |
-| `POST` | `/api/requests/:tconst/retry` | |
+| `POST` | `/api/requests/:tconst/retry` | the "Try again" button on `/requests`, for a request that gave up. Puts the existing row back on the queue and clears the count of empty searches, which is exactly what a fresh `POST /api/requests` for the same title does -- one store method serves both, so the two doors cannot come to disagree about what a second attempt costs |
 | `DELETE` | `/api/requests/:tconst` | withdraw. The requester or an admin; anybody else gets the same `404 unknown request` a title nobody asked for gets, so the route cannot be used to find out who asked. Drops the row, refunds the day's quota and unmonitors in the arr -- only when the arr row was one WE added. Never deletes a movie, a series or a file, and refuses a request that has already arrived |
+| `GET` | `/api/admin/requests/:tconst/media` | what removing this would delete: file count, bytes, the arr's quality name, and whether Plex still holds it. Read live from the arr, because a cached size describes whatever was on disk an hour ago |
+| `DELETE` | `/api/admin/requests/:tconst/media?deleteFiles=` | remove the media. `deleteFiles` is required and has no default. Takes the title out of Radarr or Sonarr, moves the request row to `removed` rather than deleting it, and writes an audit row naming the admin who did it. Refuses anything that has not arrived -- that is what withdrawing is for |
 | `GET` | `/api/watchlist` | your saved titles as decorated cards, newest save first. One endpoint rather than two: the page draws these and every save button reads the ids out of the same answer. A save whose title has left the index is dropped from the response and kept in the table |
 | `POST` | `/api/watchlist` `{tconst}` | save one title. Writes one row and calls no arr, spends no quota and starts no search. Saving twice is `{"saved":false}` rather than a conflict; an unknown tconst is `404` |
 | `DELETE` | `/api/watchlist/:tconst` | un-save. Removing something that was never on your list is `{"removed":false}`, because the state you asked for is already true |
@@ -1143,9 +1215,10 @@ Every line here is a real limitation. It is not a roadmap.
   need for that are designed and not built; [ADDONS.md](ADDONS.md) lists them and says
   plainly that they do not exist yet.
 - Withdrawing a request never removes the media, and a request that has already arrived
-  cannot be withdrawn at all. Withdraw stops the search and forgets the ask; deleting the
-  film, the series or the file is still done in the arr, where you can see what you are
-  deleting.
+  cannot be withdrawn at all. Withdraw stops the search and forgets the ask; removing what
+  arrived is Remove, which is a different button on the same two pages and belongs to an
+  administrator. There is no way for an ordinary member to ask for something to be taken
+  back out -- that is the approval-workflow shape, and approval is not built.
 - Topping up a series you already have is invisible to the request log. Asking for a show
   the library mirror already knows still answers `409 already in your library`, so the two
   whole-title grains are no use there; the episode and season grains are what fill the gap,
@@ -1154,9 +1227,11 @@ Every line here is a real limitation. It is not a roadmap.
   up on `/requests` or `/log` and neither spends anybody's daily quota.
 - A request that finds nothing goes `no_release` on its own after a day and nine
   reconcile passes, rather than showing "Processing" forever. You can retry it.
-- No per-addon configuration. An addon needing an API key reads `process.env` itself.
-  That is the biggest single gap in the extension surface and it blocks every addon that
-  is not keyless.
+- Configuring an addon needs a restart. **Administration → Addons** lists everything
+  installed and generates a form from what each one declared, so a key no longer needs a
+  shell on the host -- but an addon reads its settings once at load, so a change reaches it
+  when finderr next starts. A secret still never comes back out: the page reports whether one
+  is set and where the value came from, never the value.
 - The rate limiter is in memory, per process, and resets on restart. See
   [Putting it on the internet](#putting-it-on-the-internet).
 - A series gets its trailer, its "more like this" and its official-site link **only with a
@@ -1174,8 +1249,12 @@ Every line here is a real limitation. It is not a roadmap.
 - English only. The UI has no translation layer and synopses arrive in English from
   upstream. The facet vocabulary carries `language` and `country`, so a translated-synopsis
   addon is possible today; the app's own chrome is not translatable yet.
-- The front page is the same for everyone. Shelves come from the index and the library;
-  no watch history, no "because you watched", no personalisation.
+- The front page is arrangeable but never personal in the recommendation sense. `/account`
+  reorders the shelves, hides the ones you never scroll to, and puts it all back with one
+  control -- but that is order and visibility over the shelves that already exist. A
+  preference can never ADD a shelf, which is exactly what keeps a personal front page a row
+  lookup rather than a per-reader assembly. Shelves come from the index and the library,
+  with no watch history and no "because you watched".
 - Installed, it still needs the server to be reachable. The service worker keeps posters
   and bundles on the device and restores the front page you left, but HTML is deliberately
   never cached -- which shell this origin serves depends on your session cookie -- so

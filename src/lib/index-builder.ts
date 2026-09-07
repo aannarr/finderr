@@ -647,11 +647,79 @@ export const INDEXES = {
    * > seconds**, and the file grows by 16.6 MB of table and 28.7 MB of index on 1.79 GB. That
    * > is the price rather than an objection -- see `.claude/CLAUDE.md` on runtime beating
    * > build time -- and it buys 1,839 ms of render path per `/api/lists/completion`.
+   *
+   * > [!IMPORTANT] `ix_lang_rank` GAINED `year`, and `ix_lang_votes` is the FOURTH -- one
+   * > index per ORDER, the pair `ix_tg_rank`/`ix_tg_votes` already models one table over
+   * > A language list is one query; a language BROWSE is four, because the reader picks the
+   * > order and may cross it with a year or a decade. `title_lang` could serve none of those
+   * > until it carried `year` and `votes` (see `ORIGIN_SCHEMA`), so every one of them named a
+   * > column only `title` has -- which put `title` back in the query, took the covering count
+   * > away, and for a votes sort left no column here that could serve the ORDER at all.
+   * >
+   * > `year` is a TRAILING covered filter on both, not a key column, and that position is the
+   * > whole point: a decade is a RANGE, so leading with it would put the sort column behind an
+   * > unconstrained column -- the exact mistake `non_english` made above. Trailing, it is
+   * > tested while walking `rank desc` or `votes desc` and the walk still stops at `limit`.
+   * >
+   * > Measured on a copy of the real 1,276,669-title index, M1 Max, 2026-09-07, best of five
+   * > warm through `SearchEngine.browse`. Both files carried the statistics a build left AT
+   * > THE TIME -- `pragma optimize`'s capped estimates -- because that is what the planner
+   * > then saw. The build has since ended on `analyze` instead (see the comment on that line).
+   * > The three of these rows the bench now carries -- `browse.langVotes`, `browse.langDecade`
+   * > and `browse.langGenre` in `../lib/bench-scenarios.ts` -- were re-measured under both sets
+   * > of statistics on a freshly built index, and neither their plans nor their times moved.
+   * >
+   * > | browse | before | after |
+   * > |---|---|---|
+   * > | `?lang=en&kind=movie&decade=2010&sort=votes` | 349.7 ms | 4.4 |
+   * > | `?lang=en&kind=movie&decade=2010&sort=rank` | 280.9 | 3.2 |
+   * > | `?lang=en&kind=movie&decade=1990&sort=rank` | 244.6 | 3.1 |
+   * > | `?lang=fr&genre=Horror&kind=movie&sort=votes` | 32.9 | 9.2 |
+   * > | `?lang=en&kind=movie&sort=votes` | 28.1 | 0.9 |
+   * > | `?lang=fr&kind=movie&sort=votes` | 18.8 | 0.2 |
+   * > | `?lang=fr&kind=movie&decade=2010&sort=votes` | 17.7 | 2.5 |
+   * > | `?lang=en&kind=movie&year=1994&sort=rank` | 9.5 | 2.9 |
+   * > | `?lang=fr&kind=movie&decade=2010&sort=rank` | 8.9 | 0.7 |
+   * > | `?lang=fr&kind=movie&year=1994&sort=rank` | 7.1 | 0.8 |
+   * >
+   * > The genre row is in that table as a SIDE EFFECT rather than a target: nothing about a
+   * > genre browse's SQL changed, and the four-index shape simply gives the planner a better
+   * > choice for it. The genre case itself is still declined -- see `coveringCountTable`.
+   * >
+   * > The CONTROLS did not move, which is the half that says this is a widening rather than a
+   * > trade: the forty-five language lists total 11.0 ms before and 11.1 after, the unfiltered
+   * > `?lang=en&kind=movie&sort=rank` 1.8 and 1.8, `?lang=en&genre=Horror&kind=movie&sort=rank`
+   * > 16.2 and 16.4, and the deployment PREFERENCE the caution at the top of this block
+   * > protects 445.1 and 447.9. Every total was identical on both files.
+   * >
+   * > **`year` IN `ix_lang_votes` was priced separately and it pays**: without it a decade
+   * > browse sorted by votes splits into ten per-year seeks that each fall out of the index,
+   * > 9.4 ms against 4.4 for English and 8.8 against 2.5 for French, for 3.6 MB.
+   * >
+   * > > [!CAUTION] MEASURE AGAINST THE STATISTICS A BUILD LEAVES -- WHICH IS NOW `analyze`
+   * > > Dropping and recreating an index by hand on a copy of the real file DELETES its
+   * > > `sqlite_stat1` row, and the planner is then estimating with nothing. That made the
+   * > > change measured above look like a 29 ms -> 52 ms REGRESSION on
+   * > > `?lang=fr&genre=Horror&kind=movie&sort=votes` until the file was rebuilt properly.
+   * > >
+   * > > **Repairing it is now one statement: run `analyze` on the copy.** That is exactly what
+   * > > a build leaves since 2026-09-07, so a prototyped copy and a shipped index agree. It was
+   * > > not always this simple -- while the build ended on `pragma optimize` the only faithful
+   * > > recipe was to rebuild the table and its indexes and then reproduce the capped estimate,
+   * > > and `delete from sqlite_stat1; pragma optimize;` does NOT reproduce it (measured: on a
+   * > > connection that has not queried the table, `optimize` writes nothing at all).
+   * >
+   * > WHAT IT COSTS THE BUILD, measured 2026-09-07 by writing `title_lang` and its indexes
+   * > both ways over the real 1,288,966 rows: **2.23 s to 3.72 s, so +1.5 seconds**, and
+   * > 95.9 MB to 133.8 MB, so **+37.9 MB** on a 1.79 GB file. Almost all of the time is the
+   * > fourth index (1.04 s) and `ix_lang_rank` getting wider (0.60 -> 0.99 s); the insert
+   * > itself does not move. Same trade as the widening above, one order over.
    */
   origin: [
     "create index ix_lang on title_lang(title_rowid, lang)",
     "create index ix_lang_code on title_lang(lang, title_rowid)",
-    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english)",
+    "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english, year)",
+    "create index ix_lang_votes on title_lang(lang, kind, votes desc, non_english, year)",
   ],
 } satisfies Record<string, readonly string[]>;
 
@@ -1059,7 +1127,36 @@ export async function buildIndex(
   // run, and never by a stage itself -- see `stampStages`.
   stampStages(db, cfg);
 
-  db.run("pragma optimize");
+  /*
+    THE STATISTICS THE PLANNER WILL SEE FOR THE LIFE OF THIS FILE. It is `analyze`, not
+    `pragma optimize`, and the difference is the whole reason this comment exists.
+
+    `pragma optimize` -- what this line was until 2026-09-07 -- does NOT scan. It caps the
+    analysis at 2000 rows per index and extrapolates, and NOTHING lifts the cap: measured on
+    SQLite 3.51.0 (the build `bun:sqlite` bundles), `pragma analysis_limit = 1000000000`
+    reads back as 1e9 and the stat row is still the capped one. It also only analyses tables
+    whose indexes THIS CONNECTION happened to query, so which tables end up with statistics
+    at all is a side effect of what the build read. The reasonable reading of the old line --
+    "the build analyses itself" -- was wrong on both counts.
+
+    What that cost, on the real 1,276,669-title index: `ix_kind` claimed every `kind` value
+    matches 2,001 of 1.28M rows where the truth is 319,168, and `ix_lang_rank` claimed 572
+    rows per language against 8,006. A planner choosing between indexes on a 160x under-
+    estimate is right by luck, and luck does not survive the next index change.
+
+    THE PRICE IS 3.0 SECONDS on the finished 1.9 GB file (M1 Max, 2026-09-07), against ~20 ms
+    for the estimate. That is the price rather than an objection -- see `.claude/CLAUDE.md` on
+    runtime beating build time -- and it is under 3% of even the fastest measured build above.
+
+    WHAT IT BOUGHT AT THE TIME OF THE CHANGE, measured rather than assumed: nothing visible.
+    A full `bun run bench` both ways over the same freshly built file changed NO query plan in
+    any of the 33 scenarios and no warm total (65.0 ms against 64.7). The card that made this
+    change was filed on a 3x gap on `?lang=fr&genre=Horror&kind=movie&sort=votes`, and by the
+    time it was built `ix_lang_votes` (see `INDEXES.origin`) had already given the planner an
+    index good enough that the statistics no longer decided anything. So this is not a
+    measured speedup; it is the removal of a lie the planner was reading, taken on a tie.
+  */
+  db.run("analyze");
   db.close();
 
   vacuumIndex(dest, log);

@@ -490,6 +490,50 @@ export class SearchEngine {
   readonly hasLangRank: boolean;
 
   /**
+   * Whether `title_lang` carries its own copy of `year`, AND `ix_lang_rank` covers it.
+   *
+   * The sibling of `hasGenreYear`, gating the same trade one table over: with it a browse
+   * that crosses a language with a year or a decade names `l.year`, keeps its covering count
+   * and stays inside `ix_lang_rank`; without it the same browse names `t.year`, which is what
+   * every version before 2026-09-07 did and is correct.
+   *
+   * > [!IMPORTANT] It degrades to SLOW and it MUST -- this is the one guard here that gates a
+   * > new COLUMN rather than a new plan
+   * > `hasLangRank` above could have shipped without a probe on the `ix_lang_rank` REORDER,
+   * > because an old file still had every column the predicate named. A file built before
+   * > this stage has no `title_lang.year` at all, so `l.year` on it is not slower, it is
+   * > `no such column` -- a browse that THROWS on a deployment that is otherwise healthy, for
+   * > the up-to-a-day window before the next refresh lands.
+   *
+   * BOTH halves are checked, the shape `hasLangRank` set: the column and the widened index
+   * are one stage's output, and a file carrying the column with the narrow index would name
+   * `l.year` while the count fell out of the index and back onto a table lookup per row --
+   * the one way a capability probe can make things worse rather than better.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasLangYear: boolean;
+
+  /**
+   * Whether `title_lang` carries its own copy of `votes`, AND the index that orders by it.
+   *
+   * The other half of what `hasLangYear` gates, and a SEPARATE flag because it buys a
+   * different query: `year` fixes the decade and year slices of a RANKED browse, this one
+   * fixes the VOTES sort -- which is the default order, and the one no column on this table
+   * could serve at all before 2026-09-07. Measured on a copy of the real index:
+   * `?lang=fr&kind=movie&sort=votes` **18.8 ms -> 0.2** and `?lang=en&kind=movie&sort=votes`
+   * **28.1 -> 0.9**, same totals.
+   *
+   * `ix_lang_votes` is checked as well as the column, the shape `hasLangRank` set: without
+   * the index the order is a sort of every row of the language rather than a walk, which is
+   * the one way a capability probe can make things worse. Degrades to SLOW, never to absent
+   * -- an index built before this stage names `t.votes` exactly as it always did.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasLangVotes: boolean;
+
+  /**
    * Whether `title_genre` carries its own copy of `votes`.
    *
    * The fourth guard, for the same reason as the three above: the index a deploy meets is
@@ -646,6 +690,8 @@ export class SearchEngine {
       this.columnExists("title_lang", "rank") &&
       this.columnExists("title_lang", "non_english") &&
       this.indexExists("ix_lang_rank");
+    this.hasLangYear = this.columnExists("title_lang", "year") && this.indexCovers("ix_lang_rank", "year");
+    this.hasLangVotes = this.columnExists("title_lang", "votes") && this.indexExists("ix_lang_votes");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
     this.hasGenreYear = this.columnExists("title_genre", "year");
     this.hasBrowseCounts = this.tableExists("browse_count");
@@ -1556,6 +1602,8 @@ export class SearchEngine {
       genreVotes: this.hasGenreVotes,
       genreYear: this.hasGenreYear,
       langRank: this.hasLangRank,
+      langYear: this.hasLangYear,
+      langVotes: this.hasLangVotes,
       browseCounts: this.hasBrowseCounts,
       rankIndexes: this.hasRankIndexes,
     });
@@ -1584,8 +1632,45 @@ export class SearchEngine {
       genreVotes: this.hasGenreVotes,
       genreYear: this.hasGenreYear,
       langRank: this.hasLangRank,
+      langYear: this.hasLangYear,
+      langVotes: this.hasLangVotes,
       rankIndexes: this.hasRankIndexes,
     });
+  }
+
+  /**
+   * How many ranked non-English titles of `kind` each language reaches -- the population
+   * `LIST_LANGUAGES` is drawn from, counted rather than remembered.
+   *
+   * `null` for an index that cannot answer, and `null` and an empty map are different answers
+   * for the reason `searchPeople` keeps them apart: an empty map would say "no language has a
+   * single ranked film", which is a finding, and this says "do not read one from this file".
+   *
+   * `UNKNOWN_LANG` is stripped HERE rather than by the caller, where `browseIndex` strips it
+   * from `hiddenByLanguage` for the same reason: the empty string is a storage device that
+   * keeps the language filter to one predicate, and 186,109 films filed under it would be
+   * reported as a language missing its list.
+   *
+   * > [!NOTE] The `not exists` pair rather than the `non_english` column, deliberately
+   * > `title_lang.non_english` is the same predicate denormalised and it is 13x faster
+   * > (69 ms against 938 on the real 1.27M-title index, M1 Max, 2026-09-07, identical answers
+   * > for all 146 codes). It is also a v3 column, so using it would mean a second query for
+   * > older files -- two copies of the one rule this whole audit exists to stop drifting.
+   * > A second of scan in a job that runs beside a two-second canary buys nothing worth that.
+   */
+  rankedNonEnglishCounts(kind: string): Map<string, number> | null {
+    if (!this.hasOrigin || !this.hasRank) return null;
+    const rows = this.db
+      .query(
+        `select l.lang lang, count(*) films
+           from title_lang l join title t on t.rowid_ = l.title_rowid
+          where t.kind = ? and t.rank is not null
+            and not exists (select 1 from title_lang e
+                             where e.title_rowid = l.title_rowid and e.lang = ?)
+          group by l.lang`,
+      )
+      .all(kind, ENGLISH_LANG) as { lang: string; films: number }[];
+    return new Map(rows.filter((r) => r.lang !== UNKNOWN_LANG).map((r) => [r.lang, r.films]));
   }
 
   private tableExists(name: string): boolean {
@@ -1600,6 +1685,24 @@ export class SearchEngine {
    */
   private indexExists(name: string): boolean {
     return this.db.query("select 1 from sqlite_master where type = 'index' and name = ?").get(name) !== null;
+  }
+
+  /**
+   * Does `index` carry `column` -- as a key column or as a covered trailing one?
+   *
+   * `indexExists` above answers "is it there", which is enough when a widening only reordered
+   * the columns an index already had. It is NOT enough when the widening ADDS one: the index
+   * name does not change, so a file built before it looks complete and the query that assumed
+   * the extra column falls out of the index onto a table lookup per candidate row.
+   *
+   * `index_xinfo` rather than `index_info` because it lists the trailing columns too, and the
+   * columns this asks about are exactly the trailing ones. Answers false for an index that is
+   * not in the file, so a caller can ask this alone.
+   */
+  private indexCovers(index: string, column: string): boolean {
+    return (this.db.query(`pragma index_xinfo(${index})`).all() as { name: string | null }[]).some(
+      (c) => c.name === column,
+    );
   }
 
   /** Does `table` have `column`? Answers false for a table that does not exist at all. */
@@ -1802,6 +1905,20 @@ export interface BrowseOptions extends BrowseFilters {
    * walking the rank order rather than by seeking `ix_lang_rank`.
    */
   langRank?: boolean;
+  /**
+   * Whether `title_lang` carries its own `year` copy -- `SearchEngine.hasLangYear`.
+   *
+   * A capability of the open file, like the four above, and it defaults to FALSE for the
+   * reason `genreYear` states: a caller that forgot to ask the file gets the slower reading
+   * of `title.year`, never `no such column` on a real index.
+   */
+  langYear?: boolean;
+  /**
+   * Whether `title_lang` carries its own `votes` copy -- `SearchEngine.hasLangVotes`.
+   *
+   * A capability of the open file, defaulting to FALSE for the reason `genreYear` states.
+   */
+  langVotes?: boolean;
 }
 
 /**
@@ -1930,6 +2047,8 @@ interface BrowseCaps {
   genreYear?: boolean;
   rankIndexes?: boolean;
   langRank?: boolean;
+  langYear?: boolean;
+  langVotes?: boolean;
   languages?: readonly string[];
 }
 
@@ -1947,6 +2066,8 @@ function capsOf(opts: BrowseOptions): BrowseCaps {
     genreYear: opts.genreYear,
     rankIndexes: opts.rankIndexes,
     langRank: opts.langRank,
+    langYear: opts.langYear,
+    langVotes: opts.langVotes,
   };
 }
 
@@ -1969,6 +2090,8 @@ function browseSql(
     genreYear = false,
     rankIndexes = false,
     langRank = false,
+    langYear = false,
+    langVotes = false,
     languages = [],
   } = caps;
   const where: string[] = [];
@@ -1993,7 +2116,7 @@ function browseSql(
     so 250 rows are 250 rows read. `langListJoin` decides it on ONE question -- whether the
     language predicate is selective -- and English is the case where the answer is no.
   */
-  const langJoin = langListJoin(f, langRank, sort);
+  const langJoin = langListJoin(f, { langRank, langYear, langVotes }, sort);
   /*
     WHICH TABLE'S COPY OF `votes` -- exactly the question `ranked` answers below for `rank`,
     and it decides the whole cost of a genre browse.
@@ -2004,10 +2127,19 @@ function browseSql(
     per matching row to get there, then a temp b-tree -- 3.66s against a seek, measured on
     the live NAS index. So the join decides which column is named, not taste.
 
-    `genreVotes` false is an index built before that column existed: it still answers every
-    query correctly, on the old slow path, until the rebuild the stage stamp has ordered.
+    `title_lang` carries its own copy since 2026-09-07 and takes PRECEDENCE, the same order
+    `ranked` and `yearCol` use and for the same reason: the language seek is the more
+    selective of the two, and only the table the query drives from can serve the order.
+    `ix_lang_votes(lang, kind, votes desc, non_english)` is the exact counterpart of
+    `ix_tg_votes` one table over. It is what makes a VOTES sort -- the default order --
+    affordable for a named language at all: measured over rows and count together,
+    `?lang=fr&kind=movie&sort=votes` 18.8 ms -> 0.2 and `?lang=en&...` 28.1 -> 0.9.
+
+    `genreVotes` and `langVotes` false are an index built before the respective column
+    existed: it still answers every query correctly, on the old slow path, until the rebuild
+    the stage stamp has ordered.
   */
-  const voted = genreJoin && genreVotes ? "g.votes" : "t.votes";
+  const voted = langJoin && langVotes ? "l.votes" : genreJoin && genreVotes ? "g.votes" : "t.votes";
   // `votes >= 0` is true for every row -- the column is `not null default 0` -- so
   // spelling it out only stops SQLite covering the count from an index. Omitting it is
   // what makes an unfloored per-genre list a pure seek.
@@ -2017,7 +2149,10 @@ function browseSql(
     if (voted.startsWith("t.")) touchesTitle = true;
   }
   /*
-    WHICH TABLE'S COPY OF `year`, the same question `voted` and `ranked` answer below.
+    WHICH TABLE'S COPY OF `year`, the same question `voted` and `ranked` answer below, and
+    with the same precedence `ranked` uses: `title_lang` first, then `title_genre`, then
+    `title`. The language seek is the more selective of the two and is the table the query
+    drives from, so it is the one whose copy keeps the count covering.
 
     `title_genre` carries `year` denormalised since 2026-09-05, and naming it is what keeps
     a year-sliced genre count reading `title_genre` alone. It was NOT copied before that,
@@ -2026,10 +2161,15 @@ function browseSql(
     until a LANGUAGE PREFERENCE became such a query. Measured on the real index, Crime
     movies 2011-2026 with a preference: 1,091 ms through `title`, 59 ms from this column.
 
-    `genreYear` false is an index built before the column existed: correct, on the old slow
-    path, until the rebuild the stage stamp has already ordered.
+    `title_lang` carries it since 2026-09-07, for the identical reason one table over: a
+    browse that NAMES a language and slices it by a year or a decade had to reach back into
+    `title`, which cost it the covering count and, for English, the whole denormalised path.
+    See `langIndexServesAlone` for the numbers that bought it.
+
+    `genreYear` and `langYear` false are an index built before the respective column existed:
+    correct, on the old slow path, until the rebuild the stage stamp has already ordered.
   */
-  const yearCol = genreJoin && genreYear ? "g.year" : "t.year";
+  const yearCol = langJoin && langYear ? "l.year" : genreJoin && genreYear ? "g.year" : "t.year";
   const yearOnTitle = yearCol.startsWith("t.");
   if (f.decade !== undefined) {
     where.push(`${yearCol} >= ? and ${yearCol} <= ?`);
@@ -2237,21 +2377,36 @@ function browseSql(
  * > the reorder only makes it faster, and `INDEX_STAGES.origin` rebuilds a stale file through
  * > the ordinary mechanism.
  */
-function langListJoin(f: BrowseFilters, langRank: boolean, sort: BrowseSort): string {
-  if (!langRank || f.lang === undefined) return "";
-  if (f.lang === ENGLISH_LANG && !langIndexServesAlone(f, sort)) return "";
+function langListJoin(f: BrowseFilters, caps: LangCaps, sort: BrowseSort): string {
+  if (!caps.langRank || f.lang === undefined) return "";
+  if (f.lang === ENGLISH_LANG && !langIndexServesAlone(f, sort, caps)) return "";
   return "join title_lang l on l.title_rowid = t.rowid_";
+}
+
+/**
+ * The three `title_lang` capabilities, together, because the two functions below need all of
+ * them and reading one without the others is what a wrong answer would look like.
+ *
+ * `langRank` says the denormalised path exists at all; the other two say which ORDER and
+ * which SLICE it can serve without leaving the index. They are one stage's output, so they
+ * move together in practice -- separate flags because they answer separate queries, and
+ * `INDEX_STAGES.origin` is the thing that keeps them in step.
+ */
+interface LangCaps {
+  langRank: boolean;
+  langYear: boolean;
+  langVotes: boolean;
 }
 
 /**
  * Can `ix_lang_rank` answer this browse by itself -- the order AND the count?
  *
- * `title_lang` carries `lang`, `kind`, `rank` and `non_english` and nothing else, so a genre,
- * a year or a decade forces `title` or `title_genre` back into the query: the rows take a
+ * `title_lang` carries the columns a browse can name without leaving the index, so a filter
+ * on anything ELSE forces `title` or `title_genre` back into the query: the rows take a
  * reach-through per candidate and, worse, `coveringCountTable` stops being able to count from
- * the index at all. A votes sort does the same to the ORDER, since no column here can serve
- * it. Each of those is affordable once the language has already narrowed the corpus to a few
- * thousand rows, which is why only English asks this question -- see `langListJoin`.
+ * the index at all. Each of those is affordable once the language has already narrowed the
+ * corpus to a few thousand rows, which is why only English asks this question -- see
+ * `langListJoin`.
  *
  * Measured 2026-09-06 on a copy of the real 1,288,159-row index, M1 Max, English movies, with
  * the join FORCED on to price each clause: **200.2 ms against 16.2 with a genre, 79.2 against
@@ -2259,12 +2414,40 @@ function langListJoin(f: BrowseFilters, langRank: boolean, sort: BrowseSort): st
  * two orders of magnitude, 195.8 ms to 1.8. So this is a measured boundary rather than
  * caution, and every filter set on the far side of it keeps exactly the query it had before.
  *
- * A vote FLOOR would belong in this list and cannot appear: `browseVoteFloor` returns 0 for a
- * ranked sort, so no filter set that reaches here carries one.
+ * > [!IMPORTANT] A YEAR OR A DECADE MOVED TO THE NEAR SIDE on 2026-09-07, because the column
+ * > that made it expensive is now here
+ * > The 79.2 ms above was `t.year` dragging `title` back in. With `year` denormalised onto
+ * > `title_lang` and carried by `ix_lang_rank` (see `ORIGIN_SCHEMA` and `INDEXES.origin`) the
+ * > slice is a COVERED FILTER applied while walking the rank order, and the count is a
+ * > covering scan of the same range. Measured on a copy of the real 1,276,669-title index,
+ * > M1 Max, 2026-09-07, best of five warm through `SearchEngine.browse`:
+ * > `?lang=en&kind=movie&decade=2010&sort=rank` **280.9 ms -> 3.2**, `decade=1990` **244.6 ->
+ * > 3.1**, `year=1994` **9.5 -> 2.9**. So this asks `langYear` rather than refusing outright,
+ * > and a file built before that column keeps exactly the query it had.
+ *
+ * > [!NOTE] A GENRE stays on the far side, and that is a decision rather than a gap -- 38.2 ms
+ * > for `?lang=fr&genre=Horror&kind=movie&sort=rank`, 16.2 ms for the English one
+ * > See `coveringCountTable`, which is where that number and its reason are written down.
+ *
+ * > [!IMPORTANT] A VOTES SORT moved with it, on the same day and for the same reason
+ * > The 156.2 ms above was `title_lang` having no column that could serve that order, so the
+ * > joined path sorted the language's whole set while the `exists` path walked the global
+ * > votes order until the page filled -- the SELECTIVITY trap that made English and French
+ * > want opposite things. `votes` denormalised here with `ix_lang_votes(lang, kind, votes
+ * > desc, non_english)` removes the sort rather than choosing a side of it, so both ends
+ * > improve: rows and count together, `?lang=fr&kind=movie&sort=votes` **18.8 ms -> 0.2**
+ * > and `?lang=en&kind=movie&sort=votes` **28.1 -> 0.9**, same totals.
+ *
+ * A vote FLOOR is why the votes half needed the index and not just the column: `browseVoteFloor`
+ * applies `BROWSE_VOTE_FLOOR` to an unsliced votes browse, and `votes >= ?` with `lang` and
+ * `kind` already fixed is a prefix of that index's walk rather than a filter over a sort.
+ * A ranked sort takes no floor at all, so the rank half never meets the question.
  */
-function langIndexServesAlone(f: BrowseFilters, sort: BrowseSort): boolean {
-  if (sort !== "rank") return false;
-  return f.genre === undefined && f.year === undefined && f.decade === undefined && f.years === undefined;
+function langIndexServesAlone(f: BrowseFilters, sort: BrowseSort, caps: LangCaps): boolean {
+  if (sort === "votes" && !caps.langVotes) return false;
+  if (f.genre !== undefined) return false;
+  const slicedByYear = f.year !== undefined || f.decade !== undefined || f.years !== undefined;
+  return slicedByYear ? caps.langYear : true;
 }
 
 /**
@@ -2276,9 +2459,28 @@ function langIndexServesAlone(f: BrowseFilters, sort: BrowseSort): boolean {
  * INTEGER PRIMARY KEY, so the join can neither add a row nor remove one. SQLite cannot work
  * that out for itself, which is why it is decided here.
  *
- * With BOTH joins present it declines. Re-hanging `title_genre` off `title_lang`'s rowid
- * would be correct too, and would be a second place that knows how these tables key together
- * -- for a case that is one language list crossed with one genre, which nothing links to.
+ * > [!IMPORTANT] WITH BOTH JOINS PRESENT IT DECLINES, and that is where a language crossed
+ * > with a GENRE stops -- 38.2 ms for `?lang=fr&genre=Horror&kind=movie&sort=rank` and 16.2 ms
+ * > for the English one, measured on a copy of the real 1,276,669-title index, M1 Max,
+ * > 2026-09-07, and 40.6 / 16.4 after the widening that fixed the year and votes shapes. This
+ * > function is the one that declines them, so the number lives here.
+ * >
+ * > **It was ruled UNFIXED on 2026-09-07, deliberately, and the ruling named what it refused.**
+ * > The card that moved the year, decade and votes shapes onto `title_lang` (see
+ * > `langIndexServesAlone`) could not move the genre one, because the fix is not the same
+ * > shape: a title has MANY genres, so a genre cannot be denormalised onto `title_lang` the
+ * > way a year can -- it is a genuine cross product rather than a column. The two alternatives
+ * > were priced and refused. A LANGUAGE DIMENSION ON `browse_count` multiplies a stored
+ * > aggregate by the number of languages and changes a table every browse in the product
+ * > reads; a THIRD EXPLODED TABLE crossing language and genre is the second owner of how these
+ * > tables key together that the paragraph below already warns against.
+ * >
+ * > So an honest 38 ms with an owner beat a fourth structure nobody can maintain. If it is
+ * > ever picked up it starts here, with this number.
+ *
+ * Re-hanging `title_genre` off `title_lang`'s rowid would be correct too, and would be that
+ * second place that knows how these tables key together -- for a case that is one language
+ * list crossed with one genre, which nothing links to.
  */
 function coveringCountTable(genreJoin: string, langJoin: string, touchesTitle: boolean): string | undefined {
   if (touchesTitle || (genreJoin && langJoin)) return undefined;

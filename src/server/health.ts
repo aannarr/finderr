@@ -14,6 +14,8 @@
  * precisely so the test can assert it was never invoked.
  */
 
+import type { PeakSample } from "../lib/runtime-stats";
+import type { WarmAttempt, WarmState, WarmStatus } from "./live-index";
 import type { ShelfCoverage } from "./shelves";
 
 export interface HealthRuntime {
@@ -30,6 +32,20 @@ export interface HealthRuntime {
   } | null;
   cpuSeconds: number;
   gcSeconds: number | null;
+  /**
+   * The largest this process has ever been while doing a named background job, and which one.
+   *
+   * `rss` above is a GAUGE and cannot answer the question this field exists for. The container
+   * probes health every thirty seconds; a library walk that briefly doubles the process is
+   * over long before the next probe, so every reading is taken between spikes and the process
+   * looks steady right up until the kernel kills it. That is not hypothetical -- it is what
+   * Seerr's #3307 reporter observed for sixteen days while Docker called the container
+   * healthy. Read this beside `cgroup.limit`: a peak approaching it is the warning that a
+   * gauge structurally cannot give you.
+   *
+   * `null` until a job has run, which on a fresh boot is the first minute.
+   */
+  peak: PeakSample | null;
   /**
    * The fuzzy pool's report, or `null` while there is no index open to ask.
    *
@@ -61,17 +77,23 @@ export interface HealthReload {
 /**
  * Whether the page-cache prefault ran, what it kept, and the settings it ran under.
  *
- * The three numbers answer three different questions and none substitutes for another:
- * `readMb` is what the loop did, `residentMb` is what the kernel still had afterwards, and
- * `tuning` is what was asked for. A deployment can fail at any one of them independently --
- * not running, running and being reclaimed, or being told to map more memory than the
- * container has.
+ * `state` and `ok` are owned by `LiveIndex` -- read `WarmState` there for what each value
+ * means and why a failed prefault needed a name of its own. Everything else here answers a
+ * different question and none substitutes for another: `last.readMb` is what the loop did,
+ * `last.residentMb` is what the kernel still had afterwards, and `tuning` is what was asked
+ * for. A deployment can fail at any one of them independently -- not running, running and
+ * being reclaimed, or being told to map more memory than the container has.
+ *
+ * There is no `prefault` boolean here any more. It said exactly what `state !== "off"` says,
+ * and it said it WRONG on the first-install path: no engine is open there, so the derivation
+ * answered `false` for a prefault that was simply waiting for an index to exist.
  */
 export interface HealthWarm {
-  /** The derived-or-forced decision. `false` here with a big index is worth knowing about. */
-  prefault: boolean;
-  /** `null` means it has not completed in this process. */
-  last: { readMb: number; ms: number; residentMb: number | null } | null;
+  state: WarmState;
+  /** The one field a probe keys on. False means a prefault ran and did not deliver the file. */
+  ok: boolean;
+  /** The last attempt to finish, success or failure. `null` before the first one completes. */
+  last: WarmAttempt | null;
   tuning: {
     budgetMb: number;
     budgetSource: string;
@@ -88,19 +110,10 @@ export interface HealthWarm {
  * reading a boot log, and this endpoint is reachable from the internet. Numbers cross;
  * sentences stay in the log, the same rule `work.problems` follows for provider errors.
  */
-export function warmHealth(s: {
-  prefault: boolean;
-  last: { readMb: number; ms: number; residentMb: number | null } | null;
-  tuning: {
-    budgetMb: number;
-    budgetSource: string;
-    mmapBytes: number;
-    cacheKib: number;
-    prefault: boolean;
-  } | null;
-}): HealthWarm {
+export function warmHealth(s: WarmStatus): HealthWarm {
   return {
-    prefault: s.prefault,
+    state: s.state,
+    ok: s.ok,
     last: s.last,
     tuning: s.tuning
       ? {
@@ -119,11 +132,12 @@ export interface HealthDeps {
    * `reload` and `warm` are plain values read off the holder -- no work, like every other field.
    *
    * **`warm` is the field this endpoint was missing, and the gap was expensive.** The prefault
-   * is worth up to 32x on first reads from a spinning array, it defaults on, and until now the
-   * only evidence it had run was one log line -- so a container reading every query off the
-   * disk was indistinguishable from a healthy one. Read `warm.last` being `null` minutes after
-   * a restart as "it did not run", and `warm.last.residentMb` far below `readMb` as "it ran and
-   * the memory cap took most of it back", which is a different problem with a different fix.
+   * is worth up to 32x on first reads from a spinning array, it defaults on, and until it
+   * shipped the only evidence it had run was one log line -- so a container reading every
+   * query off the disk was indistinguishable from a healthy one. Alert on `warm.ok`; read
+   * `warm.state` for which of the six situations it is; and read `warm.last.residentMb` far
+   * below `readMb` as "it ran and the memory cap took most of it back", which is a different
+   * problem again, with a different fix, and which `ok` deliberately does not fire on.
    */
   index: {
     rows: number;

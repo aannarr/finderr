@@ -149,6 +149,68 @@ export interface ReloadOutcome {
   rows: number;
 }
 
+/**
+ * Where the page-cache prefault got to. ONE value, so a probe never has to infer a fault.
+ *
+ * > [!IMPORTANT] `failed` and `partial` exist because they used to be indistinguishable from
+ * > `running`, and the difference is worth 224x on the deployment array
+ * > The catch arm of `warmPageCache` returned without recording anything, so a prefault that
+ * > threw looked exactly like one that had not finished yet: both reported `last: null`. A
+ * > container serving every query off the disk was therefore reporting the same JSON as one
+ * > that had booted three seconds ago, and the only evidence was a log line nobody greps.
+ *
+ * `partial` is the subtle half: a read that threw after delivering most of the file has left
+ * most of the index resident, which is a materially different situation from one that
+ * delivered nothing -- so the bytes it did read travel with it rather than being discarded.
+ */
+export type WarmState =
+  /** Decided against: `FINDERR_INDEX_PREFAULT=false`, or retention below the knee. */
+  | "off"
+  /**
+   * On, and not started.
+   *
+   * Reachable on the first-install path only: the server listens while the index is still
+   * being built, so there is no file to read and no engine whose tuning could be asked. It
+   * is NOT `off` -- the prefault runs the moment a built index is adopted.
+   */
+  | "pending"
+  /** In flight. Normal for the first seconds after a boot or an index swap. */
+  | "running"
+  /** Read the whole file. What `residentMb` says about it is a separate question. */
+  | "done"
+  /** The read threw after delivering some of the file. `readMb` is what it got through. */
+  | "partial"
+  /** The read threw having delivered nothing at all. */
+  | "failed";
+
+/** What one prefault attempt did, whether it finished or threw. */
+export interface WarmAttempt {
+  /** Bytes actually delivered, in MB -- on a `partial`, how far it got before the throw. */
+  readMb: number;
+  ms: number;
+  /** Page cache charged to the cgroup afterwards, or `null` where there is no cgroup to read. */
+  residentMb: number | null;
+  /** The thrown message. Present on `partial` and `failed`, absent otherwise. */
+  error?: string;
+}
+
+/** The prefault's own report, as `/api/health` and the operator page read it. */
+export interface WarmStatus {
+  state: WarmState;
+  /**
+   * THE FIELD A PROBE KEYS ON, in the same spirit as `ReloadOutcome.ok`.
+   *
+   * False only for `partial` and `failed` -- a prefault that RAN and did not deliver the
+   * file, which is the one condition where the container was told to warm itself and
+   * silently did not. `off` is a decision rather than a fault, and `pending`/`running` are
+   * a moment rather than a fault, so none of them alerts.
+   */
+  ok: boolean;
+  /** The most recent attempt to FINISH, success or failure. `null` before the first one. */
+  last: WarmAttempt | null;
+  tuning: StorageTuning | null;
+}
+
 export interface LiveIndexOptions {
   path: string;
   cfg: Config;
@@ -200,6 +262,17 @@ export interface LiveIndexOptions {
    * trusting. `.claude/CLAUDE.md`: a check that passes is not a check that works.
    */
   nowNs?: NanoClock;
+  /**
+   * Open the index file for the prefault. `Bun.file(path).stream()` by default.
+   *
+   * The third test seam in this class, and the same kind as `recover` and `nowNs`: the branch
+   * it reaches is otherwise unreachable. A prefault fails when the filesystem goes away under
+   * a running container -- an unmounted share, a disk that stops answering -- and nothing a
+   * test can do to a temp file reproduces "the stream threw after 1,400 of 1,892 MB". That
+   * partial is exactly the state this holder now has to report, so it has to be shown doing
+   * it. `.claude/CLAUDE.md`: a check that passes is not a check that works.
+   */
+  warmStream?: (path: string) => ReadableStream<Uint8Array>;
 }
 
 /**
@@ -237,6 +310,7 @@ export class LiveIndex {
     this.nowNs = opts.nowNs ?? Bun.nanoseconds;
     this.recover = opts.recover;
     this.prefault = opts.prefault ?? null;
+    this.warmStream = opts.warmStream ?? ((path) => Bun.file(path).stream());
     if (opts.allowMissing && !existsSync(this.path)) {
       this.engine = null;
     } else {
@@ -260,6 +334,9 @@ export class LiveIndex {
    */
   private readonly prefault: boolean | null;
 
+  /** Opens the file the prefault reads. Injected so a failing read can be shown. */
+  private readonly warmStream: (path: string) => ReadableStream<Uint8Array>;
+
   /** Whether to prefault right now: an explicit override, else the open engine's tuning. */
   private shouldPrefault(): boolean {
     return this.prefault ?? this.engine?.tuning.prefault ?? false;
@@ -269,23 +346,38 @@ export class LiveIndex {
   private warming: Promise<void> | null = null;
 
   /**
-   * What the last prefault DID, for `/api/health`.
+   * How the last prefault ENDED, or `null` before one has started in this process.
    *
-   * The prefault is worth up to 32x on first reads from a spinning array and, until this
-   * shipped, nothing outside a log line said whether it had run -- so a container serving
-   * every query off the disk looked identical to a healthy one. `null` means it has not
-   * completed (or was never going to), which is itself the thing worth alerting on.
+   * Deliberately not `off`: whether a prefault is going to happen at all is re-derived on
+   * every read, because the answer changes when an engine arrives on the first-install path.
+   * This field only ever remembers what an attempt DID.
    */
-  private lastWarm: { readMb: number; ms: number; residentMb: number | null } | null = null;
+  private warmOutcome: Exclude<WarmState, "off" | "pending"> | null = null;
 
-  /** The prefault's own report, and the settings it ran under. Both `null` before an engine. */
-  warmStatus(): {
-    prefault: boolean;
-    last: { readMb: number; ms: number; residentMb: number | null } | null;
-    tuning: StorageTuning | null;
-  } {
+  /** What the last prefault attempt did, whether it finished or threw. */
+  private lastWarm: WarmAttempt | null = null;
+
+  /**
+   * Where the prefault is, in one word.
+   *
+   * The order is what makes it honest. An explicit `prefault: false` is `off` whatever else
+   * is true; with no engine open there is nothing to warm and nothing to ask, so the answer
+   * is `pending` rather than a decision nobody has made yet; and only then does the engine's
+   * own derivation get to say `off`.
+   */
+  private warmState(): WarmState {
+    if (this.prefault === false) return "off";
+    if (!this.engine) return "pending";
+    if (!this.shouldPrefault()) return "off";
+    return this.warmOutcome ?? "pending";
+  }
+
+  /** The prefault's own report, and the settings it ran under. `tuning` is `null` before an engine. */
+  warmStatus(): WarmStatus {
+    const state = this.warmState();
     return {
-      prefault: this.shouldPrefault(),
+      state,
+      ok: state !== "partial" && state !== "failed",
       last: this.lastWarm,
       tuning: this.engine?.tuning ?? null,
     };
@@ -322,41 +414,63 @@ export class LiveIndex {
     if (!this.shouldPrefault() || this.warming) return;
     const path = this.path;
     const t0 = Date.now();
+    this.warmOutcome = "running";
     this.warming = (async () => {
       let bytes = 0;
       try {
         // Streamed rather than read whole: `Bun.file().arrayBuffer()` would hold the entire
         // index in the heap at once, which is exactly the 1,514 MB mistake the trigram index
         // made. The chunks here are discarded as they arrive and nothing accumulates.
-        const stream = Bun.file(path).stream();
-        for await (const chunk of stream) bytes += chunk.length;
+        for await (const chunk of this.warmStream(path)) bytes += chunk.length;
+        this.recordWarm("done", bytes, t0);
       } catch (err) {
         // A warm that fails costs nothing but the warm -- the index is open and serving, and
-        // the next reader simply pays the seeks it would have paid anyway.
-        this.log(`index warm: skipped -- ${(err as Error).message}`);
-        return;
+        // the next reader simply pays the seeks it would have paid anyway. What it DOES cost
+        // is 224x on those first reads, so the failure is recorded rather than logged and
+        // forgotten -- and with the bytes it managed, because a read that got through most of
+        // the file has left most of the index resident.
+        this.recordWarm(bytes > 0 ? "partial" : "failed", bytes, t0, (err as Error).message);
       } finally {
         this.warming = null;
       }
-      const ms = Date.now() - t0;
-      /*
-        REPORT WHAT STAYED, NOT WHAT WAS READ, because under a memory cap they are different
-        numbers and the difference is invisible from inside the process.
-
-        This line used to say "1892 MB into the page cache" unconditionally. On the live
-        deployment -- a 1.5 GB cgroup serving an 1,892 MB index -- roughly a fifth of that had
-        already been reclaimed by the time the line was written, and the log was the only place
-        anybody would have looked. Reading the cgroup back turns a claim into a measurement.
-        Where there is no cgroup to read, it says only what it did.
-      */
-      const resident = readMemoryUsage().cacheMb;
-      this.lastWarm = { readMb: Math.round(bytes / 1e6), ms, residentMb: resident };
-      this.log(
-        `index warm: read ${(bytes / 1e6).toFixed(0)} MB in ${(ms / 1000).toFixed(1)}s ` +
-          `(${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s)` +
-          (resident === null ? "" : `; ${resident} MB resident in the page cache afterwards`),
-      );
     })();
+  }
+
+  /**
+   * Close one prefault attempt: record what it did, then say so.
+   *
+   * > [!IMPORTANT] REPORT WHAT STAYED, NOT WHAT WAS READ
+   * > Under a memory cap those are different numbers and the difference is invisible from
+   * > inside the process. The log line used to say "1892 MB into the page cache"
+   * > unconditionally; on a 1.5 GB cgroup serving an 1,892 MB index roughly a fifth of that
+   * > had already been reclaimed by the time the line was written. Reading the cgroup back
+   * > turns a claim into a measurement. Where there is no cgroup, it says only what it did.
+   */
+  private recordWarm(
+    outcome: Exclude<WarmState, "off" | "pending" | "running">,
+    bytes: number,
+    startedAtMs: number,
+    error?: string,
+  ): void {
+    const ms = Date.now() - startedAtMs;
+    const readMb = Math.round(bytes / 1e6);
+    const residentMb = readMemoryUsage().cacheMb;
+    // The key is absent rather than `undefined` on a success, so the wire shape says what
+    // it means: an `error` field present at all is a prefault that did not deliver.
+    this.lastWarm = error === undefined ? { readMb, ms, residentMb } : { readMb, ms, residentMb, error };
+    this.warmOutcome = outcome;
+    const resident = residentMb === null ? "" : `; ${residentMb} MB resident in the page cache`;
+    if (outcome === "done") {
+      this.log(
+        `index warm: read ${readMb} MB in ${(ms / 1000).toFixed(1)}s ` +
+          `(${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s)${resident}`,
+      );
+      return;
+    }
+    this.log(
+      `index warm: ${outcome.toUpperCase()} after ${readMb} MB in ${(ms / 1000).toFixed(1)}s` +
+        `${resident} -- ${error}`,
+    );
   }
 
   /**

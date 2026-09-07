@@ -66,8 +66,9 @@ export const MAX_SERIES_CAST = 50;
  * `0,1,5,6,8,10,12,15,11,17,...` and Sean Bean at billing 2 sits at array index 42, so
  * taking the first fifty as they arrive would drop leads and keep bit parts.
  *
- * `imageBase` is `tmdb.imageBase` from config -- the same setting the poster proxy uses,
- * so an operator pointing at a mirror moves headshots with it. `original` matches the size
+ * `imageBase` is the addon's `imageBase` setting, which is LITERALLY the one the poster
+ * proxy reads -- one declaration in `src/lib/tmdb-settings.ts`, so an operator pointing at a
+ * mirror moves headshots and posters together. `original` matches the size
  * segment `api.radarr.video` puts on the headshots it sends, and `ArtworkService` rewrites
  * that segment to whatever width is actually being served.
  */

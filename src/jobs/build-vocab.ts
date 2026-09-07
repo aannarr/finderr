@@ -8,7 +8,8 @@
  * A full `index:build` also does this, but it re-downloads ~235 MB of IMDb dumps and
  * rebuilds 1.27M rows to get there. An index built before the vocabulary existed is
  * otherwise perfectly good -- it just has no fuzzy tier -- so upgrading it in place
- * takes about two seconds instead of half a minute.
+ * takes a handful of seconds instead of half a minute: about four to build the vocabulary
+ * and three more to re-`analyze` the file (measured on the real 1.9 GB index, M1 Max).
  *
  * Writes in place. That is safe on a stopped container and NOT safe on a running one:
  * a live server holds the index open, and SQLite's locking is documented as unreliable
@@ -55,7 +56,12 @@ try {
   db.run(`drop table if exists ${SPELLFIX_TABLE}`);
   db.run(`drop table if exists ${SPELLFIX_MAP_TABLE}`);
   buildVocabulary(db, cfg, log);
-  db.run("pragma optimize");
+  // The same statistics `buildIndex` ends on, for the same reason and deliberately not
+  // `pragma optimize` -- see the comment on that line. This job REWRITES part of an index a
+  // build already analysed, so leaving the estimate here would mean a file's statistics
+  // depend on which job touched it last: full for the tables the build wrote, capped at 2000
+  // rows for the vocabulary. One owner of "what statistics does a finderr index carry".
+  db.run("analyze");
   log(`done -> ${target}`);
 } finally {
   db.close();
