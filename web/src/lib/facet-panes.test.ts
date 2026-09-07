@@ -3,6 +3,7 @@ import type { PersonLinks } from "../../../src/lib/people";
 import {
   adjacentSeasonNumber,
   byBillingOrder,
+  cardSubtitle,
   defaultSeasonNumber,
   entityKindOf,
   episodeLabel,
@@ -10,6 +11,7 @@ import {
   episodeStateIndex,
   episodesForSeason,
   externalHref,
+  foreignLanguage,
   formatCalendarDate,
   formatRatingValue,
   formatShelfDate,
@@ -464,6 +466,107 @@ describe("languageNames", () => {
   test("survives a junk locale from the browser", () => {
     expect(languageNames([{ code: "hi" }], ["not a locale"])).toEqual(["Hindi"]);
     expect(languageNames([{ code: "hi" }], [])).toEqual(["Hindi"]);
+  });
+});
+
+describe("foreignLanguage", () => {
+  test("names a language the reader does not read", () => {
+    expect(foreignLanguage("ko", ["en-US"])).toBe("Korean");
+    expect(foreignLanguage("es", ["en-GB"])).toBe("Spanish");
+    // Named in the READER's language, off the same stored code -- the whole reason the
+    // column holds `sv` and not "Swedish".
+    expect(foreignLanguage("sv", ["de"])).toBe("Schwedisch");
+  });
+
+  test("says nothing about a title the reader can already watch", () => {
+    expect(foreignLanguage("en", ["en-US"])).toBeNull();
+    // The region is not part of the question: `en-GB` reads an American film.
+    expect(foreignLanguage("en", ["en-GB", "sv"])).toBeNull();
+    expect(foreignLanguage("sv", ["en-US", "sv-SE"])).toBeNull();
+  });
+
+  /**
+   * The rule the codes' shape forces, and the one worth stating twice.
+   *
+   * P364 is an unordered SET -- nothing says which of `en,hi,pa` is the main language --
+   * so "the primary language is not yours" is unanswerable and ANY overlap has to silence
+   * the label. A wrong label on something a reader can watch is worse than a missing one.
+   */
+  test("ANY overlap silences it, on a multi-language title", () => {
+    expect(foreignLanguage("en,hi,pa", ["en-US"])).toBeNull();
+    expect(foreignLanguage("hi,pa", ["en-US"])).toBe("Hindi, Punjabi");
+  });
+
+  test("nothing to say is the common answer, and never an empty string", () => {
+    // Every one of these is a real row: no column on an older index, no language known,
+    // and the empty-ish shapes a comma-joined column can take.
+    expect(foreignLanguage(null, ["en"])).toBeNull();
+    expect(foreignLanguage(undefined, ["en"])).toBeNull();
+    expect(foreignLanguage("", ["en"])).toBeNull();
+    expect(foreignLanguage(" , ,", ["en"])).toBeNull();
+    // A well-formed tag naming no language is dropped by `languageNames`, and dropping
+    // every code must leave nothing rather than an empty label.
+    expect(foreignLanguage("xx", ["en"])).toBeNull();
+  });
+
+  test("survives a junk locale from the browser", () => {
+    expect(foreignLanguage("ko", ["not a locale"])).toBe("Korean");
+    expect(foreignLanguage("ko", [])).toBe("Korean");
+  });
+
+  /**
+   * aannarr, 2026-09-07: *"no need to show 'English' for english titles"*. Not a property
+   * of the reader's browser -- a property of what this library is mostly in.
+   */
+  test("English is never labelled, whatever the browser reports", () => {
+    expect(foreignLanguage("en", ["ko"])).toBeNull();
+    expect(foreignLanguage("en", [])).toBeNull();
+    expect(foreignLanguage("en,fr", ["ko"])).toBeNull();
+    // And it silences only ITSELF: a Korean reader still learns a film is in French.
+    expect(foreignLanguage("fr", ["ko"])).toBe("프랑스어");
+  });
+
+  test("takes the codes as the index writes them: lower case, comma-joined, sorted", () => {
+    expect(foreignLanguage("es,fr", ["en"])).toBe("Spanish, French");
+    // Whitespace and case are not in the column today, and a guard here costs nothing.
+    expect(foreignLanguage(" ES , fr ", ["en"])).toBe("Spanish, French");
+  });
+});
+
+describe("cardSubtitle", () => {
+  test("both halves, either half, or no line at all", () => {
+    expect(cardSubtitle("Collision", "Colisión", "Spanish")).toEqual({
+      original: "Colisión",
+      language: "Spanish",
+    });
+    expect(cardSubtitle("Inception", null, null)).toEqual({ original: null, language: null });
+    expect(cardSubtitle("Inception", "Inception", null)).toEqual({ original: null, language: null });
+  });
+
+  /**
+   * The bug this function was extracted to make impossible.
+   *
+   * `La Cible` is a French mini-series whose original title IS its title, so a language
+   * nested inside the original-title check never draws -- and that shape is common rather
+   * than a corner. Both halves are decided independently, every time.
+   */
+  test("a language draws even when the title has no other name", () => {
+    expect(cardSubtitle("La Cible", "La Cible", "French")).toEqual({
+      original: null,
+      language: "French",
+    });
+    expect(cardSubtitle("SWAT Exiles", null, "French")).toEqual({
+      original: null,
+      language: "French",
+    });
+  });
+
+  test("an original title draws with no language, which is what every English row does", () => {
+    expect(cardSubtitle("The Seventh Seal", "Det sjunde inseglet", null)).toEqual({
+      original: "Det sjunde inseglet",
+      language: null,
+    });
+    expect(cardSubtitle("X", undefined, null)).toEqual({ original: null, language: null });
   });
 });
 

@@ -233,6 +233,16 @@ starting, airing soon, releasing soon, coming soon, this decade, one row per gen
 every one of them is an index query. Every view has a URL. Back steps through your
 refinements and any result set is a link you can send someone.
 
+A card says what language a title is in when that is not one you read. The index carries an
+original-language column filled from Wikidata, and the card names it in your own words --
+`Colisión · Spanish` to an English reader, the same row reading `spanska` to a Swedish one,
+because what is stored is the code and the name is made in the browser. English is never
+labelled and neither is anything your browser lists, so the line appears on the titles where
+it tells you something and on no others. Coverage follows the corpus rather than the head:
+Wikidata knows a language for 19% of all indexed titles and for 86% of the ones clearing the
+1,000-vote browse floor, so the obscure short you dug up may say nothing while nearly
+everything on a shelf does.
+
 Ranking a "best of" list is a build-time job, not a `ORDER BY rating`. The index build
 writes a weighted `rank` column: a Bayesian average that pulls a title's own rating toward
 the corpus mean in proportion to how few people voted, so a 10.0 from six voters does not

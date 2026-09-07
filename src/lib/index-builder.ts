@@ -229,8 +229,23 @@ create table title (
   rank      real,
   -- Comma-joined ISO 3166-1 codes, sorted. DISPLAY ONLY -- nothing filters on it, so it
   -- is a column here rather than a second exploded table. See loadOrigin() for why the
-  -- LANGUAGE is exploded and the country is not.
+  -- language is EXPLODED for the filter and neither of these two is.
   country   text,
+  -- Comma-joined ISO 639-1 codes, sorted. DISPLAY ONLY, and the same shape as country
+  -- above for the same reason: it is read once per row of a list that has already been
+  -- chosen, and never seeked.
+  --
+  -- LANGUAGE IS THEREFORE STORED TWICE, WHICH IS DELIBERATE AND IS THE WHOLE POINT.
+  -- title_lang is the exploded form the FILTER seeks (a set-membership test wants an
+  -- index seek); this is the form a CARD draws (one string, already in hand, no join).
+  -- Serving the card off title_lang would put a join on the render path of every shelf,
+  -- search grid, browse page and filmography in the product, to fetch a fact the row was
+  -- being read for anyway -- and the third rule says to widen the row instead. Both are
+  -- written by loadOrigin() from one source, so they cannot disagree.
+  --
+  -- NULL where nothing knows, and never UNKNOWN_LANG: the empty string is a storage
+  -- device belonging to the filter's in-list, not a fact about a title. See TitleRow.
+  lang      text,
   -- normalized forms, precomputed once so every query is a lookup not a transform
   ntitle    text not null default '',
   norig     text not null default '',

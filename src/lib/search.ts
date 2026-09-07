@@ -59,6 +59,7 @@ import {
 } from "./query-parser";
 import { STOPWORD_VOTE_FLOOR, STOPWORDS, stopwordTokens } from "./search-stopwords";
 import { loadSpellfix, SPELLFIX_MAP_TABLE, SPELLFIX_MISSING, SPELLFIX_TABLE } from "./spellfix";
+import { type TitleRow, titleCols } from "./title-cols";
 import {
   rarestTrigrams,
   TRIGRAM_DF_TABLE,
@@ -84,17 +85,15 @@ export function isTier(v: unknown): v is Tier {
   return typeof v === "string" && (TIERS as readonly string[]).includes(v);
 }
 
-export interface TitleRow {
-  tconst: string;
-  title: string;
-  orig: string | null;
-  year: number | null;
-  kind: string;
-  votes: number;
-  rating: number;
-  genres: string;
-  runtime: number | null;
-}
+/**
+ * `TitleRow` and `titleCols` live in `./title-cols`, and are re-exported here.
+ *
+ * The move was mechanical rather than editorial: this module imports `personPage` from
+ * `./people` as a value, so `people.ts` importing the column list back would close a
+ * runtime cycle. The re-export keeps every `import type { TitleRow } from "./search"` in
+ * the tree correct. That file's docstring owns why the two belong together.
+ */
+export type { TitleRow } from "./title-cols";
 
 export interface Hit extends TitleRow {
   score: number;
@@ -490,6 +489,28 @@ export class SearchEngine {
   readonly hasLangRank: boolean;
 
   /**
+   * Whether `title` carries the denormalised `lang` column every ROW payload draws from.
+   *
+   * > [!CAUTION] Do not confuse this with `hasOrigin`. They gate opposite directions of
+   * > the same fact and only one of them is on the render path of every list.
+   * > `hasOrigin` is about `title_lang`, which the language FILTER seeks. This is about
+   * > one comma-joined display column on `title`, which every `TitleRow` carries so a
+   * > card can say what language a title is in without a join. A file can have either
+   * > without the other -- they arrive from the same stage but an index built between the
+   * > two ships has the table and not the column.
+   *
+   * Degrades to ABSENT rather than to slow, and it has to: `titleCols` writes
+   * `null as lang` when this is false, so a pre-column index serves every row exactly as
+   * it always did and no card draws a language until the next refresh. Naming `t.lang`
+   * unconditionally would be `no such column` on every shelf, search and browse at once,
+   * for the up-to-a-day window before the rebuild lands -- the failure `hasGenreVotes`
+   * and `hasLangYear` were each written to prevent, on a wider surface than either.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasTitleLang: boolean;
+
+  /**
    * Whether `title_lang` carries its own copy of `year`, AND `ix_lang_rank` covers it.
    *
    * The sibling of `hasGenreYear`, gating the same trade one table over: with it a browse
@@ -690,6 +711,7 @@ export class SearchEngine {
       this.columnExists("title_lang", "rank") &&
       this.columnExists("title_lang", "non_english") &&
       this.indexExists("ix_lang_rank");
+    this.hasTitleLang = this.columnExists("title", "lang");
     this.hasLangYear = this.columnExists("title_lang", "year") && this.indexCovers("ix_lang_rank", "year");
     this.hasLangVotes = this.columnExists("title_lang", "votes") && this.indexExists("ix_lang_votes");
     this.hasGenreVotes = this.columnExists("title_genre", "votes");
@@ -911,7 +933,7 @@ export class SearchEngine {
     const phrase = tokens.join(" ");
     const rows = this.db
       .query(
-        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+        `select ${titleCols(this.hasTitleLang)}
          from title
          where votes >= ? and (title like ? or title like ?)
          order by votes desc
@@ -928,8 +950,8 @@ export class SearchEngine {
   private ftsCandidates(expr: string): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
     return this.db
       .query(
-        `select t.rowid_ as rowid, t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating,
-                t.genres, t.runtime, t.ntitle, t.norig, -bm25(tfts) as bm
+        `select t.rowid_ as rowid, ${titleCols(this.hasTitleLang, "t.")},
+                t.ntitle, t.norig, -bm25(tfts) as bm
          from tfts join title t on t.rowid_ = tfts.rowid
          where tfts match ?
          order by (-bm25(tfts)) + 1.6 * ln(t.votes + 10) desc
@@ -1206,7 +1228,7 @@ export class SearchEngine {
       out.push(
         ...(this.db
           .query(
-            `select rowid_ as rowid, tconst, title, orig, year, kind, votes, rating, genres, runtime, ntitle, norig
+            `select rowid_ as rowid, ${titleCols(this.hasTitleLang)}, ntitle, norig
              from title where rowid_ in (${chunk.map(() => "?").join(",")})`,
           )
           .all(...chunk) as (TitleRow & {
@@ -1333,11 +1355,9 @@ export class SearchEngine {
 
   byTconst(tconst: string): TitleRow | null {
     return (
-      (this.db
-        .query(
-          "select tconst, title, orig, year, kind, votes, rating, genres, runtime from title where tconst = ?",
-        )
-        .get(tconst) as TitleRow | undefined) ?? null
+      (this.db.query(`select ${titleCols(this.hasTitleLang)} from title where tconst = ?`).get(tconst) as
+        | TitleRow
+        | undefined) ?? null
     );
   }
 
@@ -1368,7 +1388,7 @@ export class SearchEngine {
     /** Rows to take PER KIND before merging. */
     perKind: number;
   }): TitleRow[] {
-    const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
+    const cols = titleCols(this.hasTitleLang, "t.");
     // The genre form ranks off `title_genre`'s own denormalised copy, which is what lets the
     // seek happen without touching `title` until the rows are already chosen.
     const sql = opts.genre
@@ -1407,7 +1427,7 @@ export class SearchEngine {
       ? this.rankedSeek({ kind: opts.kind, perKind: limit * 3 })
       : (this.db
           .query(
-            `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+            `select ${titleCols(this.hasTitleLang)}
          from title
          where votes >= ? and rating >= 7.5 ${opts.kind ? "and kind = ?" : ""}
          order by rating * ln(votes) desc
@@ -1454,7 +1474,7 @@ export class SearchEngine {
   hiddenGems(opts: { minVotes?: number; maxVotes?: number; kind?: string; limit?: number } = {}): TitleRow[] {
     return this.db
       .query(
-        `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+        `select ${titleCols(this.hasTitleLang)}
          from title
          where votes >= ? and votes <= ? and rating >= 7.6 ${opts.kind ? "and kind = ?" : ""}
          order by rating desc, votes desc
@@ -1485,7 +1505,7 @@ export class SearchEngine {
       ? this.rankedSeek({ genre, perKind: limit * 3 })
       : (this.db
           .query(
-            `select t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime
+            `select ${titleCols(this.hasTitleLang, "t.")}
          from title t join title_genre g on g.title_rowid = t.rowid_
          where g.genre = ? and t.votes >= ? and t.rating >= 7.0
          order by t.rating * ln(t.votes) desc
@@ -1504,7 +1524,7 @@ export class SearchEngine {
       ? this.rankedSeek({ minYear: decade, perKind: limit * 3 })
       : (this.db
           .query(
-            `select tconst, title, orig, year, kind, votes, rating, genres, runtime
+            `select ${titleCols(this.hasTitleLang)}
          from title
          where year >= ? and votes >= 5000 and rating >= 7.0
          order by rating * ln(votes) desc
@@ -1604,6 +1624,7 @@ export class SearchEngine {
       langRank: this.hasLangRank,
       langYear: this.hasLangYear,
       langVotes: this.hasLangVotes,
+      titleLang: this.hasTitleLang,
       browseCounts: this.hasBrowseCounts,
       rankIndexes: this.hasRankIndexes,
     });
@@ -1715,7 +1736,9 @@ export class SearchEngine {
 
   /** A person and their filmography. `null` for an unknown id, or an index without people. */
   personPage(nconst: string, opts: PersonCreditsOptions = {}): PersonPage | null {
-    return this.hasPeople ? personPage(this.db, nconst, opts) : null;
+    // `titleLang` is a capability of the open FILE, so it is injected here rather than
+    // being something a caller passes -- the same split `browse` makes just above.
+    return this.hasPeople ? personPage(this.db, nconst, { ...opts, titleLang: this.hasTitleLang }) : null;
   }
 
   /**
@@ -1919,6 +1942,19 @@ export interface BrowseOptions extends BrowseFilters {
    * A capability of the open file, defaulting to FALSE for the reason `genreYear` states.
    */
   langVotes?: boolean;
+
+  /**
+   * Whether `title` carries the `lang` display column -- `SearchEngine.hasTitleLang`.
+   *
+   * NOT in `BrowseCaps` and deliberately so: every other capability here changes the
+   * PLAN, so `browseSql` needs it and `capsOf` forwards it. This one only changes the
+   * SELECT list of the row fetch, which `browseSql` does not build, so it is read
+   * straight off `opts` where the columns are chosen.
+   *
+   * Defaults to FALSE for the reason `genreYear` states -- an option a caller forgot to
+   * pass must produce the query every version before this one wrote.
+   */
+  titleLang?: boolean;
 }
 
 /**
@@ -2730,7 +2766,7 @@ export function browseIndex(db: Database, opts: BrowseOptions): BrowseResult {
   */
   const filteredByLanguage = opts.lang !== undefined || langs.length > 0;
   const total = browseTotal(db, sql, opts, minVotes, sort, counts, filteredByLanguage);
-  const cols = "t.tconst, t.title, t.orig, t.year, t.kind, t.votes, t.rating, t.genres, t.runtime";
+  const cols = titleCols(opts.titleLang ?? false, "t.");
   const limit = opts.limit ?? 60;
   const offset = opts.offset ?? 0;
   // The COUNT is left on the range: it is a covering seek either way (1.59ms measured) and

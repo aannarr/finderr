@@ -55,6 +55,15 @@ interface FixtureShape {
    * in for up to a day after this ships -- which is why it is a shape rather than a mock.
    */
   withLangYear?: boolean;
+  /**
+   * `false` builds a file from before `title.lang` existed -- origin recipe v6.
+   *
+   * Unlike `narrowLangTable` this one really is an `alter table drop column`, and the
+   * difference is not laziness: no index and no FTS table names `title.lang`, so dropping
+   * it leaves EXACTLY the shape a v6 build wrote. `title_lang` could not be narrowed that
+   * way because its indexes carry the columns being removed.
+   */
+  withTitleLang?: boolean;
 }
 
 /**
@@ -128,6 +137,7 @@ function indexOf(rows: Row[], opts: FixtureShape = {}): Database {
     opts.withLangRank === false ? LANG_BEFORE_RANK : opts.withLangYear === false ? LANG_BEFORE_YEAR : null;
   if (older) narrowLangTable(db, older.columns, older.indexes);
   else for (const sql of INDEXES.origin) db.run(sql);
+  if (opts.withTitleLang === false) db.run("alter table title drop column lang");
   return db;
 }
 
@@ -245,6 +255,104 @@ describe("the origin data", () => {
     const n = db.query("select count(*) c from title_lang").get() as { c: number };
     expect(n.c).toBe(CORPUS.length);
     expect(titles(db, { genre: "Crime", languages: EN_SV }).length).toBe(CORPUS.length);
+  });
+});
+
+/*
+  `title.lang` -- the DISPLAY copy, which is a different question from every test above.
+
+  Those assert what the FILTER can seek. These assert what a CARD can draw, and the two are
+  stored separately on purpose (see `SCHEMA`). The one thing that must hold between them is
+  that they never disagree about what a title is in, which is why the last test here reads
+  both forms out of one build rather than trusting the two writes.
+*/
+describe("title.lang, the display copy", () => {
+  test("comma-joined and sorted, and an unknown title stays NULL rather than UNKNOWN_LANG", () => {
+    const db = indexOf(CORPUS);
+    const rows = db.query("select tconst, lang from title order by tconst").all() as {
+      tconst: string;
+      lang: string | null;
+    }[];
+    const byTconst = new Map(rows.map((r) => [r.tconst, r.lang]));
+    expect(byTconst.get("tt-multi")).toBe("en,hi,pa");
+    expect(byTconst.get("tt-sv")).toBe("sv");
+
+    /*
+      THE ASSERTION THIS WHOLE COLUMN TURNS ON. `tt-unknown` HAS a `title_lang` row -- the
+      backfill gives it `UNKNOWN_LANG` so "unknown" can be a member of the filter's in-list
+      -- and it must NOT inherit that empty string here. A card reading `""` would draw a
+      language tile naming nothing, or worse, `Intl.DisplayNames` would hand back the input.
+    */
+    expect(byTconst.get("tt-unknown")).toBeNull();
+    expect(rows.some((r) => r.lang === UNKNOWN_LANG)).toBe(false);
+  });
+
+  test("a sourceless build leaves every lang NULL while the filter still passes everything", () => {
+    // The two halves of the same deployment: nothing to display, and nothing hidden.
+    const db = indexOf(CORPUS.map((r) => ({ ...r, langs: [], countries: [] })));
+    const set = db.query("select count(*) c from title where lang is not null").get() as { c: number };
+    expect(set.c).toBe(0);
+    expect(titles(db, { genre: "Crime", languages: EN_SV }).length).toBe(CORPUS.length);
+  });
+
+  test("the exploded rows and the display column never disagree", () => {
+    // Read out of ONE build, both ways. Two writes of one fact is the risk this column
+    // takes on, so the fixture asks each form the same question and compares the answers.
+    const db = indexOf(CORPUS);
+    const exploded = db
+      .query(
+        `select t.tconst, group_concat(l.lang) codes from title t
+           join (select title_rowid, lang from title_lang where lang <> ? order by lang) l
+             on l.title_rowid = t.rowid_
+          group by t.rowid_ order by t.tconst`,
+      )
+      .all(UNKNOWN_LANG) as { tconst: string; codes: string }[];
+    const display = db
+      .query("select tconst, lang from title where lang is not null order by tconst")
+      .all() as { tconst: string; lang: string }[];
+    expect(display).toEqual(exploded.map((r) => ({ tconst: r.tconst, lang: r.codes })));
+  });
+
+  test("every row payload carries it, on every surface a card is drawn from", () => {
+    const engine = engineOn(CORPUS);
+    expect(engine.hasTitleLang).toBe(true);
+    /*
+      THREE SHAPES, not three methods, and that is the point of picking these three:
+      `browse` builds its list in `browseIndex` at module level, `byTconst` writes a bare
+      one, and `topRated` goes through `rankedSeek`'s `t.`-prefixed one. Those are every
+      form `titleCols` can emit, and a site missed by hand returns `undefined` here rather
+      than throwing -- which is why the `topRated` assertion is `not.toBeUndefined()` on
+      every row instead of a spot check on one.
+    */
+    expect(engine.browse({ genre: "Crime" }).rows.find((r) => r.tconst === "tt-multi")?.lang).toBe(
+      "en,hi,pa",
+    );
+    expect(engine.byTconst("tt-sv")?.lang).toBe("sv");
+    expect(engine.byTconst("tt-unknown")?.lang).toBeNull();
+    const top = engine.topRated({ minVotes: 0 });
+    expect(top.length).toBeGreaterThan(0);
+    for (const r of top) expect(r.lang).not.toBeUndefined();
+    expect(top.find((r) => r.tconst === "tt-multi")?.lang).toBe("en,hi,pa");
+    engine.close();
+  });
+
+  test("an index built BEFORE the column keeps serving, with lang null everywhere", () => {
+    /*
+      The v6 file, which is what a deploy MEETS for up to a day. Without `hasTitleLang`
+      every one of these is `no such column: lang` rather than a row -- the whole product,
+      not one pane -- so the assertion that matters is that they answer at all.
+    */
+    const engine = engineOn(CORPUS, { withTitleLang: false });
+    expect(engine.hasTitleLang).toBe(false);
+    expect(engine.browse({ genre: "Crime" }).rows.length).toBe(CORPUS.length);
+    expect(engine.browse({ genre: "Crime" }).rows.every((r) => r.lang === null)).toBe(true);
+    expect(engine.byTconst("tt-multi")?.lang).toBeNull();
+    const top = engine.topRated({ minVotes: 0 });
+    expect(top.length).toBeGreaterThan(0);
+    for (const r of top) expect(r.lang).toBeNull();
+    // The FILTER is unaffected: `title_lang` is still there, so a preference still applies.
+    expect(engine.browse({ genre: "Crime", languages: ["en", "sv"] }).rows.length).toBeGreaterThan(0);
+    engine.close();
   });
 });
 

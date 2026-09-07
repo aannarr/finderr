@@ -518,6 +518,20 @@ export function pickCertification(
 // --- language --------------------------------------------------------------
 
 /**
+ * Languages a card never bothers naming, behind whatever the reader's browser reports.
+ *
+ * The sibling of `FALLBACK_COUNTRIES`, and it holds English for a blunt reason rather than
+ * an editorial one: **English is what this library is mostly in**, so labelling it spends a
+ * line on nearly every card to say the unsurprising thing, and the label only earns its
+ * space when it is telling a reader something they did not assume. aannarr, 2026-09-07:
+ * *"show only non-configured/standard languages.. like 'Spanish', 'Danish'"*.
+ *
+ * It is deliberately not `config.languages`: that is the operator's FILTER, and it does not
+ * reach the browser. See `foreignLanguage`.
+ */
+const FALLBACK_LANGUAGES = ["en"] as const;
+
+/**
  * The languages a title was made in, named in the reader's own words.
  *
  * THE NAME IS MADE HERE AND NEVER STORED. `Intl.DisplayNames` is a full CLDR table in
@@ -569,6 +583,97 @@ function readableLocales(locales: readonly string[]): string[] {
     }
   });
   return [...usable, "en"];
+}
+
+/**
+ * What to call a title's language on a CARD -- or `null`, which is the common answer.
+ *
+ * `Title.lang` is the comma-joined column off the index (`src/lib/title-cols.ts`); this is
+ * the rule that turns it into at most a few words beside a title, and it exists because a
+ * card reading "Colisión" tells a reader nothing about what they would be watching.
+ *
+ * > [!IMPORTANT] ANY overlap with the reader's own languages silences it, rather than every
+ * > code having to match
+ * > The codes are an unordered SET out of Wikidata's P364 -- `Sardar Udham` is `en,hi,pa`
+ * > and nothing in the data says which of those is the main one. So "the primary language
+ * > is not yours" is a question this cannot answer, and the one it CAN answer is "is there
+ * > any chance this is in a language you read". A film with an English track is not the
+ * > thing the label was asked for, and a wrong label on a title somebody can already watch
+ * > is worse than a missing one on a title they cannot -- the same way round
+ * > `pickWatchProviders` refuses to fall back to another country's offers.
+ *
+ * **ENGLISH IS NEVER LABELLED, whatever the browser says.** aannarr, 2026-09-07: *"no need
+ * to show 'English' for english titles.. show only non-configured/standard languages.. like
+ * 'Spanish', 'Danish'"*. So `FALLBACK_LANGUAGES` sits behind the reader's own list exactly
+ * as `FALLBACK_COUNTRIES` sits behind it in `preferredCountries`, and for the same reason:
+ * a browser that reports only `ko` would otherwise put "English" on most of the library,
+ * which is noise on the majority case rather than a fact worth a line.
+ *
+ * The reader's languages come from `browserLocales()` at the call site rather than from
+ * `config.languages`: that config is the OPERATOR's filter, it is empty by default, and it
+ * does not reach the browser at all today. This is a render decision about ONE reader, so
+ * it asks the browser -- the same shape and the same reason as `preferredCountries`. The
+ * consequence worth knowing: on a server configured `en,sv`, a Swedish film still draws
+ * "Swedish" unless that reader's own browser lists `sv`. Silencing the operator's whole
+ * configured set would need that config sent to the client, which is a new surface and not
+ * one this rule should invent on its own.
+ *
+ * Locales are passed in for the reason `languageNames` states: `Intl` with no locale
+ * follows the test runner's.
+ */
+export function foreignLanguage(lang: string | null | undefined, locales: readonly string[]): string | null {
+  if (!lang) return null;
+  const codes = lang
+    .split(",")
+    .map((c) => c.trim().toLowerCase())
+    .filter(Boolean);
+  if (codes.length === 0) return null;
+  const mine = new Set<string>(FALLBACK_LANGUAGES);
+  for (const locale of locales) {
+    const base = baseLanguageOf(locale);
+    if (base) mine.add(base);
+  }
+  if (codes.some((code) => mine.has(code))) return null;
+  const names = languageNames(
+    codes.map((code) => ({ code })),
+    locales,
+  );
+  return names.length === 0 ? null : names.join(", ");
+}
+
+/**
+ * The two optional halves of a card's subtitle line, decided once.
+ *
+ * `TitleCard` draws "what this is called at home" and "what language that is" on ONE line
+ * -- `Colisión · Spanish` -- and either half can be absent. Written inline it was the same
+ * `orig && orig !== title` test three times over, once per element including the middot,
+ * which is three places to get the next change wrong.
+ *
+ * **NEITHER HALF IMPLIES THE OTHER, and that is the bug this shape prevents.** The first
+ * draft nested the language inside the original-title check, which silently dropped it for
+ * every title whose two titles happen to match -- `La Cible` is a French series called
+ * `La Cible` in French, so the case is common rather than a corner.
+ *
+ * `original` is null when there is no other title or it is the same string, because
+ * printing a title twice says nothing. Both null means the line is not drawn at all.
+ */
+export function cardSubtitle(
+  title: string,
+  orig: string | null | undefined,
+  language: string | null,
+): { original: string | null; language: string | null } {
+  const original = orig && orig !== title ? orig : null;
+  return { original, language };
+}
+
+/** A locale's language subtag -- `en` for `en-GB`. Sibling of `regionOf`, same guard. */
+function baseLanguageOf(locale: string): string | null {
+  try {
+    return new Intl.Locale(locale).language?.toLowerCase() ?? null;
+  } catch {
+    // A hand-edited or truncated locale is expected input, not an error case.
+    return null;
+  }
 }
 
 /** One language's name, or `null` when nothing can put a name to the code. */
