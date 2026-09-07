@@ -34,7 +34,7 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { prettyCategory } from "../lib/awards-format";
-import { creditLabels, mergedCategories } from "../lib/credits";
+import { creditLabels, creditNote, mergedCategories } from "../lib/credits";
 import type { SearchParams } from "../lib/search-params";
 
 const PAGE = 60;
@@ -451,7 +451,13 @@ export function PersonRoute() {
         stays put, which is what keeps focus on the chip that was just pressed.
       */}
       <StaleResults stale={!showingCurrentCredits}>
-        <TitleGrid titles={page.credits} />
+        {/*
+          `creditNote` is passed by REFERENCE and must stay that way -- `TitleGrid` is
+          `memo`'d, so an inline `(c) => creditNote(c)` would be a new function on every
+          render of this route and defeat it for the whole grid. It is a module-level pure
+          function precisely so this line can be a bare name.
+        */}
+        <TitleGrid titles={page.credits} noteFor={creditNote} />
 
         {page.credits.length < page.total && (
           <div className="mt-6 flex justify-center">

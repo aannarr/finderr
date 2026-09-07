@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { creditLabels, mergedCategories } from "./credits";
+import { creditLabels, creditNote, mergedCategories } from "./credits";
 
 describe("mergedCategories", () => {
   test("actor and actress are one chip carrying both IMDb values", () => {
@@ -55,6 +55,72 @@ describe("creditLabels", () => {
 
   test("no categories is no labels, never a stray separator", () => {
     expect(creditLabels([])).toEqual([]);
+  });
+});
+
+describe("creditNote", () => {
+  test("an acting credit reads as the CHARACTER, not as the job", () => {
+    // "Acting" is what the reader already knew from the chip they pressed. The name is the
+    // fact the card can add.
+    expect(creditNote({ tconst: "tt0", categories: ["actor"], characters: "Dom Cobb" })).toEqual({
+      text: "Dom Cobb",
+      full: "Dom Cobb · Acting",
+    });
+  });
+
+  test("a credit with no character falls back to the job", () => {
+    expect(creditNote({ tconst: "tt0", categories: ["director"], characters: null })).toEqual({
+      text: "Directing",
+      full: "Directing",
+    });
+  });
+
+  test("several characters draw the first and reveal all of them on hover", () => {
+    // Billed under two aliases on one film. The card has room for one; the tooltip is
+    // where the other lives.
+    expect(creditNote({ tconst: "tt0", categories: ["actor"], characters: "Hank Hall, Hawk" })).toEqual({
+      text: "Hank Hall",
+      full: "Hank Hall · Hawk · Acting",
+    });
+  });
+
+  test("several jobs draw the first and reveal all of them on hover", () => {
+    expect(creditNote({ tconst: "tt0", categories: ["director", "writer"], characters: null })).toEqual({
+      text: "Directing",
+      full: "Directing · Writing",
+    });
+  });
+
+  test("acting AND directing leads with the character, and the hover holds both jobs", () => {
+    expect(creditNote({ tconst: "tt0", categories: ["actor", "director"], characters: "Vincent" })).toEqual({
+      text: "Vincent",
+      full: "Vincent · Acting · Directing",
+    });
+  });
+
+  test("actor and actress collapse to one job in the hover, never two", () => {
+    // The same merge the chips do. "Acting · Acting" would be the tell that this reached
+    // for the raw categories instead of `creditLabels`.
+    expect(creditNote({ tconst: "tt0", categories: ["actor", "actress"], characters: null })).toEqual({
+      text: "Acting",
+      full: "Acting",
+    });
+  });
+
+  test("a row carrying neither draws NO line rather than an empty one", () => {
+    // What a plain `Title` from a search grid looks like: the fields are simply absent, and
+    // `TitleGrid` hands every row to this function whatever page it is on.
+    expect(creditNote({ tconst: "tt0" })).toBeNull();
+    expect(creditNote({ tconst: "tt0", categories: [], characters: null })).toBeNull();
+  });
+
+  test("a character list that is only separators is no character at all", () => {
+    // `group_concat` skips nulls, so this shape should not arise -- but an empty string
+    // here would draw a blank line that looks like a rendering bug rather than an absence.
+    expect(creditNote({ tconst: "tt0", categories: ["actor"], characters: " , " })).toEqual({
+      text: "Acting",
+      full: "Acting",
+    });
   });
 });
 

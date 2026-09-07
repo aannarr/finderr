@@ -14,7 +14,7 @@ import { CARD_LINK_SELECTOR, CARD_REQUEST_SELECTOR, CARD_SELECTOR } from "../lib
 import { ariaKeyShortcuts, HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 import { Skeleton } from "./FacetPane";
 import { moveRovingFocus, type RovingItems } from "./RovingFocus";
-import { TitleCard } from "./TitleCard";
+import { type CardNote, TitleCard } from "./TitleCard";
 
 /**
  * The one grid class list, shared with `GridSkeleton` so the two cannot drift apart.
@@ -75,8 +75,29 @@ function onCardKeyDown(event: KeyboardEvent<HTMLElement>): void {
 export const TitleGrid = memo(function TitleGrid({
   titles,
   onOpen,
+  noteFor,
 }: {
   titles: Title[];
+  /**
+   * One line of the SURFACE's own context per card -- see `CardNote`.
+   *
+   * A FUNCTION rather than a parallel array of notes, for the reason `onOpen` gives just
+   * below about position: the grid owns the order, so handing it a second list to line up
+   * by index is a copy of that order which goes wrong the first time either side filters.
+   * Asking per row cannot disagree with the row it was asked about.
+   *
+   * **Keep the reference STABLE** -- this component is `memo`'d, so an inline arrow
+   * defeats it for every card on every parent render. A module-level pure function is the
+   * intended shape (`creditNote` is one); `useCallback` if it must close over something.
+   *
+   * The parameter is `Title`, so a supplied function must accept ANY title rather than only
+   * the enriched rows its own page holds -- parameters are contravariant, and `Credit` is
+   * NARROWER than `Title`, so `(c: Credit) => ...` is exactly what does not fit here.
+   * `creditNote` therefore declares its extra fields OPTIONAL and reads them defensively.
+   * The alternative was a generic `TitleGrid<T extends Title>`, which `memo` cannot express
+   * without a cast; a widened parameter costs one `?` and no cast at all.
+   */
+  noteFor?: (t: Title) => CardNote | null;
   /**
    * A card in THIS grid was opened, with its position.
    *
@@ -104,6 +125,7 @@ export const TitleGrid = memo(function TitleGrid({
           onRequest={request}
           onOpen={onOpen && (() => onOpen(t, rank))}
           requestShortcut={REQUEST_SHORTCUT}
+          note={noteFor?.(t)}
         />
       ))}
     </div>
