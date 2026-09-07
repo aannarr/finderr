@@ -1162,6 +1162,64 @@ export class SearchEngine {
    *
    * Text similarity is computed here (not taken from bm25) precisely so the scales
    * match; bm25 is used only to pick which 400 rows are worth scoring.
+   *
+   * > [!CAUTION] WEIGHTING `cov` BY TOKEN RARITY WAS BUILT, SWEPT AND DECLINED, 2026-09-08.
+   * > TOKEN COVERAGE STAYS UNWEIGHTED. THE RECORD IS HERE SO NOBODY RE-DERIVES IT.
+   * >
+   * > The case was `Leila dilemma` from the live log: no title holds both words, so every
+   * > candidate covers exactly one, `cov` ties at 0.5 across the page and popularity decides
+   * > -- handing the top two rows to "The Dilemma" (59,512 votes) and "The Social Dilemma"
+   * > (95,057) over the "Leila" (9,580) the reader clicked at rank 2. The proposal was to
+   * > weight each query word by how rare it is, so the word that IDENTIFIES the title buys
+   * > more of the query's coverage than the word that does not.
+   * >
+   * > Built as `weight(t) = (titles / docFrequency(t)) ^ s`, normalised to sum to 1 so `cov`
+   * > stayed a 0..1 ratio and `FULL_COVERAGE` kept meaning "every word present". Frequencies
+   * > came from `fts5vocab` over `tfts` -- the same auxiliary table `./vocab-trigrams.ts`
+   * > reads trigram frequencies from, so nothing new was stored. `s = 0` is today's
+   * > behaviour exactly, which made the status quo a row of the sweep rather than a
+   * > remembered number. Measured on an M1 Max against the real 1,276,833-row index
+   * > (`data/titles.prev.db`, the newest build carrying a vocabulary) with a frozen snapshot
+   * > of the live click log, so every row saw the same 14 clicked titles:
+   * >
+   * > | s | canary | mean clicked rank | `Leila dilemma` | `Swedish criminal` clicks |
+   * > |---|---|---|---|---|
+   * > | **0 -- unweighted, shipped** | **46/46** | **1.57** | rank 2 | 6, 3, 2 |
+   * > | 0.25 | 46/46 | 1.71 | rank 2 | 6, 3, 2 |
+   * > | 0.5 | 46/46 | 1.93 | rank 2 | 7, 3, 2 |
+   * > | 1 | 46/46 | 2.64 | rank 2 | 9, 5, 3 |
+   * > | 2.5 | **45/46** | 3.57 | **rank 0** | 13, 7, 5 |
+   * >
+   * > **Monotonically worse, and the one setting that fixes the case fails the build gate.**
+   * > Four points in one direction is not a wash to be re-read as noise -- but the per-click
+   * > table is where the argument is, and it names the loser: `Swedish criminal`, three
+   * > clicked titles, where `swedish` (df 59) swamps `criminal` (df 297) and the page fills
+   * > with Swedish titles that are not crime. At `s = 2.5` the canary loses `Nile City`.
+   * >
+   * > **THE CARD'S PREMISE WAS FALSE, AND THAT IS THE REAL FINDING.** It assumed `dilemma`
+   * > was a common word and `leila` a rare one. Out of `fts5vocab`: `leila` is in 59 titles,
+   * > `dilemma` in 128. Both are rare and the whole rarity signal between them is a factor of
+   * > 2.2. What loses that page is not a common word out-weighing a rare one, it is 59,512
+   * > votes against 9,580 -- a popularity gap, reachable only by a popularity lever.
+   * >
+   * > The arithmetic bounds the idea rather than just this parameterisation, so a different
+   * > weighting function is not worth trying either: the partial branch pays `10 * cov`, so
+   * > the largest swing ANY weighting can produce between two candidates each covering one
+   * > word of a two-word query is 10 points, and spending it means reading a two-word query
+   * > as a one-word query. The gap here is 6.96 points; `s = 1` moves 3.68 of them.
+   * >
+   * > Two things a re-implementer needs and would otherwise learn the hard way. **`cov` is
+   * > not only a scoring term, it is the ESCALATION GATE** (`hits[0].coverage < 0.6` in
+   * > `search`), so reweighting it changes WHICH TIER answers -- that, not the score, is how
+   * > `Nile City` broke: it fell from `fuzzy` to `or`, whose 400-row window does not hold
+   * > "NileCity 105.6". And **the `fts5vocab` table must be created before
+   * > `pragma query_only = 1`**, which refuses a write to `temp` as readily as to `main`; a
+   * > lazy one throws *"attempt to write a readonly database"* on the first query that needs
+   * > it, in production, long after every test has passed.
+   * >
+   * > **What would re-open it:** a click log big enough that 14 titles stop being the
+   * > denominator. Nothing else. Run `bun run search:replay` on your own base first -- it
+   * > prints the click count beside the mean, and the count has already moved once.
    */
   private rank(
     rows: (TitleRow & { rowid: number; ntitle?: string; norig?: string })[],
