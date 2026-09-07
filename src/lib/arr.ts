@@ -24,6 +24,48 @@ export interface ArrQualityProfile {
   name: string;
 }
 
+/**
+ * What an arr already knows about the CONTENT of a file it imported.
+ *
+ * Both arrs run MediaInfo at import and serve the result, so finderr can decide a transcode
+ * plan from its own six-hourly mirror rather than probing 1,175 files. Verified against the
+ * live Radarr and Sonarr on 2026-09-08; every field is optional because the arr omits the
+ * whole block for a file it imported before it scanned, and one absent codec must not lose
+ * the path beside it.
+ *
+ * > [!IMPORTANT] `videoCodec` is the arr's RELEASE vocabulary, not ffmpeg's
+ * > It says `x265` where ffprobe says `hevc`, and `h264` where ffprobe agrees. It is a
+ * > normalised label rather than a stream codec name, so anything matching on it maps
+ * > through one table -- and the authority for an actual playback decision is the ffprobe
+ * > at click time, never this. This block is for deciding CHEAPLY and in bulk: which titles
+ * > would need a transcode at all, what the library looks like, what to warn about.
+ *
+ * > [!WARNING] `subtitles` is a LANGUAGE list and never a format, and the difference is expensive
+ * > `"eng"` does not say whether that track is SRT (converts to WebVTT for nothing) or PGS
+ * > (a bitmap, which forces a full video transcode to burn in). Nothing here can tell you,
+ * > which is exactly why the click-time probe still exists.
+ */
+export interface ArrMediaInfo {
+  videoCodec?: string;
+  videoBitDepth?: number;
+  videoDynamicRange?: string;
+  audioCodec?: string;
+  audioChannels?: number;
+  audioLanguages?: string;
+  subtitles?: string;
+  resolution?: string;
+  runTime?: string;
+}
+
+/** A file an arr imported, as both arrs describe one. Same shape, two endpoints. */
+export interface ArrFile {
+  id: number;
+  /** ABSOLUTE, as the ARR's container sees it. Never opened without `media-path.ts`. */
+  path?: string;
+  size?: number;
+  mediaInfo?: ArrMediaInfo;
+}
+
 export interface RadarrMovie {
   id: number;
   title: string;
@@ -40,6 +82,8 @@ export interface RadarrMovie {
    * name suggests and NOT what Sonarr does. Mirror it; never build it.
    */
   titleSlug?: string;
+  /** The imported file, embedded in `/movie` at no extra cost. Absent when `hasFile` is false. */
+  movieFile?: ArrFile;
 }
 
 export interface SonarrSeries {
@@ -68,6 +112,8 @@ export interface SonarrEpisode {
   airDate?: string | null;
   hasFile?: boolean;
   monitored?: boolean;
+  /** Present only because `episodes()` asks for `includeEpisodeFile`. See that method. */
+  episodeFile?: ArrFile;
 }
 
 /**
@@ -670,7 +716,12 @@ export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
    * list" rather than two that must be kept in step.
    */
   episodes(seriesId: number): AsyncGenerator<SonarrEpisode> {
-    return this.getStream<SonarrEpisode>("/episode", { seriesId });
+    // `includeEpisodeFile` is what makes the playback mirror FREE. Verified against the live
+    // Sonarr 2026-09-08: the episode records come back carrying `episodeFile` with its path,
+    // size and full `mediaInfo` -- so finderr learns every codec it needs to plan a
+    // transcode without a second call per series. Radarr needs no equivalent flag; its
+    // `/movie` list already embeds `movieFile`.
+    return this.getStream<SonarrEpisode>("/episode", { seriesId, includeEpisodeFile: "true" });
   }
 
   /**

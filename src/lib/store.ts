@@ -14,6 +14,7 @@ import { applyAuthSchema } from "./auth-store";
 import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
+import { type MediaFileRow, mediaFileRow, NOT_AN_EPISODE } from "./media-file";
 import type { PlexItem } from "./plex";
 import type { RequestDiagnostic } from "./request-diagnostics";
 import {
@@ -408,6 +409,43 @@ create table if not exists episode (
   has_file       integer not null default 0,
   monitored      integer not null default 0,
   air_date       text,
+  updated_at     text not null,
+  primary key (imdb_id, season, episode)
+);
+
+-- THE FILE behind a playable thing: where it is and what is inside it.
+--
+-- One row per FILE, which is one per film and one per episode. A film is keyed with
+-- season and episode of -1 (NOT_AN_EPISODE in media-file.ts) -- a reserved in-band value
+-- rather than a nullable key column, because SQLite treats two NULLs as distinct and a
+-- primary key over them stops being one. -1 rather than 0 because SEASON 0 IS THE
+-- SPECIALS and exists on every series.
+--
+-- Separate from library and episode for the reason those two are separate from each
+-- other: they answer "did the arr get this" and this answers "what would we have to do
+-- to play it". The arr can hold a file whose mediaInfo it has not scanned, so has_file
+-- and "we know what is in it" are different facts and only this table knows the second.
+--
+-- Every column but path is nullable ON PURPOSE. An unscanned import serves a path and no
+-- mediaInfo; dropping the row over a missing codec would make a playable file unplayable
+-- to protect a field nothing needs, and the click-time probe is the authority anyway.
+create table if not exists media_file (
+  imdb_id        text not null,
+  season         integer not null,
+  episode        integer not null,
+  service        text not null,
+  arr_file_id    integer not null,
+  path           text not null,
+  size           integer,
+  video_codec    text,
+  video_depth    integer,
+  video_range    text,
+  audio_codec    text,
+  audio_channels real,
+  audio_langs    text,
+  subtitle_langs text,
+  resolution     text,
+  runtime        text,
   updated_at     text not null,
   primary key (imdb_id, season, episode)
 );
@@ -1143,6 +1181,130 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       throw err;
     }
     return (this.db.query("select count(*) c from episode where imdb_id = ?").get(imdbId) as { c: number }).c;
+  }
+
+  /**
+   * Replace every media file row one SERVICE knows about, in one transaction.
+   *
+   * Full swap per service, the same shape and the same reason as `replaceLibrary`: a file
+   * deleted upstream has to disappear here, and scoping the delete to the service means a
+   * Radarr walk cannot empty Sonarr's rows when Sonarr is unreachable.
+   *
+   * **A failed walk therefore leaves the previous mirror standing**, which is deliberate and
+   * is `syncPlex`'s rule as well: a stale path is a Play button that probably still works,
+   * an emptied table is a page that silently loses every Play button it had.
+   */
+  replaceMediaFiles(service: "radarr" | "sonarr", rows: readonly MediaFileRow[]): number {
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      `insert or replace into media_file
+         (imdb_id, season, episode, service, arr_file_id, path, size, video_codec, video_depth,
+          video_range, audio_codec, audio_channels, audio_langs, subtitle_langs, resolution,
+          runtime, updated_at)
+       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    this.db.run("begin");
+    try {
+      this.db.run("delete from media_file where service = ?", [service]);
+      for (const r of rows) {
+        ins.run(
+          r.imdb_id,
+          r.season,
+          r.episode,
+          r.service,
+          r.arr_file_id,
+          r.path,
+          r.size,
+          r.video_codec,
+          r.video_depth,
+          r.video_range,
+          r.audio_codec,
+          r.audio_channels,
+          r.audio_langs,
+          r.subtitle_langs,
+          r.resolution,
+          r.runtime,
+          now,
+        );
+      }
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+    return (
+      this.db.query("select count(*) c from media_file where service = ?").get(service) as { c: number }
+    ).c;
+  }
+
+  /**
+   * Replace the media files for ONE series, scoped to that series.
+   *
+   * Sonarr's episode walk is batched -- only some series are due on any pass -- so the
+   * service-wide swap above would delete the rows of every series this pass did NOT visit.
+   * This is the per-series form, and it is called from the same transaction boundary as
+   * `replaceEpisodes` for the same reason.
+   */
+  replaceMediaFilesForSeries(imdbId: string, rows: readonly MediaFileRow[]): number {
+    const now = new Date().toISOString();
+    const ins = this.db.prepare(
+      `insert or replace into media_file
+         (imdb_id, season, episode, service, arr_file_id, path, size, video_codec, video_depth,
+          video_range, audio_codec, audio_channels, audio_langs, subtitle_langs, resolution,
+          runtime, updated_at)
+       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    this.db.run("begin");
+    try {
+      this.db.run("delete from media_file where imdb_id = ? and service = 'sonarr'", [imdbId]);
+      for (const r of rows) {
+        ins.run(
+          r.imdb_id,
+          r.season,
+          r.episode,
+          r.service,
+          r.arr_file_id,
+          r.path,
+          r.size,
+          r.video_codec,
+          r.video_depth,
+          r.video_range,
+          r.audio_codec,
+          r.audio_channels,
+          r.audio_langs,
+          r.subtitle_langs,
+          r.resolution,
+          r.runtime,
+          now,
+        );
+      }
+      this.db.run("commit");
+    } catch (err) {
+      this.db.run("rollback");
+      throw err;
+    }
+    return rows.length;
+  }
+
+  /**
+   * The file behind one playable thing, or `null`.
+   *
+   * A film omits `at` entirely; an episode names its season and number. There is no lookup
+   * that returns "the files for a series" because nothing plays a series -- you play an
+   * episode, and the caller always knows which one.
+   */
+  mediaFile(imdbId: string, at?: { season: number; episode: number }): MediaFileRow | null {
+    const season = at?.season ?? NOT_AN_EPISODE;
+    const episode = at?.episode ?? NOT_AN_EPISODE;
+    const r = this.db
+      .query("select * from media_file where imdb_id = ? and season = ? and episode = ?")
+      .get(imdbId, season, episode) as (MediaFileRow & { updated_at: string }) | undefined;
+    return r ?? null;
+  }
+
+  /** How many playable files we mirror, for `/api/health`. */
+  mediaFileCount(): number {
+    return (this.db.query("select count(*) c from media_file").get() as { c: number }).c;
   }
 
   /** Every episode we mirror for one series, keyed `"<season>:<episode>"`. */
@@ -3015,24 +3177,42 @@ export async function syncLibrary(
   clients: { radarr?: RadarrClient; sonarr?: SonarrClient },
   episodePolicy: EpisodeRefreshPolicy,
   log: (m: string) => void = () => {},
-): Promise<{ radarr?: number; sonarr?: number; episodes?: number; errors: string[] }> {
+): Promise<{
+  radarr?: number;
+  sonarr?: number;
+  episodes?: number;
+  mediaFiles?: number;
+  errors: string[];
+}> {
   const errors: string[] = [];
-  const out: { radarr?: number; sonarr?: number; episodes?: number; errors: string[] } = {
-    errors,
-  };
+  const out: {
+    radarr?: number;
+    sonarr?: number;
+    episodes?: number;
+    mediaFiles?: number;
+    errors: string[];
+  } = { errors };
 
   if (clients.radarr) {
     try {
-      const walk = await collectLibraryWalk(clients.radarr.movies(), (m) => ({
-        imdb_id: m.imdbId ?? "",
-        arr_id: m.id,
-        has_file: m.hasFile ? 1 : 0,
-        monitored: m.monitored ? 1 : 0,
-        progress: m.hasFile ? 1 : 0,
-        added_at: addedFrom(m),
-        title_slug: m.titleSlug ?? null,
-      }));
+      // Collected on the SAME pass rather than in a second walk: `/movie` already embeds
+      // `movieFile`, so the only alternative would be streaming the identical list twice.
+      const files: MediaFileRow[] = [];
+      const walk = await collectLibraryWalk(clients.radarr.movies(), (m) => {
+        const file = mediaFileRow(m.imdbId ?? "", "radarr", m.movieFile);
+        if (file) files.push(file);
+        return {
+          imdb_id: m.imdbId ?? "",
+          arr_id: m.id,
+          has_file: m.hasFile ? 1 : 0,
+          monitored: m.monitored ? 1 : 0,
+          progress: m.hasFile ? 1 : 0,
+          added_at: addedFrom(m),
+          title_slug: m.titleSlug ?? null,
+        };
+      });
       out.radarr = store.replaceLibrary("radarr", walk.rows);
+      out.mediaFiles = (out.mediaFiles ?? 0) + store.replaceMediaFiles("radarr", files);
       // Every owned title already carries its artwork AND its studio in the same
       // response -- seeding here costs nothing extra and covers the whole library
       // instantly, so an owned title never waits on an on-demand lookup for either.
@@ -3136,6 +3316,7 @@ export async function syncEpisodes(
       // series is bounded, but a long-running show is thousands of episodes and there is no
       // reason for the fat records to coexist with the narrow ones.
       const rows: Omit<EpisodeEntry, "imdb_id" | "updated_at">[] = [];
+      const files: MediaFileRow[] = [];
       for await (const e of sonarr.episodes(s.arr_id)) {
         rows.push({
           season: e.seasonNumber,
@@ -3145,8 +3326,18 @@ export async function syncEpisodes(
           monitored: e.monitored ? 1 : 0,
           air_date: e.airDate ?? null,
         });
+        // `episodeFile` rides this same response because `episodes()` asks for it, so the
+        // playback mirror costs this walk nothing beyond the projection.
+        const file = mediaFileRow(s.imdb_id, "sonarr", e.episodeFile, {
+          season: e.seasonNumber,
+          episode: e.episodeNumber,
+        });
+        if (file) files.push(file);
       }
       episodes += store.replaceEpisodes(s.imdb_id, rows);
+      // PER SERIES, never the service-wide swap: this walk is batched, so only some series
+      // are due on any pass and a service-wide delete would empty every series it skipped.
+      store.replaceMediaFilesForSeries(s.imdb_id, files);
       walked += 1;
     } catch (err) {
       errors.push(`sonarr episodes ${s.imdb_id}: ${(err as Error).message}`);

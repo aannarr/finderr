@@ -246,7 +246,14 @@ describe("syncLibrary mirrors what the arrs report", () => {
 
     await syncLibrary(store, clients(), WALK_EVERYTHING);
 
-    expect(calls).toContain("/api/v3/episode?seriesId=21");
+    // The SERIES ID is what this case defends -- that the walk asks about the series the
+    // mirror holds rather than one it invented. It was an exact-string match until the
+    // playback mirror added `includeEpisodeFile`, which is a second, unrelated claim about
+    // the same URL and has its own case in `media-file.test.ts`. Matching the whole string
+    // made this test fail for a reason it was never about.
+    const episodeCalls = calls.filter((c) => c.startsWith("/api/v3/episode"));
+    expect(episodeCalls).toHaveLength(1);
+    expect(episodeCalls[0]).toContain("seriesId=21");
     expect(store.episodeCount()).toBe(2);
   });
 });
