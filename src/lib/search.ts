@@ -22,6 +22,7 @@
 
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
+import { BREAKOUT_META, BREAKOUT_SHELF } from "./breakout";
 import type { Config } from "./config";
 import { ENGLISH_LANG, type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
 import type { PersonCredit } from "./facets";
@@ -467,6 +468,23 @@ export class SearchEngine {
   readonly hasOrigin: boolean;
 
   /**
+   * Whether this index carries `title_breakout` -- the locale-breakout scores.
+   *
+   * Fails toward LESS, and that is the easy direction for once: false means the shelf does
+   * not render, which is exactly what an index built before this stage should do. There is
+   * no degraded form to fall back to, because the scores cannot be derived at query time --
+   * they are medians over the whole corpus, which is the reason the stage exists.
+   *
+   * The stage is ADDITIVE and its table can also be legitimately EMPTY: a build with no
+   * origin data on disk files every title as locale-less, no stratum reaches `MIN_STRATUM`,
+   * and nothing is scored. `breakoutTitles` then returns no rows and the shelf hides itself
+   * down the ordinary empty-shelf path -- the same answer, one layer up.
+   *
+   * Constructor body, never a field initializer -- see `hasPeople`.
+   */
+  readonly hasBreakout: boolean;
+
+  /**
    * Whether `title_lang` carries the denormalised list columns AND the index that reads them.
    *
    * > [!IMPORTANT] This one gates an OPTIMISATION, not a filter -- the opposite of `hasOrigin`
@@ -706,6 +724,7 @@ export class SearchEngine {
     this.hasIds = this.tableExists("title_ids");
     this.hasPersonIds = this.tableExists("person_external");
     this.hasOrigin = this.tableExists("title_lang");
+    this.hasBreakout = this.tableExists("title_breakout");
     this.hasLangRank =
       this.columnExists("title_lang", "kind") &&
       this.columnExists("title_lang", "rank") &&
@@ -1592,6 +1611,55 @@ export class SearchEngine {
       .query("select lang from title_lang where title_rowid = ? and lang != '' order by lang")
       .all(row.rowid_) as { lang: string }[];
     return { lang: langs.map((l) => l.lang), country: row.country ? row.country.split(",") : [] };
+  }
+
+  /**
+   * Titles that were enormous where they were made and are unknown here.
+   *
+   * The whole shape of this query is "read a stored answer": the two thresholds were
+   * percentiles when `breakoutStage` computed them and are plain numbers by the time they
+   * reach SQLite, so this is an indexed seek on `ix_breakout` and never a sort over the
+   * corpus. Ordering by anything computed here would be the 1,508 ms mistake measured on
+   * 2026-09-07 -- an expression in `order by` abandons the index and materialises 1.27M rows.
+   *
+   * > [!IMPORTANT] A MISSING CUTOFF EMPTIES THE SHELF, deliberately
+   * > The two `meta` reads are subqueries, so an index carrying `title_breakout` but not the
+   * > cutoffs (a build from between these two commits, and nothing else) yields `NULL`, every
+   * > comparison against it is `NULL`, and no row passes. That is `breakoutCutoff`'s
+   * > `Infinity` contract arriving intact at the database: a threshold nobody can clear beats
+   * > a shelf assembled from a made-up number.
+   */
+  breakoutTitles(limit: number): TitleRow[] {
+    if (!this.hasBreakout) return [];
+    return this.db
+      .query(
+        `select ${titleCols(this.hasTitleLang, "t.")}
+         from title_breakout b
+         join title t on t.rowid_ = b.title_rowid
+         where b.local = 1
+           and b.reach >= (select cast(value as real) from meta where key = ?)
+           and b.love  >= (select cast(value as real) from meta where key = ?)
+           and t.votes between ? and ?
+           and t.year >= ?
+           -- Already in the all-time head is already on the front page. Without this, 18 of
+           -- the top 30 are the existing Top 250 row wearing a different heading. It is a
+           -- stored SCORE rather than a "not in top N" subquery for two reasons: on a corpus
+           -- smaller than the head every title is in the head, so that form empties the shelf
+           -- (a fixture caught it); and this way the head costs one comparison, not a
+           -- 2,500-row subquery per candidate row.
+           and (t.rank is null or t.rank < (select cast(value as real) from meta where key = ?))
+         order by b.love desc
+         limit ?`,
+      )
+      .all(
+        BREAKOUT_META.reach,
+        BREAKOUT_META.love,
+        BREAKOUT_SHELF.minVotes,
+        BREAKOUT_SHELF.maxVotes,
+        BREAKOUT_SHELF.fromYear,
+        BREAKOUT_META.rankHead,
+        limit,
+      ) as TitleRow[];
   }
 
   browse(opts: BrowseOptions): BrowseResult {

@@ -284,3 +284,74 @@ export function breakoutCutoff(values: readonly number[], percentile: number): n
   const s = [...values].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(s.length * percentile))];
 }
+
+/**
+ * What the shelf asks for, and every number is here rather than in the SQL.
+ *
+ * The two percentiles are computed AT BUILD TIME over the local-market population and stored
+ * in `meta`, so the query is a plain indexed filter against a constant that was a percentile
+ * when it was written. That is the whole trick: the honesty of a percentile, the cost of a
+ * literal, and it re-derives itself on every build instead of ageing in a source file.
+ */
+export const BREAKOUT_SHELF = {
+  /** Reach above the 92nd percentile: the extreme tail, which is all a noisy score can carry. */
+  reachPercentile: 0.92,
+  /** Love above the 85th: better than its locale's peers, without demanding a masterpiece. */
+  lovePercentile: 0.85,
+  /**
+   * Titles inside the all-time rank head are EXCLUDED, and this is what makes it a new shelf.
+   *
+   * Measured 2026-09-07 on the real index: of the top 30 by `love` over the last 20 years,
+   * **18 were already in the all-time rank top 500** -- so without this the row is the
+   * existing Top 250 redrawn, and the reader learns nothing they could not already see.
+   */
+  rankHead: 2500,
+  /**
+   * The vote window, and it is the single most important line in this object.
+   *
+   * Above the ceiling the shelf re-lists famous films (Parasite, Spirited Away) that every
+   * other list already carries. Below the floor a locale median is being computed against
+   * titles nobody voted on. The MIDDLE is where this score knows something no global sort
+   * does: big at home, invisible everywhere else.
+   */
+  minVotes: 10_000,
+  maxVotes: 150_000,
+  /** Roughly "this century's second half" -- recent enough to be requestable. */
+  fromYear: 2006,
+} as const;
+
+/** `meta` keys for the cutoffs, so the writer and the reader cannot spell them apart. */
+export const BREAKOUT_META = {
+  reach: "breakout_reach_cutoff",
+  love: "breakout_love_cutoff",
+  rankHead: "breakout_rank_head_cutoff",
+} as const;
+
+/**
+ * A rank score so high nothing can reach it, for a corpus with no head to speak of.
+ *
+ * > [!CAUTION] It is `Number.MAX_VALUE` and NOT `Infinity`, and the difference is silent
+ * > `meta` holds text, and SQLite's `cast('Infinity' as real)` is **0** -- not an error, not
+ * > null, zero. So the "exclude nothing" sentinel would become "exclude everything with a
+ * > non-negative rank", which is the whole shelf, with nothing logged. Measured 2026-09-07:
+ * > `cast('Infinity' as real)` returns 0 and `7.5 >= 0` is true, where
+ * > `cast('1.7976931348623157e+308' as real)` round-trips exactly and `7.5 >=` it is false.
+ * > (`1e400` casts to NULL, which fails closed instead -- also wrong, differently.)
+ */
+export const NO_RANK_HEAD = Number.MAX_VALUE;
+
+/**
+ * The rank score at the edge of the all-time head, or `NO_RANK_HEAD` if there is no head.
+ *
+ * Excluding "the top N by rank" cannot be written as a `not in (... limit N)` subquery: on a
+ * corpus SMALLER than N every title is in the top N, so the shelf is empty and the reason is
+ * invisible. A fixture caught exactly that. Turning the position into a THRESHOLD at build
+ * time fixes it in both directions -- a small index has no head to exclude, and the query
+ * stops paying for a 2,500-row subquery per candidate.
+ *
+ * `ranks` must be sorted DESCENDING, which is the order the caller's `order by rank desc`
+ * already produces.
+ */
+export function rankHeadCutoff(ranksDesc: readonly number[], headSize: number): number {
+  return ranksDesc.length < headSize ? NO_RANK_HEAD : ranksDesc[headSize - 1];
+}

@@ -110,7 +110,14 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { type BreakoutRow, scoreBreakout } from "./breakout";
+import {
+  BREAKOUT_META,
+  BREAKOUT_SHELF,
+  type BreakoutRow,
+  breakoutCutoff,
+  rankHeadCutoff,
+  scoreBreakout,
+} from "./breakout";
 import { type Config, paths } from "./config";
 import {
   COUNTRY_CROSSWALK,
@@ -1148,7 +1155,7 @@ export async function buildIndex(
   const origin = originStage(db, dumpDir, log);
   // AFTER originStage, never beside it: this reads title.lang and title.country, which that
   // stage is what fills. Run it first and every title looks locale-less.
-  const breakoutRows = breakoutStage(db, log);
+  const breakout = breakoutStage(db, log);
 
   log("building secondary indexes ...");
   for (const sql of INDEXES.secondary) db.run(sql);
@@ -1177,7 +1184,10 @@ export async function buildIndex(
   setMeta.run("person_id_rows", String(personIdRows));
   setMeta.run("origin_lang_titles", String(origin.withLang));
   setMeta.run("origin_country_titles", String(origin.withCountry));
-  setMeta.run("breakout_rows", String(breakoutRows));
+  setMeta.run("breakout_rows", String(breakout.rows));
+  setMeta.run(BREAKOUT_META.reach, String(breakout.reachCutoff));
+  setMeta.run(BREAKOUT_META.love, String(breakout.loveCutoff));
+  setMeta.run(BREAKOUT_META.rankHead, String(breakout.rankHeadCutoff));
   // How the lists were ranked, so a list page can say it rather than restate a constant
   // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
   setMeta.run("rank_prior_votes", String(prior.c));
@@ -1337,7 +1347,10 @@ function kept(db: Database): number {
  * The vote floor is `BROWSE_VOTE_FLOOR`, the same one the browse grid curates at, because a
  * locale median computed over titles nobody has voted on describes nothing.
  */
-function breakoutStage(db: Database, log: (m: string) => void): number {
+function breakoutStage(
+  db: Database,
+  log: (m: string) => void,
+): { rows: number; reachCutoff: number; loveCutoff: number; rankHeadCutoff: number } {
   log("scoring locale breakouts ...");
   const rows = db
     .query(
@@ -1358,12 +1371,25 @@ function breakoutStage(db: Database, log: (m: string) => void): number {
     for (const s of scores) ins.run(s.rowid, s.reach, s.love, s.local ? 1 : 0);
   })();
 
-  const local = scores.filter((s) => s.local).length;
+  // The shelf's thresholds are derived HERE, from the population this build actually
+  // produced, and stored in `meta`. A percentile written into the query as a literal is a
+  // statement about a distribution that has since moved -- see `breakoutCutoff`, and the
+  // 25-candidates-to-1 collapse that proved it.
+  const local = scores.filter((s) => s.local);
+  const reachCutoff = breakoutCutoff(local.map((s) => s.reach), BREAKOUT_SHELF.reachPercentile);
+  const loveCutoff = breakoutCutoff(local.map((s) => s.love), BREAKOUT_SHELF.lovePercentile);
+  // Where the all-time head ends, as a SCORE rather than a position -- so the query is one
+  // comparison, and so a corpus smaller than the head excludes nothing instead of everything.
+  const head = db
+    .query("select rank from title where rank is not null order by rank desc limit ?")
+    .all(BREAKOUT_SHELF.rankHead) as { rank: number }[];
+  const headCutoff = rankHeadCutoff(head.map((r) => r.rank), BREAKOUT_SHELF.rankHead);
   log(
     `  ${scores.length.toLocaleString()} titles scored of ${rows.length.toLocaleString()} eligible, ` +
-      `${local.toLocaleString()} from a local market`,
+      `${local.length.toLocaleString()} from a local market ` +
+      `(reach >= ${reachCutoff.toFixed(2)}, love >= ${loveCutoff.toFixed(2)})`,
   );
-  return scores.length;
+  return { rows: scores.length, reachCutoff, loveCutoff, rankHeadCutoff: headCutoff };
 }
 
 /**
