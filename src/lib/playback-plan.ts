@@ -38,7 +38,7 @@
  */
 
 import { type EncoderChoice, SOFTWARE } from "./encoder";
-import { RUN_INIT_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
+import { RUN_INIT_NAME, segmentFilePattern, type Track } from "./hls-timeline";
 
 /** What the browser told us it can decode. Codec names are ffmpeg's, lowercased. */
 export interface ClientCapabilities {
@@ -234,7 +234,15 @@ export interface FfmpegOpts {
   input: string;
   /** Directory this run writes its playlist, init segment and media segment into. */
   outDir: string;
-  /** Which segment of the timeline to produce, and the range it covers. */
+  /**
+   * Which rendition this run produces.
+   *
+   * One run makes ONE track, because a muxed segment can honour only one cutting rule and
+   * the two tracks need different ones -- see `hls-timeline.ts` for why that is what closes
+   * the audio hole rather than an arrangement preference.
+   */
+  track: Track;
+  /** Which segment of that rendition's timeline to produce, and the range it covers. */
   segment: { index: number; startSec: number; endSec: number };
   /**
    * Which encoder to use when the video must be re-encoded.
@@ -246,7 +254,7 @@ export interface FfmpegOpts {
 }
 
 /**
- * How far PAST the segment's end a COPY reads, so the muxer can close the segment.
+ * How far PAST the segment's end a VIDEO COPY reads, so the muxer can close the segment.
  *
  * > [!CAUTION] THE MUXER CUTS THE SEGMENT, `-to` ONLY STOPS THE READ, and the difference
  * > shows up as a stutter
@@ -267,7 +275,7 @@ export interface FfmpegOpts {
 const SEGMENT_TAIL_SLACK_SEC = 2;
 
 /**
- * How far PAST a copy-mode boundary to ask ffmpeg to seek, so that it lands ON it.
+ * How far PAST a video-copy boundary to ask ffmpeg to seek, so that it lands ON it.
  *
  * > [!CAUTION] ffmpeg's `-ss` DELIBERATELY UNDERSHOOTS, and without this the segment is wrong
  * > `ffmpeg.c` subtracts `3/23` of a second -- about 130 ms -- from a seek target on any input
@@ -283,11 +291,35 @@ const SEGMENT_TAIL_SLACK_SEC = 2;
  * > steady stream of `bufferAppendNoProgress`.
  * >
  * > 200 ms is comfortably more than 130 and comfortably less than the gap between two index
- * > entries, which is a cluster -- seconds. It applies ONLY to a copy: a re-encode decodes
- * > from the previous keyframe and discards, so it starts exactly where it was asked to and a
- * > nudge would make it skip 200 ms of film.
+ * > entries, which is a cluster -- seconds. It applies ONLY to a video copy: a re-encode
+ * > decodes from the previous keyframe and discards, so it starts exactly where it was asked
+ * > to and a nudge would make it skip 200 ms of film, and an AUDIO run WANTS to start early
+ * > because that is what makes its segment cover its whole declared range.
  */
 const SEEK_NUDGE_SEC = 0.2;
+
+/**
+ * The `-hls_time` an AUDIO run gets: longer than any film, so the muxer never cuts.
+ *
+ * > [!CAUTION] THE AUDIO SEGMENT IS BOUNDED BY `-to` AND NOTHING ELSE, and that is the fix
+ * > Told a real `-hls_time`, the muxer cuts that far after the run's FIRST packet -- and a
+ * > copy-mode seek lands at the container's index granularity BEFORE the boundary, so the cut
+ * > lands early by however much that was. Measured 2026-09-08 on a 1080p WEB-DL with 1.6 s
+ * > Matroska clusters: `-ss 2400 -hls_time 6` produced [2398.400, 2404.416) where the playlist
+ * > had declared [2400, 2406). Consecutive segments then abut only when the cluster spacing
+ * > happens to divide the grid -- true on that file, not true in general, and a gap is exactly
+ * > the bug this whole rendition split exists to remove.
+ * >
+ * > With no reachable cut the run writes everything it read as ONE segment, so a segment
+ * > covers [wherever the seek landed, `-to`) -- a SUPERSET of its declared range, always. The
+ * > start may be early and never late, so segment N ends exactly where segment N+1's declared
+ * > range begins and N+1 begins at or before that. **No gap is possible by construction**
+ * > rather than by measurement. Measured on the same file: [2398.400, 2406.016) then
+ * > [2404.416, 2412.000), zero gap, 1.6 s of overlap that MSE simply overwrites. The
+ * > re-encode path buys the same guarantee for 0.037 s of overlap, because a decode discards
+ * > accurately.
+ */
+const AUDIO_NEVER_CUT_SEC = 86_400;
 
 /**
  * The argv that produces ONE segment, derived from the plan.
@@ -332,72 +364,129 @@ const SEEK_NUDGE_SEC = 0.2;
  * > cost this module exists to avoid.
  */
 export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  const args: string[] = ["-hide_banner", "-loglevel", "error", "-nostdin"];
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    ...hardwareArgs(plan, opts),
+    ...readArgs(plan, opts),
+    ...streamArgs(plan, opts),
+    ...muxerArgs(opts),
+  ];
+}
 
-  /*
-    Hardware acceleration is wired up ONLY when there is an encode to accelerate.
+/**
+ * Hardware acceleration, wired up ONLY when there is an encode to accelerate.
+ *
+ * Decoding into a hardware surface and then COPYING the stream is pure overhead, and for
+ * VAAPI it breaks the copy path outright -- the frames end up somewhere `-c:v copy` cannot
+ * reach. So a remux stays entirely software whatever the machine can do, which costs
+ * nothing: a remux never touches a pixel. An AUDIO run never touches a pixel either, so it
+ * has nothing to accelerate whatever the video half of the plan says.
+ */
+function hardwareArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
+  const enc = videoEncoder(plan, opts);
+  if (!enc.hardware || !enc.hwaccel) return [];
+  // Only VAAPI keeps its frames on the GPU and needs its device named. VideoToolbox and
+  // NVENC take the accelerator alone, and handing them an output format they do not expect
+  // is a spawn error rather than an ignored flag.
+  const device = enc.vaapiDevice ? ["-hwaccel_output_format", "vaapi", "-vaapi_device", enc.vaapiDevice] : [];
+  return ["-hwaccel", enc.hwaccel, ...device];
+}
 
-    Decoding into a hardware surface and then COPYING the stream is pure overhead, and for
-    VAAPI it breaks the copy path outright -- the frames end up somewhere `-c:v copy` cannot
-    reach. So a remux stays entirely software whatever the machine can do, which costs
-    nothing: a remux never touches a pixel.
-  */
-  const enc = plan.video.action === "transcode" ? (opts.encoder ?? SOFTWARE) : SOFTWARE;
-  const hw = enc.hardware;
-  if (hw && enc.hwaccel) {
-    args.push("-hwaccel", enc.hwaccel);
-    // Only VAAPI keeps its frames on the GPU and needs its device named. VideoToolbox and
-    // NVENC take the accelerator alone, and handing them an output format they do not
-    // expect is a spawn error rather than an ignored flag.
-    if (enc.vaapiDevice) {
-      args.push("-hwaccel_output_format", "vaapi", "-vaapi_device", enc.vaapiDevice);
-    }
-  }
+/** Which encoder this run will actually use, or `SOFTWARE` when it encodes no video at all. */
+function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
+  const encodes = opts.track === "video" && plan.video.action === "transcode";
+  return encodes ? (opts.encoder ?? SOFTWARE) : SOFTWARE;
+}
 
-  const copying = plan.video.action === "copy";
-  if (opts.segment.startSec > 0) {
-    if (copying) {
-      // See SEEK_NUDGE_SEC. `-noaccurate_seek` is the other half: without it ffmpeg discards
-      // everything before the nudged target, and since every AUDIO packet is a key packet it
-      // discards those happily -- leaving a nudge-sized hole in the sound at every boundary
-      // while the video, which can only start at a keyframe, starts in the right place.
-      args.push("-noaccurate_seek", "-ss", (opts.segment.startSec + SEEK_NUDGE_SEC).toFixed(6));
-    } else {
-      // A re-encode decodes from the previous keyframe and discards, so it starts exactly
-      // where it is asked to and needs neither the nudge nor the slack below.
-      args.push("-ss", opts.segment.startSec.toFixed(6));
-    }
-  }
-  args.push("-i", opts.input);
-  const readUntil = opts.segment.endSec + (copying ? SEGMENT_TAIL_SLACK_SEC : 0);
-  args.push("-copyts", "-avoid_negative_ts", "disabled", "-to", readUntil.toFixed(6));
+/**
+ * Where the read starts and where it stops.
+ *
+ * The three regimes and what separates them:
+ *
+ * - **A video COPY** is nudged past its boundary and reads past the end, because the MUXER
+ *   does the cutting for it -- see `SEEK_NUDGE_SEC` and `SEGMENT_TAIL_SLACK_SEC`.
+ * - **A video RE-ENCODE** decodes from the previous keyframe and discards, so it starts
+ *   exactly where it is asked to and ends exactly where it is told. Either the nudge or the
+ *   slack would make it wrong -- skipping 200 ms of film, or encoding two seconds nobody
+ *   asked for.
+ * - **AUDIO, either way**, asks for the boundary plainly and stops at the next one, because
+ *   `-to` is the only thing bounding an audio segment -- see `AUDIO_NEVER_CUT_SEC`.
+ */
+function readArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
+  const { startSec, endSec } = opts.segment;
+  const copyingVideo = opts.track === "video" && plan.video.action === "copy";
+  const seek = startSec > 0 ? seekArgs(copyingVideo, startSec) : [];
+  const readUntil = endSec + (copyingVideo ? SEGMENT_TAIL_SLACK_SEC : 0);
+  return [
+    ...seek,
+    "-i",
+    opts.input,
+    "-copyts",
+    "-avoid_negative_ts",
+    "disabled",
+    "-to",
+    readUntil.toFixed(6),
+  ];
+}
 
-  if (plan.video.sourceIndex !== null) args.push("-map", `0:${plan.video.sourceIndex}`);
-  if (plan.audio.sourceIndex !== null) args.push("-map", `0:${plan.audio.sourceIndex}`);
+function seekArgs(copyingVideo: boolean, startSec: number): string[] {
+  if (!copyingVideo) return ["-ss", startSec.toFixed(6)];
+  // See SEEK_NUDGE_SEC. `-noaccurate_seek` is the other half: without it ffmpeg discards
+  // everything between the nudged target and the boundary, which would drop the first 200 ms
+  // of the segment.
+  return ["-noaccurate_seek", "-ss", (startSec + SEEK_NUDGE_SEC).toFixed(6)];
+}
 
-  // A re-encode needs no `-force_key_frames`: a fresh encoder emits an IDR on its first
-  // frame, and every segment is a fresh encoder. The segment is independently decodable by
-  // construction, which is the property `EXT-X-INDEPENDENT-SEGMENTS` promises.
-  if (plan.video.action === "copy") {
-    args.push("-c:v", "copy");
-  } else if (hw) {
-    // Hardware encoders take a BITRATE rather than a quality target: none of the three
-    // implements `-crf`, and passing it is a spawn error rather than an ignored flag.
-    args.push("-c:v", enc.encoder, "-b:v", "6M");
-  } else {
-    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "21");
-  }
+/**
+ * Which source stream this run carries, and what it does to it.
+ *
+ * The other track is refused EXPLICITLY with `-vn` or `-an` rather than merely left unmapped:
+ * a rendition that quietly picked up a second stream would be a muxed segment again, which is
+ * the whole thing this split exists to prevent.
+ */
+function streamArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
+  const stream = opts.track === "video" ? plan.video : plan.audio;
+  const map = stream.sourceIndex !== null ? ["-map", `0:${stream.sourceIndex}`] : [];
+  const codec = opts.track === "video" ? videoCodecArgs(plan, opts) : audioCodecArgs(plan);
+  return [...map, ...codec];
+}
 
-  args.push("-c:a", plan.audio.action === "copy" ? "copy" : "aac");
-  if (plan.audio.action === "transcode") args.push("-ac", "2", "-b:a", "192k");
+/**
+ * A re-encode needs no `-force_key_frames`: a fresh encoder emits an IDR on its first frame,
+ * and every segment is a fresh encoder. The segment is independently decodable by
+ * construction, which is the property `EXT-X-INDEPENDENT-SEGMENTS` promises.
+ */
+function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
+  if (plan.video.action === "copy") return ["-an", "-c:v", "copy"];
+  const enc = videoEncoder(plan, opts);
+  // Hardware encoders take a BITRATE rather than a quality target: none of the three
+  // implements `-crf`, and passing it is a spawn error rather than an ignored flag.
+  const codec = enc.hardware
+    ? ["-c:v", enc.encoder, "-b:v", "6M"]
+    : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"];
+  return ["-an", ...codec];
+}
 
-  args.push(
+function audioCodecArgs(plan: PlaybackPlan): string[] {
+  if (plan.audio.action === "copy") return ["-vn", "-c:a", "copy"];
+  return ["-vn", "-c:a", "aac", "-ac", "2", "-b:a", "192k"];
+}
+
+/** The HLS muxer block: one segment, its init, and the throwaway playlist ffmpeg insists on. */
+function muxerArgs(opts: FfmpegOpts): string[] {
+  return [
     "-f",
     "hls",
-    // The segment's own length, so the muxer's cutting rule -- the first keyframe at or past
-    // this -- lands on the NEXT boundary, which is a keyframe by construction.
+    // VIDEO: the segment's own length, so the muxer's cutting rule -- the first keyframe at or
+    // past this -- lands on the NEXT boundary, which is a keyframe by construction.
+    // AUDIO: unreachable on purpose, so `-to` alone ends the segment. See AUDIO_NEVER_CUT_SEC.
     "-hls_time",
-    (opts.segment.endSec - opts.segment.startSec).toFixed(6),
+    opts.track === "video"
+      ? (opts.segment.endSec - opts.segment.startSec).toFixed(6)
+      : AUDIO_NEVER_CUT_SEC.toFixed(6),
     "-hls_playlist_type",
     "vod",
     "-hls_segment_type",
@@ -405,7 +494,7 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     "-hls_flags",
     "independent_segments",
     // `-start_number` names the file after its place in the WHOLE film rather than after
-    // this run's position in it, so a run started at segment 400 writes seg00400.m4s and the
+    // this run's position in it, so a run started at segment 400 writes vseg00400.m4s and the
     // playlist the client already holds points straight at it.
     "-start_number",
     String(opts.segment.index),
@@ -415,11 +504,10 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     "-hls_fmp4_init_filename",
     RUN_INIT_NAME,
     "-hls_segment_filename",
-    `${opts.outDir}/${SEGMENT_FILE_PATTERN}`,
+    `${opts.outDir}/${segmentFilePattern(opts.track)}`,
     // ffmpeg insists on a playlist output. Nothing reads this one -- the client is served
     // `hls-timeline.ts`'s complete VOD playlist, which knows about every segment rather than
     // only the one this run made.
     `${opts.outDir}/produced.m3u8`,
-  );
-  return args;
+  ];
 }

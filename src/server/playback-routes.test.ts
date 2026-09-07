@@ -10,7 +10,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initFileName, segmentFileName, type Timeline } from "../lib/hls-timeline";
+import {
+  initFileName,
+  MASTER_PLAYLIST_NAME,
+  mediaPlaylistName,
+  segmentFileName,
+  type Timeline,
+  type Track,
+} from "../lib/hls-timeline";
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
@@ -28,6 +35,7 @@ let sessionDir: string;
 
 /** Three six-second segments -- enough for the routes to have a timeline to state. */
 const TIMELINE: Timeline = { starts: [0, 6, 12], endSec: 18 };
+const TIMELINES = { video: TIMELINE, audio: TIMELINE };
 
 /**
  * Enough of the manager for the routes; the real one is proved in its own suite.
@@ -45,7 +53,7 @@ function fakeSessions(dir: string) {
     dir,
     input: "/plex/a.mkv",
     plan: PLAN,
-    timeline: TIMELINE,
+    timelines: TIMELINES,
     expensive: false,
     startedAt: 1,
     lastAccessAt: 1,
@@ -62,8 +70,8 @@ function fakeSessions(dir: string) {
       return session;
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
-    segmentPath: (id: string, index: number) => found(id, segmentFileName(index)),
-    initPath: (id: string, index: number) => found(id, initFileName(index)),
+    segmentPath: (id: string, track: Track, index: number) => found(id, segmentFileName(track, index)),
+    initPath: (id: string, track: Track, index: number) => found(id, initFileName(track, index)),
     stop: (id: string) => {
       stopped.push(id);
     },
@@ -111,9 +119,11 @@ beforeEach(() => {
   sessionDir = join(root, "sess");
   mkdtempSync(`${root}/x-`);
   require("node:fs").mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(join(sessionDir, "index.m3u8"), "#EXTM3U\n");
-  writeFileSync(join(sessionDir, initFileName(1)), "init");
-  writeFileSync(join(sessionDir, segmentFileName(1)), "segment-bytes");
+  writeFileSync(join(sessionDir, MASTER_PLAYLIST_NAME), "#EXTM3U\n");
+  writeFileSync(join(sessionDir, initFileName("video", 1)), "init");
+  writeFileSync(join(sessionDir, segmentFileName("video", 1)), "segment-bytes");
+  writeFileSync(join(sessionDir, initFileName("audio", 1)), "init");
+  writeFileSync(join(sessionDir, segmentFileName("audio", 1)), "segment-bytes");
   // A file OUTSIDE the session directory, next door -- the thing traversal would reach.
   writeFileSync(join(root, "secret.txt"), "the admin api key");
 
@@ -127,10 +137,13 @@ beforeEach(() => {
   */
   writeFileSync(join(sessionDir, ".env"), "the admin api key");
   writeFileSync(join(sessionDir, "index.m3u8.bak"), "the admin api key");
-  writeFileSync(join(sessionDir, "seg1.m4s"), "the admin api key");
-  writeFileSync(join(sessionDir, "seg00001.m4s.txt"), "the admin api key");
-  writeFileSync(join(sessionDir, "init1.mp4"), "the admin api key");
+  writeFileSync(join(sessionDir, "vseg1.m4s"), "the admin api key");
+  writeFileSync(join(sessionDir, "vseg00001.m4s.txt"), "the admin api key");
+  writeFileSync(join(sessionDir, "vinit1.mp4"), "the admin api key");
   writeFileSync(join(sessionDir, "init.mp4"), "the admin api key");
+  // The name a run writes INSIDE its private working directory, and the one an earlier
+  // version of this route would have served: it is not a published name and must not be one.
+  writeFileSync(join(sessionDir, "seg00001.m4s"), "the admin api key");
   writeFileSync(join(sessionDir, "..%2Fsecret.txt"), "the admin api key");
   require("node:fs").mkdirSync(join(sessionDir, "etc"), { recursive: true });
   writeFileSync(join(sessionDir, "etc", "passwd"), "the admin api key");
@@ -183,11 +196,12 @@ describe("a segment name cannot walk out of its session directory", () => {
     "/etc/passwd",
     ".env",
     "index.m3u8.bak",
-    "seg1.m4s",
-    "seg00001.m4s.txt",
-    "INIT00001.MP4",
-    "init1.mp4",
+    "vseg1.m4s",
+    "vseg00001.m4s.txt",
+    "VINIT00001.MP4",
+    "vinit1.mp4",
     "init.mp4",
+    "seg00001.m4s",
   ])("refuses %s with a 404", async (name) => {
     const { routes } = build({});
     const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
@@ -195,9 +209,18 @@ describe("a segment name cannot walk out of its session directory", () => {
     expect(await res.text()).not.toContain("admin api key");
   });
 
-  test("serves exactly the three shapes a session produces", async () => {
+  test("serves exactly the shapes a session publishes, and both renditions", async () => {
     const { routes } = build({});
-    for (const name of ["index.m3u8", initFileName(1), segmentFileName(1)]) {
+    const published = [
+      MASTER_PLAYLIST_NAME,
+      mediaPlaylistName("video"),
+      mediaPlaylistName("audio"),
+      initFileName("video", 1),
+      segmentFileName("video", 1),
+      initFileName("audio", 1),
+      segmentFileName("audio", 1),
+    ];
+    for (const name of published) {
       const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
       expect(res.status).toBe(200);
     }
@@ -206,18 +229,22 @@ describe("a segment name cannot walk out of its session directory", () => {
   test("a playlist is never cached and a segment is immutable", async () => {
     const { routes } = build({});
     const playlist = (await routes["/api/play/s/:id/:file"]?.GET?.(
-      segReq("sess-1", "index.m3u8"),
+      segReq("sess-1", MASTER_PLAYLIST_NAME),
     )) as Response;
     expect(playlist.headers.get("cache-control")).toBe("no-store");
     expect(playlist.headers.get("content-type")).toContain("mpegurl");
 
-    const seg = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", "seg00001.m4s"))) as Response;
+    const seg = (await routes["/api/play/s/:id/:file"]?.GET?.(
+      segReq("sess-1", segmentFileName("video", 1)),
+    )) as Response;
     expect(seg.headers.get("cache-control")).toContain("immutable");
   });
 
   test("an unknown session is a 404 rather than a read of some other directory", async () => {
     const { routes } = build({});
-    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("nope", "index.m3u8"))) as Response;
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(
+      segReq("nope", MASTER_PLAYLIST_NAME),
+    )) as Response;
     expect(res.status).toBe(404);
   });
 
@@ -227,7 +254,9 @@ describe("a segment name cannot walk out of its session directory", () => {
    */
   test("a segment that could not be produced is a 404, not a 500", async () => {
     const { routes } = build({});
-    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", "seg00042.m4s"))) as Response;
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(
+      segReq("sess-1", segmentFileName("video", 42)),
+    )) as Response;
     expect(res.status).toBe(404);
   });
 });
@@ -238,14 +267,30 @@ describe("a segment name cannot walk out of its session directory", () => {
  * feature. A playlist read off disk could only ever name what had already been encoded.
  */
 describe("the playlist states the whole timeline up front", () => {
-  test("it names every segment and ends the list", async () => {
+  const read = async (name: string) => {
     const { routes } = build({});
-    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", "index.m3u8"))) as Response;
-    const text = await res.text();
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
+    return res.text();
+  };
 
-    expect(text).toContain(segmentFileName(0));
-    expect(text).toContain(segmentFileName(2));
-    expect(text).toContain("#EXT-X-ENDLIST");
+  test.each(["video", "audio"] as const)(
+    "the %s rendition names every segment and ends the list",
+    async (track) => {
+      const text = await read(mediaPlaylistName(track));
+
+      expect(text).toContain(segmentFileName(track, 0));
+      expect(text).toContain(segmentFileName(track, 2));
+      expect(text).toContain("#EXT-X-ENDLIST");
+    },
+  );
+
+  /** Two renditions on two grids is what closes the ~60 ms audio hole at every boundary. */
+  test("the master names both renditions rather than any segment", async () => {
+    const text = await read(MASTER_PLAYLIST_NAME);
+
+    expect(text).toContain(mediaPlaylistName("video"));
+    expect(text).toContain(mediaPlaylistName("audio"));
+    expect(text).not.toContain(segmentFileName("video", 0));
     // Not the file sitting in the session directory, which says only this.
     expect(text).not.toBe("#EXTM3U\n");
   });

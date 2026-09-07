@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
-import { RUN_INIT_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
+import { RUN_INIT_NAME, segmentFilePattern } from "./hls-timeline";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -266,18 +266,33 @@ describe("a client that declares nothing gets the conservative floor", () => {
   });
 });
 
-describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
+describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE rendition", () => {
   const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), CHROME_HEVC);
   /** Segment 7 of a six-second grid: past the start, so the seek flags are exercised. */
   const SEG7 = { index: 7, startSec: 42, endSec: 48 };
   const args = (p: typeof plan, opts: Partial<Parameters<typeof ffmpegArgs>[1]> = {}) =>
-    ffmpegArgs(p, { input: "/plex/a.mkv", outDir: "/tmp/s1", segment: SEG7, ...opts });
+    ffmpegArgs(p, { input: "/plex/a.mkv", outDir: "/tmp/s1", track: "video", segment: SEG7, ...opts });
 
-  test("copies video, encodes audio, and packages fragmented MP4", () => {
+  test("copies the video and packages fragmented MP4", () => {
     const a = args(plan);
     expect(a.join(" ")).toContain("-c:v copy");
-    expect(a.join(" ")).toContain("-c:a aac");
     expect(a.join(" ")).toContain("-hls_segment_type fmp4");
+  });
+
+  /**
+   * ONE RUN, ONE TRACK, and the refusal is explicit rather than implied by the `-map`. A
+   * rendition that quietly picked up the other stream would be a muxed segment again -- which
+   * is the thing that drops ~60 ms of sound at every boundary.
+   */
+  test("a video run carries no audio and an audio run carries no video", () => {
+    expect(args(plan)).toContain("-an");
+    expect(args(plan)).not.toContain("-vn");
+
+    const audio = args(plan, { track: "audio" });
+    expect(audio).toContain("-vn");
+    expect(audio).not.toContain("-an");
+    expect(audio.join(" ")).toContain("-c:a aac");
+    expect(audio.join(" ")).not.toContain("-c:v");
   });
 
   /**
@@ -422,10 +437,10 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
     expect(args(encoding, { encoder: VAAPI })).toContain(VAAPI_DEVICE);
   });
 
-  test("maps the exact source streams the plan chose", () => {
-    const a = args(plan);
-    expect(a.join(" ")).toContain("-map 0:0");
-    expect(a.join(" ")).toContain("-map 0:1");
+  test("maps the exact source stream this rendition is made of", () => {
+    expect(args(plan).join(" ")).toContain("-map 0:0");
+    expect(args(plan).join(" ")).not.toContain("-map 0:1");
+    expect(args(plan, { track: "audio" }).join(" ")).toContain("-map 0:1");
   });
 
   /**
@@ -435,9 +450,50 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
    * nothing at all.
    */
   test("everything a run writes lands in the working directory it was given", () => {
-    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", segment: SEG7 });
+    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", track: "video", segment: SEG7 });
     expect(a).toContain("/tmp/w42/produced.m3u8");
-    expect(a.join(" ")).toContain(`/tmp/w42/${SEGMENT_FILE_PATTERN}`);
+    expect(a.join(" ")).toContain(`/tmp/w42/${segmentFilePattern("video")}`);
     expect(a.join(" ")).toContain(`-hls_fmp4_init_filename ${RUN_INIT_NAME}`);
+  });
+
+  test("a run writes the file names its own rendition's playlist points at", () => {
+    expect(args(plan, { track: "audio" }).join(" ")).toContain(`/${segmentFilePattern("audio")}`);
+    expect(args(plan, { track: "audio" }).join(" ")).not.toContain(segmentFilePattern("video"));
+  });
+
+  /**
+   * THE AUDIO RUN IS BOUNDED BY `-to` AND NOTHING ELSE, which is what closes the hole.
+   *
+   * Told a real `-hls_time`, the muxer cuts that far after the run's FIRST packet -- and a
+   * copy seek lands at the container's index granularity BEFORE the boundary, so the cut lands
+   * early by however much that was. Measured 2026-09-08 on a 1080p WEB-DL with 1.6 s clusters:
+   * `-ss 2400 -hls_time 6` produced [2398.400, 2404.416) against a declared [2400, 2406), and
+   * consecutive segments abutted only because that file's cluster spacing happened to divide
+   * the grid. With no reachable cut the run writes what it read as one segment -- measured
+   * [2398.400, 2406.016) then [2404.416, 2412.000), zero gap and 1.6 s of harmless overlap.
+   */
+  test("an audio run is given a cut point no film can reach", () => {
+    const a = args(plan, { track: "audio" });
+    expect(Number(a[a.indexOf("-hls_time") + 1])).toBeGreaterThan(24 * 60 * 60 - 1);
+  });
+
+  /**
+   * The nudge and the slack both exist to survive the muxer cutting on a KEYFRAME, and an
+   * audio run has no keyframes to wait for. Nudging it would drop 200 ms of sound, and reading
+   * two seconds past the boundary would only widen the overlap.
+   */
+  test("an audio run asks for its boundary plainly and stops at the next one", () => {
+    const a = args(plan, { track: "audio" });
+    expect(a.join(" ")).toContain("-ss 42.000000");
+    expect(a.join(" ")).toContain("-to 48.000000");
+    expect(a).not.toContain("-noaccurate_seek");
+  });
+
+  /** An audio run never touches a pixel, so there is nothing for a GPU to accelerate. */
+  test("an audio run wires up no hardware even when the video is being re-encoded", () => {
+    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
+    const a = args(encoding, { track: "audio", encoder: VAAPI });
+    expect(a).not.toContain("-hwaccel");
+    expect(a).not.toContain("-vaapi_device");
   });
 });

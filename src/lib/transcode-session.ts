@@ -1,11 +1,16 @@
 /**
- * One playback: a plan, a timeline, an output directory, and the rules that stop it owning
- * the machine.
+ * One playback: a plan, a timeline per rendition, an output directory, and the rules that
+ * stop it owning the machine.
  *
  * A session here does NOT hold a running ffmpeg. It holds the DECISION -- which file, cut
  * how, into which segments -- and makes each segment when a player asks for it. ffmpeg runs
  * for the length of one segment and exits. `hls-timeline.ts` owns the segmentation,
  * `playback-plan.ts` owns the argv, and this module owns the bookkeeping between them.
+ *
+ * **A segment belongs to a TRACK as well as to an index.** Video and audio are published as
+ * separate renditions cut on separate grids -- see `hls-timeline.ts` for why that is what
+ * closes the audio hole -- so every question this module answers is asked per track, and the
+ * concurrency ceiling and the disk cache are per track too.
  *
  * Segments are handed out by the route with `Bun.file`, which is zero-copy, so **segment
  * bytes never enter the JS heap and the event loop pays a stat and an fd handoff per
@@ -48,7 +53,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { EncoderChoice } from "./encoder";
-import { initFileName, RUN_INIT_NAME, segmentFileName, segmentRange, type Timeline } from "./hls-timeline";
+import {
+  initFileName,
+  RUN_INIT_NAME,
+  segmentFileName,
+  segmentRange,
+  type Timeline,
+  TRACKS,
+  type Track,
+  type TrackTimelines,
+} from "./hls-timeline";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
 /**
@@ -71,7 +85,7 @@ export const EXPENSIVE_SESSIONS = 2;
 export const MAX_SESSIONS = 8;
 
 /**
- * How many segments one session may be producing at the same moment.
+ * How many segments one RENDITION of one session may be producing at the same moment.
  *
  * Two, because a player asks for the initialisation segment and the first media segment
  * almost together and serialising those two is a visible delay. Past that it is
@@ -79,11 +93,16 @@ export const MAX_SESSIONS = 8;
  * scrubber emits a seek per pointer move, and without a ceiling each one would spawn an
  * ffmpeg for a position the viewer has already left. A refused production is a 404, which is
  * what a player retries.
+ *
+ * **Per rendition rather than per session**, because a player now fetches video and audio in
+ * parallel: one shared ceiling of two would be filled by the first segment of each track, and
+ * the very next request -- the one the player makes before the first frame -- would be
+ * refused. The two tracks contend for the disk rather than for each other's slots.
  */
 export const SEGMENT_CONCURRENCY = 2;
 
 /**
- * How many produced segments a session keeps on disk.
+ * How many produced segments one RENDITION of a session keeps on disk.
  *
  * A full watch-through of a remuxed 4K film would otherwise leave the whole film in the data
  * directory -- gigabytes, for a viewer who has already passed it. The oldest production is
@@ -120,8 +139,13 @@ export interface StartOpts {
   /** ALREADY resolved through `media-path.ts`. This module never validates a path. */
   input: string;
   plan: PlaybackPlan;
-  /** Every segment of the title, from `hls-timeline.ts`. */
-  timeline: Timeline;
+  /**
+   * Every segment of every rendition this title publishes, from `hls-timeline.ts`.
+   *
+   * Two grids, not one: video is cut on the source's keyframes and audio on a plain uniform
+   * grid, which is what stops the muxer dropping ~60 ms of sound at every boundary.
+   */
+  timelines: TrackTimelines;
   /** Which encoder to use for a re-encode. From `chooseEncoder`, probed once at boot. */
   encoder?: EncoderChoice;
   /** Who asked, for the health report. Never used for a decision. */
@@ -134,7 +158,7 @@ export interface Session {
   dir: string;
   input: string;
   plan: PlaybackPlan;
-  timeline: Timeline;
+  timelines: TrackTimelines;
   expensive: boolean;
   encoder?: EncoderChoice;
   startedAt: number;
@@ -158,13 +182,19 @@ export interface ManagerOpts {
   ffmpegPath?: string;
 }
 
-/** Everything a session keeps that a caller has no business seeing. */
-interface SessionState {
-  session: Session;
+/** One rendition's bookkeeping: what it is making, and what it has already made. */
+interface TrackState {
+  timeline: Timeline;
   /** Segment index -> the production in flight for it, so two requests cost one ffmpeg. */
   producing: Map<number, Promise<boolean>>;
   /** Produced segment indices in the order they landed, for eviction. */
   produced: number[];
+}
+
+/** Everything a session keeps that a caller has no business seeing. */
+interface SessionState {
+  session: Session;
+  tracks: Map<Track, TrackState>;
   /** Live children, so shutdown can kill what is running rather than orphaning it. */
   running: Set<ReturnType<Spawner>>;
 }
@@ -216,14 +246,19 @@ export class TranscodeSessions {
       dir,
       input: o.input,
       plan: o.plan,
-      timeline: o.timeline,
+      timelines: o.timelines,
       expensive,
       encoder: o.encoder,
       startedAt: at,
       lastAccessAt: at,
       owner: o.owner ?? null,
     };
-    this.states.set(session.id, { session, producing: new Map(), produced: [], running: new Set() });
+    const tracks = new Map<Track, TrackState>();
+    for (const track of TRACKS) {
+      const timeline = o.timelines[track];
+      if (timeline) tracks.set(track, { timeline, producing: new Map(), produced: [] });
+    }
+    this.states.set(session.id, { session, tracks, running: new Set() });
     this.byKey.set(key, session.id);
     return session;
   }
@@ -249,63 +284,65 @@ export class TranscodeSessions {
   }
 
   /**
-   * The path of segment `index`, producing it first if nobody has yet.
+   * The path of one rendition's segment `index`, producing it first if nobody has yet.
    *
-   * Null means the caller should answer 404: no such session, no such segment, ffmpeg
-   * failed, or too many productions are already in flight. Every one of those is a state a
-   * player retries out of, which is why they share an answer.
+   * Null means the caller should answer 404: no such session, no such rendition, no such
+   * segment, ffmpeg failed, or too many productions are already in flight. Every one of those
+   * is a state a player retries out of, which is why they share an answer.
    */
-  segmentPath(id: string, index: number): Promise<string | null> {
-    return this.published(id, index, segmentFileName(index));
+  segmentPath(id: string, track: Track, index: number): Promise<string | null> {
+    return this.published(id, track, index, segmentFileName(track, index));
   }
 
   /**
-   * The path of segment `index`'s fMP4 initialisation segment, producing it if need be.
+   * The path of that segment's fMP4 initialisation segment, producing it if need be.
    *
    * Every run writes its own init and the session keeps it BESIDE its segment rather than
-   * sharing one, for the measured reason in `vodPlaylist`'s note: the init carries an edit
+   * sharing one, for the measured reason in `mediaPlaylist`'s note: the init carries an edit
    * list naming where its run started, so the wrong one shifts the whole segment. A player
    * asks for this immediately before the media, so on a cold session this call is usually
    * what pays for the segment too, and the request that follows it is already satisfied.
    */
-  initPath(id: string, index: number): Promise<string | null> {
-    return this.published(id, index, initFileName(index));
+  initPath(id: string, track: Track, index: number): Promise<string | null> {
+    return this.published(id, track, index, initFileName(track, index));
   }
 
   /**
-   * One published file of segment `index` -- its media or its init -- produced if need be.
+   * One published file of a segment -- its media or its init -- produced if need be.
    *
    * Both come out of the SAME ffmpeg run, so both questions are the same question and asking
    * them through one method is what stops a player's init request and its media request
    * costing two transcodes of the same six seconds.
    */
-  private async published(id: string, index: number, name: string): Promise<string | null> {
+  private async published(id: string, track: Track, index: number, name: string): Promise<string | null> {
     const state = this.states.get(id);
     if (!state) return null;
     state.session.lastAccessAt = this.now();
     const path = join(state.session.dir, name);
     if (existsSync(path)) return path;
-    await this.produce(state, index);
+    await this.produce(state, track, index);
     return existsSync(path) ? path : null;
   }
 
   /**
-   * Produce one segment, or join the production already making it.
+   * Produce one segment of one rendition, or join the production already making it.
    *
    * The dedupe is not an optimisation: two ffmpegs writing one segment file would hand a
    * player half of each.
    */
-  private produce(state: SessionState, index: number): Promise<boolean> {
-    const already = state.producing.get(index);
+  private produce(state: SessionState, track: Track, index: number): Promise<boolean> {
+    const trackState = state.tracks.get(track);
+    if (!trackState) return Promise.resolve(false);
+    const already = trackState.producing.get(index);
     if (already) return already;
-    if (state.producing.size >= SEGMENT_CONCURRENCY) return Promise.resolve(false);
-    const range = segmentRange(state.session.timeline, index);
+    if (trackState.producing.size >= SEGMENT_CONCURRENCY) return Promise.resolve(false);
+    const range = segmentRange(trackState.timeline, index);
     if (!range) return Promise.resolve(false);
 
-    const run = this.runFfmpeg(state, index, range).finally(() => {
-      state.producing.delete(index);
+    const run = this.runFfmpeg(state, track, index, range).finally(() => {
+      trackState.producing.delete(index);
     });
-    state.producing.set(index, run);
+    trackState.producing.set(index, run);
     return run;
   }
 
@@ -320,13 +357,16 @@ export class TranscodeSessions {
    */
   private async runFfmpeg(
     state: SessionState,
+    track: Track,
     index: number,
     range: { startSec: number; endSec: number },
   ): Promise<boolean> {
     const { session } = state;
     let work: string;
     try {
-      work = mkdtempSync(join(session.dir, `w${index}-`));
+      // The track is in the name only so a directory left behind by a crash says which
+      // rendition was making it; `mkdtempSync` is what makes it unique.
+      work = mkdtempSync(join(session.dir, `w-${track}-${index}-`));
     } catch {
       // The session directory is gone: it was stopped while this request was in flight.
       return false;
@@ -337,6 +377,7 @@ export class TranscodeSessions {
       ...ffmpegArgs(session.plan, {
         input: session.input,
         outDir: work,
+        track,
         segment: { index, startSec: range.startSec, endSec: range.endSec },
         encoder: session.encoder,
       }),
@@ -360,7 +401,7 @@ export class TranscodeSessions {
       state.running.delete(proc);
     }
 
-    const published = code === 0 && this.publish(state, work, index);
+    const published = code === 0 && this.publish(state, track, work, index);
     rmSync(work, { recursive: true, force: true });
     return published;
   }
@@ -372,28 +413,30 @@ export class TranscodeSessions {
    * other one. The media is renamed LAST so that a segment file appearing implies its init is
    * already there -- a player asks for them in the other order, but nothing enforces that.
    */
-  private publish(state: SessionState, work: string, index: number): boolean {
+  private publish(state: SessionState, track: Track, work: string, index: number): boolean {
+    const trackState = state.tracks.get(track);
+    if (!trackState) return false;
     const { dir } = state.session;
-    const media = segmentFileName(index);
+    const media = segmentFileName(track, index);
     try {
       if (!existsSync(join(work, RUN_INIT_NAME)) || !existsSync(join(work, media))) return false;
-      renameSync(join(work, RUN_INIT_NAME), join(dir, initFileName(index)));
+      renameSync(join(work, RUN_INIT_NAME), join(dir, initFileName(track, index)));
       renameSync(join(work, media), join(dir, media));
     } catch {
       return false;
     }
-    state.produced.push(index);
-    this.evict(state);
+    trackState.produced.push(index);
+    this.evict(state, track, trackState);
     return true;
   }
 
-  /** Drop the oldest productions, both files of each, once a session holds too many. */
-  private evict(state: SessionState): void {
-    while (state.produced.length > SEGMENT_CACHE) {
-      const oldest = state.produced.shift();
+  /** Drop the oldest productions, both files of each, once a rendition holds too many. */
+  private evict(state: SessionState, track: Track, trackState: TrackState): void {
+    while (trackState.produced.length > SEGMENT_CACHE) {
+      const oldest = trackState.produced.shift();
       if (oldest === undefined) return;
-      rmSync(join(state.session.dir, segmentFileName(oldest)), { force: true });
-      rmSync(join(state.session.dir, initFileName(oldest)), { force: true });
+      rmSync(join(state.session.dir, segmentFileName(track, oldest)), { force: true });
+      rmSync(join(state.session.dir, initFileName(track, oldest)), { force: true });
     }
   }
 

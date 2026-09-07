@@ -11,15 +11,21 @@
 import { describe, expect, test } from "bun:test";
 import {
   initFileName,
-  SEGMENT_FILE_PATTERN,
+  MASTER_PLAYLIST_NAME,
+  masterPlaylist,
+  mediaPlaylist,
+  mediaPlaylistName,
+  parseProducedName,
   SEGMENT_TARGET_SEC,
   segmentCount,
   segmentFileName,
+  segmentFilePattern,
   segmentRange,
   type Timeline,
+  TRACKS,
+  type Track,
   timelineFrom,
   uniformTimeline,
-  vodPlaylist,
 } from "./hls-timeline";
 
 /** `65 (2023)`: a ten-second GOP with scene cuts in between, from ffprobe. */
@@ -112,9 +118,9 @@ describe("a re-encode gets an exact grid", () => {
   });
 });
 
-describe("the VOD playlist", () => {
+describe("a rendition's VOD playlist", () => {
   const t: Timeline = timelineFrom(60, 6, LONG_GOP);
-  const text = vodPlaylist(t);
+  const text = mediaPlaylist("video", t);
 
   /**
    * `EXT-X-ENDLIST` is what makes this VOD rather than live: the player stops polling, trusts
@@ -127,7 +133,7 @@ describe("the VOD playlist", () => {
   });
 
   test("it names every segment before any of them exists", () => {
-    for (let i = 0; i < segmentCount(t); i++) expect(text).toContain(segmentFileName(i));
+    for (let i = 0; i < segmentCount(t); i++) expect(text).toContain(segmentFileName("video", i));
   });
 
   test("the durations are the real ones, not the target", () => {
@@ -149,18 +155,24 @@ describe("the VOD playlist", () => {
    * own ffmpeg run started, so playing segment 401 against segment 400's init shifted it by
    * 6.882 s -- exactly the distance between the two boundaries.
    */
-  test("every segment names the init produced with it", () => {
-    expect(text.match(/#EXT-X-MAP/g)).toHaveLength(segmentCount(t));
+  /**
+   * The audio rendition needs this exactly as much, and that is measured rather than assumed:
+   * two audio-only runs six seconds apart on the same file produced inits differing at byte
+   * 275, in both copy and re-encode mode.
+   */
+  test.each([...TRACKS])("every %s segment names the init produced with it", (track: Track) => {
+    const rendition = mediaPlaylist(track, t);
+    expect(rendition.match(/#EXT-X-MAP/g)).toHaveLength(segmentCount(t));
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(text).toContain(`#EXT-X-MAP:URI="${initFileName(i)}"`);
+      expect(rendition).toContain(`#EXT-X-MAP:URI="${initFileName(track, i)}"`);
     }
   });
 
   test("each init is declared before the segment it belongs to", () => {
     const lines = text.split("\n");
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(lines.indexOf(`#EXT-X-MAP:URI="${initFileName(i)}"`)).toBeLessThan(
-        lines.indexOf(segmentFileName(i)),
+      expect(lines.indexOf(`#EXT-X-MAP:URI="${initFileName("video", i)}"`)).toBeLessThan(
+        lines.indexOf(segmentFileName("video", i)),
       );
     }
   });
@@ -170,6 +182,57 @@ describe("the VOD playlist", () => {
     expect(text).not.toContain("http");
     expect(text).not.toContain("/api/");
   });
+
+  /** One rendition must never name the other's files, or a player decodes video as audio. */
+  test("a rendition names its own segments and nobody else's", () => {
+    expect(mediaPlaylist("audio", t)).toContain(segmentFileName("audio", 0));
+    expect(mediaPlaylist("audio", t)).not.toContain(segmentFileName("video", 0));
+  });
+});
+
+/**
+ * THE MASTER PLAYLIST IS WHAT MAKES AUDIO A SEPARATE RENDITION, and the split is the fix: a
+ * muxed segment can honour one cutting rule, video's rule is the strict one, and obeying it
+ * drops ~60 ms of sound into a segment nobody publishes.
+ */
+describe("the master playlist", () => {
+  const t = uniformTimeline(60, 6);
+
+  test("it declares the audio rendition and points the variant at the video playlist", () => {
+    const text = masterPlaylist({ video: t, audio: t });
+    expect(text).toContain(`#EXT-X-MEDIA:TYPE=AUDIO`);
+    expect(text).toContain(`URI="${mediaPlaylistName("audio")}"`);
+    expect(text).toContain(`AUDIO="audio"`);
+    expect(text).toContain(mediaPlaylistName("video"));
+  });
+
+  /**
+   * NO `CODECS`, deliberately: a declared codec string that does not match the media makes the
+   * browser refuse the SourceBuffer outright, and hls.js reads the real one out of each
+   * rendition's init segment.
+   */
+  test("it declares a bandwidth and no codecs", () => {
+    expect(masterPlaylist({ video: t, audio: t })).toMatch(/#EXT-X-STREAM-INF:BANDWIDTH=\d+/);
+    expect(masterPlaylist({ video: t, audio: t })).not.toContain("CODECS");
+  });
+
+  /** A rendition that does not exist must not be named, or the player 404s chasing it. */
+  test("a title with no audio names no audio rendition", () => {
+    const text = masterPlaylist({ video: t });
+    expect(text).not.toContain("#EXT-X-MEDIA");
+    expect(text).not.toContain(mediaPlaylistName("audio"));
+    expect(text).toContain(mediaPlaylistName("video"));
+  });
+
+  test("a title with no video makes audio the variant itself", () => {
+    const text = masterPlaylist({ audio: t });
+    expect(text).not.toContain("#EXT-X-MEDIA");
+    expect(text.trimEnd().endsWith(mediaPlaylistName("audio"))).toBe(true);
+  });
+
+  test("nothing in it is an absolute URL either", () => {
+    expect(masterPlaylist({ video: t, audio: t })).not.toContain("http");
+  });
 });
 
 /**
@@ -177,11 +240,47 @@ describe("the VOD playlist", () => {
  * `padStart(5, "0")` have to keep agreeing or a produced file is published under a name the
  * playlist never mentions.
  */
-test("the ffmpeg template and the generated name are the same spelling", () => {
-  expect(SEGMENT_FILE_PATTERN.replace("%05d", "00042")).toBe(segmentFileName(42));
+test.each([...TRACKS])(
+  "the ffmpeg %s template and the generated name are the same spelling",
+  (track: Track) => {
+    expect(segmentFilePattern(track).replace("%05d", "00042")).toBe(segmentFileName(track, 42));
+  },
+);
+
+/**
+ * Four names now share one directory, and every pair of them has to be distinguishable or a
+ * route serves one rendition's bytes for another's.
+ */
+test("no two published names collide", () => {
+  const names = TRACKS.flatMap((track) => [segmentFileName(track, 42), initFileName(track, 42)]);
+  expect(new Set(names).size).toBe(names.length);
 });
 
-/** The two published names have to be distinguishable, or one route serves the other's file. */
-test("a media segment and an init segment can never be confused", () => {
-  expect(initFileName(42)).not.toBe(segmentFileName(42));
+/**
+ * THE TRAVERSAL GUARD, from the naming side. It admits what this server writes and refuses
+ * everything else, which is the property `playback-routes.ts` leans on entirely.
+ */
+describe("reading a published name back", () => {
+  test("every name this module generates round-trips to what generated it", () => {
+    for (const track of TRACKS) {
+      expect(parseProducedName(segmentFileName(track, 42))).toEqual({ track, kind: "segment", index: 42 });
+      expect(parseProducedName(initFileName(track, 7))).toEqual({ track, kind: "init", index: 7 });
+    }
+  });
+
+  test.each([
+    "",
+    "vseg1.m4s",
+    "vseg00001.m4s.txt",
+    "vseg0001x.m4s",
+    "VSEG00001.M4S",
+    "../vseg00001.m4s",
+    "seg00001.m4s",
+    "vinit00001.m4s",
+    "init.mp4",
+    MASTER_PLAYLIST_NAME,
+    mediaPlaylistName("audio"),
+  ])("refuses %p", (name) => {
+    expect(parseProducedName(name)).toBeNull();
+  });
 });

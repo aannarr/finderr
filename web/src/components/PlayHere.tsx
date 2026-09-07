@@ -115,19 +115,16 @@ export function PlayHere({
         // and the default 20 s would abandon it just as it finished.
         fragLoadingTimeOut: 60_000,
         /*
-          BRIDGE THE AUDIO SEAM AT EACH BOUNDARY. Measured in Chromium 2026-09-08 and it is a
-          known limit of producing every segment from its own ffmpeg run.
+          NO `maxBufferHole` OVERRIDE, and its absence is deliberate.
 
-          The muxer cuts a segment on the video keyframe, and the audio packets that arrive
-          after it go to the segment AFTER -- which a different run produces, starting past
-          them. So roughly 60 ms of sound is missing at every boundary, and the buffered
-          intersection of the two tracks shows a ~0.16 s hole. The default 0.1 s tolerance
-          makes hls.js stall there before jumping; 0.25 s makes it jump straight away.
-
-          This is a mitigation, not the fix -- the fix is to stop losing the audio, and it has
-          its own card. Video is frame-exact either way.
+          There used to be a `maxBufferHole: 0.25` here, widening hls.js's default 0.1 s
+          tolerance so it would JUMP the ~0.16 s hole a muxed segment left at every boundary
+          instead of stalling on it first. The server no longer leaves one: video and audio are
+          separate renditions on separate grids, and an audio segment covers its whole declared
+          range and a little of the one before it, so there is nothing to jump. Leaving the
+          override in would hide a regression in exactly this behaviour -- the default is what
+          makes a returning hole audible as a stall rather than silently papered over.
         */
-        maxBufferHole: 0.25,
       });
       hlsRef.current = hls;
       hls.loadSource(session.playlist);

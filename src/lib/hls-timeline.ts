@@ -1,7 +1,7 @@
 /**
  * The whole timeline of a title, stated up front, so a player will let you scrub anywhere.
  *
- * Entirely pure: numbers in, numbers and one string out. No ffmpeg, no filesystem, no clock.
+ * Entirely pure: numbers in, numbers and strings out. No ffmpeg, no filesystem, no clock.
  *
  * ## Why the playlist has to be complete before a single frame exists
  *
@@ -28,10 +28,37 @@
  * > can be cut and picks a subset of them. `keyframes.ts` finds those places, and when it
  * > cannot the caller passes a uniform grid, which is exactly right for a re-encode because
  * > a re-encode makes its own keyframes.
+ *
+ * ## THE TWO TRACKS ARE SEGMENTED SEPARATELY, and that is what closes the audio hole
+ *
+ * A muxed segment can honour exactly ONE cutting rule, and video's rule -- cut on a keyframe
+ * -- is the strictest. ffmpeg obeys it and writes the audio packets that arrive after that
+ * keyframe into the NEXT segment of the run, which is discarded because the next segment
+ * comes from a different run seeking past them. Measured 2026-09-08: **~60 ms of sound missing
+ * at every boundary**, showing up in the browser as a ~0.16 s hole in `media.buffered`, a
+ * `bufferStalledError` and a freeze every six seconds.
+ *
+ * So video and audio are published as SEPARATE RENDITIONS, which is what production packagers
+ * do. The video rendition keeps the keyframe grid it has to keep. The audio rendition has no
+ * keyframe constraint at all -- every audio packet is a key packet -- so it gets a plain
+ * uniform grid and `playback-plan.ts` makes each audio segment cover its whole declared range
+ * and a little of the one before it. A gap becomes impossible rather than jumped over.
+ *
+ * The grids do NOT have to match, and forcing them to would bring the constraint straight
+ * back: hls.js aligns renditions by timestamp, not by segment index.
  */
 
 /**
- * Where every segment of one title starts, and where the last one ends.
+ * A rendition. Video and audio are published separately and cut on different grids, so
+ * almost everything named in this module is named per track.
+ */
+export type Track = "video" | "audio";
+
+/** Both tracks, in the order a reader expects them. The one owner of that list. */
+export const TRACKS: readonly Track[] = ["video", "audio"];
+
+/**
+ * Where every segment of one rendition starts, and where the last one ends.
  *
  * `starts` is ascending and always begins at 0. Durations are DERIVED from consecutive
  * entries rather than stored, because storing both is two facts that can disagree.
@@ -41,6 +68,15 @@ export interface Timeline {
   /** Where the final segment ends: the title's runtime, in seconds. */
   endSec: number;
 }
+
+/**
+ * The timelines a session publishes, one per rendition it actually has.
+ *
+ * A track is absent when the source has no such stream -- a film with no audio track, or the
+ * audio-only case. Absent means "not published at all": no playlist, no segments, and no
+ * `EXT-X-MEDIA` line naming a rendition that would 404.
+ */
+export type TrackTimelines = { readonly [K in Track]?: Timeline };
 
 /**
  * The shortest segment worth emitting, in seconds.
@@ -104,11 +140,12 @@ export function timelineFrom(
 }
 
 /**
- * The timeline a re-encode gets: an exact grid, because a re-encode makes its own keyframes.
+ * An exact grid: what a re-encode gets, and what the AUDIO rendition always gets.
  *
  * Expressed through `timelineFrom` rather than beside it so there is ONE definition of how a
- * timeline is formed. The multiples handed in are the cut points, and a re-encoded segment
- * genuinely can start at any of them.
+ * timeline is formed. The multiples handed in are the cut points, and both callers genuinely
+ * can start a segment at any of them -- a re-encode makes its own keyframes, and audio has no
+ * keyframes to be constrained by in the first place.
  */
 export function uniformTimeline(durationSec: number, segmentSec: number): Timeline {
   const cuts: number[] = [];
@@ -118,34 +155,157 @@ export function uniformTimeline(durationSec: number, segmentSec: number): Timeli
   return timelineFrom(durationSec, segmentSec, cuts);
 }
 
-/** How a segment file is named, given its index. The one owner of that spelling. */
-export function segmentFileName(index: number): string {
-  return `seg${String(index).padStart(5, "0")}.m4s`;
+/**
+ * What each rendition's published files are called.
+ *
+ * ONE table, because these names are written in four languages -- generated here, matched by
+ * the route, handed to ffmpeg as a `%05d` template, and read back off disk by the session --
+ * and four independent spellings is the classic pair that drifts into a file published under
+ * a name the playlist never mentions.
+ */
+const TRACK_FILES: Record<Track, { playlist: string; segment: FileNaming; init: FileNaming }> = {
+  video: {
+    playlist: "video.m3u8",
+    segment: { prefix: "vseg", extension: ".m4s" },
+    init: { prefix: "vinit", extension: ".mp4" },
+  },
+  audio: {
+    playlist: "audio.m3u8",
+    segment: { prefix: "aseg", extension: ".m4s" },
+    init: { prefix: "ainit", extension: ".mp4" },
+  },
+};
+
+/** How one kind of published file is spelled: a fixed prefix, an index, a fixed extension. */
+interface FileNaming {
+  prefix: string;
+  extension: string;
+}
+
+/** How many digits a published name carries. `%05d` in ffmpeg's template language. */
+const INDEX_DIGITS = 5;
+
+function publishedName(naming: FileNaming, index: number): string {
+  return `${naming.prefix}${String(index).padStart(INDEX_DIGITS, "0")}${naming.extension}`;
+}
+
+/** How a media segment file is named. The one owner of that spelling. */
+export function segmentFileName(track: Track, index: number): string {
+  return publishedName(TRACK_FILES[track].segment, index);
+}
+
+/** How a published initialisation segment is named. The one owner of that spelling. */
+export function initFileName(track: Track, index: number): string {
+  return publishedName(TRACK_FILES[track].init, index);
 }
 
 /**
  * The same spelling as `segmentFileName`, in ffmpeg's template language.
  *
- * Two languages for one naming rule is the classic pair that drifts, so they live together
- * and a test asserts they still agree. `%05d` is what makes `padStart(5, "0")` correct.
+ * Derived from the same table rather than typed a second time, so the two cannot drift.
  */
-export const SEGMENT_FILE_PATTERN = "seg%05d.m4s";
+export function segmentFilePattern(track: Track): string {
+  const { prefix, extension } = TRACK_FILES[track].segment;
+  return `${prefix}%0${INDEX_DIGITS}d${extension}`;
+}
+
+/** The name of one rendition's media playlist, as the master playlist points at it. */
+export function mediaPlaylistName(track: Track): string {
+  return TRACK_FILES[track].playlist;
+}
 
 /**
  * What one ffmpeg run calls the initialisation segment it writes.
  *
  * A fixed name inside that run's own private working directory, so it never collides; the
- * session renames it to `initFileName(index)` on the way out.
+ * session renames it to `initFileName(track, index)` on the way out.
  */
 export const RUN_INIT_NAME = "init.mp4";
 
-/** How a published initialisation segment is named. The one owner of that spelling. */
-export function initFileName(index: number): string {
-  return `init${String(index).padStart(5, "0")}.mp4`;
+/** One file a session publishes, as named on the wire. */
+export interface ProducedName {
+  track: Track;
+  kind: "segment" | "init";
+  index: number;
 }
 
 /**
- * The complete VOD playlist, as text.
+ * Read a published file name back into the thing it names, or null when it is not one of ours.
+ *
+ * **This is the traversal guard, and it works by ENUMERATING what is allowed rather than by
+ * stripping what is forbidden.** The name arrives off the wire and a session directory is a
+ * real directory, so the only safe shape is a closed pattern whose capture becomes a NUMBER
+ * before anything touches the filesystem -- no `..`, no slash, no dot-file, no extension we
+ * did not write. Parsing lives here, beside the spelling it has to agree with, so the route
+ * never re-types a pattern that could drift from the names actually produced.
+ */
+export function parseProducedName(name: string): ProducedName | null {
+  for (const track of TRACKS) {
+    for (const kind of ["segment", "init"] as const) {
+      const index = indexIn(TRACK_FILES[track][kind], name);
+      if (index !== null) return { track, kind, index };
+    }
+  }
+  return null;
+}
+
+/**
+ * The index this name carries, or null when it is not this naming at all.
+ *
+ * The slice is a guess and the round trip is the guard: a name is accepted only when
+ * re-generating it from the parsed index reproduces the name EXACTLY, which settles the
+ * prefix, the digit count, the padding and the extension in one comparison. So there is no
+ * separate pattern to keep in step with `publishedName`, and no way for a name that merely
+ * resembles ours to slip through.
+ */
+function indexIn(naming: FileNaming, name: string): number | null {
+  const digits = name.slice(naming.prefix.length, name.length - naming.extension.length);
+  if (!/^\d+$/.test(digits)) return null;
+  const index = Number(digits);
+  return publishedName(naming, index) === name ? index : null;
+}
+
+/** The playlist a player is pointed at: the one that names the renditions. */
+export const MASTER_PLAYLIST_NAME = "index.m3u8";
+
+/**
+ * A nominal bitrate for the single variant, because `BANDWIDTH` is a required attribute.
+ *
+ * It exists to drive ABR selection between variants and there is exactly one variant, so no
+ * decision anywhere reads it. A real figure would mean measuring the file to state a number
+ * nothing consults; a wrong-looking constant that is honest about being nominal is better
+ * than a guess dressed up as a measurement.
+ */
+const NOMINAL_BANDWIDTH = 8_000_000;
+
+/**
+ * The master playlist: which renditions exist, and where each one's own playlist is.
+ *
+ * > [!IMPORTANT] NO `CODECS` ATTRIBUTE, DELIBERATELY
+ * > It is optional, and getting it wrong is fatal rather than cosmetic -- a declared codec
+ * > string that does not match the media makes the browser refuse the SourceBuffer outright.
+ * > hls.js reads the real codec out of each rendition's fMP4 initialisation segment, which is
+ * > the only place that cannot be wrong about it.
+ */
+export function masterPlaylist(timelines: TrackTimelines): string {
+  const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"];
+  // Audio is a separate rendition ONLY when there is video to attach it to. A file with no
+  // video stream has one thing to play, and it is the variant itself.
+  const separateAudio = timelines.video !== undefined && timelines.audio !== undefined;
+  if (separateAudio) {
+    lines.push(
+      `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${mediaPlaylistName("audio")}"`,
+    );
+  }
+  const variant: Track = timelines.video !== undefined ? "video" : "audio";
+  lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${NOMINAL_BANDWIDTH}${separateAudio ? ',AUDIO="audio"' : ""}`);
+  // RELATIVE, like every other name this module writes -- see `mediaPlaylist`.
+  lines.push(mediaPlaylistName(variant));
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * One rendition's complete VOD playlist, as text.
  *
  * `EXT-X-ENDLIST` is what makes it VOD rather than live: the player stops polling, trusts the
  * total duration, and enables the full scrub bar. Version 7 is the floor for fMP4
@@ -167,9 +327,12 @@ export function initFileName(index: number): string {
  * > the segment. That is correct under a player which applies edit lists and under one which
  * > ignores them, which is the reason to prefer it over betting on which this browser is.
  * >
- * > The cost is one four-kilobyte request per segment, for a file every run already wrote.
+ * > **The audio rendition needs exactly the same treatment, and that is measured too**: two
+ * > audio-only runs six seconds apart on the same file produced inits differing at byte 275,
+ * > in both copy and re-encode mode. The cost is one four-kilobyte request per segment, for a
+ * > file every run already wrote.
  */
-export function vodPlaylist(t: Timeline): string {
+export function mediaPlaylist(track: Track, t: Timeline): string {
   const lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:7",
@@ -184,9 +347,9 @@ export function vodPlaylist(t: Timeline): string {
     // RELATIVE names, which is what lets a client retarget the media at a different endpoint
     // from the playlist. An absolute base here would weld every segment to one address and
     // make multi-homed playback impossible without rewriting the playlist.
-    lines.push(`#EXT-X-MAP:URI="${initFileName(i)}"`);
+    lines.push(`#EXT-X-MAP:URI="${initFileName(track, i)}"`);
     lines.push(`#EXTINF:${(range.endSec - range.startSec).toFixed(6)},`);
-    lines.push(segmentFileName(i));
+    lines.push(segmentFileName(track, i));
   }
   lines.push("#EXT-X-ENDLIST");
   return `${lines.join("\n")}\n`;

@@ -14,12 +14,12 @@
  *
  * > [!CAUTION] SEGMENT NAMES ARE MATCHED AGAINST A CLOSED PATTERN, never sanitised
  * > A session directory is a real directory and the file name arrives from the wire, so this
- * > is the classic traversal surface. `serveFromSession` admits exactly three shapes and
- * > nothing else: the generated playlist, and the two `PRODUCED_NAME` patterns, whose
- * > captures are turned into a NUMBER before anything touches the filesystem. So no caller's
- * > text ever becomes a path component -- no `..`, no slash, no dot-file, no extension we
- * > did not write. A pattern that ENUMERATES what is allowed cannot be walked out of; one
- * > that strips what is forbidden is a guessing game with an attacker.
+ * > is the classic traversal surface. `serveFromSession` admits exactly the names this server
+ * > generates and nothing else: the three playlists, and whatever `parseProducedName` accepts
+ * > -- which is a closed vocabulary whose index becomes a NUMBER before anything touches the
+ * > filesystem. So no caller's text ever becomes a path component -- no `..`, no slash, no
+ * > dot-file, no extension we did not write. A pattern that ENUMERATES what is allowed cannot
+ * > be walked out of; one that strips what is forbidden is a guessing game with an attacker.
  * >
  * > This is the second such boundary in the playback path and they guard different things:
  * > `media-path.ts` decides which INPUT files may be opened, this decides which OUTPUT files
@@ -27,29 +27,33 @@
  */
 
 import type { EncoderChoice } from "../lib/encoder";
-import { SEGMENT_TARGET_SEC, segmentCount, vodPlaylist } from "../lib/hls-timeline";
+import {
+  MASTER_PLAYLIST_NAME,
+  masterPlaylist,
+  mediaPlaylist,
+  mediaPlaylistName,
+  parseProducedName,
+  SEGMENT_TARGET_SEC,
+  segmentCount,
+  type Timeline,
+  TRACKS,
+  type Track,
+  type TrackTimelines,
+  uniformTimeline,
+} from "../lib/hls-timeline";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
-import { cutTimeline } from "../lib/keyframes";
+import { type CutSource, cutTimeline } from "../lib/keyframes";
 import { NOT_AN_EPISODE } from "../lib/media-file";
 import { type MediaVolume, resolveMediaFile } from "../lib/media-path";
 import { probeMedia } from "../lib/media-probe";
-import { type ClientCapabilities, CONSERVATIVE_CLIENT, planPlayback } from "../lib/playback-plan";
+import {
+  type ClientCapabilities,
+  CONSERVATIVE_CLIENT,
+  type PlaybackPlan,
+  planPlayback,
+} from "../lib/playback-plan";
 import type { Store } from "../lib/store";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
-
-/** The playlist name, which is generated rather than written by ffmpeg. */
-const PLAYLIST_NAME = "index.m3u8";
-
-/**
- * The only file names a session directory may hand out, besides the generated playlist.
- *
- * One per thing a session produces, and each capture is how the request names WHICH segment
- * it wants. Closed by construction: a name matching neither is refused rather than sanitised.
- */
-const PRODUCED_NAME: { pattern: RegExp; of: keyof Pick<TranscodeSessions, "segmentPath" | "initPath"> }[] = [
-  { pattern: /^seg(\d{5})\.m4s$/, of: "segmentPath" },
-  { pattern: /^init(\d{5})\.mp4$/, of: "initPath" },
-];
 
 /**
  * How long the start request will wait for the first segment before answering anyway.
@@ -111,46 +115,91 @@ function capabilitiesFrom(v: unknown): ClientCapabilities {
 /**
  * The path of the produced file this name asks for, producing it if nobody has yet.
  *
- * Null for a name that is not one of ours, which is the traversal guard: the index comes
- * out of a closed pattern and is then a NUMBER, so nothing a caller writes ever reaches the
+ * Null for a name that is not one of ours, which is the traversal guard: the index comes out
+ * of a closed vocabulary and is then a NUMBER, so nothing a caller writes ever reaches the
  * filesystem as text.
  */
 function producedFile(sessions: TranscodeSessions, id: string, name: string): Promise<string | null> {
-  for (const { pattern, of } of PRODUCED_NAME) {
-    const index = pattern.exec(name)?.[1];
-    if (index !== undefined) return sessions[of](id, Number(index));
-  }
-  return Promise.resolve(null);
+  const asked = parseProducedName(name);
+  if (!asked) return Promise.resolve(null);
+  const of = asked.kind === "segment" ? sessions.segmentPath : sessions.initPath;
+  return of.call(sessions, id, asked.track, asked.index);
 }
 
 /**
- * Get the first segment on its way before answering the start request.
+ * Get the first segment of every rendition on its way before answering the start request.
  *
  * Not politeness: a player asks for the initialisation segment and the first media segment
  * within milliseconds of reading the playlist, and both of those would otherwise arrive
- * while ffmpeg was still starting. Bounded, and a timeout is NOT an error -- the production
- * carries on and the client's own request joins it.
+ * while ffmpeg was still starting. **Both renditions**, because the player fetches them in
+ * parallel and it cannot show a frame until it has one of each. Bounded, and a timeout is NOT
+ * an error -- the production carries on and the client's own request joins it.
  */
-async function warmFirstSegment(sessions: TranscodeSessions, session: Session): Promise<void> {
-  await Promise.race([sessions.segmentPath(session.id, 0), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
+async function warmFirstSegments(sessions: TranscodeSessions, session: Session): Promise<void> {
+  const first = TRACKS.filter((track) => session.timelines[track]).map((track) =>
+    sessions.segmentPath(session.id, track, 0),
+  );
+  await Promise.race([Promise.all(first), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
+}
+
+/**
+ * The timelines a title publishes: the video grid it is stuck with, and a plain audio grid.
+ *
+ * The audio grid has no keyframe constraint to honour -- every audio packet is a key packet
+ * -- so it is uniform whatever the video is doing, which is exactly what lets an audio
+ * segment cover its whole declared range and leave no hole at the boundary. The two grids do
+ * not have to agree, and making them agree would bring the constraint back.
+ */
+async function timelinesFor(
+  path: string,
+  durationSec: number,
+  plan: PlaybackPlan,
+): Promise<{ timelines: TrackTimelines; videoSource: CutSource | null }> {
+  const timelines: { -readonly [K in Track]?: Timeline } = {};
+  let videoSource: CutSource | null = null;
+  if (plan.video.sourceIndex !== null) {
+    const cut = await cutTimeline(path, durationSec, SEGMENT_TARGET_SEC, {
+      copiesVideo: plan.video.action === "copy",
+    });
+    timelines.video = cut.timeline;
+    videoSource = cut.source;
+  }
+  if (plan.audio.sourceIndex !== null) timelines.audio = uniformTimeline(durationSec, SEGMENT_TARGET_SEC);
+  return { timelines, videoSource };
+}
+
+/** How many segments the playhead moves through: the video grid, or the audio one alone. */
+function publishedSegments(timelines: TrackTimelines): number {
+  const timeline = timelines.video ?? timelines.audio;
+  return timeline ? segmentCount(timeline) : 0;
 }
 
 export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
   const log = deps.log ?? (() => {});
 
   /**
-   * Serve one file of a session: the playlist, the init segment, or one media segment.
+   * The playlist this name asks for, or null when it is not a playlist name.
    *
-   * The playlist is GENERATED here rather than read off disk, and it is the whole point of
-   * the redesign -- it names every segment of the film before any of them exists, so the
-   * player offers a full scrub bar. The media, by contrast, is produced on demand: asking
-   * for a segment is what causes it to be made.
+   * Every playlist is GENERATED rather than read off disk, and that is the whole point of the
+   * redesign -- they name every segment of the film before any of them exists, so the player
+   * offers a full scrub bar. The media, by contrast, is produced on demand: asking for a
+   * segment is what causes it to be made.
    */
+  const playlistFor = (session: Session, name: string): string | null => {
+    if (name === MASTER_PLAYLIST_NAME) return masterPlaylist(session.timelines);
+    for (const track of TRACKS) {
+      const timeline = session.timelines[track];
+      if (timeline && name === mediaPlaylistName(track)) return mediaPlaylist(track, timeline);
+    }
+    return null;
+  };
+
+  /** Serve one file of a session: a playlist, an init segment, or one media segment. */
   const serveFromSession = async (id: string, name: string): Promise<Response> => {
-    if (name === PLAYLIST_NAME) {
-      const session = deps.sessions.touch(id);
-      if (!session) return bad("no such session", 404);
-      return new Response(vodPlaylist(session.timeline), {
+    const session = deps.sessions.touch(id);
+    const playlist = session ? playlistFor(session, name) : null;
+    if (playlist !== null) {
+      return new Response(playlist, {
         headers: {
           "content-type": "application/vnd.apple.mpegurl",
           // The timeline is fixed for the life of the session, but the session is not: a
@@ -254,33 +303,39 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           return bad("this file does not say how long it is", 409);
         }
 
-        const { timeline, source } = await cutTimeline(resolved.path, probe.durationSec, SEGMENT_TARGET_SEC, {
-          copiesVideo: plan.video.action === "copy",
-        });
-        plan.reasons.push(
-          source === "keyframes"
-            ? `segments follow the source keyframes, ${segmentCount(timeline)} of them`
-            : `segments are a ${SEGMENT_TARGET_SEC}s grid, ${segmentCount(timeline)} of them`,
-        );
+        const { timelines, videoSource } = await timelinesFor(resolved.path, probe.durationSec, plan);
+        const segments = publishedSegments(timelines);
+        if (videoSource !== null) {
+          plan.reasons.push(
+            videoSource === "keyframes"
+              ? `video segments follow the source keyframes, ${segments} of them`
+              : `video segments are a ${SEGMENT_TARGET_SEC}s grid, ${segments} of them`,
+          );
+        }
+        // The audio grid is worth stating too: it is the thing a reader would otherwise assume
+        // matches the video grid, and it deliberately does not.
+        if (timelines.audio && timelines.video) {
+          plan.reasons.push(`audio is a separate rendition on its own ${SEGMENT_TARGET_SEC}s grid`);
+        }
 
         try {
           const session = deps.sessions.start({
             input: resolved.path,
             plan,
-            timeline,
+            timelines,
             encoder: deps.encoder,
             owner: deps.actorId(req) ?? undefined,
           });
-          await warmFirstSegment(deps.sessions, session);
+          await warmFirstSegments(deps.sessions, session);
 
           return json({
             sessionId: session.id,
             // RELATIVE, so a client may retarget it at any endpoint that serves this server
             // -- the property multi-homed playback needs and the reason the playlist itself
             // carries relative segment names too.
-            playlist: `/api/play/s/${session.id}/${PLAYLIST_NAME}`,
+            playlist: `/api/play/s/${session.id}/${MASTER_PLAYLIST_NAME}`,
             durationSec: probe.durationSec,
-            segments: segmentCount(timeline),
+            segments,
             plan,
           });
         } catch (err) {
@@ -327,7 +382,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           sessions: deps.sessions.list().map((s) => ({
             id: s.id,
             expensive: s.expensive,
-            segments: segmentCount(s.timeline),
+            segments: publishedSegments(s.timelines),
             startedAt: new Date(s.startedAt).toISOString(),
             lastAccessAt: new Date(s.lastAccessAt).toISOString(),
             owner: s.owner,
