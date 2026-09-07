@@ -344,30 +344,22 @@ function Settings({ acting, quota }: { acting: Acting; quota: AdminQuotaState })
  */
 function QuotaSetting({ acting, quota }: { acting: Acting; quota: AdminQuotaState }) {
   const { user, reload } = acting;
-  const save = async (quotaPerDay: number | null) => {
-    await patchUser(user.id, { quotaPerDay });
-    await reload();
-  };
 
   return (
     <QuotaField
       id="quota"
-      label="Titles a day"
-      value={user.quotaPerDay ?? quota.siteLimitPerDay}
-      save={save}
-      secondary={
-        user.quotaPerDay === null
-          ? undefined
-          : {
-              label: `Follow the site default (${quota.siteLimitPerDay === 0 ? "unlimited" : quota.siteLimitPerDay})`,
-              run: () => save(null),
-            }
-      }
+      label="Daily request limit"
+      value={user.quotaPerDay}
+      // The site's own answer, RESOLVED into words rather than shown as a number the reader
+      // has to interpret -- "Follow the site default (0)" is the magic-value problem back
+      // again, one level up.
+      inheritLabel={`Follow the site default (${quota.siteLimitPerDay === 0 ? "no limit" : `${quota.siteLimitPerDay} a day`})`}
+      save={async (quotaPerDay) => {
+        await patchUser(user.id, { quotaPerDay });
+        await reload();
+      }}
     >
-      {user.quotaPerDay === null
-        ? `Following the site default${quota.siteLimitPerDay === 0 ? ", which is unlimited" : ""}.`
-        : `Their own allowance${user.quotaPerDay === 0 ? ", which is unlimited" : ""}, whatever the site does.`}{" "}
-      0 means no limit. Administrators are never limited.
+      Administrators are never limited, whatever this says.
     </QuotaField>
   );
 }
@@ -453,16 +445,27 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
       <Identity user={detail.user} />
 
       {/*
-        `lg` rather than `md`: the rail carries device names and request titles, and at the
-        md breakpoint both columns are narrow enough that everything in them truncates. One
-        column that reads beats two that do not.
-      */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] lg:items-start">
-        <div className="flex flex-col gap-4">
-          <Actions acting={acting} />
-          <Settings acting={acting} quota={detail.quota} />
-        </div>
+        THE COLUMNS ARE SPLIT ON HOW MUCH WIDTH THE CONTENT NEEDS, and the first version of
+        this had it backwards (aannarr, 2026-09-07: *"actions is the SMALLEST .. and should
+        live on the right, in a small panel"*).
 
+        It was split on WHO ASKS -- change on the left, check on the right -- which is a
+        sound idea and the wrong axis, because the two do not correlate with width. Actions
+        is four stacked buttons and the widest thing in it is "Remove this account", so a
+        full-width card left two thirds of a row empty on every screen. Meanwhile passkey
+        rows (a device name, two stamps and a Revoke) and request rows (a title, a year, a
+        status and an age) were truncating in a 22rem rail.
+
+        So: the RAIL is the narrow panel and holds Actions alone, and everything with rows
+        in it gets the wide column. `lg` rather than `md` still, for the same reason as
+        before -- at md both columns are too narrow and one column that reads beats two
+        that do not.
+
+        Order down the wide column is what an operator reads in order: how they get in (the
+        access state, which is what should stop a destructive action), then what they are
+        allowed, then what they have actually done.
+      */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,17rem)] lg:items-start">
         <div className="flex flex-col gap-4">
           <AdminCard title="How they get in">
             <div className="flex flex-col gap-4">
@@ -507,6 +510,8 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
             </div>
           </AdminCard>
 
+          <Settings acting={acting} quota={detail.quota} />
+
           <AdminCard title="Requests" description={quotaLine(detail.quota)}>
             <Rows empty="They have not asked for anything yet.">
               {logOrder(detail.requests).map((r) => (
@@ -514,6 +519,15 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
               ))}
             </Rows>
           </AdminCard>
+        </div>
+
+        {/*
+          The rail. One card, and it stays with the reader on a long page -- an operator
+          scrolling a hundred requests should not have to come back up to act on what they
+          just read. `top-4` clears nothing in particular; it is the page's own gap.
+        */}
+        <div className="lg:sticky lg:top-4">
+          <Actions acting={acting} />
         </div>
       </div>
     </div>

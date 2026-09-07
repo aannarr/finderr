@@ -31,10 +31,24 @@ describe("the request quota", () => {
     expect(draw(settings())).toContain('value="5"');
   });
 
-  test("zero is drawn as a value and explained as no limit rather than as an empty field", () => {
+  /*
+    ZERO IS A NAMED CHOICE, not a value in a box that a hint explains.
+
+    This asserted `value="0"` plus the sentence "Nobody is limited" under it, which is the
+    exact shape the 2026-09-07 rewrite removed: the difference between "nobody is limited" and
+    "everybody may have zero titles" was one character, in a field, explained in prose. It is
+    a radio reading "No limit" now, and the number field is not drawn at all.
+  */
+  test("no limit is a named choice, and draws no number to misread", () => {
     const html = draw(settings({ requestQuotaPerDay: 0 }));
-    expect(html).toContain('value="0"');
-    expect(html).toContain("Nobody is limited");
+    expect(html).toContain("No limit");
+    expect(html).not.toContain('aria-label="Requests a day"');
+  });
+
+  test("a real cap selects the limit choice and shows the number", () => {
+    const html = draw(settings({ requestQuotaPerDay: 5 }));
+    expect(html).toContain("Limit the number of requests a day");
+    expect(html).toContain('value="5"');
   });
 
   /** Otherwise an operator edits `.env`, restarts, and watches nothing happen. */

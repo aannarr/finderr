@@ -13,48 +13,145 @@
 
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "../test/interact";
-import { QuotaField, ToggleSetting } from "./SettingControls";
+import { modeOf, QuotaField, storedFor, ToggleSetting } from "./SettingControls";
 
 const press = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
 
 /** A save that never resolves, so the in-flight state can be asserted rather than raced. */
 const pending = () => new Promise<void>(() => {});
 
+/*
+  REWRITTEN 2026-09-07 WHEN THE NUMBER FIELD BECAME THREE NAMED CHOICES.
+
+  It was one box whose magic values carried the meaning -- `null` inherit, `0` unlimited, `n`
+  a cap -- with the last two explained in a hint underneath. Every premise below survived the
+  change; only the mechanism moved. The one that got STRONGER is the empty-field guard: an
+  empty box used to be indistinguishable from "no limit", and now they are not even the same
+  control.
+*/
+describe("modeOf / storedFor", () => {
+  /*
+    The wire format is unchanged and `src/lib/request-quota.ts` still owns what it means, so
+    the mapping this component renders through has to round-trip exactly. A drift here would
+    show up as a setting that reads back differently from how it was saved -- silently.
+  */
+  test("every stored value names a mode, and every mode returns to its value", () => {
+    expect(modeOf(null)).toBe("inherit");
+    expect(modeOf(0)).toBe("none");
+    expect(modeOf(3)).toBe("capped");
+
+    expect(storedFor("inherit", 3)).toBe(null);
+    expect(storedFor("none", 3)).toBe(0);
+    expect(storedFor("capped", 3)).toBe(3);
+  });
+
+  /** `none` ignores whatever is in the box, which is what makes the draft safe to remember. */
+  test("choosing no limit sends zero whatever was typed", () => {
+    expect(storedFor("none", 99)).toBe(0);
+  });
+});
+
 describe("QuotaField", () => {
   const field = (over: Partial<Parameters<typeof QuotaField>[0]> = {}) => (
-    <QuotaField id="q" label="Titles a day" value={5} save={async () => {}} {...over}>
+    <QuotaField
+      id="q"
+      label="Daily request limit"
+      value={5}
+      inheritLabel="Follow the site default (no limit)"
+      save={async () => {}}
+      {...over}
+    >
       the hint
     </QuotaField>
   );
 
-  test("the current value is the draft, and zero is a value rather than a blank field", () => {
-    render(field({ value: 0 }));
-    expect((screen.getByLabelText("Titles a day") as HTMLInputElement).value).toBe("0");
+  const choose = (name: string) => fireEvent.click(screen.getByRole("radio", { name }));
+
+  test("the stored value selects its own choice, and a cap shows the number", () => {
+    render(field({ value: 5 }));
+    expect(
+      screen.getByRole("radio", { name: "Limit the number of requests a day" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect((screen.getByLabelText("Requests a day") as HTMLInputElement).value).toBe("5");
   });
 
-  test("saving sends the number that was typed", async () => {
-    const saved: number[] = [];
+  /*
+    ZERO IS A CHOICE, NOT A BLANK -- the same property the old test asserted about a "0" in a
+    box, now asserted about the control that says it in words. This is the whole point of the
+    rewrite: nothing on screen requires the reader to know what zero means.
+  */
+  test("no limit is its own choice, and draws no number at all", () => {
+    render(field({ value: 0 }));
+    expect(screen.getByRole("radio", { name: "No limit" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByLabelText("Requests a day")).toBeNull();
+  });
+
+  test("following the site default is offered where there is one to follow", () => {
+    render(field({ value: null }));
+    expect(screen.getByRole("radio", { name: "Follow the site default (no limit)" })).toBeDefined();
+  });
+
+  /** The site-wide caller passes no `inheritLabel`: there is nothing above a site default. */
+  test("and is absent entirely without an inheritLabel", () => {
+    render(field({ inheritLabel: undefined, value: 0 }));
+    expect(screen.queryByRole("radio", { name: "Follow the site default (no limit)" })).toBeNull();
+  });
+
+  test("saving a cap sends the number that was typed", async () => {
+    const saved: (number | null)[] = [];
     render(field({ save: async (n) => void saved.push(n) }));
 
-    fireEvent.change(screen.getByLabelText("Titles a day"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "12" } });
     press("Save");
     await waitFor(() => expect(saved).toEqual([12]));
   });
 
+  test("choosing no limit sends zero, and following the site sends null", async () => {
+    const saved: (number | null)[] = [];
+    render(field({ save: async (n) => void saved.push(n) }));
+
+    choose("No limit");
+    press("Save");
+    await waitFor(() => expect(saved).toEqual([0]));
+
+    choose("Follow the site default (no limit)");
+    press("Save");
+    await waitFor(() => expect(saved).toEqual([0, null]));
+  });
+
   /**
-   * THE REGRESSION. `Number("")` is `0`, and zero means UNLIMITED -- so clearing the box and
-   * pressing Save used to REMOVE the limit while looking like a form somebody had not filled
-   * in. The browser's own `min`/`step` validation cannot catch this one: an empty optional
-   * number field is valid, which is why a fraction never reaches the handler and this does.
+   * THE REGRESSION, and it still matters. `Number("")` is `0`, which used to mean UNLIMITED --
+   * so clearing the box and pressing Save REMOVED the limit while looking like a form somebody
+   * had not filled in. The browser's own `min`/`step` validation cannot catch it: an empty
+   * optional number field is valid, which is why a fraction never reaches the handler and this
+   * does. The guard tests the STRING before it is ever a number.
    */
-  test("an emptied field is refused rather than read as zero, which would mean unlimited", async () => {
+  test("an emptied box is refused rather than read as zero", async () => {
     let calls = 0;
     render(field({ save: async () => void calls++ }));
 
-    fireEvent.change(screen.getByLabelText("Titles a day"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "" } });
     press("Save");
-    await waitFor(() => expect(screen.getByText("a whole number of titles, 0 or more")).toBeDefined());
+    await waitFor(() => expect(screen.getByText("a whole number, 1 or more")).toBeDefined());
     expect(calls).toBe(0);
+  });
+
+  /*
+    A cap of zero is not a cap -- that is the "No limit" choice, and it has its own radio.
+
+    The refusal is the BROWSER's here rather than ours: `min={1}` on the field means
+    constraint validation blocks the submit before the handler runs, so what is asserted is
+    that nothing was saved, not that our own message appeared. Both floors exist on purpose --
+    the attribute stops the spinner going below 1 and gives the native refusal, and the string
+    check in the handler catches the empty box the attribute calls valid.
+  */
+  test("a cap of zero never reaches the server, because zero is a different choice", async () => {
+    let calls = 0;
+    render(field({ save: async () => void calls++ }));
+
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "0" } });
+    press("Save");
+    await waitFor(() => expect(calls).toBe(0));
   });
 
   test("the server's own refusal lands on the control, in its own words", async () => {
@@ -65,38 +162,41 @@ describe("QuotaField", () => {
         },
       }),
     );
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "6" } });
     press("Save");
     await waitFor(() => expect(screen.getByText("that setting could not be saved")).toBeDefined());
   });
 
-  test("both buttons are disabled while a save is in flight, so it cannot be sent twice", () => {
-    render(field({ save: pending, secondary: { label: "Follow the site default (0)", run: pending } }));
+  test("Save is disabled while the request is in flight, so it cannot be sent twice", () => {
+    render(field({ save: pending }));
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "6" } });
     press("Save");
-
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeDefined();
-    expect(
-      (screen.getByRole("button", { name: "Follow the site default (0)" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("the secondary action runs its own work, not the save", async () => {
-    let cleared = 0;
-    let saved = 0;
-    render(
-      field({
-        save: async () => void saved++,
-        secondary: { label: "Follow the site default (0)", run: async () => void cleared++ },
-      }),
-    );
-    press("Follow the site default (0)");
+  /*
+    A Save that is always live invites a write that changes nothing and reloads the page for
+    it -- and on this control that write would be indistinguishable from a real edit in the
+    log. Nothing has changed at rest, so there is nothing to send.
+  */
+  test("Save is dead until something actually differs from what is stored", () => {
+    render(field({ value: 5 }));
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
 
-    await waitFor(() => expect(cleared).toBe(1));
-    expect(saved).toBe(0);
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "6" } });
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  test("with no secondary, only Save is offered", () => {
-    render(field());
-    expect(screen.getAllByRole("button")).toHaveLength(1);
+  /** Switching away and back must not silently wipe what somebody had already typed. */
+  test("the typed number survives a trip through another choice", () => {
+    render(field({ value: 5 }));
+    fireEvent.change(screen.getByLabelText("Requests a day"), { target: { value: "9" } });
+
+    choose("No limit");
+    expect(screen.queryByLabelText("Requests a day")).toBeNull();
+
+    choose("Limit the number of requests a day");
+    expect((screen.getByLabelText("Requests a day") as HTMLInputElement).value).toBe("9");
   });
 });
 

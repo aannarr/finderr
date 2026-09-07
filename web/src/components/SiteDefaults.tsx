@@ -35,17 +35,18 @@ export function SiteDefaults(props: {
       description="What applies to everybody who has no allowance of their own."
     >
       <div className="flex flex-col gap-5">
+        {/*
+          NO `inheritLabel`, and that is the one difference between the two callers: there is
+          nothing above a site default for it to follow.
+        */}
         <QuotaField
           id="site-quota"
-          label="Titles a day"
+          label="Daily request limit"
           value={requestQuotaPerDay}
-          save={(n) => props.save({ requestQuotaPerDay: n })}
+          save={(n) => props.save({ requestQuotaPerDay: n ?? 0 })}
         >
-          {requestQuotaPerDay === 0
-            ? "Nobody is limited. Set a number to cap how much any one person may ask for in a day."
-            : `Everybody without an allowance of their own may ask for ${requestQuotaPerDay} a day.`}{" "}
-          0 means no limit, and administrators are never limited. Saving this replaces whatever
-          FINDERR_REQUEST_QUOTA_PER_DAY was set to on the host.
+          Applies to everybody without an allowance of their own; administrators are never limited. Saving
+          this replaces whatever FINDERR_REQUEST_QUOTA_PER_DAY was set to on the host.
         </QuotaField>
 
         <Separator />
