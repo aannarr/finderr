@@ -200,16 +200,47 @@ export function orderShelves<T extends { id: string }>(shelves: readonly T[], pr
 }
 
 /**
- * Shelf ids the OPERATOR has switched off for anybody who has not said otherwise.
+ * Does the OPERATOR ship this shelf switched off? Asked once per shelf, per request.
  *
- * `config.shelves.hiddenByDefault`, and it is deliberately its own type rather than a bare
- * `Set<string>` at each call site: both functions below take it, and a caller that passed one
- * and forgot the other would draw a settings screen disagreeing with the page it arranges.
+ * A PREDICATE rather than a `Set`, because the ids it has to cover are not all knowable when
+ * it is configured -- see `defaultHiddenShelves`. It is its own named type rather than an
+ * inline signature at each call site: both functions below take it, and a caller that passed
+ * one and forgot the other would draw a settings screen disagreeing with the page it arranges.
  */
-export type DefaultHiddenShelves = ReadonlySet<string>;
+export type DefaultHiddenShelves = (shelfId: string) => boolean;
 
 /** No operator default at all -- the shape every existing caller and test already has. */
-const NOTHING_HIDDEN: DefaultHiddenShelves = new Set<string>();
+const NOTHING_HIDDEN: DefaultHiddenShelves = () => false;
+
+/**
+ * Compile `config.shelves.hiddenByDefault` into the predicate above.
+ *
+ * > [!IMPORTANT] A TRAILING `*` MATCHES A PREFIX, and it exists because one id space ROTATES
+ * > The genre rows are `genre-<lowercased name>` built from `engine.topGenres(5)`, so which
+ * > five exist is decided by the nightly index build and changes without anybody editing a
+ * > config. An operator who switched off all five genre rows by name would silently get a
+ * > SIXTH one switched on the first night the corpus shifted -- one visible row among five
+ * > hidden ones, which reads as a bug in the feature rather than as the config being stale.
+ * > `genre-*` says the thing they actually meant and keeps saying it.
+ *
+ * The wildcard is deliberately ONLY a trailing `*` and not a glob or a regex. A shelf id is a
+ * short kebab string in one namespace; a full pattern language here would be a parser, a set
+ * of escaping rules and a way to write a config that matches nothing while looking correct.
+ * A bare `*` is refused for the same reason -- it is indistinguishable from a typo and would
+ * empty the whole front page for every reader at once.
+ */
+export function defaultHiddenShelves(patterns: readonly string[]): DefaultHiddenShelves {
+  const exact = new Set<string>();
+  const prefixes: string[] = [];
+  for (const raw of patterns) {
+    const pattern = raw.trim();
+    if (!pattern || pattern === "*") continue;
+    if (pattern.endsWith("*")) prefixes.push(pattern.slice(0, -1));
+    else exact.add(pattern);
+  }
+  if (exact.size === 0 && prefixes.length === 0) return NOTHING_HIDDEN;
+  return (shelfId) => exact.has(shelfId) || prefixes.some((p) => shelfId.startsWith(p));
+}
 
 /**
  * The page this reader actually sees: their order, minus what they hid.
@@ -235,7 +266,7 @@ export function applyShelfPreference<T extends { id: string }>(
   pref: ShelfPreference,
   byDefault: DefaultHiddenShelves = NOTHING_HIDDEN,
 ): T[] {
-  const hidden = hiddenIds(pref, byDefault);
+  const hidden = hiddenIds(shelves, pref, byDefault);
   return orderShelves(shelves, pref).filter((shelf) => !hidden.has(shelf.id));
 }
 
@@ -257,7 +288,7 @@ export function shelfCatalogue(
   pref: ShelfPreference,
   byDefault: DefaultHiddenShelves = NOTHING_HIDDEN,
 ): ShelfChoiceView[] {
-  const hidden = hiddenIds(pref, byDefault);
+  const hidden = hiddenIds(shelves, pref, byDefault);
   return orderShelves(shelves, pref).map((shelf) => ({
     id: shelf.id,
     title: shelf.title,
@@ -294,10 +325,17 @@ export interface ShelfPreferencePayload {
  * consulted for it -- so `hidden: false` on a default-hidden shelf turns it back on, which is
  * what makes the settings screen's "Show" button mean something.
  */
-function hiddenIds(pref: ShelfPreference, byDefault: DefaultHiddenShelves): Set<string> {
-  const opinionated = new Set(pref.map((choice) => choice.id));
-  const hidden = new Set(pref.filter((choice) => choice.hidden).map((choice) => choice.id));
-  for (const id of byDefault) if (!opinionated.has(id)) hidden.add(id);
+function hiddenIds(
+  shelves: readonly { id: string }[],
+  pref: ShelfPreference,
+  byDefault: DefaultHiddenShelves,
+): Set<string> {
+  const own = new Map(pref.map((choice) => [choice.id, choice.hidden]));
+  const hidden = new Set<string>();
+  for (const shelf of shelves) {
+    const mine = own.get(shelf.id);
+    if (mine === undefined ? byDefault(shelf.id) : mine) hidden.add(shelf.id);
+  }
   return hidden;
 }
 

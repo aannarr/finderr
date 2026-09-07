@@ -65,6 +65,7 @@ import {
 import { decodeSeasons, parseSeasonsInput } from "../lib/seasons";
 import {
   applyShelfPreference,
+  defaultHiddenShelves,
   parseShelfChoices,
   type ShelfChoice,
   type ShelfPreferencePayload,
@@ -720,7 +721,7 @@ function preferenceOf(req: Request): ShelfChoice[] {
  * shape the two resolvers take, so the settings screen and the front page cannot be handed
  * different defaults -- which would draw a shelf the arranging list swore was hidden.
  */
-const shelvesHiddenByDefault: ReadonlySet<string> = new Set(cfg.shelves.hiddenByDefault);
+const shelvesHiddenByDefault = defaultHiddenShelves(cfg.shelves.hiddenByDefault);
 
 /**
  * What the preference routes all answer with: the whole catalogue, in this reader's order.

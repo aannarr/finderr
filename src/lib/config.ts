@@ -800,10 +800,21 @@ export interface Config {
     keepFresh: boolean;
 
     /**
-     * Shelf ids that are OFF for anybody who has not said otherwise. Empty by default.
+     * Shelf ids that are OFF for anybody who has not said otherwise.
      *
-     * `FINDERR_SHELVES_HIDDEN_BY_DEFAULT=coming-soon-series,genre-adventure`, and the ids are
-     * the ones `src/server/shelves.ts` declares -- `genre-<lowercased name>` for a genre row.
+     * `FINDERR_SHELVES_HIDDEN_BY_DEFAULT=coming-soon-series,genre-*`, and the ids are the ones
+     * `src/server/shelves.ts` declares -- `genre-<lowercased name>` for a genre row. A trailing
+     * `*` matches a prefix; `defaultHiddenShelves` in `shelf-preferences.ts` owns that rule and
+     * says why the genre rows need it.
+     *
+     * > [!IMPORTANT] THE SHIPPED VALUE IS NOT EMPTY, and it is aannarr's, chosen from a screenshot
+     * > 2026-09-07. The front page assembles sixteen rows and he named the seven that should not
+     * > be in front of somebody by default: the request log, the Top 250, and every genre row.
+     * > What is left is nine rows about what you own, what is coming and what is worth starting.
+     * >
+     * > Set the env var to override it, and set it to a single space to switch the default OFF
+     * > entirely and get all sixteen back -- an EMPTY string is indistinguishable from an unset
+     * > variable to `envStr`, so it falls through to this list rather than clearing it.
      *
      * > [!IMPORTANT] It is a DEFAULT, not a removal, and the difference is the whole design
      * > The shelf is still assembled, still warmed and still on `/api/shelves/preference`
@@ -921,7 +932,14 @@ export interface Config {
   pluginModules: string[];
 }
 
-const DEFAULTS: Config = {
+/**
+ * What finderr ships with, before any file or environment variable touches it.
+ *
+ * EXPORTED so a test can assert on a shipped PRODUCT decision -- `shelves.hiddenByDefault`
+ * decides what nine of sixteen rows a fresh install draws, and a value that consequential
+ * should be hard to change by accident. Read it, never mutate it.
+ */
+export const DEFAULT_CONFIG: Config = {
   port: 7979,
   host: "0.0.0.0",
   dataDir: "/data",
@@ -1027,7 +1045,12 @@ const DEFAULTS: Config = {
   push: { enabled: true, contact: "mailto:finderr@localhost" },
   libraryRefreshSeconds: 60,
   // Opt-in. See `shelves.keepFresh` -- off is the behaviour every version so far has had.
-  shelves: { keepFresh: false, hiddenByDefault: [] },
+  // aannarr's front page, 2026-09-07. See the field's doc comment for what is left standing
+  // and for how to get all sixteen rows back.
+  shelves: {
+    keepFresh: false,
+    hiddenByDefault: ["recently-requested", "top-250", "genre-*"],
+  },
   episodeRefreshSeconds: 21_600,
   episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
@@ -1361,7 +1384,7 @@ let cached: Config | undefined;
 
 export function loadConfig(force = false): Config {
   if (cached && !force) return cached;
-  const merged = merge(merge(DEFAULTS, loadYaml()), envOverrides());
+  const merged = merge(merge(DEFAULT_CONFIG, loadYaml()), envOverrides());
   validate(merged);
   cached = merged;
   return merged;
