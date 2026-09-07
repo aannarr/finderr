@@ -37,6 +37,8 @@
  * > works, where failing the other way produces a player that spins forever.
  */
 
+import { type EncoderChoice, SOFTWARE } from "./encoder";
+
 /** What the browser told us it can decode. Codec names are ffmpeg's, lowercased. */
 export interface ClientCapabilities {
   /** e.g. `["h264", "hevc"]`. */
@@ -233,8 +235,13 @@ export interface FfmpegOpts {
   outDir: string;
   /** Seconds to seek to before the first frame. 0 starts at the beginning. */
   seekSec?: number;
-  /** `/dev/dri/renderD128` when QuickSync is available, else undefined for software. */
-  vaapiDevice?: string;
+  /**
+   * Which encoder to use when the video must be re-encoded.
+   *
+   * Comes from `chooseEncoder` (`./encoder.ts`), probed once at boot. Absent means
+   * software, which is always correct and always slow.
+   */
+  encoder?: EncoderChoice;
   /** Seconds per segment. */
   segmentSec?: number;
   /**
@@ -268,18 +275,25 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   const segment = opts.segmentSec ?? 4;
   const args: string[] = ["-hide_banner", "-loglevel", "error", "-nostdin"];
 
-  // Hardware decode is only wired up when we are also encoding: decoding to a VAAPI surface
-  // and then copying the stream is pure overhead, and it breaks the copy path outright.
-  const hw = opts.vaapiDevice && plan.video.action === "transcode";
-  if (hw)
-    args.push(
-      "-hwaccel",
-      "vaapi",
-      "-hwaccel_output_format",
-      "vaapi",
-      "-vaapi_device",
-      opts.vaapiDevice as string,
-    );
+  /*
+    Hardware acceleration is wired up ONLY when there is an encode to accelerate.
+
+    Decoding into a hardware surface and then COPYING the stream is pure overhead, and for
+    VAAPI it breaks the copy path outright -- the frames end up somewhere `-c:v copy` cannot
+    reach. So a remux stays entirely software whatever the machine can do, which costs
+    nothing: a remux never touches a pixel.
+  */
+  const enc = plan.video.action === "transcode" ? (opts.encoder ?? SOFTWARE) : SOFTWARE;
+  const hw = enc.hardware;
+  if (hw && enc.hwaccel) {
+    args.push("-hwaccel", enc.hwaccel);
+    // Only VAAPI keeps its frames on the GPU and needs its device named. VideoToolbox and
+    // NVENC take the accelerator alone, and handing them an output format they do not
+    // expect is a spawn error rather than an ignored flag.
+    if (enc.vaapiDevice) {
+      args.push("-hwaccel_output_format", "vaapi", "-vaapi_device", enc.vaapiDevice);
+    }
+  }
 
   if (opts.seekSec && opts.seekSec > 0) args.push("-ss", String(opts.seekSec));
 
@@ -336,7 +350,9 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   if (plan.video.action === "copy") {
     args.push("-c:v", "copy");
   } else if (hw) {
-    args.push("-c:v", "h264_vaapi", "-b:v", "6M");
+    // Hardware encoders take a BITRATE rather than a quality target: none of the three
+    // implements `-crf`, and passing it is a spawn error rather than an ignored flag.
+    args.push("-c:v", enc.encoder, "-b:v", "6M");
   } else {
     args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "21");
   }

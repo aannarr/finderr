@@ -39,6 +39,7 @@
 
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type { EncoderChoice } from "./encoder";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
 /**
@@ -86,8 +87,8 @@ export interface StartOpts {
   input: string;
   plan: PlaybackPlan;
   seekSec?: number;
-  /** `/dev/dri/renderD128` when QuickSync is available. */
-  vaapiDevice?: string;
+  /** Which encoder to use for a re-encode. From `chooseEncoder`, probed once at boot. */
+  encoder?: EncoderChoice;
   /** Seconds to burst-read before throttling; see `FfmpegOpts.readrateBurstSec`. */
   readrateBurstSec?: number;
   /** Who asked, for the health report. Never used for a decision. */
@@ -169,7 +170,7 @@ export class TranscodeSessions {
         input: o.input,
         outDir: dir,
         seekSec: o.seekSec,
-        vaapiDevice: o.vaapiDevice,
+        encoder: o.encoder,
         readrateBurstSec: o.readrateBurstSec,
       }),
     ];
@@ -372,6 +373,6 @@ export function sessionKey(o: StartOpts): string {
     p.audio.sourceIndex,
     p.subtitles.action,
     p.subtitles.sourceIndex,
-    o.vaapiDevice ?? "",
+    o.encoder?.encoder ?? "",
   ].join("|");
 }

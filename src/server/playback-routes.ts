@@ -25,6 +25,7 @@
  */
 
 import { join } from "node:path";
+import type { EncoderChoice } from "../lib/encoder";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
 import { NOT_AN_EPISODE } from "../lib/media-file";
 import { type MediaVolume, resolveMediaFile } from "../lib/media-path";
@@ -78,7 +79,8 @@ export interface PlaybackDeps {
   requireAdmin: (req: Request) => Response | null;
   /** For attributing a session in the health report. Never used for a decision. */
   actorId: (req: Request) => string | null;
-  vaapiDevice?: string;
+  /** Which encoder a re-encode should use. Probed once at boot. */
+  encoder?: EncoderChoice;
   /** Seconds to burst-read before throttling. Probed once at boot; 0 means plain `-re`. */
   readrateBurstSec?: number;
   log?: (m: string) => void;
@@ -212,7 +214,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             input: resolved.path,
             plan,
             seekSec,
-            vaapiDevice: deps.vaapiDevice,
+            encoder: deps.encoder,
             readrateBurstSec: deps.readrateBurstSec,
             owner: deps.actorId(req) ?? undefined,
           });

@@ -26,6 +26,7 @@ import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import { CostMeter } from "../lib/cost-meter";
+import { probeEncoder, SOFTWARE } from "../lib/encoder";
 import {
   type EpisodeState,
   episodeStateOf,
@@ -249,7 +250,7 @@ const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
   all on the minority of titles that need one.
 */
 const mediaVolumes = parseVolumes(cfg.media.volumes);
-const vaapiDevice = existsSync("/dev/dri/renderD128") ? "/dev/dri/renderD128" : null;
+const videoEncoder = mediaVolumes.length > 0 ? await probeEncoder() : SOFTWARE;
 // Whether this ffmpeg can burst-then-throttle. One probe, at boot, for the reason
 // `probeReadrateBurst` gives: an unknown option is a hard error, not a warning.
 const readrateBurstSec = mediaVolumes.length > 0 ? await probeReadrateBurst() : 0;
@@ -261,9 +262,7 @@ bindShutdown(transcodeSessions);
 const sweptSessions = transcodeSessions.sweepStale();
 if (sweptSessions > 0) log(`playback: swept ${sweptSessions} stale session director(ies)`);
 if (mediaVolumes.length > 0) {
-  log(
-    `playback: ${mediaVolumes.length} media volume(s), ${vaapiDevice ? "QuickSync at /dev/dri/renderD128" : "software encoding"}`,
-  );
+  log(`playback: ${mediaVolumes.length} media volume(s), video encoder ${videoEncoder.reason}`);
 }
 
 /*
@@ -3755,7 +3754,7 @@ const allRoutes = {
     volumes: mediaVolumes,
     requireAdmin: (req) => auth.requireAdmin(req),
     actorId: (req) => auth.principal(req)?.user?.id ?? null,
-    vaapiDevice: vaapiDevice ?? undefined,
+    encoder: videoEncoder,
     readrateBurstSec,
     log,
   }),

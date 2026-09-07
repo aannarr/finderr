@@ -19,6 +19,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -92,6 +93,18 @@ const SAFARI: ClientCapabilities = { video: ["h264", "hevc"], audio: ["aac", "ac
 const CHROME_HEVC: ClientCapabilities = { video: ["h264", "hevc"], audio: ["aac"] };
 /** Firefox: h264 and aac, which is also the conservative floor. */
 const FIREFOX: ClientCapabilities = { video: ["h264"], audio: ["aac"] };
+
+/** The two hardware encoders that actually exist on the machines this runs on. */
+const VAAPI: EncoderChoice = chooseEncoder({
+  platform: "linux",
+  available: ["h264_vaapi", "libx264"],
+  hasDri: true,
+});
+const VIDEOTOOLBOX: EncoderChoice = chooseEncoder({
+  platform: "darwin",
+  available: ["h264_videotoolbox", "libx264"],
+  hasDri: false,
+});
 
 describe("parseProbe reads what ffprobe actually emits", () => {
   test("narrows a real matroska document", () => {
@@ -326,21 +339,53 @@ describe("ffmpegArgs turns a plan into flags", () => {
    * the vaapi flags only appear when there is an encode to accelerate.
    */
   test("vaapi is wired up only when the video is actually re-encoded", () => {
-    const copying = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", vaapiDevice: "/dev/dri/renderD128" });
+    const copying = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
     expect(copying).not.toContain("-hwaccel");
     expect(copying.join(" ")).toContain("-c:v copy");
 
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const hw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", vaapiDevice: "/dev/dri/renderD128" });
+    const hw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
     expect(hw).toContain("-hwaccel");
     expect(hw.join(" ")).toContain("h264_vaapi");
   });
 
-  test("without a vaapi device it falls back to libx264 rather than failing", () => {
+  test("with no hardware it falls back to libx264 rather than failing", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const sw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o" });
-    expect(sw.join(" ")).toContain("libx264");
-    expect(sw).not.toContain("-hwaccel");
+    for (const encoder of [undefined, SOFTWARE]) {
+      const sw = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder });
+      expect(sw.join(" ")).toContain("libx264");
+      expect(sw).not.toContain("-hwaccel");
+    }
+  });
+
+  /**
+   * VideoToolbox takes the accelerator alone. Handing it VAAPI's `-hwaccel_output_format`
+   * and `-vaapi_device` is a SPAWN ERROR rather than an ignored flag, so the device-specific
+   * half of the hardware setup has to be gated on the encoder that needs it.
+   */
+  test("VideoToolbox gets its accelerator and none of VAAPI's device flags", () => {
+    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
+    const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VIDEOTOOLBOX });
+    expect(a.join(" ")).toContain("-hwaccel videotoolbox");
+    expect(a.join(" ")).toContain("h264_videotoolbox");
+    expect(a).not.toContain("-vaapi_device");
+    expect(a).not.toContain("-hwaccel_output_format");
+  });
+
+  /** A hardware encoder has no `-crf`; passing one is an error, not an ignored flag. */
+  test("a hardware encode asks for a bitrate and never a crf", () => {
+    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
+    for (const encoder of [VAAPI, VIDEOTOOLBOX]) {
+      const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder });
+      expect(a).toContain("-b:v");
+      expect(a).not.toContain("-crf");
+    }
+  });
+
+  test("VAAPI names its render node, because it is the one that needs it", () => {
+    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
+    const a = ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o", encoder: VAAPI });
+    expect(a).toContain(VAAPI_DEVICE);
   });
 
   test("maps the exact source streams the plan chose", () => {
