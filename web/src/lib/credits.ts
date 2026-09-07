@@ -109,41 +109,66 @@ export function characterNote(credit: CreditLike): CardNote | null {
 /**
  * Which of the two lines THIS filmography wants, as a function its grid can hold.
  *
- * A job is worth printing only when it distinguishes one card from another. Two ways it
- * cannot, and both end with every card printing one identical word:
+ * ONE rule: **a job is printed only when it tells two cards apart.** If every card that
+ * would name a job names the SAME job, the word is a column of itself and the character --
+ * the thing that does vary -- is what the line should carry.
  *
- * - **The person only ever does one job.** Nineteen acting credits under an "Acting (19)"
- *   chip; the word is already on screen, once, where it belongs -- and repeating it buries
- *   the fact that does vary (Philip J. Fry, Sorcerio, Zapp Brannigan) under a column of
- *   "Acting".
- * - **A role filter is active.** A chip carries every IMDb value behind ONE label
- *   (`mergedCategories` merges `actor` and `actress` precisely so it does), so narrowing to
- *   a chip narrows to a single label by construction -- the reader pressed "Directing" and
- *   does not need it repeated sixty times. `personPage` also strips the other categories
- *   from each row under a filter, so the note could not name a second job even if it wanted
- *   to, and `creditNote`'s own caveat about a narrowed hover stops applying here.
+ * That single test subsumes the three ways the repetition arises, which is why this takes no
+ * flags. All three were measured on the real pages, 2026-09-07:
  *
- * **It takes the MERGED roles the chip row already built, not the raw categories.** The
- * route computes `mergedCategories(page.categories)` to decide whether a filter row is worth
- * drawing at all -- "one role means every chip is a no-op" -- and that is the same question
- * in different words, so it is the same value rather than a second derivation of it.
+ * - **A person who only ever does one job.** Billy West, nineteen acting credits: every card
+ *   printed "Acting" and buried Philip J. Fry, Sorcerio and Zapp Brannigan under it.
+ * - **A role filter.** A chip carries every IMDb value behind ONE label (`mergedCategories`
+ *   merges `actor` and `actress` precisely so it does), so narrowing to a chip narrows to a
+ *   single label by construction. `personPage` also strips the other categories from each
+ *   row under a filter -- which is why `creditNote`'s caveat about a NARROWED HOVER cannot
+ *   bite here: a filtered page never reaches `creditNote` at all.
+ * - **A person who does the same job on everything.** Nolan holds three roles, so a
+ *   person-level count of distinct roles calls the job informative -- and every one of his
+ *   fourteen cards still printed "Directing", because he directs all of them. This is the
+ *   case that a role COUNT cannot see and only comparing the actual lines catches. It is
+ *   also the case the whole change was asked for.
  *
- * **Those counts are over ALL of the person's credits, which is what keeps this stable.**
- * `personPage` builds them `where person_rowid = ?` with no category predicate and says so
- * in its own docstring. So the answer is identical on the first page and the fifth. Deriving
- * it from the cards currently ON SCREEN would make notes appear and vanish as somebody
- * presses "Show 60 more" -- a worse failure than the repetition it set out to fix, and the
- * reason this takes the person's breakdown rather than the loaded rows.
+ * > [!IMPORTANT] It reads the LOADED credits, and the instability that costs is one-way
+ * > The obvious alternative was `PersonPage.categories`, whose counts are over all of the
+ * > person's credits and therefore identical on the first page and the fifth. It was built
+ * > that way first and it does not work: marginal counts per category cannot tell you which
+ * > label each TITLE would print, so Nolan survives it. Nothing short of the rows answers
+ * > the question the rule actually asks.
+ * >
+ * > So notes can APPEAR when somebody presses "Show 60 more" and a genuinely different job
+ * > arrives. They can never vanish: growing the set can only turn uniform into varied. A
+ * > one-way change that fires exactly when new information shows up is the acceptable half
+ * > of that trade, and it is the half we are on.
  *
  * **Returns one of two MODULE-LEVEL constants and allocates nothing**, because `TitleGrid`
  * is `memo`'d and `noteFor` has to be a stable reference. A closure built per render, or a
  * `.bind`, would defeat the memo for every card on the page.
  */
-export function noteForFilmography(
-  roles: readonly { label: string }[],
-  roleFilterActive: boolean,
-): (credit: CreditLike) => CardNote | null {
-  return roleFilterActive || roles.length < 2 ? characterNote : creditNote;
+export function noteForFilmography(credits: readonly CreditLike[]): (credit: CreditLike) => CardNote | null {
+  return jobVaries(credits) ? creditNote : characterNote;
+}
+
+/**
+ * Would naming the job distinguish any two of these cards?
+ *
+ * Compares the JOB each card would actually print -- `creditLabels(...)[0]`, the same value
+ * `creditNote` picks -- rather than the set of jobs the person holds. A credit with no job
+ * at all is skipped rather than counted as a distinct one: an absent label is not a second
+ * opinion, and counting it would turn one missing category into a page-wide "varied".
+ *
+ * Short-circuits on the first disagreement, so the common case for a mixed filmography is a
+ * couple of comparisons rather than a walk of every loaded row.
+ */
+function jobVaries(credits: readonly CreditLike[]): boolean {
+  let seen: string | undefined;
+  for (const credit of credits) {
+    const job = creditLabels(credit.categories ?? [])[0];
+    if (job === undefined) continue;
+    if (seen === undefined) seen = job;
+    else if (seen !== job) return true;
+  }
+  return false;
 }
 
 /**

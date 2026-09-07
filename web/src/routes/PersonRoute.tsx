@@ -377,13 +377,14 @@ export function PersonRoute() {
   const roles = mergedCategories(page.categories);
   /*
     What each card says this person did here -- the character, and the job only when the job
-    varies across the filmography. `noteForFilmography` owns that rule and returns one of two
+    tells two cards apart. `noteForFilmography` owns that rule and returns one of two
     module-level functions, so this is a STABLE reference and `TitleGrid`'s `memo` holds.
 
-    `roles` is reused rather than re-derived: the chip row below hides itself on a single
-    role for the same reason this suppresses the job, and one merge answers both.
+    It is handed the CREDITS rather than `roles`, and that is not an oversight: the role
+    breakdown says Nolan holds three, while every card of his prints "Directing". Only the
+    rows answer the question. See its docstring for what that costs.
   */
-  const noteFor = noteForFilmography(roles, role !== undefined);
+  const noteFor = noteForFilmography(page.credits);
   /** Both chip rows below go to the same place with a different question. */
   const showCredits = (search: Pick<SearchParams, "role" | "sort">) =>
     navigate({ to: "/person/$nconst", params: { nconst }, search });

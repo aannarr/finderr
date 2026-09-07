@@ -151,34 +151,63 @@ describe("characterNote", () => {
 });
 
 describe("noteForFilmography", () => {
-  const acting = [{ label: "Acting" }];
-  const several = [{ label: "Directing" }, { label: "Production" }, { label: "Writing" }];
-
-  test("one role means the job is never printed -- it would be the same word on every card", () => {
-    expect(noteForFilmography(acting, false)).toBe(characterNote);
+  const credit = (categories: string[], characters: string | null = null) => ({
+    tconst: `tt${categories.join("")}${characters ?? ""}`,
+    categories,
+    characters,
   });
 
-  test("several roles means the job IS printed, because it tells the cards apart", () => {
-    expect(noteForFilmography(several, false)).toBe(creditNote);
+  test("a person who only ever does one job never has it printed", () => {
+    // Billy West: nineteen acting credits. "Acting" under every card buries the names.
+    const west = [credit(["actor"], "Philip J. Fry"), credit(["actor"], "Sorcerio"), credit(["actor"])];
+    expect(noteForFilmography(west)).toBe(characterNote);
   });
 
-  test("a role filter suppresses the job however many roles the person has", () => {
-    // The reader pressed "Directing". Repeating it under all sixty cards answers a question
-    // nobody asked, and `personPage` has stripped the other categories from these rows
-    // anyway -- so the note could not name a second job even if it tried.
-    expect(noteForFilmography(several, true)).toBe(characterNote);
-    expect(noteForFilmography(acting, true)).toBe(characterNote);
+  test("THE CASE A ROLE COUNT CANNOT SEE: three roles, one job on every card", () => {
+    // Nolan holds Directing, Production and Writing, so counting his DISTINCT roles calls
+    // the job informative -- and all fourteen cards still print "Directing", because he
+    // directs every one of them. Measured on the live page 2026-09-07; it is the reason
+    // this function takes the rows rather than `PersonPage.categories`.
+    const nolan = Array.from({ length: 4 }, () => credit(["director", "producer", "writer"]));
+    expect(noteForFilmography(nolan)).toBe(characterNote);
   });
 
-  test("no roles at all is not a crash and prints no job", () => {
-    expect(noteForFilmography([], false)).toBe(characterNote);
+  test("a job that genuinely differs between two cards IS printed", () => {
+    const mixed = [credit(["actor"], "Vincent"), credit(["director"])];
+    expect(noteForFilmography(mixed)).toBe(creditNote);
+  });
+
+  test("a role filter needs no special case -- one label everywhere suppresses itself", () => {
+    // `personPage` strips the other categories under a filter, so every row arrives as the
+    // filtered role alone. The uniformity test catches it with no flag to pass.
+    const filtered = [credit(["director"]), credit(["director"]), credit(["director"])];
+    expect(noteForFilmography(filtered)).toBe(characterNote);
+  });
+
+  test("a credit with NO job is skipped, not counted as a second opinion", () => {
+    // Otherwise one row missing its categories would flip a uniform page to "varied" and
+    // put the repeated word back under every card.
+    expect(noteForFilmography([credit(["actor"], "Fry"), credit([], "Bender")])).toBe(characterNote);
+  });
+
+  test("an empty filmography is not a crash and prints no job", () => {
+    expect(noteForFilmography([])).toBe(characterNote);
   });
 
   test("returns a STABLE reference, which is what keeps TitleGrid's memo working", () => {
     // Not an implementation detail: `noteFor` is a prop on a `memo`'d component, so a fresh
     // closure per render would re-render every card in the grid on every keystroke.
-    expect(noteForFilmography(several, false)).toBe(noteForFilmography(several, false));
-    expect(noteForFilmography(acting, false)).toBe(noteForFilmography(acting, false));
+    const mixed = [credit(["actor"], "Vincent"), credit(["director"])];
+    expect(noteForFilmography(mixed)).toBe(noteForFilmography(mixed));
+    expect(noteForFilmography([])).toBe(noteForFilmography([]));
+  });
+
+  test("growing the page can only ADD the job, never take it away", () => {
+    // The one-way instability the docstring accepts: notes appear when a genuinely
+    // different job arrives, and no amount of loading can make them vanish again.
+    const first = [credit(["director"]), credit(["director"])];
+    expect(noteForFilmography(first)).toBe(characterNote);
+    expect(noteForFilmography([...first, credit(["actor"], "Cameo")])).toBe(creditNote);
   });
 });
 
