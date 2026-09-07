@@ -29,6 +29,7 @@ const TITLE: Title = {
   rating: 8.4,
   genres: "Action,Sci-Fi",
   runtime: 148,
+  lang: null,
   inLibrary: false,
   hasFile: false,
   progress: null,

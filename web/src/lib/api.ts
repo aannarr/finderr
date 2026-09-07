@@ -108,6 +108,16 @@ export interface Title extends RequestStateView {
   rating: number;
   genres: string;
   runtime: number | null;
+  /**
+   * Comma-joined ISO 639-1 codes, or `null` when this index cannot say.
+   *
+   * The client mirror of `TitleRow.lang` (`src/lib/title-cols.ts`), which owns the whole
+   * argument. Two things a reader of this line needs: the NAME is made here rather than
+   * sent (`languageNames`, so a Swedish reader sees "spanska" off the same `es`), and
+   * `null` covers both "nobody knows" and "this index predates the column" -- deliberately
+   * indistinguishable, because both mean draw nothing.
+   */
+  lang: string | null;
   score?: number;
   inLibrary: boolean;
   hasFile: boolean;

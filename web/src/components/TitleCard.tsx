@@ -2,8 +2,9 @@ import { Link } from "@tanstack/react-router";
 import { memo } from "react";
 import { todayUtc } from "../../../src/lib/episodes";
 import { prefetchTitle, type Title } from "../lib/api";
-import { shelfDateLabel } from "../lib/facet-panes";
+import { cardSubtitle, foreignLanguage, shelfDateLabel } from "../lib/facet-panes";
 import { jumpAriaKeyShortcut } from "../lib/jump-keys";
+import { browserLocales } from "../lib/reader-locale";
 import { AwardChip } from "./AwardChip";
 import { BrowseChip } from "./BrowseChip";
 import { JumpBadge, useJumpKey } from "./JumpKeys";
@@ -73,6 +74,21 @@ export const TitleCard = memo(function TitleCard({
   // screen -- so this costs nothing and draws nothing outside the grid routes.
   const jump = useJumpKey();
   const jumpLabel = jump.active ? jump.label : null;
+  /*
+    What language this is in, when that is not one the reader already reads.
+
+    `null` for the overwhelming majority of cards -- a title in the reader's own language,
+    a title nothing knows the language of, and every title on an index built before the
+    `lang` column existed all land here. `foreignLanguage` owns the whole rule; this line
+    only decides WHO is asking, and it asks the browser rather than `config.languages`
+    for the reason stated there.
+
+    Read per card rather than lifted to the grid: `browserLocales()` reads two properties
+    off `navigator` and this is not a hook, so a shelf of thirty pays nothing measurable
+    for it, and the alternative is a prop threaded through every grid, shelf and row in
+    the product to hand each card a value it can ask for itself.
+  */
+  const subtitle = cardSubtitle(t.title, t.orig, foreignLanguage(t.lang, browserLocales()));
 
   return (
     // h-full so the card fills its grid row or shelf slot -- without it a card with a
@@ -299,10 +315,31 @@ export const TitleCard = memo(function TitleCard({
           </p>
         )}
 
-        {/* The original title is often the one a non-English speaker searched for. */}
-        {t.orig && t.orig !== t.title && (
-          <p className="line-clamp-1 text-xs text-muted/80 italic" title={t.orig}>
-            {t.orig}
+        {/*
+          What this is called at home, and what language that is. ONE line, either half
+          optional, and the reason they share a line rather than taking two:
+
+          The original title is often the one a non-English speaker searched for, and the
+          language is what says whether a reader could watch it at all -- but they answer
+          the same question ("what am I actually looking at"), and a card 150px wide has
+          already spent a line each on the year and on an award. So `Colisión · Spanish`
+          when we have both, and either one alone when we do not.
+
+          NEITHER HALF IMPLIES THE OTHER, which is why this is not nested. `La Cible` is a
+          French series whose original title IS its title, so it draws a language and no
+          italic; a Swedish film with an English release title draws both; `SWAT Exiles`
+          draws neither and this element does not exist. Hiding the language behind
+          `t.orig` -- the shape the first draft had -- silently drops it for every title
+          whose two titles happen to match.
+
+          The italic is on the TITLE only: a title in another script or language is being
+          quoted, and the language beside it is a label rather than a name.
+        */}
+        {(subtitle.original || subtitle.language) && (
+          <p className="line-clamp-1 text-xs text-muted/80" title={subtitle.original ?? undefined}>
+            {subtitle.original && <span className="italic">{subtitle.original}</span>}
+            {subtitle.original && subtitle.language && <span aria-hidden="true"> · </span>}
+            {subtitle.language}
           </p>
         )}
 

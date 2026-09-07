@@ -278,12 +278,19 @@ function TitleFactsPanes({
       />
 
       {/*
-        PLAIN TEXT, not a chip, and that is a decision rather than an omission.
-        `.claude/CLAUDE.md`'s dead-end rule: a term becomes a link only once it has
-        somewhere real to go, and `/browse` cannot filter on language -- the IMDb dumps the
-        index is built from carry no language column at all, so there is nothing to
-        populate 1.27M rows with. A chip that looks like the year and decade chips beside
-        it and does nothing when clicked is worse than a word.
+        PLAIN TEXT, not a chip -- and CORRECTED 2026-09-07: the reason it gives is no
+        longer true and the conclusion has simply not been revisited.
+
+        This read "`/browse` cannot filter on language -- the IMDb dumps the index is built
+        from carry no language column at all". Both halves are now false: the origin stage
+        (2026-09-05) fills `title_lang` from a Wikidata crosswalk rather than from the
+        dumps, `browseIndex` takes a `lang`, `search-params.ts` validates `?lang=` and
+        `LIST_LANGUAGES` gives dozens of languages a ranked list page of their own. Under
+        the dead-end rule this term now HAS somewhere real to go.
+
+        It is still plain text because nobody has looked at what a chip here would do to
+        this pane, not because a chip would dead-end. Do not cite this comment as evidence
+        that it cannot be one.
       */}
       <FacetPane
         {...shared}
@@ -1127,8 +1134,8 @@ function CertificationBadge({ certs }: { certs: Certification[] }) {
 function LanguageNames({ langs }: { langs: Language[] }) {
   const names = languageNames(langs, browserLocales());
   if (names.length === 0) return null;
-  // Plain text and no chip: `/browse` has no language filter and the index cannot grow one
-  // -- see the comment where this pane is mounted.
+  // Plain text and no chip. The comment where this pane is mounted says why, and says
+  // which half of the old reason stopped being true -- the index grew a language filter.
   return <p className="text-sm text-ink">{names.join(", ")}</p>;
 }
 
