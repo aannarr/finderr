@@ -798,6 +798,27 @@ export interface Config {
      * so on and off produce identical shelves. `front-page.test.ts` pins that row for row.
      */
     keepFresh: boolean;
+
+    /**
+     * Shelf ids that are OFF for anybody who has not said otherwise. Empty by default.
+     *
+     * `FINDERR_SHELVES_HIDDEN_BY_DEFAULT=coming-soon-series,genre-adventure`, and the ids are
+     * the ones `src/server/shelves.ts` declares -- `genre-<lowercased name>` for a genre row.
+     *
+     * > [!IMPORTANT] It is a DEFAULT, not a removal, and the difference is the whole design
+     * > The shelf is still assembled, still warmed and still on `/api/shelves/preference`
+     * > marked hidden, so a reader can turn it back on and their choice then outranks this
+     * > for good. An operator who wants a shelf GONE deletes it from `shelfSpecs`; this is
+     * > for a row that is worth having and not worth putting in front of everybody.
+     *
+     * An id here that names no shelf is ignored rather than refused, the same rule a stored
+     * preference follows: the genre rows rotate with the nightly index build, so a name that
+     * was real when it was configured can be gone by morning and that is not an error.
+     *
+     * It is the OPERATOR's knob and never the reader's -- there is no URL parameter and no
+     * per-reader way to set it, the same argument `languages` and `minVotes` make.
+     */
+    hiddenByDefault: string[];
   };
 
   /**
@@ -1006,7 +1027,7 @@ const DEFAULTS: Config = {
   push: { enabled: true, contact: "mailto:finderr@localhost" },
   libraryRefreshSeconds: 60,
   // Opt-in. See `shelves.keepFresh` -- off is the behaviour every version so far has had.
-  shelves: { keepFresh: false },
+  shelves: { keepFresh: false, hiddenByDefault: [] },
   episodeRefreshSeconds: 21_600,
   episodeRefreshBatch: 25,
   resourceLogSeconds: 300,
@@ -1196,7 +1217,15 @@ function envOverrides(): Record<string, unknown> {
       contact: envStr("FINDERR_PUSH_CONTACT"),
     },
     libraryRefreshSeconds: envInt("FINDERR_LIBRARY_REFRESH_SECONDS"),
-    shelves: { keepFresh: envBool("FINDERR_KEEP_SHELVES_FRESH") },
+    shelves: {
+      keepFresh: envBool("FINDERR_KEEP_SHELVES_FRESH"),
+      // Not case-folded, unlike `regions` and `languages`: a shelf id is our own string
+      // rather than an ISO code, and `shelfSpecs` already writes every one in lower case.
+      hiddenByDefault: envStr("FINDERR_SHELVES_HIDDEN_BY_DEFAULT")
+        ?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    },
     episodeRefreshSeconds: envInt("FINDERR_EPISODE_REFRESH_SECONDS"),
     episodeRefreshBatch: envInt("FINDERR_EPISODE_REFRESH_BATCH"),
     resourceLogSeconds: envInt("FINDERR_RESOURCE_LOG_SECONDS"),
