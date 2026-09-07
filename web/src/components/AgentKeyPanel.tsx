@@ -1,5 +1,5 @@
 /**
- * Your one agent key, on the account page.
+ * Your agent keys, on the account page.
  *
  * > [!IMPORTANT] The deliverable is the SNIPPET, not the token
  * > What a person wants from this screen is something they can hand to an agent, so the
@@ -14,34 +14,108 @@
  * paste into a browser, a chat or an issue without registering that they just published a
  * credential.
  *
- * ONE key per user, so there is no list here and no id anywhere -- creating replaces, which
- * is what "Replace" says on the button. The plaintext is shown exactly once, at that moment,
- * and the warning is on THIS screen rather than only in the manifest because the moment to
- * warn somebody is while the thing is still in front of them.
+ * > [!NOTE] IT WAS ONE KEY PER USER until 2026-09-07, and the list is what names buy
+ * > With one key, two agents shared a credential: revoking the one that leaked killed the
+ * > one that had not, and "last used" answered for both at once. A name is what turns a row
+ * > into something you can decide about, which is why aannarr asked for one -- and a name
+ * > only means anything when there is more than one thing to tell apart.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { type AgentKeySummary, createAgentKey, getAgentKey, revokeAgentKey } from "../lib/auth-api";
+import { Bot } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { type AgentKeySummary, getAgentKeys, renameAgentKey, revokeAgentKey } from "../lib/auth-api";
 import { formatStamp } from "../lib/timestamps";
-import { LINK_BUTTON } from "../lib/ui";
-import { ShowOnceSecret } from "./ShowOnceSecret";
+import { ConfirmAction } from "./ConfirmAction";
+import { ACTION_COL, Empty, Row, Rows, Section } from "./settings/Section";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+
+/**
+ * The create flow, LAZY.
+ *
+ * It is the rarest thing on `/account` and it pulls in the whole Radix dialog; a reader who
+ * never makes a key never downloads it. `lazy` at module scope rather than inside the
+ * component, or every render would start a new import.
+ */
+const AgentKeyDialog = lazy(() => import("./AgentKeyDialog"));
+
+/** What a key is CALLED, falling back to what it can do. Never an id -- that is plumbing. */
+function keyTitle(key: AgentKeySummary): string {
+  return key.name ?? (key.readOnly ? "Read-only key" : "Read and write key");
+}
+
+function AgentKeyRow({
+  agentKey,
+  onRename,
+  onRevoke,
+}: {
+  agentKey: AgentKeySummary;
+  onRename: () => void;
+  onRevoke: () => Promise<void>;
+}) {
+  const [asking, setAsking] = useState(false);
+  /*
+    The KIND moves into the metadata line once a key has a name, because the title is then
+    the name and the kind is a fact about it. Without a name the title IS the kind, and
+    repeating it underneath would be the row saying one thing twice.
+  */
+  const kind = agentKey.name ? (agentKey.readOnly ? "read-only" : "read and write") : null;
+
+  return (
+    <Row
+      icon={<Bot aria-hidden="true" />}
+      title={keyTitle(agentKey)}
+      meta={
+        asking ? (
+          <span className="text-ink">Anything using it stops working immediately.</span>
+        ) : (
+          [
+            kind,
+            `added ${formatStamp(agentKey.createdAt, "never")}`,
+            `last used ${formatStamp(agentKey.lastUsedAt, "never")}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        )
+      }
+      // The one thing on this page that can act WITHOUT a browser, stated where the key is
+      // rather than in a paragraph under the section.
+      note={
+        !agentKey.readOnly ? "It can start real downloads on your behalf, in that agent's history" : undefined
+      }
+      action={
+        <>
+          {!asking && (
+            <Button type="button" size="sm" variant="ghost" onClick={onRename}>
+              Rename
+            </Button>
+          )}
+          <ConfirmAction
+            variant="inline"
+            onAskingChange={setAsking}
+            label="Revoke"
+            question="Anything using it stops working immediately."
+            confirmLabel="Yes, revoke"
+            busyLabel="Revoking…"
+            onConfirm={onRevoke}
+          />
+        </>
+      }
+    />
+  );
+}
 
 export function AgentKeyPanel() {
-  const [key, setKey] = useState<AgentKeySummary | null>(null);
+  const [keys, setKeys] = useState<AgentKeySummary[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [readOnly, setReadOnly] = useState(false);
-  /** The bootstrap block, held only until this page is left. It is not fetchable again. */
-  const [snippet, setSnippet] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  /** Which key is being renamed, and to what. Null means nothing is being edited. */
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const found = (await getAgentKey()).key;
-      setKey(found);
-      // The box starts where the existing key already is, so "Replace" without touching it
-      // keeps the kind you chose last time rather than silently promoting a read-only key.
-      if (found) setReadOnly(found.readOnly);
+      setKeys((await getAgentKeys()).keys);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -53,28 +127,16 @@ export function AgentKeyPanel() {
     void load();
   }, [load]);
 
-  const create = async () => {
-    setBusy(true);
+  const saveName = async () => {
+    if (!editing) return;
+    const { id, name } = editing;
+    setEditing(null);
     setError(null);
     try {
-      const made = await createAgentKey({ readOnly });
-      setSnippet(made.snippet);
-      setKey(made.key);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const revoke = async () => {
-    setError(null);
-    try {
-      await revokeAgentKey();
-      // The snippet goes with it. Leaving a dead credential on screen invites somebody to
-      // copy one that no longer authenticates and then debug the wrong thing.
-      setSnippet(null);
-      setKey(null);
+      // Empty CLEARS the name rather than storing "", the same rule the passkey rename
+      // follows -- one spelling of "no name", and the row falls back to its kind.
+      await renameAgentKey(id, name.trim() || null);
+      await load();
     } catch (e) {
       setError((e as Error).message);
     }
@@ -83,68 +145,104 @@ export function AgentKeyPanel() {
   if (!loaded) return null;
 
   return (
-    <section>
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-medium">Agent key</h2>
-        <span className="flex shrink-0 gap-3">
-          <button type="button" onClick={create} disabled={busy} className={LINK_BUTTON}>
-            {key ? "Replace" : "Create"}
-          </button>
-          {key && (
-            <button type="button" onClick={revoke} className={LINK_BUTTON}>
-              Revoke
-            </button>
+    <Section
+      label="Automation"
+      /*
+        ZONE 1: additive only, and UNDER the list. Two things moved on 2026-09-07 and both
+        were placement bugs the zone rules made nameable:
+
+        - REVOKE was up here beside Create. A destructive verb on a section's rule is the one
+          control a reader can press having read a noun and nothing else. It is a row action
+          now, beside the key it destroys.
+        - CREATE was pinned top-right, two thousand pixels from this list on a wide screen.
+          See the zone-1 caution in `settings/Section.tsx`.
+      */
+      add={
+        <Button type="button" size="sm" onClick={() => setCreating(true)}>
+          {keys.length > 0 ? "Create another key" : "Create a key"}
+        </Button>
+      }
+    >
+      {keys.length === 0 ? (
+        /*
+          ONE sentence, and the button beneath it is the call to action.
+
+          What used to be here was three stacked paragraphs and a floating `Read-only`
+          checkbox whose Create button was off at the other edge of the screen -- aannarr,
+          2026-09-07: *"is this readonly, what is that? is that not PER KEY?"*. It is per key,
+          and everything about the key being made now lives in the dialog that makes it.
+        */
+        <Empty>
+          No keys yet. One lets a script or an AI agent search, browse and request on your behalf, without a
+          browser.
+        </Empty>
+      ) : (
+        <Rows>
+          {keys.map((k) =>
+            editing?.id === k.id ? (
+              <li key={k.id} className="border-b border-line/60 py-3 last:border-0">
+                <form
+                  className="flex items-center gap-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void saveName();
+                  }}
+                >
+                  <Input
+                    // biome-ignore lint/a11y/noAutofocus: it opens on an explicit Rename click
+                    autoFocus
+                    value={editing.name}
+                    maxLength={60}
+                    placeholder="What is it for?"
+                    onChange={(e) => setEditing({ id: k.id, name: e.target.value })}
+                    // Blur saves rather than discarding: clicking away from a rename is far
+                    // more often "done" than "cancel", and the value is one word.
+                    onBlur={() => void saveName()}
+                    aria-label="Key name"
+                    className="min-w-0 flex-1"
+                  />
+                  {/* Same column as every other row, so the field ends where they end. */}
+                  <div className={ACTION_COL}>
+                    <Button type="submit" size="sm">
+                      Save
+                    </Button>
+                  </div>
+                </form>
+              </li>
+            ) : (
+              <AgentKeyRow
+                key={k.id}
+                agentKey={k}
+                onRename={() => setEditing({ id: k.id, name: k.name ?? "" })}
+                onRevoke={async () => {
+                  // NOT caught: the inline confirm shows the server's refusal on the row that
+                  // provoked it.
+                  await revokeAgentKey(k.id);
+                  await load();
+                }}
+              />
+            ),
           )}
-        </span>
-      </div>
+        </Rows>
+      )}
 
-      <p className="mt-2 text-sm text-muted">
-        {key
-          ? `A ${key.readOnly ? "read-only" : "read-write"} key, added ${formatStamp(key.createdAt, "never")} · last used ${formatStamp(key.lastUsedAt, "never")}.`
-          : "Lets a script or an AI agent search, browse and request on your behalf, without a browser."}
-      </p>
-
-      {/*
-        The choice belongs BEFORE the key exists, because it is fixed for that key's life:
-        one key per person means read-only is a property of the key rather than something to
-        toggle later. Replacing with the box in the other state is how it changes.
-      */}
-      <label className="mt-2 flex items-center gap-2 text-sm text-muted">
-        <input
-          type="checkbox"
-          checked={readOnly}
-          onChange={(e) => setReadOnly(e.target.checked)}
-          className="accent-accent"
-        />
-        Read-only -- it can look, but it cannot request anything
-      </label>
-
-      {snippet && (
-        <ShowOnceSecret
-          // One sentence differs between a read-only key and a read-write one, so it is a
-          // clause rather than a second string: two nearly identical warnings are two
-          // warnings to keep in step, and the one nobody updates is the scarier one.
-          note={[
-            "Give this to your agent now.",
-            key?.readOnly ? null : "It can start real downloads on your behalf.",
-            "It is shown once and cannot be recovered -- if it is lost, Replace makes a new one and the old key stops working immediately.",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          value={snippet}
-        />
+      {/* A refusal, drawn as one -- it was the same grey as the explanatory lines around it. */}
+      {error && (
+        <p className="mt-3 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+          {error}
+        </p>
       )}
 
       {/*
-        Said where it is true rather than only in the manifest: the person handing over a key
-        is the one who can decide not to, and they cannot decide that after the fact.
+        Mounted only once somebody has asked for it, so the chunk is fetched on the click
+        rather than on every page load. No fallback: the dialog IS the visible response to
+        pressing the button, and a spinner in its place would be a second thing appearing.
       */}
-      <p className="mt-2 text-xs text-muted">
-        The key carries your access but never administration, and giving it to an agent puts it in that
-        agent&rsquo;s history. Replace it if you stop trusting where it went.
-      </p>
-
-      {error && <p className="mt-2 text-sm text-muted">{error}</p>}
-    </section>
+      {creating && (
+        <Suspense fallback={null}>
+          <AgentKeyDialog open={creating} onOpenChange={setCreating} onCreated={load} />
+        </Suspense>
+      )}
+    </Section>
   );
 }

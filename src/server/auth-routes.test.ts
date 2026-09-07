@@ -74,6 +74,20 @@ function fakeStore(counted: CountedWindow[]): Store {
       counted.push({ userId, sinceIso });
       return own(userId).length;
     },
+    /*
+      DERIVED FROM THE SAME ONE ROW the rest of this stub serves, rather than returning three
+      fixed numbers. The real one is a grouped query and its arithmetic is SQLite's, pinned
+      where the query lives; what matters here is that `/api/auth/me` asks for the CALLER's
+      figures and gets something consistent with the row it also lists.
+    */
+    ownActivity: (userId: string) => {
+      const rows = own(userId);
+      return {
+        requested: rows.length,
+        inFlight: rows.filter((r) => !["available", "failed", "no_release"].includes(r.status)).length,
+        ready: rows.filter((r) => r.status === "available" && r.available_seen_at === null).length,
+      };
+    },
     getKv: (key: string) => kv.get(key) ?? null,
     setKv: (key: string, value: string) => void kv.set(key, value),
   } as unknown as Store;
@@ -384,15 +398,40 @@ describe("resetting an account is the passkey answer to a forced password reset"
 
     const res = await h.call(`/api/admin/users/${u.id}/reset`, { method: "POST", bearer: API_KEY });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { revoked: { credentials: number; sessions: number }; token: string };
+    const body = (await res.json()) as {
+      revoked: { credentials: number; sessions: number; devices: number };
+      token: string;
+    };
 
-    expect(body.revoked).toEqual({ credentials: 2, sessions: 1 });
+    expect(body.revoked).toEqual({ credentials: 2, sessions: 1, devices: 0 });
     expect(h.auth.credentialsFor(u.id)).toHaveLength(0);
     expect(h.auth.sessionsFor(u.id)).toHaveLength(0);
     expect(h.auth.getUser(u.id)?.plexId).toBeNull();
     // The account survives -- a reset is not a delete, and their request history stays.
     expect(h.auth.getUser(u.id)?.displayName).toBe("Guest");
     expect(h.auth.getInvite(hashToken(body.token))?.role).toBe("user");
+  });
+
+  /*
+    THE DEVICES GO TOO, and this was the hole.
+
+    A reset revoked every credential, every session and the Plex link, and left
+    `push_subscription` standing -- so the phone belonging to whoever had that account
+    yesterday went on receiving notifications about the person who holds it now. Deleting a
+    user cascades to this table by declaration; resetting one had no such guarantee, and a
+    reset is exactly the move an operator makes when an account has gone somewhere it should
+    not have.
+  */
+  test("every subscribed device is de-registered as well", async () => {
+    const u = h.auth.createUser({ displayName: "Guest", role: "user" });
+    h.auth.putPushSubscription({ endpoint: "https://push.example/1", userId: u.id, p256dh: "p", auth: "a" });
+    h.auth.putPushSubscription({ endpoint: "https://push.example/2", userId: u.id, p256dh: "p", auth: "a" });
+
+    const res = await h.call(`/api/admin/users/${u.id}/reset`, { method: "POST", bearer: API_KEY });
+    const body = (await res.json()) as { revoked: { devices: number } };
+
+    expect(body.revoked.devices).toBe(2);
+    expect(h.auth.listPushSubscriptions(u.id)).toHaveLength(0);
   });
 });
 
@@ -702,7 +741,7 @@ describe("one person, whole", () => {
         resetsAt: string;
         applies: boolean;
       };
-      agentKey: { readOnly: boolean } | null;
+      agentKeys: { name: string | null; readOnly: boolean }[];
     };
 
   test("identity, every credential, every session and their requests, in one call", async () => {
@@ -847,13 +886,17 @@ describe("one person, whole", () => {
     HASH is in the row, and this is what stops it being spread into an admin's JSON by a
     later hand reaching for `agentKeyFor` directly.
   */
-  test("an agent key is reported as existing, never as a credential", async () => {
+  test("agent keys are reported as existing, never as credentials", async () => {
     const u = member();
-    expect((await detailOf(u.id)).agentKey).toBeNull();
+    expect((await detailOf(u.id)).agentKeys).toEqual([]);
 
-    const { token } = h.auth.putAgentKey({ userId: u.id, readOnly: true });
+    const { token } = h.auth.putAgentKey({ userId: u.id, name: "watcher", readOnly: true });
     const body = await detailOf(u.id);
-    expect(body.agentKey?.readOnly).toBe(true);
+    // A LIST since 2026-09-07: one key per user is gone, so an operator reading this page
+    // sees how many things are acting for somebody rather than whether anything is.
+    expect(body.agentKeys).toHaveLength(1);
+    expect(body.agentKeys[0].readOnly).toBe(true);
+    expect(body.agentKeys[0].name).toBe("watcher");
     expect(JSON.stringify(body)).not.toContain(token);
     expect(JSON.stringify(body)).not.toContain(hashToken(token));
   });

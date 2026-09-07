@@ -49,6 +49,7 @@ const principal = (role: Role, over: Partial<User> = {}): Principal => {
     disabledAt: null,
     quotaPerDay: null,
     assistantAllowed: true,
+    pushOfferedAt: null,
     ...over,
   };
   return { kind: "session", user, role };

@@ -165,26 +165,50 @@ describe("the key authenticates, and carries less than its owner", () => {
 
   test("only the hash is stored -- the plaintext is not in the row", () => {
     const { userId, token } = keyFor();
-    const row = h.auth.agentKeyFor(userId);
-    expect(row?.tokenHash).toBe(hashToken(token));
-    expect(JSON.stringify(row)).not.toContain(token);
+    const rows = h.auth.agentKeysFor(userId);
+    expect(rows[0]?.tokenHash).toBe(hashToken(token));
+    expect(JSON.stringify(rows)).not.toContain(token);
   });
 
-  test("a rotated key kills the old token in the same statement", async () => {
-    const { userId, token: first } = keyFor();
-    expect((await h.call("/api/discover", { bearer: first })).status).toBe(200);
+  /*
+    REPLACES "a rotated key kills the old token in the same statement", 2026-09-07.
 
-    const { token: second } = h.auth.putAgentKey({ userId, readOnly: false });
-    expect((await h.call("/api/discover", { bearer: second })).status).toBe(200);
-    // 401 rather than 403: the old token identifies nobody at all now. That IS the
-    // observable half of "one key per user" -- the schema enforces the other half by making
-    // `user_id` the primary key, so there is no second row for a test to find.
-    expect((await h.call("/api/discover", { bearer: first })).status).toBe(401);
+    That test defended the upsert on `user_id`: minting overwrote the row, so there was never
+    a window where two tokens worked. It was true, and it is exactly the property that made a
+    SECOND agent impossible -- two of them shared one credential, so revoking the leaked one
+    killed the other. Naming keys is naming several, so the upsert is gone and this is what
+    replaced it. The premise moved; the test moves with it.
+  */
+  test("two keys coexist, and revoking one leaves the other working", async () => {
+    const { userId, token: first } = keyFor();
+    const made = h.auth.putAgentKey({ userId, name: "second", readOnly: false });
+
+    expect((await h.call("/api/discover", { bearer: first })).status).toBe(200);
+    expect((await h.call("/api/discover", { bearer: made.token })).status).toBe(200);
+    expect(h.auth.agentKeysFor(userId)).toHaveLength(2);
+
+    h.auth.deleteAgentKey(made.key.id, userId);
+    const second = made.token;
+
+    // 401 rather than 403: the revoked token identifies nobody at all now. The other one is
+    // untouched, which is the whole reason a person may hold more than one.
+    expect((await h.call("/api/discover", { bearer: second })).status).toBe(401);
+    expect((await h.call("/api/discover", { bearer: first })).status).toBe(200);
+  });
+
+  /** A key is revocable only by its OWNER: an id alone is not authority over the row. */
+  test("somebody else's id revokes nothing", async () => {
+    const { userId, token } = keyFor();
+    const stranger = h.auth.createUser({ displayName: "stranger", role: "user" });
+    const mine = h.auth.agentKeysFor(userId)[0];
+
+    expect(h.auth.deleteAgentKey(mine.id, stranger.id)).toBe(false);
+    expect((await h.call("/api/discover", { bearer: token })).status).toBe(200);
   });
 
   test("a revoked key is refused immediately", async () => {
     const { userId, token } = keyFor();
-    h.auth.deleteAgentKey(userId);
+    h.auth.deleteAgentKeysFor(userId);
     expect((await h.call("/api/discover", { bearer: token })).status).toBe(401);
   });
 
@@ -226,33 +250,74 @@ describe("a key cannot manage identity, its own least of all", () => {
     expect((await h.call(AGENT_KEY_PATH, { method: "POST", bearer: token })).status).toBe(404);
   });
 
-  test("a person in a browser creates, reads and revokes it", async () => {
+  test("a person in a browser creates, names, reads and revokes them", async () => {
     const user = h.auth.createUser({ displayName: "person", role: "user" });
     const cookie = `${SESSION_COOKIE}=${h.auth.createSession({ userId: user.id, expiresAt: isoIn(60_000) })}`;
 
-    expect(await (await h.call(AGENT_KEY_PATH, { cookie })).json()).toEqual({ key: null });
+    expect(await (await h.call(AGENT_KEY_PATH, { cookie })).json()).toEqual({ keys: [] });
 
-    const made = (await (await h.call(AGENT_KEY_PATH, { method: "POST", cookie })).json()) as {
-      token: string;
-      snippet: string;
-      rotated: boolean;
-    };
-    expect(made.rotated).toBe(false);
+    const made = (await (
+      await h.call(AGENT_KEY_PATH, {
+        method: "POST",
+        cookie,
+        body: JSON.stringify({ name: "home-assistant", readOnly: false }),
+      })
+    ).json()) as { token: string; snippet: string; key: { id: string; name: string } };
+
+    expect(made.key.name).toBe("home-assistant");
     // The snippet is what a person copies, and it carries the plaintext exactly once.
     expect(made.snippet).toContain(made.token);
     expect(made.snippet).toContain(AGENT_MANIFEST_PATH);
 
     // Reading it back never returns the token again -- only the sha256 was kept.
-    const read = await (await h.call(AGENT_KEY_PATH, { cookie })).json();
-    expect(JSON.stringify(read)).not.toContain(made.token);
-
-    const again = (await (await h.call(AGENT_KEY_PATH, { method: "POST", cookie })).json()) as {
-      rotated: boolean;
+    const read = (await (await h.call(AGENT_KEY_PATH, { cookie })).json()) as {
+      keys: { id: string; name: string }[];
     };
-    expect(again.rotated).toBe(true);
+    expect(JSON.stringify(read)).not.toContain(made.token);
+    expect(read.keys).toHaveLength(1);
 
-    expect((await h.call(AGENT_KEY_PATH, { method: "DELETE", cookie })).status).toBe(200);
-    expect(await (await h.call(AGENT_KEY_PATH, { cookie })).json()).toEqual({ key: null });
+    /*
+      A SECOND key rather than a rotation. This asserted `rotated: true` on the second POST,
+      which was the observable half of the upsert -- see the schema comment on `agent_key` for
+      why that property was traded away. Two named rows is what replaced it.
+    */
+    await h.call(AGENT_KEY_PATH, {
+      method: "POST",
+      cookie,
+      body: JSON.stringify({ name: "research-bot", readOnly: true }),
+    });
+    const both = (await (await h.call(AGENT_KEY_PATH, { cookie })).json()) as {
+      keys: { name: string }[];
+    };
+    expect(both.keys.map((k) => k.name).sort()).toEqual(["home-assistant", "research-bot"]);
+
+    // Renaming and revoking are BY ID, and both leave the other key alone.
+    expect(
+      (
+        await h.call(`${AGENT_KEY_PATH}/${made.key.id}`, {
+          method: "PATCH",
+          cookie,
+          body: JSON.stringify({ name: "renamed" }),
+        })
+      ).status,
+    ).toBe(200);
+
+    expect((await h.call(`${AGENT_KEY_PATH}/${made.key.id}`, { method: "DELETE", cookie })).status).toBe(200);
+    const left = (await (await h.call(AGENT_KEY_PATH, { cookie })).json()) as { keys: { name: string }[] };
+    expect(left.keys.map((k) => k.name)).toEqual(["research-bot"]);
+  });
+
+  /** An id is not authority: another account's key is a 404, never a 403 that confirms it. */
+  test("somebody else's key id is a 404 from this account", async () => {
+    const mine = h.auth.createUser({ displayName: "mine", role: "user" });
+    const yours = h.auth.createUser({ displayName: "yours", role: "user" });
+    const theirs = h.auth.putAgentKey({ userId: yours.id, readOnly: false });
+    const cookie = `${SESSION_COOKIE}=${h.auth.createSession({ userId: mine.id, expiresAt: isoIn(60_000) })}`;
+
+    expect((await h.call(`${AGENT_KEY_PATH}/${theirs.key.id}`, { method: "DELETE", cookie })).status).toBe(
+      404,
+    );
+    expect(h.auth.agentKeysFor(yours.id)).toHaveLength(1);
   });
 
   test("an anonymous caller gets the ordinary 401, never a hint", async () => {
@@ -360,7 +425,7 @@ describe("the manifest route answers the key that asked", () => {
   function route(over: Partial<Parameters<typeof agentManifestRoute>[0]> = {}) {
     return agentManifestRoute({
       principal: (req) => h.service.principal(req),
-      keyFor: (userId) => h.auth.agentKeyFor(userId),
+      keyFor: (keyId) => h.auth.agentKeyById(keyId),
       limiter: (bucket) => h.service.agentLimiter(bucket),
       origin: () => "https://finderr.example",
       quota: () => ({ limitPerDay: 0, usedToday: 0, resetsAt: "2026-09-03T00:00:00.000Z" }),
@@ -417,7 +482,7 @@ describe("the manifest route answers the key that asked", () => {
 
     const md = await agentManifestRoute({
       principal: (req) => local.service.principal(req),
-      keyFor: (id) => local.auth.agentKeyFor(id),
+      keyFor: (id) => local.auth.agentKeyById(id),
       limiter: (bucket) => local.service.agentLimiter(bucket),
       origin: () => "http://localhost:7979",
       quota: () => ({ limitPerDay: 0, usedToday: 0, resetsAt: "2026-09-03T00:00:00.000Z" }),

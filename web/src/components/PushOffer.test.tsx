@@ -28,9 +28,13 @@ beforeEach(() => {
   control = {
     support: { kind: "available", publicKey: "k" },
     subscribed: false,
+    offered: false,
+    devices: 0,
     busy: false,
     error: null,
     toggle: async () => {},
+    disableAll: async () => {},
+    dismiss: async () => {},
   };
 });
 
@@ -51,6 +55,17 @@ describe("when the offer is made", () => {
 
   test("a device already subscribed is not asked again", () => {
     control = { ...control, subscribed: true };
+    render(<PushOffer when={true} />);
+    expect(screen.queryByRole("button", { name: OFFER })).toBeNull();
+  });
+
+  /*
+    ONCE PER PERSON, and this is the assertion that makes it true across devices. `offered`
+    is an account column, so a reader who answered on their phone is not asked on their
+    laptop -- where `subscribed` is honestly false and the test above would let it through.
+  */
+  test("somebody already asked is never asked again, on any device", () => {
+    control = { ...control, offered: true };
     render(<PushOffer when={true} />);
     expect(screen.queryByRole("button", { name: OFFER })).toBeNull();
   });
@@ -109,5 +124,33 @@ describe("pressing it", () => {
     render(<PushOffer when={false} />);
 
     expect(screen.getByText("You declined notifications.")).toBeDefined();
+  });
+});
+
+/*
+  SAYING NO WITHOUT ANSWERING A SYSTEM PROMPT. Without this control the only way to stop
+  being asked is to open the browser's own permission dialog and refuse it -- a heavier and
+  more permanent act than the question deserves, and one that also blocks the account page's
+  switch forever.
+*/
+describe("declining the offer", () => {
+  test("records the answer, so it is never put again", () => {
+    let dismissed = 0;
+    control = {
+      ...control,
+      dismiss: async () => {
+        dismissed += 1;
+      },
+    };
+    render(<PushOffer when={true} />);
+    fireEvent.click(screen.getByRole("button", { name: "No thanks" }));
+
+    expect(dismissed).toBe(1);
+  });
+
+  test("it is not offered while the other button is working", () => {
+    control = { ...control, busy: true };
+    render(<PushOffer when={true} />);
+    expect(screen.queryByRole("button", { name: "No thanks" })).toBeNull();
   });
 });

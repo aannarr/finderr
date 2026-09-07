@@ -160,28 +160,41 @@ create table if not exists push_subscription (
 );
 create index if not exists ix_push_user on push_subscription(user_id);
 
--- ONE agent key per user, and the SCHEMA is what makes that true.
+-- MANY agent keys per user, each with a name. CORRECTED 2026-09-07 -- see migrateAgentKeys.
 --
 -- NOTE: no backticks anywhere in this comment. AUTH_SCHEMA is a template literal.
 --
--- user_id is the PRIMARY KEY rather than a column beside an id of its own, so there is no
--- collection to list, nothing to label, and no revocation-by-id: creating a key when one
--- exists REPLACES it, in one statement, which kills the old token in the same write that
--- mints the new one. A table of keys would have needed a uniqueness check somebody has to
--- remember, and the failure mode of forgetting it is an orphan credential nobody can see.
+-- This was keyed on user_id, one key per person, and the comment here argued the case: no
+-- collection to list, nothing to label, no revocation-by-id, and creating replaced in one
+-- statement so there was no window where two tokens worked. That reasoning was sound for
+-- one key and it is what made the SECOND one impossible.
+--
+-- It stops holding the moment somebody runs two agents. With one key they share it, so
+-- revoking the one that leaked kills the one that did not, and last_used_at answers for
+-- both at once -- which is to say it answers for neither. A name is what turns a row into
+-- something you can decide about, and it is why aannarr asked for one.
+--
+-- The uniqueness check the old comment worried about is real and it is HERE: token_hash is
+-- unique, so an orphan credential is a constraint violation rather than a thing to remember.
 --
 -- token_hash is UNIQUE because it is the lookup key on every authenticated request: a
 -- caller presents a token, we hash it, and the row it finds decides who they are. The
 -- token itself is never stored -- same rule as sessions and invites.
 --
+-- name is NULLABLE and stays that way: a key migrated from the old shape never had one, and
+-- inventing a name for it would be inventing a fact. Readers fall back to the kind.
+--
 -- read_only is a TOGGLE, not a scope list. See AgentKey in ./auth.ts for what it costs.
 create table if not exists agent_key (
-  user_id      text primary key references app_user(id) on delete cascade,
+  id           text primary key,
+  user_id      text not null references app_user(id) on delete cascade,
+  name         text,
   token_hash   text not null unique,
   created_at   text not null,
   last_used_at text,
   read_only    integer not null default 0
 );
+create index if not exists ix_agent_key_user on agent_key(user_id, created_at desc);
 `;
 
 /**
@@ -231,6 +244,33 @@ export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
     column: "assistant_allowed",
     ddl: "alter table app_user add column assistant_allowed integer not null default 1",
   },
+  /*
+    WHEN THIS PERSON WAS ASKED ABOUT NOTIFICATIONS. Null means never, and null is the only
+    state in which finderr offers.
+
+    ON THE USER RATHER THAN ON THE DEVICE, which is aannarr's call of 2026-09-07 and the
+    whole shape of the feature: *"USER TO OPT IN"*, *"we NEVER repeat -- so once only"*. The
+    device-scoped alternative was to keep this in `localStorage`, and it is the reading that
+    looks right at first, because a SUBSCRIPTION genuinely is per-device -- a new phone has
+    never been subscribed and never can be by an old one. It loses on what the field
+    actually records: not "is this browser subscribed", which `PushManager` already answers,
+    but "have we put this question to this human". A human who has already said no is the
+    same human on their laptop, and asking again there is the nagging this exists to stop.
+    It also cannot survive cleared site data, which is the one moment a reader is most
+    likely to be annoyed at being asked twice.
+
+    A TIMESTAMP RATHER THAN A FLAG, for nothing cleverer than that it costs the same and
+    answers "when" as well as "whether". Nothing reads the value; if something ever wants to
+    re-offer after a year, the fact is already here rather than needing a migration.
+
+    NULLABLE with no default, so every existing account is "never asked" and gets the offer
+    once, which is the behaviour they had before this column existed.
+  */
+  {
+    table: "app_user",
+    column: "push_offered_at",
+    ddl: "alter table app_user add column push_offered_at text",
+  },
 ];
 
 /**
@@ -239,9 +279,66 @@ export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
  * The one way in, used by `Store` and by every test harness, so the ALTERs above are
  * exercised by the suite rather than running for the first time against the live file.
  */
+/**
+ * Rebuild `agent_key` from one-key-per-user to many-named-keys-per-user.
+ *
+ * > [!IMPORTANT] THIS IS THE ONE MIGRATION IN THIS SCHEMA THAT `ADDED_COLUMNS` CANNOT DO
+ * > Every other change to a deployed table here has been a new nullable column, which is one
+ * > `alter table add column`. This one moves the PRIMARY KEY off `user_id` and onto a new
+ * > `id`, and SQLite cannot alter a primary key at all -- the only way is to build the new
+ * > table, copy, drop and rename. So it is written out rather than declared.
+ *
+ * **IDEMPOTENT BY SHAPE, not by a version number.** It asks `PRAGMA table_info` whether an
+ * `id` column exists and does nothing if it does, so it is safe on every boot and on a fresh
+ * database that `AUTH_SCHEMA` has just built correctly. A migrations table would be a second
+ * thing to keep true; the shape IS the truth.
+ *
+ * **IN A TRANSACTION, because it is carrying live credentials.** A half-run rebuild would
+ * drop the old table having failed to fill the new one, and every agent on the deployment
+ * would stop authenticating at once. The keys are re-mintable, which bounds the damage --
+ * but "re-mint every key by hand" is not a migration outcome anybody should accept.
+ *
+ * A migrated key keeps its `token_hash`, so **whatever is holding that token goes on working
+ * across the upgrade**. It gains a generated id and a NULL name; the name is left null rather
+ * than filled with something like "Agent key", because a name nobody chose is a fact this
+ * table would be inventing, and every reader already falls back to the key's kind.
+ */
+export function migrateAgentKeys(db: Database): void {
+  const columns = db.query("pragma table_info(agent_key)").all() as { name: string }[];
+  // No table at all is a fresh database -- AUTH_SCHEMA has already built the new shape.
+  if (columns.length === 0 || columns.some((c) => c.name === "id")) return;
+
+  db.transaction(() => {
+    db.run(`create table agent_key_new (
+      id           text primary key,
+      user_id      text not null references app_user(id) on delete cascade,
+      name         text,
+      token_hash   text not null unique,
+      created_at   text not null,
+      last_used_at text,
+      read_only    integer not null default 0
+    )`);
+    /*
+      The id is derived from the token hash rather than randomly generated, so re-running an
+      interrupted migration cannot mint a second row for one credential. `substr` of a sha256
+      is 32 hex characters, which is the same width the rest of this schema's ids use and is
+      not a secret: the hash it comes from is already what the table stores.
+    */
+    db.run(`insert into agent_key_new (id, user_id, name, token_hash, created_at, last_used_at, read_only)
+            select substr(token_hash, 1, 32), user_id, null, token_hash, created_at, last_used_at, read_only
+            from agent_key`);
+    db.run("drop table agent_key");
+    db.run("alter table agent_key_new rename to agent_key");
+    db.run("create index if not exists ix_agent_key_user on agent_key(user_id, created_at desc)");
+  })();
+}
+
 export function applyAuthSchema(db: Database): void {
   db.run(AUTH_SCHEMA);
   addMissingColumns(db, AUTH_ADDED_COLUMNS);
+  // AFTER the create-if-not-exists above, so a fresh database is already the new shape and
+  // this is a no-op, and an old one is rebuilt from what it actually holds.
+  migrateAgentKeys(db);
 }
 
 interface UserRow {
@@ -255,6 +352,7 @@ interface UserRow {
   disabled_at: string | null;
   quota_per_day: number | null;
   assistant_allowed: number;
+  push_offered_at: string | null;
 }
 
 interface CredentialRow {
@@ -307,7 +405,9 @@ interface SessionRow {
 }
 
 interface AgentKeyRow {
+  id: string;
   user_id: string;
+  name: string | null;
   token_hash: string;
   created_at: string;
   last_used_at: string | null;
@@ -341,6 +441,7 @@ function toUser(r: UserRow): User {
     disabledAt: r.disabled_at,
     quotaPerDay: r.quota_per_day,
     assistantAllowed: r.assistant_allowed !== 0,
+    pushOfferedAt: r.push_offered_at,
   };
 }
 
@@ -375,7 +476,9 @@ function toInvite(r: InviteRow): Invite {
 
 function toAgentKey(r: AgentKeyRow): AgentKey {
   return {
+    id: r.id,
     userId: r.user_id,
+    name: r.name,
     tokenHash: r.token_hash,
     createdAt: r.created_at,
     lastUsedAt: r.last_used_at,
@@ -475,6 +578,8 @@ export class AuthStore {
       disabledAt: null,
       quotaPerDay: null,
       assistantAllowed,
+      // Never asked, which is what makes a new account eligible for the one offer.
+      pushOfferedAt: null,
     };
   }
 
@@ -853,33 +958,43 @@ export class AuthStore {
   // --- agent keys ----------------------------------------------------------
 
   /**
-   * Mint this user's agent key, replacing whatever they had. Returns the TOKEN.
+   * Mint one agent key. Returns the TOKEN, which exists nowhere else, ever again.
    *
-   * ROTATION IS THIS CALL, and there is no separate one. The upsert overwrites the hash of
-   * the previous key, so it stops authenticating in the same statement that mints its
-   * replacement -- no window where both work, and nothing left behind to revoke.
+   * > [!IMPORTANT] IT NO LONGER REPLACES, and losing that is the point of naming keys
+   * > This was an upsert on `user_id`: minting overwrote the previous hash, so rotation and
+   * > creation were one call and there was never a window where two tokens worked. Neat, and
+   * > it made a second agent impossible -- two agents shared one credential, so revoking the
+   * > one that leaked killed the one that had not, and `last_used_at` answered for both at
+   * > once.
+   * >
+   * > Rotation is now REPLACE-THEN-REVOKE by the caller, in that order, which does have a
+   * > window where both work. That is the honest trade: the alternative kills the running
+   * > agent before its replacement is in place, and the person doing it is looking at a
+   * > list where they can see exactly which row is which.
    *
-   * `created_at` is rewritten too: the row records the age of the key it currently holds,
-   * not of the first one this user ever had. A stamp that survived a rotation would tell
-   * somebody auditing "this credential is nine months old" about a credential that is nine
-   * minutes old.
+   * `name` is trimmed to null rather than stored as "", so there is one spelling of "no
+   * name" -- the same rule `renameCredential` follows for passkeys.
    */
-  putAgentKey(k: { userId: string; readOnly: boolean; now?: Date }): { token: string; key: AgentKey } {
+  putAgentKey(k: { userId: string; name?: string | null; readOnly: boolean; now?: Date }): {
+    token: string;
+    key: AgentKey;
+  } {
     const token = newToken();
     const tokenHash = hashToken(token);
     const createdAt = isoNow(k.now);
+    // `newToken(16)` is what every other id in this file is, and the width is the point
+    // rather than the entropy: an id is not a secret here, it is drawn on the account page.
+    const id = newToken(16);
+    const name = k.name?.trim() || null;
     this.db
       .query(
-        `insert into agent_key (user_id, token_hash, created_at, last_used_at, read_only)
-         values (?, ?, ?, null, ?)
-         on conflict(user_id) do update set
-           token_hash = excluded.token_hash, created_at = excluded.created_at,
-           last_used_at = null, read_only = excluded.read_only`,
+        `insert into agent_key (id, user_id, name, token_hash, created_at, last_used_at, read_only)
+         values (?, ?, ?, ?, ?, null, ?)`,
       )
-      .run(k.userId, tokenHash, createdAt, k.readOnly ? 1 : 0);
+      .run(id, k.userId, name, tokenHash, createdAt, k.readOnly ? 1 : 0);
     return {
       token,
-      key: { userId: k.userId, tokenHash, createdAt, lastUsedAt: null, readOnly: k.readOnly },
+      key: { id, userId: k.userId, name, tokenHash, createdAt, lastUsedAt: null, readOnly: k.readOnly },
     };
   }
 
@@ -898,16 +1013,51 @@ export class AuthStore {
     return r ? toAgentKey(r) : null;
   }
 
-  /** The key this user holds, for the account page. Never the token -- that is gone. */
-  agentKeyFor(userId: string): AgentKey | null {
-    const r = this.db.query("select * from agent_key where user_id = ?").get(userId) as
-      | AgentKeyRow
-      | undefined;
+  /**
+   * One key by its id, for the manifest that describes the caller to itself.
+   *
+   * NOT scoped to a user, unlike `deleteAgentKey` and `renameAgentKey`: the only caller is
+   * the manifest, which has just been handed this id by the hash that authenticated the
+   * request. There is no id here that did not come from a token somebody presented.
+   */
+  agentKeyById(id: string): AgentKey | null {
+    const r = this.db.query("select * from agent_key where id = ?").get(id) as AgentKeyRow | undefined;
     return r ? toAgentKey(r) : null;
   }
 
-  deleteAgentKey(userId: string): boolean {
-    return this.db.query("delete from agent_key where user_id = ?").run(userId).changes > 0;
+  /** Every key this user holds, newest first. Never a token -- those are gone. */
+  agentKeysFor(userId: string): AgentKey[] {
+    return (
+      this.db
+        .query("select * from agent_key where user_id = ? order by created_at desc, id")
+        .all(userId) as AgentKeyRow[]
+    ).map(toAgentKey);
+  }
+
+  /**
+   * Revoke ONE key, named by its id and scoped to whose it is.
+   *
+   * `user_id` is in the WHERE for the same reason `deleteSessionByHash` has it there: the id
+   * is handed to every reader of `/api/auth/me`, and holding one must never be authority over
+   * it. `false` means "not theirs, or no such thing" -- one answer for both, because telling
+   * them apart would confirm that somebody else's key exists.
+   */
+  deleteAgentKey(id: string, userId: string): boolean {
+    return this.db.query("delete from agent_key where id = ? and user_id = ?").run(id, userId).changes > 0;
+  }
+
+  /** Every key a user holds, gone at once. What "reset access" means for automation. */
+  deleteAgentKeysFor(userId: string): number {
+    return this.db.query("delete from agent_key where user_id = ?").run(userId).changes;
+  }
+
+  /** Rename one key. Empty means no name, the same rule `putAgentKey` applies on the way in. */
+  renameAgentKey(id: string, userId: string, name: string | null): boolean {
+    return (
+      this.db
+        .query("update agent_key set name = ? where id = ? and user_id = ?")
+        .run(name?.trim() || null, id, userId).changes > 0
+    );
   }
 
   /**
@@ -915,13 +1065,21 @@ export class AuthStore {
    * `touchSession`. This runs on EVERY agent-authenticated request, and "when was this key
    * last used" is a question a value under a minute old already answers.
    */
-  touchAgentKey(userId: string, now?: Date): void {
+  /**
+   * BY KEY ID, not by user -- which is the whole reason a name is worth having.
+   *
+   * It touched every row a user owned, which was correct while there was exactly one. With
+   * several it would stamp the key that has sat unused for a month every time the busy one
+   * made a request, so "last used never" -- the fact that tells you which row is safe to
+   * revoke -- would be true of nothing.
+   */
+  touchAgentKey(id: string, now?: Date): void {
     const t = now ?? new Date();
     this.db
       .query(
-        "update agent_key set last_used_at = ? where user_id = ? and (last_used_at is null or last_used_at <= ?)",
+        "update agent_key set last_used_at = ? where id = ? and (last_used_at is null or last_used_at <= ?)",
       )
-      .run(isoNow(t), userId, isoIn(-SWEEP_INTERVAL_MS, t));
+      .run(isoNow(t), id, isoIn(-SWEEP_INTERVAL_MS, t));
   }
 
   // --- push subscriptions --------------------------------------------------
@@ -974,6 +1132,25 @@ export class AuthStore {
   }
 
   /**
+   * Forget EVERY device this person has subscribed, and say how many there were.
+   *
+   * Two callers and they want it for opposite reasons, which is why it is one method rather
+   * than a loop at each site. A reader turning notifications off "everywhere" is answering
+   * for devices they may no longer be holding -- an old phone can never unsubscribe itself,
+   * because `disablePush` needs the browser that owns the endpoint. And `/reset` is an
+   * operator taking an account away from whoever had it, where leaving a live endpoint
+   * behind would go on pushing one person's news to another's lock screen.
+   *
+   * The BROWSER side of this cannot be done from here and is not attempted: a subscription
+   * the push service still considers live keeps its permission until that browser calls
+   * `unsubscribe()` or the endpoint 404s on the next send. Deleting the row is what stops us
+   * sending, which is the whole of what this server controls.
+   */
+  deletePushSubscriptionsFor(userId: string): number {
+    return this.db.query("delete from push_subscription where user_id = ?").run(userId).changes;
+  }
+
+  /**
    * Drop a dead endpoint, whoever it belonged to.
    *
    * The 404/410 path, and the one place the owner is NOT part of the key: the push service
@@ -987,6 +1164,20 @@ export class AuthStore {
     return this.db
       .query("select * from push_subscription where user_id = ? order by created_at asc")
       .all(userId) as PushSubscriptionRow[];
+  }
+
+  /**
+   * Record that this person has been asked about notifications, and will not be asked again.
+   *
+   * IDEMPOTENT AND FIRST-WRITE-WINS -- `where push_offered_at is null`. Every route that
+   * records an answer calls it, and a reader who subscribes on one device and dismisses on
+   * another would otherwise move the timestamp forward. The FIRST time we asked is the fact
+   * worth keeping; the later calls are the same answer arriving twice.
+   */
+  markPushOffered(userId: string, now?: Date): void {
+    this.db
+      .query("update app_user set push_offered_at = ? where id = ? and push_offered_at is null")
+      .run(isoNow(now), userId);
   }
 
   /** Stamped after a successful send, so an admin can see which devices are still real. */

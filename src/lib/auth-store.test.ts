@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { hashToken, isoIn } from "./auth";
-import { AUTH_SCHEMA, AuthStore, applyAuthSchema } from "./auth-store";
+import { AUTH_SCHEMA, AuthStore, applyAuthSchema, migrateAgentKeys } from "./auth-store";
 
 /**
  * An in-memory database with the same pragma the real `Store` sets.
@@ -418,6 +418,72 @@ describe("push subscriptions", () => {
     auth.deleteUser(u.id);
     expect(auth.pushSubscriptionCount()).toBe(0);
   });
+
+  /**
+   * "Turn it off everywhere", and the reason it cannot be a loop of `deletePushSubscription`
+   * in the browser: an endpoint lives in the browser that owns it, so a phone that was sold
+   * or reset can never unsubscribe itself. This is the only reach the account has over it.
+   */
+  test("every device at once, scoped to the one account", () => {
+    const ana = auth.createUser({ displayName: "Ana", role: "user" });
+    const ben = auth.createUser({ displayName: "Ben", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/ana-1", ana.id));
+    auth.putPushSubscription(sub("https://push.example/ana-2", ana.id));
+    auth.putPushSubscription(sub("https://push.example/ben", ben.id));
+
+    expect(auth.deletePushSubscriptionsFor(ana.id)).toBe(2);
+    expect(auth.listPushSubscriptions(ana.id)).toHaveLength(0);
+    expect(auth.listPushSubscriptions(ben.id)).toHaveLength(1);
+  });
+});
+
+/**
+ * ASKED ONCE, EVER -- aannarr, 2026-09-07: *"USER TO OPT IN ... we NEVER repeat, so once
+ * only"*.
+ *
+ * On the ACCOUNT rather than in the browser's storage, which is what makes it survive a new
+ * device and a cleared cache. The offer is `PushOffer` on `/requests`; this column is the
+ * only thing standing between it and being a nag.
+ */
+describe("the notifications question is put to a person once", () => {
+  test("a new account has never been asked", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    expect(u.pushOfferedAt).toBeNull();
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBeNull();
+  });
+
+  test("marking it sticks, and is read back off the row", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id, new Date("2026-09-07T10:00:00.000Z"));
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBe("2026-09-07T10:00:00.000Z");
+  });
+
+  /*
+    FIRST WRITE WINS. Every route that records an answer calls this -- subscribing, declining
+    and dismissing -- so a reader who says yes on a phone and then dismisses on a laptop
+    would otherwise walk the timestamp forward. The first time we asked is the fact worth
+    keeping.
+  */
+  test("asking again never moves the date", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id, new Date("2026-09-07T10:00:00.000Z"));
+    auth.markPushOffered(u.id, new Date("2026-09-08T10:00:00.000Z"));
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBe("2026-09-07T10:00:00.000Z");
+  });
+
+  /** Turning notifications off is an ANSWER, not a reason to ask again. */
+  test("de-registering every device leaves the question answered", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id);
+    auth.putPushSubscription({
+      endpoint: "https://push.example/1",
+      userId: u.id,
+      p256dh: "p",
+      auth: "a",
+    });
+    auth.deletePushSubscriptionsFor(u.id);
+    expect(auth.getUser(u.id)?.pushOfferedAt).not.toBeNull();
+  });
 });
 
 describe("the hot path stays cheap without ever trusting the sweep", () => {
@@ -454,5 +520,80 @@ describe("the hot path stays cheap without ever trusting the sweep", () => {
     store.putChallenge({ challenge: "new", kind: "login", expiresAt: isoIn(60_000) });
     const n = db.query("select count(*) as n from webauthn_challenge").get() as { n: number };
     expect(n.n).toBe(1);
+  });
+});
+
+/*
+  THE ONE MIGRATION IN THIS SCHEMA THAT `ADDED_COLUMNS` CANNOT DO, and the suite could not
+  otherwise see it run.
+
+  Every other test in this file goes through `applyAuthSchema`, which builds the CURRENT
+  shape -- so `migrateAgentKeys` is a no-op in all of them and would stay green having done
+  nothing. That is the exact class of check that passes without working. These build the
+  pre-2026-09-07 table by hand, which is what a deployed database actually has.
+
+  What is being defended is not the column list: it is that a LIVE CREDENTIAL keeps
+  authenticating across the upgrade. A migration that dropped the token hashes would sign
+  out every agent on the deployment at once, and the keys are re-mintable only by a person
+  who notices.
+*/
+describe("agent_key, migrated from one-key-per-user", () => {
+  /** The table exactly as it was before named keys. */
+  function withOldShape(): { db: Database; auth: AuthStore } {
+    const db = new Database(":memory:");
+    db.run("pragma foreign_keys = on");
+    applyAuthSchema(db);
+    db.run("drop table agent_key");
+    db.run(`create table agent_key (
+      user_id      text primary key references app_user(id) on delete cascade,
+      token_hash   text not null unique,
+      created_at   text not null,
+      last_used_at text,
+      read_only    integer not null default 0
+    )`);
+    return { db, auth: new AuthStore(db) };
+  }
+
+  test("a token minted before the upgrade still resolves after it, with its facts intact", () => {
+    const { db, auth } = withOldShape();
+    const u = auth.createUser({ displayName: "old", role: "user" });
+    const token = "a-live-token-from-before-the-upgrade";
+    db.run(
+      "insert into agent_key (user_id, token_hash, created_at, last_used_at, read_only) values (?,?,?,?,?)",
+      [u.id, hashToken(token), "2026-01-01T00:00:00.000Z", "2026-02-02T00:00:00.000Z", 1],
+    );
+
+    migrateAgentKeys(db);
+
+    const found = auth.getAgentKeyByHash(hashToken(token));
+    expect(found).not.toBeNull();
+    expect(found?.readOnly).toBe(true);
+    expect(found?.createdAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(found?.lastUsedAt).toBe("2026-02-02T00:00:00.000Z");
+    expect(found?.id.length).toBeGreaterThan(0);
+    // NULL rather than something like "Agent key": a name nobody chose is a fact this table
+    // would be inventing, and every reader falls back to the kind.
+    expect(found?.name).toBeNull();
+    expect(auth.agentKeysFor(u.id)).toHaveLength(1);
+  });
+
+  /** It runs on EVERY boot, so running twice must not duplicate a row or throw. */
+  test("it is idempotent, and a second key can then exist beside the migrated one", () => {
+    const { db, auth } = withOldShape();
+    const u = auth.createUser({ displayName: "old", role: "user" });
+    db.run("insert into agent_key (user_id, token_hash, created_at, read_only) values (?,?,?,?)", [
+      u.id,
+      hashToken("t"),
+      "2026-01-01T00:00:00.000Z",
+      0,
+    ]);
+
+    migrateAgentKeys(db);
+    migrateAgentKeys(db);
+    expect(auth.agentKeysFor(u.id)).toHaveLength(1);
+
+    // The whole point of the rebuild: a SECOND key, which the old primary key forbade.
+    auth.putAgentKey({ userId: u.id, name: "new one", readOnly: false });
+    expect(auth.agentKeysFor(u.id).map((k) => k.name)).toEqual(["new one", null]);
   });
 });

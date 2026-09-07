@@ -501,7 +501,15 @@ ${other.length === 0 ? "_Nothing._" : other.map((r) => `- \`${r.methods ? r.meth
  */
 export interface AgentManifestDeps {
   principal: (req: Request) => Principal | null;
-  keyFor: (userId: string) => AgentKey | null;
+  /**
+   * The key that made THIS request, by its own id.
+   *
+   * It took a `userId` while there was one key per person. With several, that lookup cannot
+   * say which one is calling -- it would describe whichever row sorted first, so a read-only
+   * key would be handed a manifest claiming it could request. The id rides on the principal
+   * (`Principal.agent.id`), put there by the hash that authenticated the call.
+   */
+  keyFor: (keyId: string) => AgentKey | null;
   limiter: (bucket: AgentBucket) => RateLimiter;
   /** The origin as the CALLER reached it, so a dev checkout and production differ. */
   origin: (req: Request) => string;
@@ -524,7 +532,7 @@ export function agentManifestRoute(deps: AgentManifestDeps): (req: Request) => R
   return (req) => {
     const p = deps.principal(req);
     const user = p?.kind === "agent" ? p.user : null;
-    const key = user ? deps.keyFor(user.id) : null;
+    const key = p?.agent ? deps.keyFor(p.agent.id) : null;
     if (!user || !key) return json({ error: "this endpoint answers to an agent key" }, { status: 403 });
 
     const buckets: AgentBucketView[] = (["cheap", "expensive"] as const).map((bucket) => {
