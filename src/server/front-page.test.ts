@@ -86,6 +86,13 @@ function world() {
         return { rows: [row(`ranked-${opts.kind}`, opts.kind)], total: 1 };
       },
       hasRank: true,
+      // Counted like every other index read: this file's whole point is that the arr tier
+      // rebuilding must run NO index query, and a shelf that skipped the counter would make
+      // that assertion pass without meaning it.
+      breakoutTitles: () => {
+        state.engineCalls++;
+        return [row("breakout")];
+      },
     } as ShelfDeps["engine"],
     store: {
       libraryMap: () => new Map(state.owned.map((id) => [id, {}])),

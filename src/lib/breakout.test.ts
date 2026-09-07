@@ -43,16 +43,20 @@ function filler(
   }));
 }
 
-const scoreOf = (rows: BreakoutRow[], rowid: number) =>
-  scoreBreakout(rows).find((s) => s.rowid === rowid);
+const scoreOf = (rows: BreakoutRow[], rowid: number) => scoreBreakout(rows).find((s) => s.rowid === rowid);
 
 describe("bug 1: a title in more than one language is still scored", () => {
   // Bron/Broen is `da,sv`. The first implementation took titles with EXACTLY ONE language,
   // which dropped 3,181 floor-clearing titles including the one that exposed it.
   test("a bilingual title lands in both of its language strata", () => {
     const bridge: BreakoutRow = {
-      rowid: 1, year: 2011, kind: "tvSeries", votes: 85442, rating: 8.6,
-      country: "DE,DK,SE", langs: ["da", "sv"],
+      rowid: 1,
+      year: 2011,
+      kind: "tvSeries",
+      votes: 85442,
+      rating: 8.6,
+      country: "DE,DK,SE",
+      langs: ["da", "sv"],
     };
     expect(localeKeys(bridge)).toEqual(["l:da", "l:sv"]);
 
@@ -73,8 +77,13 @@ describe("bug 2: a title with no language falls back to its country", () => {
   // and an implementation keyed only on language scores none of them.
   test("country carries a title that language cannot", () => {
     const beck: BreakoutRow = {
-      rowid: 1, year: 1997, kind: "tvSeries", votes: 7373, rating: 7.5,
-      country: "SE", langs: [],
+      rowid: 1,
+      year: 1997,
+      kind: "tvSeries",
+      votes: 7373,
+      rating: 7.5,
+      country: "SE",
+      langs: [],
     };
     expect(localeKeys(beck)).toEqual(["c:SE"]);
 
@@ -84,8 +93,13 @@ describe("bug 2: a title with no language falls back to its country", () => {
 
   test("language WINS where both are present, because it is the sharper axis", () => {
     const row: BreakoutRow = {
-      rowid: 1, year: 2015, kind: "movie", votes: 5000, rating: 7,
-      country: "FR", langs: ["fr"],
+      rowid: 1,
+      year: 2015,
+      kind: "movie",
+      votes: 5000,
+      rating: 7,
+      country: "FR",
+      langs: ["fr"],
     };
     expect(localeKeys(row)).toEqual(["l:fr"]);
   });
@@ -96,8 +110,13 @@ describe("bug 3: an undersized stratum climbs the ladder instead of vanishing", 
   // the most specific rung can never be scored and `Beck` fell out of the world entirely.
   test("too thin for (locale, decade, kind), still scored on the wider rung", () => {
     const beck: BreakoutRow = {
-      rowid: 1, year: 1997, kind: "tvSeries", votes: 7373, rating: 7.5,
-      country: "SE", langs: [],
+      rowid: 1,
+      year: 1997,
+      kind: "tvSeries",
+      votes: 7373,
+      rating: 7.5,
+      country: "SE",
+      langs: [],
     };
     const rows = [
       beck,
@@ -112,8 +131,13 @@ describe("bug 3: an undersized stratum climbs the ladder instead of vanishing", 
   test("a locale with nothing to compare against yields NO ROW, never a zero", () => {
     // Absent and zero are different answers: zero claims "exactly typical for its locale".
     const lonely: BreakoutRow = {
-      rowid: 1, year: 2015, kind: "movie", votes: 9000, rating: 8,
-      country: "IS", langs: ["is"],
+      rowid: 1,
+      year: 2015,
+      kind: "movie",
+      votes: 9000,
+      rating: 8,
+      country: "IS",
+      langs: ["is"],
     };
     const rows = [lonely, ...filler(MIN_STRATUM, { country: "FR", langs: ["fr"] }, 100)];
     expect(scoreOf(rows, 1)).toBeUndefined();
@@ -145,8 +169,15 @@ describe("bug 4: a co-production credit is not where a film is from", () => {
 
   test("the flag is scored, so the shelf filters on a column and not on a string test", () => {
     const rows = [
-      { rowid: 1, year: 2021, kind: "movie", votes: 900000, rating: 8,
-        country: "CA,HU,NO,US", langs: ["en"] },
+      {
+        rowid: 1,
+        year: 2021,
+        kind: "movie",
+        votes: 900000,
+        rating: 8,
+        country: "CA,HU,NO,US",
+        langs: ["en"],
+      },
       ...filler(MIN_STRATUM, { country: "US", langs: ["en"] }, 100),
     ];
     expect(scoreOf(rows, 1)?.local).toBe(false);
@@ -205,8 +236,13 @@ describe("the two axes measure different things and must not be collapsed", () =
 
   test("a stratum where every title shares one rating does not divide by zero", () => {
     const flat = Array.from({ length: MIN_STRATUM }, (_, i) => ({
-      rowid: 100 + i, year: 2015, kind: "movie", votes: 3000, rating: 7.0,
-      country: "FR", langs: ["fr"],
+      rowid: 100 + i,
+      year: 2015,
+      kind: "movie",
+      votes: 3000,
+      rating: 7.0,
+      country: "FR",
+      langs: ["fr"],
     }));
     for (const s of scoreBreakout(flat)) {
       expect(Number.isFinite(s.love)).toBe(true);

@@ -37,7 +37,14 @@ export interface DiscoveryShelf {
 export interface ShelfDeps {
   engine: Pick<
     SearchEngine,
-    "topRated" | "newThisDecade" | "topGenres" | "topRatedInGenre" | "byTconst" | "browse" | "hasRank"
+    | "topRated"
+    | "newThisDecade"
+    | "topGenres"
+    | "topRatedInGenre"
+    | "byTconst"
+    | "browse"
+    | "hasRank"
+    | "breakoutTitles"
   >;
   store: Pick<
     Store,
@@ -341,6 +348,41 @@ export function shelfSpecs(deps: ShelfDeps, genres: string[]): ShelfSpec[] {
       // `minVotes` is dead weight on a ranked index and the floor for one that has no rank
       // column yet -- see `SearchEngine.topRated`, which is the single owner of that split.
       rows: () => engine.topRated({ kind: "tvSeries", minVotes: 20_000, limit: 30 * CANDIDATE_FACTOR }),
+    },
+    /*
+      TITLES THAT WERE ENORMOUS WHERE THEY WERE MADE AND ARE UNKNOWN HERE.
+
+      The one shelf on this page that a global sort cannot produce, and the reason is the
+      whole point: every other row here orders the corpus by one yardstick, so a title that
+      is huge in Denmark and invisible everywhere else loses to English-language releases on
+      absolute numbers every time. `title_breakout` scores each title only against its OWN
+      locale, so "big at home" becomes something the index can be asked for.
+
+      > [!IMPORTANT] It orders by `love` and NEVER by `reach`, and that is not a preference
+      > `reach` is how far a title travelled, which on a modern catalogue is largely a
+      > MARKETING BUDGET. Measured 2026-09-07: the highest reach in the whole corpus is
+      > `Lupin`, whose rating is barely above other French series, and `Money Heist` and
+      > `Squid Game` sit near it. A reach-ordered shelf is a list of what Netflix promoted,
+      > which "Popular right now" already tells you. `love` is the merit axis -- rated above
+      > its own locale's peers -- and it is what puts `Parasite` and `Dark` above `Lupin`.
+
+      NO `browse` LINK, deliberately. There is no `/browse` query that expresses "scored
+      against its own locale", so a "see all" here would have to point somewhere that answers
+      a different question. The dead-end rule: a control that goes nowhere real is worse than
+      no control.
+
+      It disappears by itself on an index built before the stage -- `breakoutTitles` returns
+      no rows, and the empty-rows filter below drops the shelf. Same honest failure as the
+      Top 250 without a rank column.
+    */
+    {
+      id: "local-breakouts",
+      title: "Big at home, unknown here",
+      subtitle: "huge where it was made, and it never travelled",
+      tier: "index",
+      limit: 25,
+      excludeOwned: true,
+      rows: () => engine.breakoutTitles(25 * CANDIDATE_FACTOR),
     },
     /*
       THE FOUR UPCOMING SHELVES SPLIT TWICE, AND BOTH SPLITS CARRY MEANING.

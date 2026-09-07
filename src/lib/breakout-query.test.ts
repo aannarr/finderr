@@ -57,12 +57,20 @@ function indexOf(
   const ins = db.query(
     "insert into title (tconst, kind, title, year, votes, rating, genres, country) values (?,?,?,?,?,?,?,?)",
   );
-  const score = db.query(
-    "insert into title_breakout (title_rowid, reach, love, local) values (?,?,?,?)",
-  );
+  const score = db.query("insert into title_breakout (title_rowid, reach, love, local) values (?,?,?,?)");
   for (const r of rows) {
-    ins.run(r.tconst, "movie", r.tconst, r.year ?? 2015, r.votes, r.rating ?? 7.5, "Drama", r.country ?? "SE");
-    const rowid = (db.query("select rowid_ from title where tconst = ?").get(r.tconst) as { rowid_: number }).rowid_;
+    ins.run(
+      r.tconst,
+      "movie",
+      r.tconst,
+      r.year ?? 2015,
+      r.votes,
+      r.rating ?? 7.5,
+      "Drama",
+      r.country ?? "SE",
+    );
+    const rowid = (db.query("select rowid_ from title where tconst = ?").get(r.tconst) as { rowid_: number })
+      .rowid_;
     if (!r.unscored) score.run(rowid, r.reach ?? 5, r.love ?? 3, (r.local ?? true) ? 1 : 0);
   }
   applyRank(db, 10);
@@ -142,9 +150,7 @@ describe("the head exclusion is a score, not a position", () => {
 
   test("a corpus larger than the head cuts at the head's own score", () => {
     const ranksDesc = Array.from({ length: BREAKOUT_SHELF.rankHead + 10 }, (_, i) => 10 - i / 1000);
-    expect(rankHeadCutoff(ranksDesc, BREAKOUT_SHELF.rankHead)).toBe(
-      ranksDesc[BREAKOUT_SHELF.rankHead - 1],
-    );
+    expect(rankHeadCutoff(ranksDesc, BREAKOUT_SHELF.rankHead)).toBe(ranksDesc[BREAKOUT_SHELF.rankHead - 1]);
   });
 
   test("a title inside the head is excluded from the shelf", () => {
@@ -168,11 +174,7 @@ describe("ordering and shape", () => {
       { tconst: "tt0000002", votes: 50_000, reach: 3, love: 8 },
       { tconst: "tt0000003", votes: 50_000, reach: 6, love: 5 },
     ]);
-    expect(engine.breakoutTitles(10).map((r) => r.tconst)).toEqual([
-      "tt0000002",
-      "tt0000003",
-      "tt0000001",
-    ]);
+    expect(engine.breakoutTitles(10).map((r) => r.tconst)).toEqual(["tt0000002", "tt0000003", "tt0000001"]);
   });
 
   test("the limit is honoured", () => {

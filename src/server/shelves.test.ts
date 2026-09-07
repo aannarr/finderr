@@ -73,6 +73,9 @@ function depsWith({
       // which is why the fake answers in the same shape a real browse does.
       browse: (opts) => ({ rows: [row(`ranked-${opts.kind}`, `ranked ${opts.kind}`, opts.kind)], total: 1 }),
       hasRank: true,
+      // "Big at home, unknown here". The engine applies every threshold itself and hands
+      // back finished rows, so the fake is one row -- there is no shelf-side rule to fake.
+      breakoutTitles: () => [row("breakout")],
       ...over,
     } as ShelfDeps["engine"],
     store: {
@@ -106,6 +109,7 @@ describe("discoveryShelves", () => {
       "top-250",
       "top-movies",
       "top-series",
+      "local-breakouts",
       "airing-soon-series",
       "airing-soon-movies",
       "coming-soon-movies",
