@@ -20,7 +20,7 @@
 
 import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { UserAvatar, UserBadges } from "../components/admin/UserIdentity";
+import { UserAvatar, UserBadges } from "../components/settings/Identity";
 import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { type AdminUser, listUsers } from "../lib/auth-api";

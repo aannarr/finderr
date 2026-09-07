@@ -21,7 +21,7 @@
 import type { IndexReload, IndexWarm, ServerHealthPayload, SlowRequest } from "../lib/health-api";
 import { formatAge, formatStamp } from "../lib/timestamps";
 import { count, formatBytes } from "../lib/units";
-import { AdminCard } from "./admin/AdminCard";
+import { Panel } from "./settings/Panel";
 
 /**
  * How many slow requests to draw.
@@ -53,7 +53,7 @@ function uptime(seconds: number): string {
 
 /** A titled block, matching the card `/admin/users/:id` uses for its sections. */
 function Block(props: { title: string; children: React.ReactNode }) {
-  return <AdminCard title={props.title}>{props.children}</AdminCard>;
+  return <Panel title={props.title}>{props.children}</Panel>;
 }
 
 /**

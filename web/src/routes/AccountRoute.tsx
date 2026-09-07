@@ -1,16 +1,41 @@
 /**
- * `/account` -- your devices and your open sessions.
+ * `/account` -- you, and everything that acts as you.
  *
  * Everything here is scoped to the caller by the SERVER, not by this component: the
  * endpoints read the session and never take a user id, so there is no id to tamper with.
+ *
+ * > [!IMPORTANT] THE PAGE LEADS WITH FACTS ABOUT YOU, and before 2026-09-07 it had none
+ * > It was five identical bordered cards -- Plex, passkeys, sessions, notifications, agent
+ * > key -- each a heading over a grey sentence over a control. Uniform weight is the absence
+ * > of a design (aannarr: *"generic, random slop"*), but the deeper problem was that it was a
+ * > CREDENTIALS MANAGER wearing an account page's name. Not one line on it said anything
+ * > about the person reading it. Your own request count and your own daily allowance lived
+ * > only on the admin page ABOUT you, so the way to learn something about yourself was to
+ * > ask an administrator.
+ * >
+ * > The stat strip is the fix, and the reason `/api/auth/me` grew `activity` and `quota`.
+ *
+ * ## THE SECTION ORDER, and it is why you opened the page
+ *
+ * 1. **Signing in** -- passkeys and Plex. New phone, lost phone: the reason people come.
+ * 2. **Open sessions** -- pairs with 1. *What can get in*, then *what is in*. Splitting the
+ *    two with a switch separates two halves of one question.
+ * 3. **Notifications** -- one switch, and the rhythm between two list sections.
+ * 4. **Automation** -- rare, but nobody arrives here by accident.
+ * 5. **Sign out** -- the exit is always the last thing on a page.
+ *
+ * The three ACTION ZONES this page follows are stated once, in
+ * `web/src/components/settings/Section.tsx`. Read them before adding a control here.
  */
 
+import { Clapperboard, Download, Gauge, KeyRound, MonitorSmartphone, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AgentKeyPanel } from "../components/AgentKeyPanel";
-import { AdminCard, Empty } from "../components/admin/AdminCard";
-import { UserAvatar, UserBadges } from "../components/admin/UserIdentity";
 import { ConfirmAction } from "../components/ConfirmAction";
 import { PushToggle } from "../components/PushToggle";
+import { UserAvatar, UserBadges } from "../components/settings/Identity";
+import { ACTION_COL, Empty, Row, Rows, Section } from "../components/settings/Section";
+import { quotaStat, Stat, StatStrip } from "../components/settings/StatStrip";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { clearPersistedCaches } from "../lib/api";
@@ -21,10 +46,12 @@ import {
   getAuthState,
   getMe,
   logout,
+  type OwnActivity,
   type PublicUser,
   passkeysAvailable,
   plexLinkBegin,
   plexLinkFinish,
+  type QuotaState,
   registerPasskey,
   renameCredential,
   type SessionSummary,
@@ -34,10 +61,130 @@ import { device } from "../lib/device";
 import { pollPlexPin } from "../lib/plex-poll";
 import { formatStamp } from "../lib/timestamps";
 
+/**
+ * Plex's mark, as a glyph rather than an `<img>`.
+ *
+ * Every other icon here comes from lucide, which has no Plex; the alternative was a logo
+ * file, and the no-upstream-URL rule means that would have to be served from our own origin
+ * and kept in step with a brand nobody here controls. A chevron in a rounded square is Plex's
+ * own shape and costs nothing.
+ */
+function PlexMark() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <title>Plex</title>
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path d="M9 7.5 13.5 12 9 16.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/**
+ * One passkey.
+ *
+ * Its own component because it holds the ASKING flag: `ConfirmAction`'s inline variant draws
+ * only the two answers, and the row is what swaps its metadata line for the question. That is
+ * the whole trick -- the row keeps its height, so the thing about to be destroyed does not
+ * move out from under the cursor at the moment you are asked to confirm destroying it.
+ */
+function PasskeyRow({
+  credential,
+  onRename,
+  onRemove,
+}: {
+  credential: CredentialSummary;
+  onRename: () => void;
+  onRemove: () => Promise<void>;
+}) {
+  const [asking, setAsking] = useState(false);
+
+  return (
+    <Row
+      icon={<KeyRound aria-hidden="true" />}
+      title={credential.label ?? credential.deviceType ?? "passkey"}
+      meta={
+        asking ? (
+          // Full contrast, so the row reads as a question rather than as a row that grew
+          // two buttons.
+          <span className="text-ink">This device can no longer sign in.</span>
+        ) : (
+          `added ${formatStamp(credential.createdAt, "never")} · last used ${formatStamp(credential.lastUsedAt, "never")}`
+        )
+      }
+      /*
+        A passkey that is NOT backed up dies with its device, and that is the fact worth
+        drawing: it turns "I have two passkeys" into "I have one that survives a lost phone".
+        Said only when it is true, so the common case is quiet -- and dropped while asking,
+        because a warning about a device you are removing is no longer the point.
+      */
+      note={!credential.backedUp ? "This device only — it will not survive being lost" : undefined}
+      action={
+        <>
+          {/* Safe verb first. Gone while asking: two decisions in one column is one too many. */}
+          {!asking && (
+            <Button type="button" size="sm" variant="ghost" onClick={onRename}>
+              Rename
+            </Button>
+          )}
+          <ConfirmAction
+            variant="inline"
+            onAskingChange={setAsking}
+            label="Remove"
+            question="This device can no longer sign in."
+            confirmLabel="Yes, remove"
+            busyLabel="Removing…"
+            onConfirm={onRemove}
+          />
+        </>
+      }
+    />
+  );
+}
+
+/** One open session. `current` is the server's word for the cookie making this very request. */
+function SessionRow({ session, onEnd }: { session: SessionSummary; onEnd: () => Promise<void> }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <Row
+      icon={<MonitorSmartphone aria-hidden="true" />}
+      title={
+        <>
+          {device(session.userAgent)}
+          {session.current && <span className="ml-2 text-xs text-accent">this device</span>}
+        </>
+      }
+      meta={
+        asking ? (
+          <span className="text-ink">That browser will have to sign in again.</span>
+        ) : (
+          `since ${formatStamp(session.createdAt, "never")}`
+        )
+      }
+      action={
+        // Your OWN session has no End: signing yourself out is zone 3, at the bottom, and a
+        // second way to do it here would end the session you are reading the page with.
+        session.current ? undefined : (
+          <ConfirmAction
+            variant="inline"
+            onAskingChange={setAsking}
+            label="End"
+            question="That browser will have to sign in again."
+            confirmLabel="Yes, end it"
+            busyLabel="Ending…"
+            onConfirm={onEnd}
+          />
+        )
+      }
+    />
+  );
+}
+
 export function AccountRoute() {
   const [user, setUser] = useState<PublicUser | null>(null);
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [activity, setActivity] = useState<OwnActivity | null>(null);
+  const [quota, setQuota] = useState<QuotaState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Is Plex configured at all? No point offering to connect to a server that is not there. */
@@ -53,6 +200,8 @@ export function AccountRoute() {
       setUser(me.user);
       setCredentials(me.credentials);
       setSessions(me.sessions);
+      setActivity(me.activity);
+      setQuota(me.quota);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -114,18 +263,6 @@ export function AccountRoute() {
     }
   };
 
-  const remove = async (id: string) => {
-    setError(null);
-    try {
-      await deleteCredential(id);
-      await load();
-    } catch (e) {
-      // The server refuses to let you delete your only way in. That refusal is one of the
-      // few a signed-in user is given a real reason for, so it is shown verbatim.
-      setError((e as Error).message);
-    }
-  };
-
   const saveLabel = async () => {
     if (!editing) return;
     const { id, label } = editing;
@@ -156,23 +293,6 @@ export function AccountRoute() {
     }
   };
 
-  const disconnectPlex = async () => {
-    setError(null);
-    try {
-      await unlinkPlex();
-      await load();
-    } catch (e) {
-      // The 409 that says Plex is your only way in is shown verbatim -- same rule as the
-      // last-passkey refusal, and the same reason: it is actionable.
-      setError((e as Error).message);
-    }
-  };
-
-  const endSession = async (id: string) => {
-    await deleteSession(id).catch((e) => setError((e as Error).message));
-    await load();
-  };
-
   const signOut = async () => {
     await logout();
     /*
@@ -189,14 +309,10 @@ export function AccountRoute() {
 
   if (!user) return <p className="text-sm text-muted">{error ?? "Loading…"}</p>;
 
+  const showPlex = plexEnabled || user.plexConnected;
+
   return (
-    <div className="flex flex-col gap-6">
-      {/*
-        THE SAME IDENTITY HEADER THE ADMIN PERSON PAGE DRAWS, from the same components.
-        aannarr, 2026-09-07: *"the users own settings page MUST have same uplift as admin
-        page"*. It is the same three facts about the same kind of subject -- a disc, a name,
-        what they are -- and two spellings of that would drift the moment either is restyled.
-      */}
+    <div className="flex flex-col gap-2">
       <section className="flex items-start gap-4">
         <UserAvatar user={user} size="lg" />
         <div className="min-w-0">
@@ -211,43 +327,32 @@ export function AccountRoute() {
       </section>
 
       {/*
-        Plex was a fact in the subtitle line above and nothing more -- you could sign in
-        with it and never see it again, and a broken link had no repair short of asking an
-        admin to reset the whole account. It is a card because it is now something you
-        can DO, and its two states carry different actions.
+        Held back until the numbers land rather than drawn as four zeroes: a strip that says
+        "0 requested" and then corrects itself to 6 has told the reader something false.
       */}
-      {(plexEnabled || user.plexConnected) && (
-        <AdminCard
-          title="Plex"
-          action={
-            !user.plexConnected ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={connectPlex}
-                disabled={linkingPlex || !plexEnabled}
-              >
-                {linkingPlex ? "Waiting for Plex…" : "Connect"}
-              </Button>
-            ) : (
-              <Button type="button" size="sm" variant="outline" onClick={disconnectPlex}>
-                Disconnect
-              </Button>
-            )
-          }
-        >
-          <p className="text-sm text-muted">
-            {!user.plexConnected
-              ? "Not connected. Connecting one lets you sign in with Plex as well as with a passkey."
-              : `Connected as ${user.plexUsername ?? "your Plex account"}.`}
-          </p>
-        </AdminCard>
+      {activity && quota && (
+        <div className="mt-4">
+          <StatStrip>
+            <Stat to="/requests" icon={Clapperboard} label="Requested" value={String(activity.requested)} />
+            <Stat to="/requests" icon={Download} label="Still coming" value={String(activity.inFlight)} />
+            {/*
+              The one cell worth acting on right now, so it is the one in the accent -- and
+              only while there is something there. A permanent highlight is not a highlight.
+            */}
+            <Stat
+              to="/requests"
+              icon={Sparkles}
+              label="Ready to watch"
+              value={String(activity.ready)}
+              live={activity.ready > 0}
+            />
+            <Stat to="/requests" icon={Gauge} {...quotaStat(quota)} />
+          </StatStrip>
+        </div>
       )}
 
-      <AdminCard
-        title="Passkeys"
-        description="One per device, so a lost phone is never a lockout."
+      <Section
+        label="Signing in"
         action={
           passkeysAvailable() && (
             <Button type="button" size="sm" onClick={addDevice} disabled={busy}>
@@ -256,26 +361,22 @@ export function AccountRoute() {
           )
         }
       >
-        {/*
-          One passkey per device is the point: a lost phone must not be a lockout, so the
-          empty state here is worth flagging rather than leaving blank.
-        */}
-        {credentials.length === 0 ? (
+        {credentials.length === 0 && !showPlex ? (
           <Empty>No passkeys yet. Add one so you are not relying on a single way in.</Empty>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {credentials.map((c) => (
-              <li
-                key={c.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2/40 px-3 py-2.5"
-              >
-                {editing?.id === c.id ? (
-                  /*
-                    A form, so Enter submits and Escape is the browser's own job. A bare
-                    input with an onKeyDown would be a second, worse implementation of both.
-                  */
+          <Rows>
+            {credentials.length === 0 && (
+              <Empty>No passkeys yet. Add one so you are not relying on a single way in.</Empty>
+            )}
+            {credentials.map((c) =>
+              editing?.id === c.id ? (
+                /*
+                  A form, so Enter submits and Escape is the browser's own job. A bare input
+                  with an onKeyDown would be a second, worse implementation of both.
+                */
+                <li key={c.id} className="border-b border-line/60 py-3 last:border-0">
                   <form
-                    className="flex flex-1 items-center gap-2"
+                    className="flex items-center gap-3"
                     onSubmit={(e) => {
                       e.preventDefault();
                       void saveLabel();
@@ -294,119 +395,124 @@ export function AccountRoute() {
                       aria-label="Passkey name"
                       className="min-w-0 flex-1"
                     />
-                    <Button type="submit" size="sm">
-                      Save
-                    </Button>
-                  </form>
-                ) : (
-                  <>
-                    <span className="min-w-0 text-sm">
-                      <span className="block truncate text-ink">{c.label ?? c.deviceType ?? "passkey"}</span>
-                      <span className="text-xs text-muted">
-                        added {formatStamp(c.createdAt, "never")} · last used{" "}
-                        {formatStamp(c.lastUsedAt, "never")}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 gap-2">
-                      {/*
-                        Renaming is what makes the Remove button next to it usable. Two rows
-                        both reading "Mac · added 3 Aug" are two rows nobody can revoke with
-                        any confidence, and the label is a guess from the user agent.
-                      */}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setEditing({ id: c.id, label: c.label ?? "" })}
-                      >
-                        Rename
+                    {/* Same column as every other row, so the field ends where they end. */}
+                    <div className={ACTION_COL}>
+                      <Button type="submit" size="sm">
+                        Save
                       </Button>
-                      {/*
-                        The one place on this page that asks first. Removing your own last
-                        passkey is refused by the SERVER, but the ones it allows are still
-                        gone for good and the device cannot be re-enrolled from anywhere but
-                        that device.
-                      */}
-                      <ConfirmAction
-                        label="Remove"
-                        question="Remove this passkey? That device can no longer sign in."
-                        confirmLabel="Yes, remove"
-                        busyLabel="Removing…"
-                        onConfirm={() => remove(c.id)}
-                      />
-                    </span>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+                    </div>
+                  </form>
+                </li>
+              ) : (
+                <PasskeyRow
+                  key={c.id}
+                  credential={c}
+                  onRename={() => setEditing({ id: c.id, label: c.label ?? "" })}
+                  onRemove={async () => {
+                    // NOT caught: the inline confirm shows the server's refusal on the row
+                    // that provoked it, and "that is your only way in" is the one refusal
+                    // worth reading beside the thing it is about.
+                    await deleteCredential(c.id);
+                    await load();
+                  }}
+                />
+              ),
+            )}
+
+            {/*
+              PLEX IS A WAY IN, so it is a row in this section rather than a section of its
+              own. It had its own card, which framed "how I sign in" as two unrelated
+              concerns -- and an account with no passkey and a live Plex link is not locked
+              out, which is only obvious when the two sit together.
+            */}
+            {showPlex && (
+              <Row
+                icon={<PlexMark />}
+                title="Plex"
+                meta={
+                  user.plexConnected
+                    ? `Connected as ${user.plexUsername ?? "your Plex account"}`
+                    : "Not connected. Connecting one lets you sign in with Plex as well as with a passkey."
+                }
+                action={
+                  user.plexConnected ? (
+                    <ConfirmAction
+                      variant="inline"
+                      label="Disconnect"
+                      question="Disconnect Plex?"
+                      confirmLabel="Yes, disconnect"
+                      busyLabel="Disconnecting…"
+                      // The 409 saying Plex is your only way in is shown by the control that
+                      // provoked it -- same rule as the last-passkey refusal.
+                      onConfirm={async () => {
+                        await unlinkPlex();
+                        await load();
+                      }}
+                    />
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={connectPlex}
+                      disabled={linkingPlex || !plexEnabled}
+                    >
+                      {linkingPlex ? "Waiting for Plex…" : "Connect"}
+                    </Button>
+                  )
+                }
+              />
+            )}
+          </Rows>
         )}
+
         {!passkeysAvailable() && (
           <p className="mt-3 text-xs text-muted">
             Passkeys need a secure (https) connection, so one cannot be added from here.
           </p>
         )}
-      </AdminCard>
+      </Section>
 
-      <AdminCard title="Signed in on" description="End any session that is not yours.">
+      <Section label="Open sessions">
         {sessions.length === 0 ? (
           <Empty>No open sessions.</Empty>
         ) : (
-          <ul className="flex flex-col gap-2">
+          <Rows>
             {sessions.map((s) => (
-              <li
+              <SessionRow
                 key={s.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2/40 px-3 py-2.5"
-              >
-                <span className="min-w-0 text-sm">
-                  <span className="block truncate text-ink">
-                    {device(s.userAgent)}
-                    {s.current && <span className="text-accent"> · this device</span>}
-                  </span>
-                  <span className="text-xs text-muted">since {formatStamp(s.createdAt, "never")}</span>
-                </span>
-                {!s.current && (
-                  <Button type="button" size="sm" variant="outline" onClick={() => endSession(s.id)}>
-                    End
-                  </Button>
-                )}
-              </li>
+                session={s}
+                onEnd={async () => {
+                  await deleteSession(s.id);
+                  await load();
+                }}
+              />
             ))}
-          </ul>
+          </Rows>
         )}
-      </AdminCard>
+      </Section>
+
+      <PushToggle />
+
+      <AgentKeyPanel />
 
       {/*
         A refusal, drawn as one. It was `text-muted` -- the same grey as every explanatory
-        line on the page -- so "that is your only way in" read as a note rather than as the
-        server having declined to do what you just asked.
+        line on the page -- so a server declining to do what you asked read as a footnote.
+        Only what NO single control owns lands here; a row's refusal stays on its row.
       */}
       {error && (
-        <p className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+        <p className="mt-6 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
           {error}
         </p>
       )}
 
       {/*
-        Below the devices it is about: a notification is delivered to ONE browser, so the
-        switch belongs beside the list of browsers rather than in a settings page of its
-        own. It draws nothing at all where push cannot work.
+        ZONE 3: the whole page is its subject, so it is bottom, alone, with nothing under it.
+        Not in a section -- a heading would give the way out the same weight as the things
+        this page is actually for.
       */}
-      <PushToggle />
-
-      {/*
-        After the devices and the notification switch, because it is the least common thing
-        on this page and the one that hands out a credential. It draws its own section and
-        loads its own state -- nothing above it needs to know an agent key exists.
-      */}
-      <AgentKeyPanel />
-
-      {/*
-        Last, and NOT in a card: it is not a setting, it is the way out. A card would give it
-        the same weight as the things above it, and the things above it are what this page is
-        for.
-      */}
-      <div>
+      <div className="mt-10 border-t border-line pt-6">
         <Button type="button" variant="outline" onClick={signOut}>
           Sign out
         </Button>

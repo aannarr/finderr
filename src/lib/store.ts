@@ -1462,6 +1462,44 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
   }
 
   /**
+   * Where one person stands, in three numbers, from ONE pass over their rows.
+   *
+   * `/account` leads with these -- how much have I asked for, how much is still coming, how
+   * much is waiting for me -- and before this the page could not say any of it. The figures
+   * existed only on `/api/admin/users/:id`, so a reader had to ask an administrator to learn
+   * something about themselves.
+   *
+   * > [!IMPORTANT] ONE QUERY, GROUPED, rather than three counts or a `listRequestsFor` in memory
+   * > `listRequestsFor` caps at 200 by default, so counting its result would silently under-
+   * > report the moment somebody passed that -- a stat that is wrong only for your heaviest
+   * > users is worse than no stat. Three separate `count(*)`s would be three scans of the same
+   * > rows for one answer.
+   * >
+   * > No index, for the reason `countRequestsSince` states at length: this table holds one row
+   * > per title ANYBODY has ever asked for, which is thousands at the very most, and
+   * > `requested_by` arrives through `ADDED_COLUMNS` where no index can be declared.
+   *
+   * `inFlight` is every state that is still moving, taken from `RequestStatus` rather than
+   * from a list typed out here -- `failed` and `no_release` have stopped, `available` has
+   * arrived, and everything else is on its way. A status added later is in flight by default,
+   * which is the safe direction: a new state showing up as "still coming" is a stat that is
+   * briefly vague, and one showing up nowhere is a stat that silently loses rows.
+   */
+  ownActivity(userId: string): { requested: number; inFlight: number; ready: number } {
+    const row = this.db
+      .query(
+        `select
+           count(*) as requested,
+           sum(case when status not in ('available','failed','no_release') then 1 else 0 end) as inFlight,
+           sum(case when status = 'available' and available_seen_at is null then 1 else 0 end) as ready
+         from request where requested_by = ?`,
+      )
+      .get(userId) as { requested: number; inFlight: number | null; ready: number | null };
+    // `sum()` over no rows is NULL rather than 0, which would render as an empty cell.
+    return { requested: row.requested, inFlight: row.inFlight ?? 0, ready: row.ready ?? 0 };
+  }
+
+  /**
    * Mark every arrival this person has not been shown, and say how many that was.
    *
    * All of them at once rather than one at a time: the reader is looking at the list, so

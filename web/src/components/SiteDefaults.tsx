@@ -18,8 +18,8 @@
  */
 
 import type { SiteSettings } from "../lib/auth-api";
-import { AdminCard } from "./admin/AdminCard";
 import { QuotaField, ToggleSetting } from "./SettingControls";
+import { Panel } from "./settings/Panel";
 import { Separator } from "./ui/separator";
 
 export function SiteDefaults(props: {
@@ -30,10 +30,7 @@ export function SiteDefaults(props: {
   const { requestQuotaPerDay, assistantAllowedByDefault } = props.settings;
 
   return (
-    <AdminCard
-      title="Site defaults"
-      description="What applies to everybody who has no allowance of their own."
-    >
+    <Panel title="Site defaults" description="What applies to everybody who has no allowance of their own.">
       <div className="flex flex-col gap-5">
         {/*
           NO `inheritLabel`, and that is the one difference between the two callers: there is
@@ -69,6 +66,6 @@ export function SiteDefaults(props: {
           change on their own page.
         </ToggleSetting>
       </div>
-    </AdminCard>
+    </Panel>
   );
 }

@@ -11,9 +11,9 @@
  */
 
 import { useState } from "react";
-import { AdminCard, Empty } from "../components/admin/AdminCard";
 import { InertChip } from "../components/Chip";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
+import { Empty, Panel } from "../components/settings/Panel";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -95,7 +95,7 @@ export function AdminInvitesRoute() {
         </p>
       )}
 
-      <AdminCard
+      <Panel
         title="Invite someone"
         description="finderr has no sign-up. A link is the only way in, and it is shown once."
       >
@@ -145,9 +145,9 @@ export function AdminInvitesRoute() {
             value={freshLink}
           />
         )}
-      </AdminCard>
+      </Panel>
 
-      <AdminCard title="Invitations" description="Everything minted, whether or not it was used.">
+      <Panel title="Invitations" description="Everything minted, whether or not it was used.">
         {!data ? (
           <Empty>Loading…</Empty>
         ) : invites.length === 0 ? (
@@ -190,7 +190,7 @@ export function AdminInvitesRoute() {
             })}
           </ul>
         )}
-      </AdminCard>
+      </Panel>
     </div>
   );
 }

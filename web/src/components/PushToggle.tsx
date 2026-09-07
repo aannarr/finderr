@@ -16,8 +16,8 @@
 
 import type { PushSupport } from "../lib/push-api";
 import { usePush } from "../lib/use-push";
-import { AdminCard } from "./admin/AdminCard";
 import { ToggleSetting } from "./SettingControls";
+import { Section } from "./settings/Section";
 
 /** What to say when there is no switch to draw. One sentence, and an action where there is one. */
 const UNAVAILABLE: Record<Exclude<PushSupport["kind"], "available">, string> = {
@@ -37,7 +37,7 @@ export function PushToggle() {
   if (!support) return null;
 
   return (
-    <AdminCard title="Notifications">
+    <Section label="Notifications">
       {/*
         A real switch, through the SAME control the two admin settings use -- a notification
         is on or off for this browser and that is the whole state. It was a text link reading
@@ -71,6 +71,6 @@ export function PushToggle() {
       */}
       {error && <p className="mt-2 text-sm text-danger">{error}</p>}
       {busy && <p className="mt-2 text-xs text-muted">One moment…</p>}
-    </AdminCard>
+    </Section>
   );
 }

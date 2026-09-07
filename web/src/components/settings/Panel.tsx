@@ -18,7 +18,7 @@
 
 import type { ReactNode } from "react";
 
-export function AdminCard({
+export function Panel({
   title,
   description,
   action,

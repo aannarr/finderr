@@ -471,12 +471,35 @@ export class AuthService {
         return json({ authenticated: true, user: publicUser(p.user) });
       },
 
+      /**
+       * You, whole: who you are, how you get in, and where you stand.
+       *
+       * > [!IMPORTANT] `quota` and `activity` are the SAME facts `/api/admin/users/:id` serves
+       * > about somebody else, and they are built by the same two owners
+       * > `quotaStateFor` resolves the limit, the day boundary and the exemption; `ownActivity`
+       * > counts the rows. Neither is re-derived here, because a screen that worked out
+       * > "does a limit bind me" from a number and a role would be free to disagree with the
+       * > endpoint that actually refuses the request.
+       * >
+       * > It is not a privacy widening: every figure is about the CALLER, scoped by their own
+       * > session, and there is no id in the request to point at anybody else. Until now the
+       * > only way to learn your own request count was to ask an administrator to read the
+       * > admin page about you.
+       */
       "/api/auth/me": (req) => {
         const p = this.principal(req);
         if (!p?.user) return json({ error: "not signed in" }, { status: 401 });
+        const me = p.user;
         return json({
-          user: publicUser(p.user),
-          ...this.accessFor(p.user.id, p.session?.idHash ?? null),
+          user: publicUser(me),
+          ...this.accessFor(me.id, p.session?.idHash ?? null),
+          activity: this.deps.store.ownActivity(me.id),
+          quota: quotaStateFor({
+            role: me.role,
+            override: me.quotaPerDay,
+            siteDefault: this.deps.settings.read().requestQuotaPerDay,
+            usedToday: () => this.deps.store.countRequestsSince(me.id, utcDayStart()),
+          }),
         });
       },
 

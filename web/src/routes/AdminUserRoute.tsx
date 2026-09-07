@@ -27,11 +27,11 @@
 
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
-import { AdminCard, Empty } from "../components/admin/AdminCard";
-import { UserAvatar, UserBadges } from "../components/admin/UserIdentity";
 import { ConfirmAction } from "../components/ConfirmAction";
 import { QuotaField, ToggleSetting } from "../components/SettingControls";
 import { ShowOnceSecret } from "../components/ShowOnceSecret";
+import { UserAvatar, UserBadges } from "../components/settings/Identity";
+import { Empty, Panel } from "../components/settings/Panel";
 import { Separator } from "../components/ui/separator";
 import {
   type AdminQuotaState,
@@ -231,7 +231,7 @@ function Actions({ acting }: { acting: Acting }) {
   const admin = user.role === "admin";
 
   return (
-    <AdminCard
+    <Panel
       title="Actions"
       description="Every one of these asks before it happens. Removing an account cannot be undone."
     >
@@ -303,7 +303,7 @@ function Actions({ acting }: { acting: Acting }) {
         it before copying has to reset the account a second time.
       */}
       {invite && <ShowOnceSecret note="Their new invite link. It is not shown again." value={invite} />}
-    </AdminCard>
+    </Panel>
   );
 }
 
@@ -316,13 +316,13 @@ function Actions({ acting }: { acting: Acting }) {
  */
 function Settings({ acting, quota }: { acting: Acting; quota: AdminQuotaState }) {
   return (
-    <AdminCard title="Settings" description="What this one person is allowed, whatever the site says.">
+    <Panel title="Settings" description="What this one person is allowed, whatever the site says.">
       <div className="flex flex-col gap-5">
         <QuotaSetting acting={acting} quota={quota} />
         <Separator />
         <AssistantSetting acting={acting} />
       </div>
-    </AdminCard>
+    </Panel>
   );
 }
 
@@ -467,7 +467,7 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
       */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,17rem)] lg:items-start">
         <div className="flex flex-col gap-4">
-          <AdminCard title="How they get in">
+          <Panel title="How they get in">
             <div className="flex flex-col gap-4">
               <div>
                 <h3 className="mb-2 text-[0.7rem] font-medium uppercase tracking-wider text-muted">
@@ -508,17 +508,17 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
                 </p>
               </div>
             </div>
-          </AdminCard>
+          </Panel>
 
           <Settings acting={acting} quota={detail.quota} />
 
-          <AdminCard title="Requests" description={quotaLine(detail.quota)}>
+          <Panel title="Requests" description={quotaLine(detail.quota)}>
             <Rows empty="They have not asked for anything yet.">
               {logOrder(detail.requests).map((r) => (
                 <Request key={r.tconst} request={r} />
               ))}
             </Rows>
-          </AdminCard>
+          </Panel>
         </div>
 
         {/*

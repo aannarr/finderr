@@ -228,10 +228,27 @@ export interface SessionSummary {
   current: boolean;
 }
 
+/**
+ * Where you stand, in the three numbers `/account` leads with.
+ *
+ * `requested` is every title you have ever asked for; `inFlight` is how many of those are
+ * still moving; `ready` is how many have arrived that you have not been shown. The three do
+ * not sum to anything -- `ready` is a subset of the arrivals, not a fourth bucket -- and each
+ * one is a link into `/requests` rather than a readout.
+ */
+export interface OwnActivity {
+  requested: number;
+  inFlight: number;
+  ready: number;
+}
+
 export function getMe(): Promise<{
   user: PublicUser;
   credentials: CredentialSummary[];
   sessions: SessionSummary[];
+  activity: OwnActivity;
+  /** Your own standing against the daily limit, resolved by the server. */
+  quota: QuotaState;
 }> {
   return get("/api/auth/me");
 }

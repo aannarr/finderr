@@ -20,14 +20,52 @@
  * warn somebody is while the thing is still in front of them.
  */
 
+import { Bot } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { type AgentKeySummary, createAgentKey, getAgentKey, revokeAgentKey } from "../lib/auth-api";
 import { formatStamp } from "../lib/timestamps";
-import { AdminCard } from "./admin/AdminCard";
 import { ConfirmAction } from "./ConfirmAction";
 import { ShowOnceSecret } from "./ShowOnceSecret";
+import { Empty, Row, Rows, Section } from "./settings/Section";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
+
+/**
+ * The one key, as a row -- so Revoke sits beside the thing it destroys rather than on the
+ * section's rule, and so the shape is already right when there are several of them.
+ */
+function AgentKeyRow({ agentKey, onRevoke }: { agentKey: AgentKeySummary; onRevoke: () => Promise<void> }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <Row
+      icon={<Bot aria-hidden="true" />}
+      title={agentKey.readOnly ? "Read-only key" : "Read and write key"}
+      meta={
+        asking ? (
+          <span className="text-ink">Anything using it stops working immediately.</span>
+        ) : (
+          `added ${formatStamp(agentKey.createdAt, "never")} · last used ${formatStamp(agentKey.lastUsedAt, "never")}`
+        )
+      }
+      // The one thing on this page that can act WITHOUT a browser, stated where the key is
+      // rather than in a paragraph under the section.
+      note={
+        !agentKey.readOnly ? "It can start real downloads on your behalf, in that agent's history" : undefined
+      }
+      action={
+        <ConfirmAction
+          variant="inline"
+          onAskingChange={setAsking}
+          label="Revoke"
+          question="Anything using it stops working immediately."
+          confirmLabel="Yes, revoke"
+          busyLabel="Revoking…"
+          onConfirm={onRevoke}
+        />
+      }
+    />
+  );
+}
 
 export function AgentKeyPanel() {
   const [key, setKey] = useState<AgentKeySummary | null>(null);
@@ -86,54 +124,53 @@ export function AgentKeyPanel() {
   if (!loaded) return null;
 
   return (
-    <AdminCard
-      title="Agent key"
+    <Section
+      label="Automation"
+      /*
+        ZONE 1 IS ADDITIVE ONLY, so only Create/Replace lives here. Revoke sat beside it in
+        the first draft, which breaks the rule this file's own idiom states: a destructive
+        verb on a section's rule is the one control a reader can press having read a noun and
+        nothing else. It is a row action now, beside the key it destroys.
+      */
       action={
-        <span className="flex shrink-0 gap-2">
-          <Button type="button" size="sm" onClick={create} disabled={busy}>
-            {key ? "Replace" : "Create"}
-          </Button>
-          {key && (
-            /*
-              The one destructive verb here, and it asks. Revoking is instant and total --
-              whatever is holding that key stops working mid-run -- and it was one unguarded
-              click beside a Replace button of identical weight.
-            */
-            <ConfirmAction
-              label="Revoke"
-              question="Revoke this key? Anything using it stops working immediately."
-              confirmLabel="Yes, revoke"
-              busyLabel="Revoking…"
-              onConfirm={revoke}
-            />
-          )}
-        </span>
+        <Button type="button" size="sm" onClick={create} disabled={busy}>
+          {key ? "Replace" : "Create"}
+        </Button>
       }
     >
-      <p className="text-sm text-muted">
-        {key
-          ? `A ${key.readOnly ? "read-only" : "read-write"} key, added ${formatStamp(key.createdAt, "never")} · last used ${formatStamp(key.lastUsedAt, "never")}.`
-          : "Lets a script or an AI agent search, browse and request on your behalf, without a browser."}
-      </p>
+      {key ? (
+        <Rows>
+          <AgentKeyRow agentKey={key} onRevoke={revoke} />
+        </Rows>
+      ) : (
+        <>
+          <Empty>
+            No key yet. One lets a script or an AI agent search, browse and request on your behalf, without a
+            browser.
+          </Empty>
 
-      {/*
-        The choice belongs BEFORE the key exists, because it is fixed for that key's life:
-        one key per person means read-only is a property of the key rather than something to
-        toggle later. Replacing with the box in the other state is how it changes.
+          {/*
+            The choice belongs BEFORE the key exists, because it is fixed for that key's life:
+            one key per person means read-only is a property of the key rather than something
+            to toggle later. Replacing with the box in the other state is how it changes --
+            which is also why the box is drawn only when there is no key, and the row states
+            which kind the existing one is.
 
-        Control LEFT, words right -- the rule `SettingControls` states for these screens.
-      */}
-      <div className="mt-3 flex items-start gap-2.5">
-        <Checkbox
-          id="agent-key-read-only"
-          checked={readOnly}
-          onCheckedChange={(v) => setReadOnly(v === true)}
-          className="mt-0.5 shrink-0"
-        />
-        <label htmlFor="agent-key-read-only" className="text-sm leading-5">
-          Read-only — it can look, but it cannot request anything
-        </label>
-      </div>
+            Control LEFT, words right -- the rule `SettingControls` states for these screens.
+          */}
+          <div className="mt-1 flex items-start gap-2.5">
+            <Checkbox
+              id="agent-key-read-only"
+              checked={readOnly}
+              onCheckedChange={(v) => setReadOnly(v === true)}
+              className="mt-0.5 shrink-0"
+            />
+            <label htmlFor="agent-key-read-only" className="text-sm leading-5">
+              Read-only — it can look, but it cannot request anything
+            </label>
+          </div>
+        </>
+      )}
 
       {snippet && (
         <ShowOnceSecret
@@ -166,6 +203,6 @@ export function AgentKeyPanel() {
           {error}
         </p>
       )}
-    </AdminCard>
+    </Section>
   );
 }

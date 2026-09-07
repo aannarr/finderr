@@ -74,6 +74,20 @@ function fakeStore(counted: CountedWindow[]): Store {
       counted.push({ userId, sinceIso });
       return own(userId).length;
     },
+    /*
+      DERIVED FROM THE SAME ONE ROW the rest of this stub serves, rather than returning three
+      fixed numbers. The real one is a grouped query and its arithmetic is SQLite's, pinned
+      where the query lives; what matters here is that `/api/auth/me` asks for the CALLER's
+      figures and gets something consistent with the row it also lists.
+    */
+    ownActivity: (userId: string) => {
+      const rows = own(userId);
+      return {
+        requested: rows.length,
+        inFlight: rows.filter((r) => !["available", "failed", "no_release"].includes(r.status)).length,
+        ready: rows.filter((r) => r.status === "available" && r.available_seen_at === null).length,
+      };
+    },
     getKv: (key: string) => kv.get(key) ?? null,
     setKv: (key: string, value: string) => void kv.set(key, value),
   } as unknown as Store;
