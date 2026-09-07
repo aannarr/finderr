@@ -18,7 +18,9 @@ import {
   cachedBrowse,
   cachedBrowseRun,
   cachedDiscover,
+  cachedPersonRun,
   getDiscover,
+  getPerson,
   getTitleDetail,
   patchTitleState,
   postRequest,
@@ -300,6 +302,86 @@ describe("cachedBrowseRun", () => {
     pagedFetch([["a", "b"]]);
     await browse(filters, { limit: 2, offset: 0 });
     expect(cachedBrowseRun({ genre: "Comedy" }, { limit: 2 })).toBeUndefined();
+  });
+});
+
+/**
+ * The same defect one route over, and it was live on `main` while browse's was fixed.
+ *
+ * `PersonRoute` unmounts every time a title is opened from a filmography, and it re-seeds
+ * itself from the client cache on the way back. Seeding from the offset-0 entry alone gave
+ * a reader who had pressed "Show more" their first page back -- and the router then restored
+ * their scroll against a document that had lost half its height. Measured on the M1 Max,
+ * 2026-09-07, `/person/nm0000168`: 119 credits at `scrollHeight` 12721, scrolled to 9000,
+ * open a title, Back -- 60 credits, 6823, scroll clamped to 6103.
+ */
+describe("cachedPersonRun", () => {
+  const nconst = "nm1";
+
+  /** Pages of distinct credits, so concatenation order is observable. */
+  function pagedPersonFetch(pages: string[][]) {
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      const offset = Number(new URL(String(url), "http://x").searchParams.get("offset") ?? 0);
+      const credits = (pages[offset / 2] ?? []).map((tconst) => ({ tconst }));
+      return {
+        ok: true,
+        json: async () => ({
+          person: { nconst, name: "A Person" },
+          credits,
+          total: 6,
+          categories: [{ category: "actor", count: 6 }],
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  test("a miss is undefined, so the route falls through to a fetch", () => {
+    expect(cachedPersonRun(nconst, { limit: 2 })).toBeUndefined();
+  });
+
+  test("rebuilds every page the reader had paged through, in order", async () => {
+    pagedPersonFetch([
+      ["a", "b"],
+      ["c", "d"],
+      ["e", "f"],
+    ]);
+    await getPerson(nconst, { limit: 2, offset: 0 });
+    await getPerson(nconst, { limit: 2, offset: 2 });
+    await getPerson(nconst, { limit: 2, offset: 4 });
+
+    const run = cachedPersonRun(nconst, { limit: 2 });
+    expect(run?.credits.map((c) => c.tconst)).toEqual(["a", "b", "c", "d", "e", "f"]);
+    // The whole-filmography facts come from the first page and must survive the walk --
+    // "Show more" is drawn off `total` against the rows on screen, so losing it hides the
+    // control that got the reader here.
+    expect(run?.total).toBe(6);
+    expect(run?.categories).toEqual([{ category: "actor", count: 6 }]);
+  });
+
+  test("stops at the first gap rather than splicing pages out of order", async () => {
+    pagedPersonFetch([
+      ["a", "b"],
+      ["c", "d"],
+      ["e", "f"],
+    ]);
+    await getPerson(nconst, { limit: 2, offset: 0 });
+    await getPerson(nconst, { limit: 2, offset: 4 });
+
+    expect(cachedPersonRun(nconst, { limit: 2 })?.credits.map((c) => c.tconst)).toEqual(["a", "b"]);
+  });
+
+  /**
+   * The ROLE chip and the SORT chip are both part of the key, so a run never mixes two
+   * questions. `personKey` carries them; this is what stops a widened key from being
+   * "simplified" back into one that silently serves an actor's rows under a director filter.
+   */
+  test("a run is per-filter and per-sort", async () => {
+    pagedPersonFetch([["a", "b"]]);
+    await getPerson(nconst, { limit: 2, offset: 0 });
+    expect(cachedPersonRun(nconst, { limit: 2, category: "director" })).toBeUndefined();
+    expect(cachedPersonRun(nconst, { limit: 2, sort: "year" })).toBeUndefined();
+    expect(cachedPersonRun("nm2", { limit: 2 })).toBeUndefined();
   });
 });
 
