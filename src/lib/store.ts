@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
-import type { RadarrClient, SonarrClient, SonarrSeries } from "./arr";
+import type { RadarrClient, SonarrClient } from "./arr";
 import { applyAuthSchema } from "./auth-store";
 import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
 import type { Config } from "./config";
@@ -273,6 +273,19 @@ export interface LibraryEntry {
   title_slug: string | null;
   updated_at: string;
 }
+
+/**
+ * One library row as a MIRROR WALK offers it -- the stored shape minus what the store fills in.
+ *
+ * Named rather than spelled inline on `replaceLibrary` because it is now the unit a walk
+ * accumulates, and it is what `syncEpisodes` reads its candidates from. That the walk's
+ * intermediate list is THIS narrow, and never the arr's own ~5.5 KB record, is the whole memory
+ * property of `syncLibrary` -- so the type is worth being able to point at.
+ */
+export type LibraryMirrorRow = Omit<LibraryEntry, "service" | "updated_at" | "title_slug"> & {
+  added_at?: string | null;
+  title_slug?: string | null;
+};
 
 /** What Sonarr knows about ONE episode of one series we mirror. */
 export interface EpisodeEntry {
@@ -992,13 +1005,7 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    * here too, and a full swap is the only way to notice a deletion without a
    * second round trip.
    */
-  replaceLibrary(
-    service: "radarr" | "sonarr",
-    rows: (Omit<LibraryEntry, "service" | "updated_at" | "title_slug"> & {
-      added_at?: string | null;
-      title_slug?: string | null;
-    })[],
-  ): number {
+  replaceLibrary(service: "radarr" | "sonarr", rows: readonly LibraryMirrorRow[]): number {
     const now = new Date().toISOString();
     const ins = this.db.prepare(
       "insert or replace into library (imdb_id, service, arr_id, has_file, monitored, progress, updated_at, added_at, title_slug) values (?,?,?,?,?,?,?,?,?)",
@@ -2847,11 +2854,64 @@ export function posterFrom(images: unknown): string | null {
 
 // ---------------------------------------------------------------------------
 
+/** What `seedArtwork` takes for one title, lifted off the library record that carried it. */
+interface ArtworkSeed {
+  imdb_id: string;
+  url: string | null;
+  studio: string | null;
+}
+
+/**
+ * The poster and studio an arr's library record carries for free.
+ *
+ * Both services put them in the same two places, so this is one projection rather than a copy
+ * per service -- and it is where the `images` cast lives, once, instead of at each call site.
+ */
+function artworkSeed(record: { imdbId?: string; images?: unknown }): ArtworkSeed {
+  return {
+    imdb_id: record.imdbId ?? "",
+    url: posterFrom(record.images),
+    studio: studioFrom(record),
+  };
+}
+
+/**
+ * Drain a library walk into the two narrow lists the mirror actually stores.
+ *
+ * > [!IMPORTANT] What this function does NOT do is the reason it exists
+ * > It never builds an array of the arr's own records. A Radarr movie is ~5.5 KB of JSON --
+ * > `images`, `alternateTitles`, `ratings`, a full `movieFile` -- and the mirror keeps seven
+ * > fields of it plus a poster URL. Projecting inside the loop lets each fat record be
+ * > collected as soon as the next one is parsed, so the peak is set by the projection ratio
+ * > rather than by the library's size. Seerr's #3307 is what the other shape costs at 16k
+ * > items: a +335 MB heap step and ~450 MB never given back.
+ *
+ * The narrow lists ARE accumulated in full, on purpose: `replaceLibrary` and `seedArtwork` are
+ * swaps, and streaming rows straight into them would let a walk that failed halfway leave the
+ * mirror holding half a library. Collecting first means a throw anywhere in the walk reaches
+ * the caller before the store is touched at all.
+ */
+async function collectLibraryWalk<T extends { imdbId?: string; images?: unknown }>(
+  records: AsyncIterable<T>,
+  toRow: (record: T) => LibraryMirrorRow,
+): Promise<{ rows: LibraryMirrorRow[]; artwork: ArtworkSeed[] }> {
+  const rows: LibraryMirrorRow[] = [];
+  const artwork: ArtworkSeed[] = [];
+  for await (const record of records) {
+    rows.push(toRow(record));
+    artwork.push(artworkSeed(record));
+  }
+  return { rows, artwork };
+}
+
 /**
  * Pull both libraries into the mirror.
  *
  * Failures are per-service and non-fatal: if Sonarr is down we still want an accurate
  * picture of Radarr rather than a stale picture of both.
+ *
+ * Both walks STREAM -- see `collectLibraryWalk` for what that buys and what it deliberately
+ * still buffers.
  */
 export async function syncLibrary(
   store: Store,
@@ -2866,29 +2926,20 @@ export async function syncLibrary(
 
   if (clients.radarr) {
     try {
-      const movies = (await clients.radarr.movies()) ?? [];
-      out.radarr = store.replaceLibrary(
-        "radarr",
-        movies.map((m) => ({
-          imdb_id: m.imdbId ?? "",
-          arr_id: m.id,
-          has_file: m.hasFile ? 1 : 0,
-          monitored: m.monitored ? 1 : 0,
-          progress: m.hasFile ? 1 : 0,
-          added_at: addedFrom(m),
-          title_slug: m.titleSlug ?? null,
-        })),
-      );
+      const walk = await collectLibraryWalk(clients.radarr.movies(), (m) => ({
+        imdb_id: m.imdbId ?? "",
+        arr_id: m.id,
+        has_file: m.hasFile ? 1 : 0,
+        monitored: m.monitored ? 1 : 0,
+        progress: m.hasFile ? 1 : 0,
+        added_at: addedFrom(m),
+        title_slug: m.titleSlug ?? null,
+      }));
+      out.radarr = store.replaceLibrary("radarr", walk.rows);
       // Every owned title already carries its artwork AND its studio in the same
       // response -- seeding here costs nothing extra and covers the whole library
       // instantly, so an owned title never waits on an on-demand lookup for either.
-      const seeded = store.seedArtwork(
-        movies.map((m) => ({
-          imdb_id: m.imdbId ?? "",
-          url: posterFrom((m as unknown as { images?: unknown }).images),
-          studio: studioFrom(m),
-        })),
-      );
+      const seeded = store.seedArtwork(walk.artwork);
       log(`library: ${out.radarr} movies mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
     } catch (err) {
       errors.push(`radarr: ${(err as Error).message}`);
@@ -2897,30 +2948,23 @@ export async function syncLibrary(
 
   if (clients.sonarr) {
     try {
-      const series = (await clients.sonarr.series()) ?? [];
-      out.sonarr = store.replaceLibrary(
-        "sonarr",
-        series.map((s) => ({
-          imdb_id: s.imdbId ?? "",
-          arr_id: s.id,
-          has_file: (s.statistics?.episodeFileCount ?? 0) > 0 ? 1 : 0,
-          monitored: s.monitored ? 1 : 0,
-          progress: s.statistics ? s.statistics.percentOfEpisodes / 100 : null,
-          added_at: addedFrom(s),
-          title_slug: s.titleSlug ?? null,
-        })),
-      );
-      const seeded = store.seedArtwork(
-        series.map((s) => ({
-          imdb_id: s.imdbId ?? "",
-          url: posterFrom((s as unknown as { images?: unknown }).images),
-          studio: studioFrom(s),
-        })),
-      );
+      const walk = await collectLibraryWalk(clients.sonarr.series(), (s) => ({
+        imdb_id: s.imdbId ?? "",
+        arr_id: s.id,
+        has_file: (s.statistics?.episodeFileCount ?? 0) > 0 ? 1 : 0,
+        monitored: s.monitored ? 1 : 0,
+        progress: s.statistics ? s.statistics.percentOfEpisodes / 100 : null,
+        added_at: addedFrom(s),
+        title_slug: s.titleSlug ?? null,
+      }));
+      out.sonarr = store.replaceLibrary("sonarr", walk.rows);
+      const seeded = store.seedArtwork(walk.artwork);
       log(`library: ${out.sonarr} series mirrored${seeded ? `, ${seeded} posters seeded` : ""}`);
 
-      // A SLICE of the stale series, never all of them -- see `syncEpisodes`.
-      const eps = await syncEpisodes(store, clients.sonarr, series, episodePolicy, log);
+      // A SLICE of the stale series, never all of them -- see `syncEpisodes`. It reads the
+      // MIRROR ROWS rather than Sonarr's records, which is all it ever needed: `arr_id` is the
+      // series id its endpoint takes, and `imdb_id` is how the slice is chosen.
+      const eps = await syncEpisodes(store, clients.sonarr, walk.rows, episodePolicy, log);
       out.episodes = eps.episodes;
       errors.push(...eps.errors);
     } catch (err) {
@@ -2966,7 +3010,13 @@ export interface EpisodeRefreshPolicy {
 export async function syncEpisodes(
   store: Store,
   sonarr: SonarrClient,
-  series: readonly SonarrSeries[],
+  /**
+   * The series to consider, as the MIRROR holds them -- `imdb_id` picks the slice, `arr_id` is
+   * the series id Sonarr's endpoint takes. Narrowed from `SonarrSeries[]` to the two fields
+   * this actually reads, so a caller may hand over the rows it already built instead of
+   * keeping the arr's own records alive for a second reader.
+   */
+  series: readonly Pick<LibraryMirrorRow, "imdb_id" | "arr_id">[],
   policy: EpisodeRefreshPolicy,
   log: (m: string) => void = () => {},
 ): Promise<{ episodes: number; series: number; errors: string[] }> {
@@ -2981,26 +3031,28 @@ export async function syncEpisodes(
   if (due.size === 0) return { episodes, series: walked, errors };
 
   for (const s of series) {
-    const imdbId = s.imdbId;
     // The slice is chosen from the MIRROR rather than from this list, so a series Sonarr
     // just dropped cannot be walked and one with no IMDb id was never a candidate.
-    if (!imdbId || !due.has(imdbId)) continue;
+    if (!s.imdb_id || !due.has(s.imdb_id)) continue;
     try {
-      const rows = (await sonarr.episodes(s.id)) ?? [];
-      episodes += store.replaceEpisodes(
-        imdbId,
-        rows.map((e) => ({
+      // Streamed and projected in the loop, for the reason `collectLibraryWalk` gives: one
+      // series is bounded, but a long-running show is thousands of episodes and there is no
+      // reason for the fat records to coexist with the narrow ones.
+      const rows: Omit<EpisodeEntry, "imdb_id" | "updated_at">[] = [];
+      for await (const e of sonarr.episodes(s.arr_id)) {
+        rows.push({
           season: e.seasonNumber,
           episode: e.episodeNumber,
           arr_episode_id: e.id,
           has_file: e.hasFile ? 1 : 0,
           monitored: e.monitored ? 1 : 0,
           air_date: e.airDate ?? null,
-        })),
-      );
+        });
+      }
+      episodes += store.replaceEpisodes(s.imdb_id, rows);
       walked += 1;
     } catch (err) {
-      errors.push(`sonarr episodes ${imdbId}: ${(err as Error).message}`);
+      errors.push(`sonarr episodes ${s.imdb_id}: ${(err as Error).message}`);
     }
   }
 

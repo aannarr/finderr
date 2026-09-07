@@ -8,6 +8,7 @@
  */
 
 import type { ArrService, ServarrService } from "./config";
+import { streamResponseArray } from "./json-array-stream";
 
 /** Every servarr finderr speaks to. Used for log lines and for `safeArrMessage`. */
 export type ServarrName = "radarr" | "sonarr" | "prowlarr";
@@ -269,6 +270,37 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
   }
 
   /**
+   * The call itself, up to and including "did it fail". Split out from `request` so the
+   * streaming reader below shares the URL, the credential and the failure vocabulary rather
+   * than growing a second copy of them.
+   *
+   * A failure body is read WHOLE here even on the streaming path, and that is deliberate:
+   * an arr's error is a sentence, and `ArrError` is what turns it into something a person
+   * can act on. Only the SUCCESS body is ever large.
+   */
+  private async send(
+    method: string,
+    path: string,
+    opts: {
+      query?: Record<string, string | number | undefined>;
+      body?: unknown;
+      timeoutMs?: number;
+    },
+  ): Promise<Response> {
+    const res = await fetch(this.url(path, opts.query), {
+      method,
+      headers: {
+        "X-Api-Key": this.svc.apiKey,
+        ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+    });
+    if (!res.ok) throw new ArrError(this.name, res.status, await res.text());
+    return res;
+  }
+
+  /**
    * Every arr DELETE is a void controller action: HTTP 200 with a zero-byte body.
    * Calling res.json() unconditionally makes a SUCCESSFUL delete throw
    * "Unexpected end of JSON input". Handle the empty body explicitly.
@@ -282,18 +314,7 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
       timeoutMs?: number;
     } = {},
   ): Promise<T | null> {
-    const res = await fetch(this.url(path, opts.query), {
-      method,
-      headers: {
-        "X-Api-Key": this.svc.apiKey,
-        ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      },
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
-    });
-
-    const text = await res.text();
-    if (!res.ok) throw new ArrError(this.name, res.status, text);
+    const text = await (await this.send(method, path, opts)).text();
     if (text.length === 0) return null;
     try {
       return JSON.parse(text) as T;
@@ -304,6 +325,23 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
 
   get<T>(path: string, query?: Record<string, string | number | undefined>) {
     return this.request<T>("GET", path, { query });
+  }
+
+  /**
+   * A GET whose answer is a JSON ARRAY, handed over one element at a time.
+   *
+   * For the endpoints that answer with a whole library and cannot be paged -- see
+   * `streamJsonArray` for the measurement, and for why the page parameters an arr accepts
+   * are worse than none at all. A caller that projects each record down to the few fields
+   * it keeps has a peak that does not grow with the library.
+   *
+   * The timeout is generous compared to `get`'s twenty seconds because it now has to cover
+   * the whole transfer rather than a small answer, and the libraries these serve are the
+   * ones expected to get much larger. It is still a timeout: a wedged arr does not hold a
+   * mirror pass open forever.
+   */
+  getStream<T>(path: string, query?: Record<string, string | number | undefined>): AsyncGenerator<T> {
+    return streamResponseArray<T>(this.send("GET", path, { query, timeoutMs: 120_000 }));
   }
   post<T>(path: string, body: unknown) {
     return this.request<T>("POST", path, { body });
@@ -450,8 +488,16 @@ export class RadarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
     super("radarr", svc);
   }
 
-  movies() {
-    return this.get<RadarrMovie[]>("/movie");
+  /**
+   * The whole movie library, one film at a time.
+   *
+   * Streamed rather than returned as an array because Radarr answers with everything and
+   * cannot be paged, and each record is ~5.5 KB of which the mirror keeps about six fields.
+   * Project inside the loop and the peak stops tracking the library's size -- see
+   * `getStream` and `streamJsonArray`.
+   */
+  movies(): AsyncGenerator<RadarrMovie> {
+    return this.getStream<RadarrMovie>("/movie");
   }
 
   /** Stop Radarr looking for one movie. The file, if there is one, is untouched. */
@@ -562,8 +608,9 @@ export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
     super("sonarr", svc);
   }
 
-  series() {
-    return this.get<SonarrSeries[]>("/series");
+  /** The whole series library, one show at a time. Same shape and same reason as `RadarrClient.movies`. */
+  series(): AsyncGenerator<SonarrSeries> {
+    return this.getStream<SonarrSeries>("/series");
   }
 
   /**
@@ -614,9 +661,16 @@ export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
     return this.get<SonarrCalendarEntry[]>("/calendar", { start, end, includeSeries: "true" });
   }
 
-  /** Every episode Sonarr lists for one series, aired or not. */
-  episodes(seriesId: number) {
-    return this.get<SonarrEpisode[]>("/episode", { seriesId });
+  /**
+   * Every episode Sonarr lists for one series, aired or not, one at a time.
+   *
+   * Bounded by one series rather than by the library, so this is the least urgent of the
+   * three walks -- but a long-running anime is thousands of episodes, and reading it the
+   * same way as the other two means there is one answer to "how does finderr read an arr
+   * list" rather than two that must be kept in step.
+   */
+  episodes(seriesId: number): AsyncGenerator<SonarrEpisode> {
+    return this.getStream<SonarrEpisode>("/episode", { seriesId });
   }
 
   /**

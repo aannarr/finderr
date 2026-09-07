@@ -59,80 +59,110 @@ describe("plexLinks", () => {
 
 // --- the mirror ------------------------------------------------------------
 
-const IDENTITY = {
-  MediaContainer: { machineIdentifier: "0123456789abcdef0123456789abcdef01234567" },
-};
+const MACHINE_ID = "0123456789abcdef0123456789abcdef01234567";
 
-const SECTIONS = {
-  MediaContainer: {
-    Directory: [
-      { key: "1", type: "movie", title: "Movies" },
-      { key: "2", type: "show", title: "TV Shows" },
-      // Real on this server and correctly skipped: no tconst has ever been in a photo set.
-      { key: "4", type: "photo", title: "Photos" },
-    ],
+const SECTIONS = [
+  { key: "1", type: "movie", title: "Movies" },
+  { key: "2", type: "show", title: "TV Shows" },
+  // Real on this server and correctly skipped: no tconst has ever been in a photo set.
+  { key: "4", type: "photo", title: "Photos" },
+];
+
+const MOVIES = [
+  {
+    // A STRING on the wire, even though it reads as a number.
+    ratingKey: "27807",
+    title: "*batteries not included",
+    guid: "plex://movie/5d7768377228e5001f1ded62",
+    Guid: [{ id: "imdb://tt0092494" }, { id: "tmdb://11548" }, { id: "tvdb://7001" }],
   },
-};
-
-const MOVIES = {
-  MediaContainer: {
-    Metadata: [
-      {
-        // A STRING on the wire, even though it reads as a number.
-        ratingKey: "27807",
-        title: "*batteries not included",
-        guid: "plex://movie/5d7768377228e5001f1ded62",
-        Guid: [{ id: "imdb://tt0092494" }, { id: "tmdb://11548" }, { id: "tvdb://7001" }],
-      },
-      {
-        ratingKey: "14450",
-        title: "2 Fast 2 Furious",
-        guid: "plex://movie/5d7768265af944001f1f6977",
-        Guid: [{ id: "tmdb://584" }, { id: "imdb://tt0322259" }],
-      },
-      {
-        // Matched by a LEGACY agent, so no imdb child at all. Real, and unreachable from
-        // our index -- it must not become a row rather than becoming a wrong one.
-        ratingKey: "99999",
-        title: "Some Home Video",
-        guid: "com.plexapp.agents.none://99999",
-        Guid: null,
-      },
-    ],
+  {
+    ratingKey: "14450",
+    title: "2 Fast 2 Furious",
+    guid: "plex://movie/5d7768265af944001f1f6977",
+    Guid: [{ id: "tmdb://584" }, { id: "imdb://tt0322259" }],
   },
-};
-
-const SHOWS = {
-  MediaContainer: {
-    Metadata: [
-      {
-        ratingKey: "10643",
-        title: "3 Body Problem",
-        guid: "plex://show/5f57bdaf782ab300435487d0",
-        Guid: [{ id: "imdb://tt13016388" }, { id: "tvdb://411959" }],
-      },
-    ],
+  {
+    // Matched by a LEGACY agent, so no imdb child at all. Real, and unreachable from
+    // our index -- it must not become a row rather than becoming a wrong one.
+    ratingKey: "99999",
+    title: "Some Home Video",
+    guid: "com.plexapp.agents.none://99999",
+    Guid: null,
   },
-};
+];
 
-function fakePlex(routes: Record<string, unknown>, onCall?: (path: string) => void): typeof fetch {
+const SHOWS = [
+  {
+    ratingKey: "10643",
+    title: "3 Body Problem",
+    guid: "plex://show/5f57bdaf782ab300435487d0",
+    Guid: [{ id: "imdb://tt13016388" }, { id: "tvdb://411959" }],
+  },
+];
+
+/** One fake PMS. Anything omitted 404s, which is how a "server is down" case is written. */
+interface FakeServer {
+  machineIdentifier?: string;
+  sections?: { key: string; type: string; title?: string }[];
+  /** Section key -> that section's whole `Metadata` list. A missing key 404s. */
+  items?: Record<string, unknown[]>;
+  /**
+   * Answer `/all` with the whole section and NO `totalSize`, which is exactly what the live
+   * server does when the paging parameters are absent -- and therefore what a server that
+   * IGNORED them would do. The walk has to terminate against this shape too.
+   */
+  ignorePaging?: boolean;
+  /** Section keys whose SECOND page fails, for "a walk that dies halfway". */
+  failAfterFirstPage?: string[];
+}
+
+/**
+ * A stand-in PMS that pages the way the real one was measured to page on 2026-09-07: the
+ * response echoes `offset`, reports `size` for the slice it returned and `totalSize` for the
+ * whole section -- and reports `totalSize` ONLY when the request asked for a page.
+ */
+function fakePlex(server: FakeServer, onCall?: (path: string) => void): typeof fetch {
   return (async (input: URL | RequestInfo) => {
     const url = new URL(String(input));
-    const path = `${url.pathname}${url.search}`;
-    onCall?.(path);
-    const body = routes[path];
-    if (body === undefined) return new Response("not found", { status: 404 });
-    return new Response(JSON.stringify(body), {
-      headers: { "content-type": "application/json" },
+    onCall?.(`${url.pathname}${url.search}`);
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const missing = new Response("not found", { status: 404 });
+
+    if (url.pathname === "/identity") {
+      return server.machineIdentifier === undefined
+        ? missing
+        : json({ MediaContainer: { machineIdentifier: server.machineIdentifier } });
+    }
+    if (url.pathname === "/library/sections") {
+      return server.sections === undefined
+        ? missing
+        : json({ MediaContainer: { Directory: server.sections } });
+    }
+
+    const section = /^\/library\/sections\/([^/]+)\/all$/.exec(url.pathname)?.[1];
+    const all = section === undefined ? undefined : server.items?.[section];
+    if (all === undefined) return missing;
+
+    const start = Number(url.searchParams.get("X-Plex-Container-Start") ?? "0");
+    if (start > 0 && server.failAfterFirstPage?.includes(section as string)) {
+      return new Response("boom", { status: 500 });
+    }
+    if (server.ignorePaging) return json({ MediaContainer: { size: all.length, Metadata: all } });
+
+    const size = Number(url.searchParams.get("X-Plex-Container-Size") ?? String(all.length));
+    const page = all.slice(start, start + size);
+    return json({
+      MediaContainer: { offset: start, size: page.length, totalSize: all.length, Metadata: page },
     });
   }) as typeof fetch;
 }
 
-const ROUTES = {
-  "/identity": IDENTITY,
-  "/library/sections": SECTIONS,
-  "/library/sections/1/all?includeGuids=1": MOVIES,
-  "/library/sections/2/all?includeGuids=1": SHOWS,
+const SERVER: FakeServer = {
+  machineIdentifier: MACHINE_ID,
+  sections: SECTIONS,
+  items: { "1": MOVIES, "2": SHOWS },
 };
 
 /** A Store on its own scratch directory, the same shape `store.test.ts` uses. */
@@ -154,14 +184,14 @@ describe("syncPlex", () => {
   test("mirrors every video section, keyed by our own tconst", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const client = new PlexClient("http://plex.test:32400", "tok", fakePlex(ROUTES));
+      const client = new PlexClient("http://plex.test:32400", "tok", fakePlex(SERVER));
       const res = await syncPlex(store, client);
 
       expect(res.error).toBeUndefined();
       expect(res.items).toBe(3);
       expect(store.plexMap().get("tt0092494")).toBe("27807");
       expect(store.plexMap().get("tt13016388")).toBe("10643");
-      expect(store.plexMachineIdentifier()).toBe(IDENTITY.MediaContainer.machineIdentifier);
+      expect(store.plexMachineIdentifier()).toBe(MACHINE_ID);
     } finally {
       cleanup();
     }
@@ -174,7 +204,7 @@ describe("syncPlex", () => {
   test("an item with no IMDb guid is dropped, not guessed at", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const client = new PlexClient("http://plex.test:32400", "tok", fakePlex(ROUTES));
+      const client = new PlexClient("http://plex.test:32400", "tok", fakePlex(SERVER));
       await syncPlex(store, client);
       expect(store.plexCount()).toBe(3); // not 4 -- "Some Home Video" is absent
     } finally {
@@ -190,12 +220,12 @@ describe("syncPlex", () => {
       const client = new PlexClient(
         "http://plex.test:32400",
         "tok",
-        fakePlex(ROUTES, (p) => calls.push(p)),
+        fakePlex(SERVER, (p) => calls.push(p)),
       );
       await syncPlex(store, client);
-      expect(calls.filter((c) => c.includes("/all"))).toEqual([
-        "/library/sections/1/all?includeGuids=1",
-        "/library/sections/2/all?includeGuids=1",
+      expect(calls.filter((c) => c.includes("/all")).map((c) => c.split("?")[0])).toEqual([
+        "/library/sections/1/all",
+        "/library/sections/2/all",
       ]);
     } finally {
       cleanup();
@@ -213,7 +243,7 @@ describe("syncPlex", () => {
       const client = new PlexClient(
         "http://plex.test:32400",
         "tok",
-        fakePlex(ROUTES, (p) => calls.push(p)),
+        fakePlex(SERVER, (p) => calls.push(p)),
       );
       await syncPlex(store, client);
       expect(calls.filter((c) => c.includes("/all")).every((c) => c.includes("includeGuids=1"))).toBe(true);
@@ -230,7 +260,7 @@ describe("syncPlex", () => {
   test("a failed walk leaves the previous mirror standing", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const good = new PlexClient("http://plex.test:32400", "tok", fakePlex(ROUTES));
+      const good = new PlexClient("http://plex.test:32400", "tok", fakePlex(SERVER));
       await syncPlex(store, good);
       expect(store.plexCount()).toBe(3);
 
@@ -249,19 +279,111 @@ describe("syncPlex", () => {
   test("a title gone from Plex leaves the mirror", async () => {
     const { store, cleanup } = tempStore();
     try {
-      await syncPlex(store, new PlexClient("http://x:32400", "tok", fakePlex(ROUTES)));
+      await syncPlex(store, new PlexClient("http://x:32400", "tok", fakePlex(SERVER)));
       expect(store.plexMap().has("tt0322259")).toBe(true);
 
-      const fewer = {
-        ...ROUTES,
-        "/library/sections/1/all?includeGuids=1": {
-          MediaContainer: { Metadata: [MOVIES.MediaContainer.Metadata[0]] },
-        },
-      };
+      const fewer: FakeServer = { ...SERVER, items: { ...SERVER.items, "1": [MOVIES[0]] } };
       await syncPlex(store, new PlexClient("http://x:32400", "tok", fakePlex(fewer)));
 
       expect(store.plexMap().has("tt0322259")).toBe(false);
       expect(store.plexMap().has("tt0092494")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // --- the walk is paged, and every way it can end -------------------------
+
+  /**
+   * Twelve hundred items so the walk has to make three requests at `PAGE_SIZE` 500, plus one
+   * that is deliberately unmatched -- a page boundary is exactly where an off-by-one would
+   * silently drop or duplicate a title.
+   */
+  const many = Array.from({ length: 1200 }, (_, i) => ({
+    ratingKey: String(100000 + i),
+    Guid: [{ id: `imdb://tt${String(9000000 + i)}` }],
+  }));
+
+  test("a section larger than one page is walked whole, in order and without repeats", async () => {
+    const { store, cleanup } = tempStore();
+    const calls: string[] = [];
+    try {
+      const server: FakeServer = { ...SERVER, items: { "1": many, "2": [] } };
+      await syncPlex(
+        store,
+        new PlexClient(
+          "http://x:32400",
+          "tok",
+          fakePlex(server, (p) => calls.push(p)),
+        ),
+      );
+
+      expect(store.plexCount()).toBe(1200);
+      expect(store.plexMap().get("tt9000000")).toBe("100000");
+      expect(store.plexMap().get("tt9001199")).toBe("101199");
+
+      // Three pages for section 1, one for the empty section 2. The empty section still costs
+      // one request -- there is no way to know it is empty without asking.
+      expect(calls.filter((c) => c.startsWith("/library/sections/1/all"))).toHaveLength(3);
+      expect(calls.filter((c) => c.includes("X-Plex-Container-Start=0"))).toHaveLength(2);
+      expect(calls.some((c) => c.includes("X-Plex-Container-Start=500"))).toBe(true);
+      expect(calls.some((c) => c.includes("X-Plex-Container-Start=1000"))).toBe(true);
+      expect(calls.some((c) => c.includes("X-Plex-Container-Start=1200"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  /**
+   * THE LOOP MUST TERMINATE AGAINST A SERVER THAT IGNORES THE PARAMETERS.
+   *
+   * The live PMS honours them (measured 2026-09-07) but an older one, or something proxying
+   * for it, may not -- and the failure shape there is not a wrong answer, it is asking for
+   * offset 500 of a list it already has in full, forever. Falling back to what the response
+   * actually held is what makes that case one request and a correct mirror.
+   */
+  test("a server that ignores the paging parameters is asked exactly once per section", async () => {
+    const { store, cleanup } = tempStore();
+    const calls: string[] = [];
+    try {
+      const server: FakeServer = { ...SERVER, items: { "1": many, "2": [] }, ignorePaging: true };
+      await syncPlex(
+        store,
+        new PlexClient(
+          "http://x:32400",
+          "tok",
+          fakePlex(server, (p) => calls.push(p)),
+        ),
+      );
+
+      expect(store.plexCount()).toBe(1200);
+      expect(calls.filter((c) => c.startsWith("/library/sections/1/all"))).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  /**
+   * Paging gives the walk more places to fail, so the rule the whole mirror rests on is
+   * asserted at the new one too: a second page that 500s must leave the mirror it already
+   * had, not a half-written one.
+   */
+  test("a page that fails midway leaves the previous mirror standing", async () => {
+    const { store, cleanup } = tempStore();
+    try {
+      await syncPlex(store, new PlexClient("http://x:32400", "tok", fakePlex(SERVER)));
+      expect(store.plexCount()).toBe(3);
+
+      const flaky: FakeServer = {
+        ...SERVER,
+        items: { "1": many, "2": [] },
+        failAfterFirstPage: ["1"],
+      };
+      const res = await syncPlex(store, new PlexClient("http://x:32400", "tok", fakePlex(flaky)));
+
+      expect(res.error).toContain("plex");
+      expect(store.plexCount()).toBe(3);
+      expect(store.plexMap().get("tt0092494")).toBe("27807");
     } finally {
       cleanup();
     }
@@ -296,7 +418,7 @@ test("the token travels as a header, never in the URL", async () => {
       url: String(input),
       token: new Headers(init?.headers).get("X-Plex-Token"),
     });
-    return new Response(JSON.stringify(IDENTITY), {
+    return new Response(JSON.stringify({ MediaContainer: { machineIdentifier: MACHINE_ID } }), {
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch);

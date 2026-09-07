@@ -84,11 +84,28 @@ interface PlexDirectory {
 }
 
 interface PlexContainer<T> {
-  MediaContainer?: { Metadata?: T[] | null; Directory?: T[] | null; machineIdentifier?: string | null };
+  MediaContainer?: {
+    Metadata?: T[] | null;
+    Directory?: T[] | null;
+    machineIdentifier?: string | null;
+    /** Items in the whole section. Present only when the request asked for a page. */
+    totalSize?: number | null;
+  };
 }
 
 /** The section types worth walking. A photo or music library has no `tconst` in it. */
 const VIDEO_SECTIONS = new Set(["movie", "show"]);
+
+/**
+ * Items per request when walking a section.
+ *
+ * 500 rather than everything: a Plex item is ~2.3 KB of JSON here (2,662,805 bytes for the
+ * 1,141 items in the movie section, measured 2026-09-07), of which the mirror keeps two
+ * fields, so a whole-section fetch is a multi-megabyte parse to build a table of `tconst ->
+ * ratingKey`. At this size that is three requests instead of one against a server on our own
+ * LAN, and the peak stops growing with the library.
+ */
+const PAGE_SIZE = 500;
 
 /**
  * A read-only client for one Plex Media Server.
@@ -136,22 +153,45 @@ export class PlexClient {
   }
 
   /**
-   * Every item in one section, as `tconst -> ratingKey`.
+   * Every item in one section, as `tconst -> ratingKey`, a page of `PAGE_SIZE` at a time.
    *
    * `includeGuids=1` is what makes this possible at all -- without it the response carries
    * only the agent's own `plex://` guid and nothing that crosswalks to our index.
+   *
+   * > [!IMPORTANT] Plex really does honour `X-Plex-Container-Start` / `-Size`, and `totalSize`
+   * > only appears when you ask for a page
+   * > Measured against the live server 2026-09-07. Unpaged, section 1 came back
+   * > `size: 1141, totalSize: undefined`; with `Start=0&Size=100` it came back
+   * > `size: 100, totalSize: 1141, offset: 0`, and `Start=100` returned a genuinely different
+   * > first item. That asymmetry is why the loop below falls back to `size` -- against a
+   * > server that ignored the parameters it would see one page holding everything and stop,
+   * > rather than asking for offset 500 of a list it already has in full, forever.
+   *
+   * The projection happens HERE rather than in the caller so a fat `Metadata` record is
+   * never held past the page it arrived in: what escapes this method is two strings per item.
    */
-  async sectionItems(key: string): Promise<PlexItem[]> {
-    const res = await this.get<PlexContainer<PlexMetadata>>(
-      `/library/sections/${encodeURIComponent(key)}/all?includeGuids=1`,
-    );
-    return (res.MediaContainer?.Metadata ?? []).flatMap((m) => {
-      const imdb_id = imdbGuidOf(m.Guid);
-      const rating_key = m.ratingKey == null ? "" : String(m.ratingKey);
-      // An item with no IMDb guid is one Plex matched with a legacy agent, or did not
-      // match at all. It is real and it is unreachable from our index, so it is not a row.
-      return imdb_id && rating_key ? [{ imdb_id, rating_key }] : [];
-    });
+  async *sectionItems(key: string): AsyncGenerator<PlexItem> {
+    const section = `/library/sections/${encodeURIComponent(key)}/all?includeGuids=1`;
+    for (let start = 0; ; ) {
+      const res = await this.get<PlexContainer<PlexMetadata>>(
+        `${section}&X-Plex-Container-Start=${start}&X-Plex-Container-Size=${PAGE_SIZE}`,
+      );
+      const page = res.MediaContainer?.Metadata ?? [];
+      for (const m of page) {
+        const imdb_id = imdbGuidOf(m.Guid);
+        const rating_key = m.ratingKey == null ? "" : String(m.ratingKey);
+        // An item with no IMDb guid is one Plex matched with a legacy agent, or did not
+        // match at all. It is real and it is unreachable from our index, so it is not a row.
+        if (imdb_id && rating_key) yield { imdb_id, rating_key };
+      }
+
+      // Advance by what THIS response actually held rather than by the page size we asked
+      // for: a server that answers with a different length can then neither skip an item nor
+      // be asked for one twice.
+      if (page.length === 0) return;
+      start += page.length;
+      if (start >= (res.MediaContainer?.totalSize ?? page.length)) return;
+    }
   }
 }
 
@@ -186,8 +226,15 @@ export async function syncPlex(
     if (!machineIdentifier) return { error: "plex: server reported no machineIdentifier" };
 
     const keys = await client.videoSectionKeys();
+    // The accumulated list is the NARROW one -- two strings per item, ~1,700 of them here --
+    // and it is collected in full before anything is written, because `replacePlexItems` is a
+    // swap: streaming it straight into the transaction would let a walk that failed halfway
+    // leave the mirror holding half a library. What is bounded is the FAT parse, one page of
+    // `Metadata` at a time, inside `sectionItems`.
     const items: PlexItem[] = [];
-    for (const key of keys) items.push(...(await client.sectionItems(key)));
+    for (const key of keys) {
+      for await (const item of client.sectionItems(key)) items.push(item);
+    }
 
     const count = store.replacePlexItems(machineIdentifier, items);
     log(`plex: ${count} items mirrored from ${keys.length} section(s)`);
