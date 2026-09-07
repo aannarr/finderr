@@ -220,38 +220,49 @@ const FUZZY_WIDE_SCOPE = 1;
 /**
  * What matching every word of the query is worth.
  *
- * Named because two branches of `rank()` read it: the coverage branch, and an exact match
- * that has no votes to be judged on. An exact title match is a strictly stronger statement
- * than "contains every query word", so the second must never be worth more than the first
- * -- and it was, by nine points, which is half of what buried `tt7526136`.
+ * Named because two branches of `rank()` read it: the coverage branch, and the FLOOR under
+ * an exact title match. An exact match is a strictly stronger statement than "contains every
+ * query word" -- the whole title being the query implies every query word appearing -- so
+ * the second must never be worth more than the first, and it was, by nine points, which is
+ * half of what buried `tt7526136`.
+ *
+ * > [!IMPORTANT] That invariant used to be a sentence in this comment and nothing else
+ * > `14 * exactPlausibility(v)` only reaches 12 at about 10,650 votes, so the claim was false
+ * > for very nearly every title in the corpus, and the one place it was patched -- zero votes
+ * > -- made the branch step DOWN from 12 to 3.1 between 0 votes and 1. It is a `Math.max` in
+ * > `rank()` now, lifted only by {@link hasTypoTwin}, so the comment describes what the code
+ * > does rather than what it was hoped to do.
  */
 const FULL_COVERAGE_MATCH = 12;
 
 /**
- * What an EXACT title match with NO VOTES AT ALL is credited with having.
+ * The coverage at which every word of the query is present.
  *
- * The same 1,000 the browse floor and the cast floor use, and the same meaning: the line
- * above which a title is taken to have an audience at all.
- *
- * > [!IMPORTANT] ZERO VOTES IS THE ABSENCE OF A MEASUREMENT, NOT A LOW ONE
- * > That boundary is the whole rule, and it is the same distinction `applyRank` draws when
- * > it gives an unrated title NULL rather than the prior mean. A title that has not come
- * > out yet has no votes BY CONSTRUCTION and nothing about it has been judged; a title with
- * > 439 votes has been seen by 439 people, and that is a real if small signal that must not
- * > be overwritten.
- * >
- * > **Extending this to any positive vote count breaks the `interstelar` canary case, and
- * > it was measured rather than reasoned about.** Crediting the 439-vote "Interstelar"
- * > (2014) takes it from 44.96 to 49.06 against the 2.6M-vote "Interstellar" at 48.67 --
- * > a 0.39-point flip, and the suite goes 41/42. `exactPlausibility` exists precisely
- * > because an obscure exact match is usually a typo of something famous; that argument is
- * > sound at 439 votes and vacuous at none.
- *
- * It buys such a title ~11 points of the popularity term's 24.8-point span -- enough to
- * clear a popular PARTIAL match, not enough to disturb the ordering AMONG exact matches,
- * where votes still decide. Both halves are pinned in `search-exact.test.ts`.
+ * Just short of 1: `cov` is a ratio of small integers and comparing a division result to
+ * exactly 1 is how a 3-of-3 match rounds itself out of its own branch. Named because two
+ * places read it -- the coverage branch of `rank()`, and {@link hasTypoTwin}, which needs
+ * the same boundary from the other side.
  */
-const UNVOTED_EXACT_MATCH_VOTES = 1_000;
+const FULL_COVERAGE = 0.999;
+
+/**
+ * What an exact title match is worth at FULL plausibility -- a title everybody has heard of.
+ *
+ * Above `FULL_COVERAGE_MATCH` by two points, which is the whole of the ordering it buys: an
+ * exact match on something famous outranks a title that merely contains every query word.
+ * `exactPlausibility` scales it down from here, and {@link FULL_COVERAGE_MATCH} floors how
+ * far down it may go whenever nothing on the page could have been mistyped into the query.
+ *
+ * > [!IMPORTANT] THE 14 WAS SWEPT AND IT IS STAYING, AND THE REASON IS MARGIN
+ * > 18 and 20 both measure better on the real log (mean clicked rank 1.41 against 1.47)
+ * > with the canary still 46/46, so the temptation is real. `interstelar` has 3.71 points
+ * > of headroom today and the 439-vote "Interstelar" gains `(bonus - 14) * 0.5644` of it,
+ * > which leaves **0.32 points at 20** and flips the case at 24. The canary is a promote
+ * > gate at 100%, so a nightly vote drift inside that margin stops the index refresh for a
+ * > live household -- and what it buys is ONE clicked title out of seventeen. Do not spend
+ * > 91% of a build gate's margin on a sample of that size. Measured 2026-09-08.
+ */
+const EXACT_MATCH = 14;
 
 /**
  * How plausible it is that a reader typing this exact title meant this exact title.
@@ -260,9 +271,133 @@ const UNVOTED_EXACT_MATCH_VOTES = 1_000;
  * something famous than a deliberate search for a 439-vote film, which is the "interstelar"
  * case the canary pins. So the bonus is bought with votes, saturating at 50,000 where
  * further evidence stops being informative.
+ *
+ * **It only answers a question the candidate set has actually asked.** The suspicion above
+ * is a hypothesis ABOUT SOMETHING -- there has to be a famous near-twin for the query to be
+ * a typo OF -- and when no such twin is on the page the discount fires anyway and buries a
+ * title the reader named letter for letter. `hasTypoTwin` is the gate that asks first.
  */
 function exactPlausibility(votes: number): number {
   return Math.min(1, Math.log(votes + 10) / Math.log(50_000));
+}
+
+/**
+ * How near-identical to the query a candidate must be before it counts as something the
+ * query could be a MISSPELLING of.
+ *
+ * > [!IMPORTANT] The BAND was measured in both directions, and 0.7 is the middle of it
+ * > Against the real 1.28M-row index on 2026-09-08, swept end to end against `bun run canary`
+ * > and the clicked-title replay that lands with the search-retune change
+ * > (`bun run search:replay` -- if that script is not in `package.json` yet, its branch has
+ * > not merged and this table cannot be reproduced from `main` alone):
+ * >
+ * > | value | canary | mean rank of a clicked title |
+ * > |---|---|---|
+ * > | 0.40 | 46/46 | 2.18 -- worse than not gating at all |
+ * > | 0.50 | 46/46 | 1.65 |
+ * > | 0.54 | 46/46 | 1.65 |
+ * > | **0.55 .. 0.818** | **46/46** | **1.59** |
+ * > | 0.82 | 45/46 -- loses `interstelar` | 1.59 |
+ * >
+ * > Both edges are a real candidate rather than a rounding: 0.818 is `interstelar` against
+ * > "Interstellar", the one query in the whole measured population whose exact match IS a
+ * > typo of something famous, and 0.545 is `Reel rivals` against "Rivals", the highest-scoring
+ * > twin that must NOT fire the discount. The population was the 46 canary queries, the 74
+ * > distinct queries in the live search log, and 400 randomly sampled real titles typed back
+ * > as queries. **0.7 is the middle of the band, not an edge of it.**
+ *
+ * `similarity` is Jaccard-blended-with-coverage over character trigrams, so it is blind to
+ * WHERE the difference is; that is why {@link hasTypoTwin} needs the other two clauses.
+ */
+const TYPO_TWIN_SIMILARITY = 0.7;
+
+/**
+ * How well known a near-twin must be before the query is read as a misspelling of it.
+ *
+ * The suspicion `exactPlausibility` encodes is that an obscure exact match is *"more often a
+ * typo of something FAMOUS"*, and the famous half is not decoration: two obscure titles one
+ * edit apart give a reader no reason to have meant either, so discounting the one they typed
+ * exactly is a pure loss.
+ *
+ * The same 50,000 `exactPlausibility` saturates at, and for the same reason: it is this
+ * file's line for "further popularity stops being informative", so it is also the line above
+ * which a title is well known enough to be worth mistyping.
+ *
+ * > [!CAUTION] NEITHER GATE SUITE COVERS THE CASE THIS CLAUSE EXISTS FOR
+ * > Swept 1 .. 2,602,282 against the canary and the replay and **nothing moves at all** --
+ * > `heart of the beast` is not a canary case and nobody has clicked it in the live log, so
+ * > both instruments are blind to it. Deleting the clause on that evidence would be reading
+ * > silence as a verdict. Measured by hand instead, on the real index: with the clause the
+ * > 2026 "Heart of the Beast" is rank 0; without it, both 0-vote rows fall out of the top
+ * > four and the 160k-vote "In the Heart of the Sea" takes the page -- which is verbatim the
+ * > bug the since-deleted `UNVOTED_EXACT_MATCH_VOTES` was written for. The near-twin that fires it is the
+ * > 339-vote "The Heart of the Bear" (2001), so any bar above a few hundred votes protects
+ * > this case; 50,000 is chosen for the reason above rather than to clear that one row.
+ * > `search-exact.test.ts` pins it on fixtures, which is where the coverage now lives.
+ */
+const TYPO_TWIN_VOTES = 50_000;
+
+/** What `rank()` knows about one candidate before it decides what the match is worth. */
+export interface Candidate {
+  /** The query is this title, letter for letter. Says nothing about the year. */
+  nameMatch: boolean;
+  /** `nameMatch`, and no explicit year in the query contradicts it. */
+  exact: boolean;
+  /** Some form of this title begins with the query. */
+  prefix: boolean;
+  /** Character-trigram similarity to the query, 0..1. */
+  textSim: number;
+  /** Fraction of the query's words present in the title, 0..1. */
+  coverage: number;
+  votes: number;
+}
+
+/**
+ * Is there something on this page the query could be a MISSPELLING of?
+ *
+ * The question `exactPlausibility` exists to answer, asked before the answer is spent. Three
+ * clauses, and each one removes a different impostor from a population where only
+ * `interstelar` should survive:
+ *
+ *   - **not itself an exact match.** Between two titles sharing a name there is no typo
+ *     hypothesis at all -- both were named letter for letter -- so votes alone should order
+ *     them.
+ *   - **the query's words are not all present.** A title containing every word of the query
+ *     is an ANSWER to the query as typed, not an alternative reading of it. This is what
+ *     separates "Interstellar" (which does not contain `interstelar`) from the twenty
+ *     near-identical sequels, reaction videos and original-language pairs that do.
+ *   - **famous in its own right.** See {@link TYPO_TWIN_VOTES}.
+ *
+ * One verdict for the whole query rather than one per candidate: "this query could be a
+ * typo" is a fact about the page, not about any row on it.
+ *
+ * It reads four of {@link Candidate}'s fields and asks for exactly those, so a caller with
+ * something else measured -- or a test -- does not have to invent a `prefix` to be ignored.
+ */
+export function hasTypoTwin(
+  candidates: readonly Pick<Candidate, "exact" | "coverage" | "textSim" | "votes">[],
+): boolean {
+  return candidates.some(
+    (c) =>
+      !c.exact &&
+      c.coverage < FULL_COVERAGE &&
+      c.textSim >= TYPO_TWIN_SIMILARITY &&
+      c.votes >= TYPO_TWIN_VOTES,
+  );
+}
+
+/**
+ * What an exact title match is worth, given whether the query could be a misspelling.
+ *
+ * MONOTONIC IN VOTES, in both modes, and that is the property rather than a side effect: two
+ * titles sharing a name must be ordered by how many people have seen them, and a bonus that
+ * dips as votes arrive orders them by an accident of where the curve crosses a constant. The
+ * branch this replaces paid 12 at zero votes, 3.1 at one vote, and did not climb back to 12
+ * until about 10,650 -- so the second-most-obscure exact match on the page was the one it
+ * treated best. `search-exact.test.ts` walks the whole range.
+ */
+export function exactMatchBonus(votes: number, typoTwin: boolean): number {
+  return Math.max(typoTwin ? 0 : FULL_COVERAGE_MATCH, EXACT_MATCH * exactPlausibility(votes));
 }
 
 /**
@@ -283,37 +418,73 @@ function exactPlausibility(votes: number): number {
 const ANTICIPATED_VOTES = 1_500;
 
 /**
- * The popularity term, and the two reasons a zero in it may not mean what it says.
+ * The popularity term, and the one reason a zero in it may not mean what it says.
  *
  * Saturating in votes: the difference between 300k and 2.6M is not informative -- both are
  * famous -- but 439 against 300k is decisive. Without the cap, blockbusters bulldoze every
  * correct-but-smaller match.
  *
- * ## The imputations, and why they cannot double-count
+ * ## The imputation, and why it cannot double-count
  *
- * Both are the same move -- replace a measurement we do not have with a prior -- so they
- * combine with `max` rather than by adding, and neither can lift a title past what the
- * prior itself is worth:
+ * `anticipation` shrinks the score toward `ANTICIPATED_VOTES` in proportion to how close the
+ * title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that already
+ * has 50,000 votes scores above the prior, so the gap is negative and the lift is exactly
+ * zero. It shrinks continuously to nothing as real votes arrive, which is what stops it
+ * double-counting with the votes it is standing in for.
  *
- *   - **`anticipation`** shrinks toward `ANTICIPATED_VOTES` in proportion to how close the
- *     title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that
- *     already has 50,000 votes scores above the prior, so the gap is negative and the lift
- *     is exactly zero. It shrinks continuously to nothing as real votes arrive, which is
- *     what stops it double-counting with the votes it is standing in for.
- *   - **`exact`** floors an exact-title match with NO votes at `UNVOTED_EXACT_MATCH_VOTES`.
- *     Independent of the first: a reader naming a 1974 title exactly gets it, and a 2027
- *     title nobody named exactly gets the other.
+ * > [!IMPORTANT] THERE USED TO BE A SECOND IMPUTATION HERE, AND IT WAS THE SAME ONE
+ * > An exact-title match with no votes was ALSO floored, at `UNVOTED_EXACT_MATCH_VOTES`
+ * > (1,000), unconditionally and at every age. Both were "replace a measurement we do not
+ * > have with a prior", and the doc block here argued they were independent. They are not:
+ * > the exact floor fired only on rows with zero votes, so the two priors always applied to
+ * > the same rows, and 1,000 votes' worth is strictly less than the 1,500 the anticipation
+ * > prior already gives a title at full weight. **On the case it was written for -- the 2026
+ * > `heart of the beast` -- it contributed nothing at all.**
+ * >
+ * > What it DID do was fire at ages where the anticipation curve has deliberately decayed to
+ * > nothing. `anticipationWeight`'s own table says a title two years out with nobody rating
+ * > it "IS evidence now", and three years and older is "ordinary obscurity, judged on its
+ * > votes like everything else" -- and the exact floor overrode exactly that judgement,
+ * > handing a thirteen-year-old row with zero votes more popularity than a rival of the same
+ * > name with a real, if small, audience. Measured against the live search log on 2026-09-08:
+ * > it put a 0-vote 2013 "Reel Rivals" above the 25-vote 2025 one somebody clicked, a 0-vote
+ * > 1999 "Look Into My Eyes" above the 711-vote 2024 one, and an undated 0-vote
+ * > "Honeymoon/Funeral" at the top of a page whose reader wanted a 184k-vote film.
+ * >
+ * > So there is one imputation, gated by one curve. `zero votes is unmeasured, not unpopular`
+ * > survives intact -- it is just no longer read as true forever.
  */
-function popularity(votes: number, why: { exact: boolean; anticipation: number } = NO_IMPUTATION): number {
+export function popularity(votes: number, anticipation = 0): number {
   const raw = saturating(votes);
-  const anticipated = raw + why.anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
-  return why.exact ? Math.max(anticipated, saturating(UNVOTED_EXACT_MATCH_VOTES)) : anticipated;
+  return raw + anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
 }
 
-const NO_IMPUTATION = { exact: false, anticipation: 0 };
+/**
+ * Where more votes stop being informative. Q2 of the tuning card, and it is ANSWERED.
+ *
+ * The question was whether 300,000 is right, and the parent card was correct that a log
+ * cannot say -- it needs an experiment: move the cap, replay every clicked title, count how
+ * many ranks move. `bun run search:replay` is that experiment, and against the first real log
+ * (91 queries, 18 clicks, 2026-09-03..07) the answer is that **the cap has slack above it and
+ * none below it**:
+ *
+ * | cap | canary | mean rank of a clicked title |
+ * |---|---|---|
+ * | 30,000 | 45/46 -- loses `interstelar` | 2.18 |
+ * | 100,000 | 46/46 | 1.47 |
+ * | **300,000** | 46/46 | **1.47** |
+ * | 1,000,000 | 46/46 | 1.47 |
+ *
+ * Not one rank moves anywhere between 100k and 1M, so this sits in the middle of a plateau
+ * rather than on a slope, and the reason is structural: a query is decided by the few
+ * candidates whose text matches, and above 100k votes every one of them is already famous.
+ * Below the plateau the cap starts deciding between famous titles, which is exactly what it
+ * exists NOT to do. Leave it alone; it is the one constant here with measured headroom.
+ */
+const VOTE_SATURATION = 300_000;
 
 function saturating(votes: number): number {
-  return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
+  return 2.4 * Math.log(Math.min(votes, VOTE_SATURATION) + 10);
 }
 
 /**
@@ -1038,6 +1209,20 @@ export class SearchEngine {
     const seen = new Set<number>();
     const out: Hit[] = [];
 
+    /*
+      MEASURE EVERY CANDIDATE FIRST, THEN SCORE THEM.
+
+      The match term is no longer decidable one row at a time: `hasTypoTwin` asks whether
+      the query could be a misspelling of something ELSE on this page, and that cannot be
+      answered while the page is still arriving. So the loop below only measures -- the
+      three text signals plus the year -- and the scoring loop that follows spends them.
+
+      The cost is one array of at most `CANDIDATE_WINDOW` small objects per query, against
+      a whole search that measures 12.91 ms; the measurements the memo comment above cites
+      were taken on the same window and the same rows.
+    */
+    const measured: (Candidate & { row: (typeof rows)[number]; ys: number })[] = [];
+
     for (const r of rows) {
       if (seen.has(r.rowid)) continue;
       seen.add(r.rowid);
@@ -1072,53 +1257,78 @@ export class SearchEngine {
       // "Interstellar". Take the strongest single signal, never the sum.
       //
       // The year gate: an explicit year must be able to beat an exact title match,
-      // or "The Matrix 2021" returns The Matrix (1999).
-      const exact = variants.includes(nq) && !(p.year && ys < 0);
+      // or "The Matrix 2021" returns The Matrix (1999). A title the query names letter
+      // for letter but whose year contradicts it is NOT exact, here or in `hasTypoTwin`:
+      // for that query it is one of the rivals.
+      const nameMatch = variants.includes(nq);
+      const exact = nameMatch && !(p.year && ys < 0);
+      const prefix = variants.some((v) => v.startsWith(nq));
 
-      /*
-        AN EXACT MATCH WITH NO VOTES IS JUDGED AS UNMEASURED, NOT AS UNPOPULAR.
+      measured.push({ row: r, ys, nameMatch, exact, prefix, textSim, coverage: cov, votes: r.votes });
+    }
 
-        One rule, one boundary, and it reaches BOTH the bonus here and the popularity term
-        below -- which is why it is computed once. Splitting it into two independently
-        tuned adjustments is how the first attempt at this fix broke `interstelar`.
+    const typoTwin = hasTypoTwin(measured);
 
-        The bug it exists for: `heart of the beast` put the film actually called that at
-        position 112. Zero votes drove the vote-scaled bonus to 2.98 -- below the flat 12
-        a title merely CONTAINING every query word gets -- and then cost another 11 points
-        of the popularity term on top. See `UNVOTED_EXACT_MATCH_VOTES`.
-      */
-      const unvotedExact = exact && r.votes === 0;
+    for (const c of measured) {
+      const r = c.row;
 
       let match: number;
-      if (variants.includes(nq)) {
-        // An exact match on an obscure title is SUSPICIOUS -- far more often a typo of
-        // something famous than a deliberate search for a 439-vote film. Scale the
-        // bonus by how plausible it is that anyone meant this title.
-        //
-        // With no votes there is nothing to scale BY, so it is worth what full coverage
-        // is worth -- never less, since the whole title being the query strictly implies
-        // every query word appearing.
-        match = exact ? (unvotedExact ? FULL_COVERAGE_MATCH : 14 * exactPlausibility(r.votes)) : 0;
-      } else if (variants.some((v) => v.startsWith(nq))) {
+      if (c.nameMatch && !c.exact) {
+        // The query names this title and its year says otherwise, so it is worth nothing
+        // as a title match -- and it must not fall through to the prefix branch, where a
+        // string trivially starts with itself. This is what "The Matrix 2021" rides on.
+        match = 0;
+      } else if (c.exact) {
+        /*
+          AN EXACT TITLE MATCH IS NEVER WORTH LESS THAN CONTAINING EVERY QUERY WORD.
+
+          The whole title being the query strictly implies every query word appearing, so
+          `FULL_COVERAGE_MATCH` is the FLOOR here and the invariant is enforced rather than
+          asserted. It used to be asserted, and it was false for everything under about
+          10,650 votes: `14 * exactPlausibility(v)` pays a 25-vote exact match 4.6 where a
+          title merely containing both words is paid 12, and the branch stepped DOWN from 12
+          to 3.1 between 0 votes and 1 because the unvoted case was patched around instead.
+          One floor covers both defects and the patch is gone.
+
+          THE FLOOR LIFTS ONLY WHEN THE QUERY COULD BE A MISSPELLING. `exactPlausibility` is
+          a real argument -- an obscure exact match IS more often a typo of something famous
+          -- but it is an argument about a rival that has to be ON THE PAGE. `hasTypoTwin`
+          asks first, so `interstelar` still ranks the 2.6M-vote "Interstellar" over the
+          439-vote "Interstelar" it is a typo of, while `Reel rivals`, `heart of the beast`
+          and every other query with no famous near-twin keeps the invariant.
+        */
+        match = exactMatchBonus(r.votes, typoTwin);
+      } else if (c.prefix) {
         match = 9;
-      } else if (cov >= 0.999) {
+      } else if (c.coverage >= FULL_COVERAGE) {
         // Matching EVERY query word is qualitatively different from matching half of
         // them, and deserves more than a linear share. This is what lets "Nile City"
         // find NileCity 105.6 over the far more popular Sin City.
         match = FULL_COVERAGE_MATCH;
       } else {
-        match = 10 * cov;
+        match = 10 * c.coverage;
       }
 
+      /*
+        THE 22 WAS SWEPT TOO, AND IT HAS NO OPTIMUM IN THIS DATA.
+
+        Against the 17 clicked titles in the first real log: 22 -> mean rank 1.47, 24 -> 1.53,
+        26 -> 1.47, 28 -> 1.47, 32 -> 1.71, 40 -> 1.82, canary 46/46 throughout. A curve that
+        gets WORSE at 24 and better again at 26 is not a curve with a minimum in it, it is
+        seventeen samples of noise -- and the one thing the higher values buy is a single
+        title crossing a 1.2-point gap, at the price of a fifth of `interstelar`'s margin.
+        Anybody re-running this with a bigger log should expect the shape to change; anybody
+        re-running it with this one is reading the same noise again.
+      */
       const score =
-        22 * textSim +
+        22 * c.textSim +
         match +
-        popularity(r.votes, { exact: unvotedExact, anticipation: anticipationOf(r.year) }) +
-        ys +
+        popularity(r.votes, anticipationOf(r.year)) +
+        c.ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);
 
-      out.push({ ...r, score, coverage: cov } as Hit);
+      out.push({ ...r, score, coverage: c.coverage } as Hit);
     }
 
     /*
