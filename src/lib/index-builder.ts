@@ -55,6 +55,41 @@
  * of `title.basics` parsed, then rank, then FTS and the spellfix vocabulary. Anything that
  * closes the last 36s has to come from there, not from cast.
  *
+ * ## The breakout stage, measured 2026-09-07 on the M1 Max -- AND A WHOLE-BUILD A/B COULD NOT SEE IT
+ *
+ * `breakoutStage` costs **~2.4 seconds and +3.3 MB**, on a ~180s build producing a 1.9 GB
+ * index. That is 1.4% of the wall and 0.17% of the file.
+ *
+ * | | |
+ * |---|---|
+ * | read 65,142 eligible rows out of `title` | 2,310 ms |
+ * | `scoreBreakout` over them, median of 5 | **118 ms** (116 / 117 / 118 / 122 / 143) |
+ * | rows written to `title_breakout` | 61,030, of which 25,973 local-market |
+ * | index size, same dumps, both sides | 1,944.7 MB -> **1,948.0 MB** |
+ *
+ * > [!CAUTION] THE OBVIOUS MEASUREMENT -- time the whole build twice -- IS USELESS HERE, AND IT LIED IN BOTH DIRECTIONS
+ * > Two full builds from identical on-disk dumps, base against branch:
+ * >
+ * > | run | base wall | branch wall | branch verdict |
+ * > |---|---|---|---|
+ * > | first | 172.2s | 200.5s | +28.3s SLOWER |
+ * > | second | 200.7s | 178.3s | -22.4s FASTER |
+ * >
+ * > The branch does strictly more work than the base, so **-22.4s is impossible** and the
+ * > +28.3s was not a measurement either. This machine's run-to-run noise on a ~180s build is
+ * > larger than the effect, which the block above already warns about in its own words ("the
+ * > rank stage alone moved 43.4s -> 25.3s between these two"). Timing the STAGE against an
+ * > already-built index is what produced a number that repeats: 116-143 ms across five runs.
+ * >
+ * > The first pair was also invalid for a second, unrelated reason worth knowing: **the
+ * > worktree had never run `bun run spellfix:build`**, so the branch silently skipped the
+ * > vocabulary stage -- which is why its file came out 34 MB SMALLER than the base while
+ * > adding a table. A build that skips a stage looks exactly like a fast one.
+ *
+ * The 2.3 seconds is the row read, not the scoring, and it is a full scan of `title` filtered
+ * on votes and year. Left alone deliberately: it runs once per build, and an index to serve
+ * it would cost more bytes on every query than it saves once a night.
+ *
  * ## The episode stage, measured 2026-09-05 on the Mac -- AND IT IS NOT CHEAP
  *
  * An A/B over one set of on-disk dumps in an isolated data directory, `--no-fetch
