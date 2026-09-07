@@ -246,20 +246,27 @@ export function partNote(part: { index: number; total: number }): string {
 }
 
 /**
- * The corner mark on a grid cell that is one part of a double.
+ * The parts of a double SQUARE THE CORNERS THEY FACE, so the run reads as one bar.
  *
- * A notch in the corner rather than a badge or a border: the cell is 3rem wide and already
- * carries a number at the size a whole grid is read at, so anything with its own footprint
- * either shrinks the score or misaligns the column. `aria-hidden` because `cellLabel`
- * already says it in words -- this is the visible half of the same fact, not a second one.
+ * > [!CAUTION] The first attempt was a 6px corner notch and it was INVISIBLE. Screenshot a marker before believing it works.
+ * > Drawn at 50% opacity in the cell's own text colour, it was a barely-darker corner on an
+ * > orange cell: present in the DOM, confirmed by a query, and unreadable at 500% zoom. A
+ * > marker nobody can see explains nothing, and explaining is the entire job -- two adjacent
+ * > cells carrying one number otherwise read as a coincidence or a bug.
+ *
+ * Squared corners cost no space, add no element, need no legend, and are the ordinary idiom
+ * for a segment that continues. The parts stack VERTICALLY -- the grid runs seasons across
+ * and episode numbers down -- so it is the top and bottom that square, never the sides.
+ *
+ * `border-spacing-1` leaves a gap between the two, so this is a shape cue rather than a real
+ * join, and it is deliberately quiet: the authoritative statement is `partNote`, which the
+ * hover card and the episode row both print in words.
  */
-function PartCorner() {
-  return (
-    <span
-      aria-hidden="true"
-      className="pointer-events-none absolute top-0 right-0 size-0 border-t-[6px] border-l-[6px] border-t-current border-l-transparent opacity-50"
-    />
-  );
+function partCornerClass(part: { index: number; total: number } | undefined): string {
+  if (!part) return "rounded";
+  if (part.index === 1) return "rounded rounded-b-none";
+  if (part.index === part.total) return "rounded rounded-t-none";
+  return "rounded-none";
 }
 
 // --- grid -------------------------------------------------------------------
@@ -311,14 +318,14 @@ export function GridView({
                         onFocus={(e) => card.open(episode, e.currentTarget)}
                         onBlur={card.close}
                         className={[
-                          "relative block w-12 overflow-hidden rounded px-1 py-1 text-center text-sm font-semibold tabular-nums",
+                          "block w-12 px-1 py-1 text-center text-sm font-semibold tabular-nums",
                           "transition-transform hover:scale-110 focus-visible:scale-110",
                           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                          partCornerClass(episode.part),
                           episode.band ? BAND_CELL[episode.band] : EMPTY_CELL,
                         ].join(" ")}
                       >
                         {episode.rating !== null ? episode.rating.toFixed(1) : "?"}
-                        {episode.part && <PartCorner />}
                       </button>
                     ) : (
                       <span className="block w-12" />

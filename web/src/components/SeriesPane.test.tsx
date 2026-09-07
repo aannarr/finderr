@@ -414,3 +414,49 @@ describe("the two facets resolving apart", () => {
     expect(html).toContain("Unavailable: servarr-metadata timed out");
   });
 });
+
+/*
+  THE DOUBLE-EPISODE MARKER, pinned by SHAPE rather than by existence.
+
+  The first version of it was a 6px corner notch at 50% opacity. It was in the DOM, a
+  query confirmed it, and it was invisible on screen at 500% zoom -- so a test asserting
+  "the element is present" would have passed on a marker that explained nothing. These
+  assert the classes that change the cell's OUTLINE, which is the thing a reader sees.
+*/
+describe("a double episode on the grid", () => {
+  const facets: ResolvedFacets = {
+    seasons: { status: "ready", data: [season({ number: 1 })] },
+    episodes: {
+      status: "ready",
+      data: [
+        episode({ season: 1, number: 1, title: "Encounter at Farpoint (1)" }),
+        episode({ season: 1, number: 2, title: "Encounter at Farpoint (2)" }),
+        episode({ season: 1, number: 3, title: "The Naked Now" }),
+      ],
+    },
+  };
+  const scores = [
+    { season: 1, number: 1, rating: 7.6, votes: 100, part: { index: 1, total: 2 } },
+    { season: 1, number: 2, rating: 7.6, votes: 100, part: { index: 2, total: 2 } },
+    { season: 1, number: 3, rating: 6.6, votes: 100 },
+  ];
+
+  test("the two halves square the corners they face, so the pair reads as one bar", () => {
+    const html = render(facets, { initialTab: "grid", scores });
+    // First part keeps its top corners and loses its bottom ones; last part the reverse.
+    expect(html).toContain("rounded rounded-b-none");
+    expect(html).toContain("rounded rounded-t-none");
+  });
+
+  test("and says so in words, which is the authoritative half", () => {
+    const html = render(facets, { initialTab: "grid", scores });
+    expect(html).toContain("part 1 of 2, scored as one episode");
+    expect(html).toContain("part 2 of 2, scored as one episode");
+  });
+
+  test("an ordinary episode is fully rounded and says nothing about parts", () => {
+    const html = render(facets, { initialTab: "grid", scores });
+    expect(html).toContain("Season 1 episode 3, The Naked Now, 6.6 out of 10");
+    expect(html).not.toContain("Season 1 episode 3, The Naked Now, part");
+  });
+});
