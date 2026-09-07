@@ -298,8 +298,32 @@ export function popularity(votes: number, anticipation = 0): number {
   return raw + anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
 }
 
+/**
+ * Where more votes stop being informative. Q2 of the tuning card, and it is ANSWERED.
+ *
+ * The question was whether 300,000 is right, and the parent card was correct that a log
+ * cannot say -- it needs an experiment: move the cap, replay every clicked title, count how
+ * many ranks move. `bun run search:replay` is that experiment, and against the first real log
+ * (91 queries, 18 clicks, 2026-09-03..07) the answer is that **the cap has slack above it and
+ * none below it**:
+ *
+ * | cap | canary | mean rank of a clicked title |
+ * |---|---|---|
+ * | 30,000 | 45/46 -- loses `interstelar` | 2.18 |
+ * | 100,000 | 46/46 | 1.47 |
+ * | **300,000** | 46/46 | **1.47** |
+ * | 1,000,000 | 46/46 | 1.47 |
+ *
+ * Not one rank moves anywhere between 100k and 1M, so this sits in the middle of a plateau
+ * rather than on a slope, and the reason is structural: a query is decided by the few
+ * candidates whose text matches, and above 100k votes every one of them is already famous.
+ * Below the plateau the cap starts deciding between famous titles, which is exactly what it
+ * exists NOT to do. Leave it alone; it is the one constant here with measured headroom.
+ */
+const VOTE_SATURATION = 300_000;
+
 function saturating(votes: number): number {
-  return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
+  return 2.4 * Math.log(Math.min(votes, VOTE_SATURATION) + 10);
 }
 
 /**
@@ -1082,6 +1106,16 @@ export class SearchEngine {
         // > "Interstellar" it is a typo of. Measured 2026-09-08, both directions. The two
         // > cannot both be had by moving a constant, so it is filed as its own card rather
         // > than forced here.
+        //
+        // > [!IMPORTANT] THE 14 WAS SWEPT AND IT IS STAYING, AND THE REASON IS MARGIN
+        // > 18 and 20 both measure better on the real log (mean clicked rank 1.41 against
+        // > 1.47) with the canary still 46/46, so the temptation is real. `interstelar` has
+        // > 3.71 points of headroom today and the 439-vote "Interstelar" gains
+        // > `(bonus - 14) * 0.5644` of it, which leaves **0.32 points at 20** and flips the
+        // > case at 24. The canary is a promote gate at 100%, so a nightly vote drift inside
+        // > that margin stops the index refresh for a live household -- and what it buys is
+        // > ONE clicked title out of seventeen. Do not spend 91% of a build gate's margin on
+        // > a sample of that size.
         match = exact ? (r.votes === 0 ? FULL_COVERAGE_MATCH : 14 * exactPlausibility(r.votes)) : 0;
       } else if (variants.some((v) => v.startsWith(nq))) {
         match = 9;
@@ -1094,6 +1128,17 @@ export class SearchEngine {
         match = 10 * cov;
       }
 
+      /*
+        THE 22 WAS SWEPT TOO, AND IT HAS NO OPTIMUM IN THIS DATA.
+
+        Against the 17 clicked titles in the first real log: 22 -> mean rank 1.47, 24 -> 1.53,
+        26 -> 1.47, 28 -> 1.47, 32 -> 1.71, 40 -> 1.82, canary 46/46 throughout. A curve that
+        gets WORSE at 24 and better again at 26 is not a curve with a minimum in it, it is
+        seventeen samples of noise -- and the one thing the higher values buy is a single
+        title crossing a 1.2-point gap, at the price of a fifth of `interstelar`'s margin.
+        Anybody re-running this with a bigger log should expect the shape to change; anybody
+        re-running it with this one is reading the same noise again.
+      */
       const score =
         22 * textSim +
         match +
