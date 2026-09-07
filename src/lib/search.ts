@@ -228,32 +228,6 @@ const FUZZY_WIDE_SCOPE = 1;
 const FULL_COVERAGE_MATCH = 12;
 
 /**
- * What an EXACT title match with NO VOTES AT ALL is credited with having.
- *
- * The same 1,000 the browse floor and the cast floor use, and the same meaning: the line
- * above which a title is taken to have an audience at all.
- *
- * > [!IMPORTANT] ZERO VOTES IS THE ABSENCE OF A MEASUREMENT, NOT A LOW ONE
- * > That boundary is the whole rule, and it is the same distinction `applyRank` draws when
- * > it gives an unrated title NULL rather than the prior mean. A title that has not come
- * > out yet has no votes BY CONSTRUCTION and nothing about it has been judged; a title with
- * > 439 votes has been seen by 439 people, and that is a real if small signal that must not
- * > be overwritten.
- * >
- * > **Extending this to any positive vote count breaks the `interstelar` canary case, and
- * > it was measured rather than reasoned about.** Crediting the 439-vote "Interstelar"
- * > (2014) takes it from 44.96 to 49.06 against the 2.6M-vote "Interstellar" at 48.67 --
- * > a 0.39-point flip, and the suite goes 41/42. `exactPlausibility` exists precisely
- * > because an obscure exact match is usually a typo of something famous; that argument is
- * > sound at 439 votes and vacuous at none.
- *
- * It buys such a title ~11 points of the popularity term's 24.8-point span -- enough to
- * clear a popular PARTIAL match, not enough to disturb the ordering AMONG exact matches,
- * where votes still decide. Both halves are pinned in `search-exact.test.ts`.
- */
-const UNVOTED_EXACT_MATCH_VOTES = 1_000;
-
-/**
  * How plausible it is that a reader typing this exact title meant this exact title.
  *
  * An exact match on an obscure title is genuinely suspicious -- far more often a typo of
@@ -283,34 +257,46 @@ function exactPlausibility(votes: number): number {
 const ANTICIPATED_VOTES = 1_500;
 
 /**
- * The popularity term, and the two reasons a zero in it may not mean what it says.
+ * The popularity term, and the one reason a zero in it may not mean what it says.
  *
  * Saturating in votes: the difference between 300k and 2.6M is not informative -- both are
  * famous -- but 439 against 300k is decisive. Without the cap, blockbusters bulldoze every
  * correct-but-smaller match.
  *
- * ## The imputations, and why they cannot double-count
+ * ## The imputation, and why it cannot double-count
  *
- * Both are the same move -- replace a measurement we do not have with a prior -- so they
- * combine with `max` rather than by adding, and neither can lift a title past what the
- * prior itself is worth:
+ * `anticipation` shrinks the score toward `ANTICIPATED_VOTES` in proportion to how close the
+ * title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that already
+ * has 50,000 votes scores above the prior, so the gap is negative and the lift is exactly
+ * zero. It shrinks continuously to nothing as real votes arrive, which is what stops it
+ * double-counting with the votes it is standing in for.
  *
- *   - **`anticipation`** shrinks toward `ANTICIPATED_VOTES` in proportion to how close the
- *     title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that
- *     already has 50,000 votes scores above the prior, so the gap is negative and the lift
- *     is exactly zero. It shrinks continuously to nothing as real votes arrive, which is
- *     what stops it double-counting with the votes it is standing in for.
- *   - **`exact`** floors an exact-title match with NO votes at `UNVOTED_EXACT_MATCH_VOTES`.
- *     Independent of the first: a reader naming a 1974 title exactly gets it, and a 2027
- *     title nobody named exactly gets the other.
+ * > [!IMPORTANT] THERE USED TO BE A SECOND IMPUTATION HERE, AND IT WAS THE SAME ONE
+ * > An exact-title match with no votes was ALSO floored, at `UNVOTED_EXACT_MATCH_VOTES`
+ * > (1,000), unconditionally and at every age. Both were "replace a measurement we do not
+ * > have with a prior", and the doc block here argued they were independent. They are not:
+ * > the exact floor fired only on rows with zero votes, so the two priors always applied to
+ * > the same rows, and 1,000 votes' worth is strictly less than the 1,500 the anticipation
+ * > prior already gives a title at full weight. **On the case it was written for -- the 2026
+ * > `heart of the beast` -- it contributed nothing at all.**
+ * >
+ * > What it DID do was fire at ages where the anticipation curve has deliberately decayed to
+ * > nothing. `anticipationWeight`'s own table says a title two years out with nobody rating
+ * > it "IS evidence now", and three years and older is "ordinary obscurity, judged on its
+ * > votes like everything else" -- and the exact floor overrode exactly that judgement,
+ * > handing a thirteen-year-old row with zero votes more popularity than a rival of the same
+ * > name with a real, if small, audience. Measured against the live search log on 2026-09-08:
+ * > it put a 0-vote 2013 "Reel Rivals" above the 25-vote 2025 one somebody clicked, a 0-vote
+ * > 1999 "Look Into My Eyes" above the 711-vote 2024 one, and an undated 0-vote
+ * > "Honeymoon/Funeral" at the top of a page whose reader wanted a 184k-vote film.
+ * >
+ * > So there is one imputation, gated by one curve. `zero votes is unmeasured, not unpopular`
+ * > survives intact -- it is just no longer read as true forever.
  */
-function popularity(votes: number, why: { exact: boolean; anticipation: number } = NO_IMPUTATION): number {
+export function popularity(votes: number, anticipation = 0): number {
   const raw = saturating(votes);
-  const anticipated = raw + why.anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
-  return why.exact ? Math.max(anticipated, saturating(UNVOTED_EXACT_MATCH_VOTES)) : anticipated;
+  return raw + anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
 }
-
-const NO_IMPUTATION = { exact: false, anticipation: 0 };
 
 function saturating(votes: number): number {
   return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
@@ -1075,20 +1061,6 @@ export class SearchEngine {
       // or "The Matrix 2021" returns The Matrix (1999).
       const exact = variants.includes(nq) && !(p.year && ys < 0);
 
-      /*
-        AN EXACT MATCH WITH NO VOTES IS JUDGED AS UNMEASURED, NOT AS UNPOPULAR.
-
-        One rule, one boundary, and it reaches BOTH the bonus here and the popularity term
-        below -- which is why it is computed once. Splitting it into two independently
-        tuned adjustments is how the first attempt at this fix broke `interstelar`.
-
-        The bug it exists for: `heart of the beast` put the film actually called that at
-        position 112. Zero votes drove the vote-scaled bonus to 2.98 -- below the flat 12
-        a title merely CONTAINING every query word gets -- and then cost another 11 points
-        of the popularity term on top. See `UNVOTED_EXACT_MATCH_VOTES`.
-      */
-      const unvotedExact = exact && r.votes === 0;
-
       let match: number;
       if (variants.includes(nq)) {
         // An exact match on an obscure title is SUSPICIOUS -- far more often a typo of
@@ -1098,7 +1070,19 @@ export class SearchEngine {
         // With no votes there is nothing to scale BY, so it is worth what full coverage
         // is worth -- never less, since the whole title being the query strictly implies
         // every query word appearing.
-        match = exact ? (unvotedExact ? FULL_COVERAGE_MATCH : 14 * exactPlausibility(r.votes)) : 0;
+        //
+        // > [!CAUTION] THIS BRANCH IS NOT MONOTONIC IN VOTES, AND THAT IS A KNOWN DEFECT
+        // > `14 * exactPlausibility(v)` is below `FULL_COVERAGE_MATCH` for anything under
+        // > ~10,650 votes, so an exact match with 25 votes is paid 4.6 where an unvoted one
+        // > is paid 12 -- and where a title merely CONTAINING every query word is paid 12
+        // > too, which is the invariant the line above claims. Flooring the branch at
+        // > `FULL_COVERAGE_MATCH` restores the invariant and measures better on the real log
+        // > (mean clicked rank 1.59 against 1.71), and it costs the `interstelar` canary
+        // > case: the 439-vote "Interstelar" gains ~4 points and overtakes the 2.6M-vote
+        // > "Interstellar" it is a typo of. Measured 2026-09-08, both directions. The two
+        // > cannot both be had by moving a constant, so it is filed as its own card rather
+        // > than forced here.
+        match = exact ? (r.votes === 0 ? FULL_COVERAGE_MATCH : 14 * exactPlausibility(r.votes)) : 0;
       } else if (variants.some((v) => v.startsWith(nq))) {
         match = 9;
       } else if (cov >= 0.999) {
@@ -1113,7 +1097,7 @@ export class SearchEngine {
       const score =
         22 * textSim +
         match +
-        popularity(r.votes, { exact: unvotedExact, anticipation: anticipationOf(r.year) }) +
+        popularity(r.votes, anticipationOf(r.year)) +
         ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);

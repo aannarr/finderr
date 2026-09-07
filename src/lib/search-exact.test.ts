@@ -32,7 +32,7 @@ import { loadConfig } from "./config";
 import { buildTitleSearchIndex, SCHEMA } from "./index-builder";
 import { despace, normalizeStripped } from "./normalize";
 import { anticipationWeight } from "./query-parser";
-import { SearchEngine } from "./search";
+import { popularity, SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-exact-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -88,6 +88,10 @@ const HEART_OF_THE_BEAST: Row[] = [
 ];
 
 describe("an exact title match", () => {
+  // Relative to the real current year for the reason the anticipation block below gives:
+  // `rank()` reads the clock, so a hardcoded year drifts into a different part of the curve.
+  const thisYear = new Date().getUTCFullYear();
+
   test("wins even with no votes at all, against a far more popular partial match", () => {
     // The reported bug, stated as the thing a reader would say: I typed the film's whole
     // name and the film was not on the page. Nothing here is about the 2026 film being
@@ -149,6 +153,42 @@ describe("an exact title match", () => {
     try {
       const hits = engine.search("dune", { limit: 10 }).hits;
       expect(hits[0]?.tconst).toBe("tt-dune-part-two");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("loses to a same-named title with a SMALL but real audience, once both are old", () => {
+    // THE GAP THE TEST ABOVE LEAVES OPEN, and the live bug that fell through it. Its rivals
+    // carry 187k and 850k votes, both far above the ~2,300 where the unvoted floor used to
+    // stop mattering -- so it asserted "votes still decide among exact matches" while votes
+    // decided nothing at all anywhere below that line.
+    //
+    // From the search log, 2026-09-08: two shows called "Reel Rivals", a 2013 one with zero
+    // votes and a 2025 one with 25, and a reader who wanted the 2025 one had to look past
+    // the 2013 one to find it. Thirteen years with nobody rating it is not an absent
+    // measurement, and `anticipationWeight` already says so.
+    const engine = engineOf([
+      { tconst: "tt-forgotten", title: "Reel Rivals", year: thisYear - 13, votes: 0 },
+      { tconst: "tt-small", title: "Reel Rivals", year: thisYear - 1, votes: 25 },
+    ]);
+    try {
+      expect(engine.search("reel rivals", { limit: 5 }).hits[0]?.tconst).toBe("tt-small");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("keeps its lift while it is still NEAR RELEASE, which is the whole of the claim", () => {
+    // The other side of the same gate, so nobody reads the test above as "the unvoted lift
+    // was deleted". It was dated, not deleted: a title out this year with no votes yet is
+    // genuinely unmeasured, and it still beats a same-named title with a small old audience.
+    const engine = engineOf([
+      { tconst: "tt-soon", title: "Reel Rivals", year: thisYear, votes: 0 },
+      { tconst: "tt-small", title: "Reel Rivals", year: thisYear - 13, votes: 25 },
+    ]);
+    try {
+      expect(engine.search("reel rivals", { limit: 5 }).hits[0]?.tconst).toBe("tt-soon");
     } finally {
       engine.close();
     }
@@ -291,10 +331,13 @@ describe("the order is TOTAL", () => {
  * cannot happen -- as a property of the scoring shape rather than of today's constants.
  */
 describe("a title crossing its own release", () => {
-  const popularityOf = (votes: number, year: number, now: Date) => {
-    const raw = 2.4 * Math.log(Math.min(votes, 300_000) + 10);
-    return raw + anticipationWeight(year, now) * Math.max(0, 2.4 * Math.log(1_500 + 10) - raw);
-  };
+  // THE ENGINE'S OWN `popularity`, not a copy of it. This used to be a re-implementation with
+  // the three constants inlined, and it silently drifted: it never carried the unvoted-exact
+  // floor the real function applied, so these four tests were pinning a curve nothing shipped.
+  // The floor is gone now and the two agree again -- which is exactly the moment to stop
+  // keeping two of them.
+  const popularityOf = (votes: number, year: number, now: Date) =>
+    popularity(votes, anticipationWeight(year, now));
 
   test("the score only ever RISES as votes arrive through the release year", () => {
     // The heart of it. Through the whole release year the weight is 1, so the blend is
