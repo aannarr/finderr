@@ -281,3 +281,59 @@ describe("formatVotes", () => {
     expect(formatVotes(1, "en-GB")).toBe("1 vote");
   });
 });
+
+/**
+ * A DOUBLE EPISODE occupies two grid slots and is ONE episode.
+ *
+ * The server's alignment marks both halves with `part` because the provider numbers a
+ * feature-length episode twice while IMDb holds one row with one score. Everything below
+ * is about the consequence: the two cells are both real (a cell is a slot), and every
+ * AGGREGATE has to count the episode once (an average and a trend are about episodes).
+ */
+describe("double episodes", () => {
+  const part = (s: number, n: number, rating: number, index: number, total: number): EpisodeScore => ({
+    season: s,
+    number: n,
+    rating,
+    votes: 100,
+    part: { index, total },
+  });
+
+  it("carries the part marker through onto the joined episode", () => {
+    const grid = episodeGrid(
+      [season(1)],
+      [episode(1, 1), episode(1, 2)],
+      [part(1, 1, 8.0, 1, 2), part(1, 2, 8.0, 2, 2)],
+    );
+    expect(grid.columns[0].cells[0]?.part).toEqual({ index: 1, total: 2 });
+    expect(grid.columns[0].cells[1]?.part).toEqual({ index: 2, total: 2 });
+  });
+
+  it("counts the episode ONCE in a season average, not once per slot", () => {
+    // One 10.0 double and one 6.0 single. Counting the double twice gives 8.7; once gives 8.0.
+    const avg = averageRating([
+      { rating: 10, part: { index: 1, total: 2 } },
+      { rating: 10, part: { index: 2, total: 2 } },
+      { rating: 6 },
+    ]);
+    expect(avg).toBe(8);
+  });
+
+  it("plots ONE point on the timeline, not a flat step the show never had", () => {
+    const t = timeline(
+      [season(1)],
+      [episode(1, 1), episode(1, 2), episode(1, 3)],
+      [part(1, 1, 9.0, 1, 2), part(1, 2, 9.0, 2, 2), score(1, 3, 7.0)],
+    );
+    expect(t.points.map((p) => p.rating)).toEqual([9.0, 7.0]);
+  });
+
+  it("leaves an ordinary episode with no marker at all", () => {
+    const grid = episodeGrid([season(1)], [episode(1, 1)], [score(1, 1, 7.5)]);
+    expect(grid.columns[0].cells[0]?.part).toBeUndefined();
+  });
+
+  it("an unrated double still averages to null rather than zero", () => {
+    expect(averageRating([{ rating: null, part: { index: 1, total: 2 } }, { rating: null }])).toBeNull();
+  });
+});

@@ -195,6 +195,7 @@ export function EpisodeCard({ state }: { state: CardState | null }) {
           {episode.airDate && <> · {formatCalendarDate(episode.airDate)}</>}
           {episode.rating !== null && <> · {formatVotes(episode.votes)}</>}
         </p>
+        {episode.part && <p className="text-xs text-muted italic">{partNote(episode.part)}</p>}
         {episode.overview && (
           <p className="line-clamp-4 text-xs leading-relaxed text-muted">{episode.overview}</p>
         )}
@@ -224,7 +225,41 @@ export function ScoreBadge({ episode, className = "" }: { episode: ScoredEpisode
 function cellLabel(episode: ScoredEpisode): string {
   const where = `Season ${episode.season} episode ${episode.number}, ${episode.label}`;
   if (episode.rating === null) return `${where}, no score yet`;
-  return `${where}, ${episode.rating.toFixed(1)} out of 10 from ${formatVotes(episode.votes)}`;
+  const score = `${episode.rating.toFixed(1)} out of 10 from ${formatVotes(episode.votes)}`;
+  // The part is stated FIRST in the sentence a screen reader hears, because it is what
+  // explains the repeated number -- said afterwards it reads as an afterthought about a
+  // score the listener has already been told twice.
+  if (episode.part)
+    return `${where}, part ${episode.part.index} of ${episode.part.total}, scored as one episode, ${score}`;
+  return `${where}, ${score}`;
+}
+
+/**
+ * `Part 1 of 2 — scored as one episode on IMDb`. The sentence, in one place.
+ *
+ * Both the hover card and the episode list print it, and the wording is the whole point:
+ * a reader seeing two adjacent cells with one number needs to know it is a fact about the
+ * SOURCE rather than a bug or a coincidence.
+ */
+export function partNote(part: { index: number; total: number }): string {
+  return `Part ${part.index} of ${part.total} — scored as one episode on IMDb`;
+}
+
+/**
+ * The corner mark on a grid cell that is one part of a double.
+ *
+ * A notch in the corner rather than a badge or a border: the cell is 3rem wide and already
+ * carries a number at the size a whole grid is read at, so anything with its own footprint
+ * either shrinks the score or misaligns the column. `aria-hidden` because `cellLabel`
+ * already says it in words -- this is the visible half of the same fact, not a second one.
+ */
+function PartCorner() {
+  return (
+    <span
+      aria-hidden="true"
+      className="pointer-events-none absolute top-0 right-0 size-0 border-t-[6px] border-l-[6px] border-t-current border-l-transparent opacity-50"
+    />
+  );
 }
 
 // --- grid -------------------------------------------------------------------
@@ -276,13 +311,14 @@ export function GridView({
                         onFocus={(e) => card.open(episode, e.currentTarget)}
                         onBlur={card.close}
                         className={[
-                          "block w-12 rounded px-1 py-1 text-center text-sm font-semibold tabular-nums",
+                          "relative block w-12 overflow-hidden rounded px-1 py-1 text-center text-sm font-semibold tabular-nums",
                           "transition-transform hover:scale-110 focus-visible:scale-110",
                           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                           episode.band ? BAND_CELL[episode.band] : EMPTY_CELL,
                         ].join(" ")}
                       >
                         {episode.rating !== null ? episode.rating.toFixed(1) : "?"}
+                        {episode.part && <PartCorner />}
                       </button>
                     ) : (
                       <span className="block w-12" />

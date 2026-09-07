@@ -19,6 +19,19 @@
  * > skeleton and no score, forever, and that is correct rather than something to chase.
  * > Nothing here should ever try to complete the score side against another provider.
  *
+ * > [!CAUTION] CORRECTED 2026-09-07: a `?` was NOT always an unaired episode, and the paragraph above was the reason nobody looked
+ * > That note is true and it was not the whole rule -- it says nothing about the two
+ * > sources disagreeing on how a show is PARTITIONED into seasons, which they do for 22 of
+ * > 195 cached series. Until the alignment landed, **2,136 of 12,528 grid cells were a
+ * > false `?` and 803 episodes drew a score belonging to a different episode.** IMDb had a
+ * > rating for every one of them. The blanks looked explained, which is why the wrong
+ * > numbers went unnoticed for so long.
+ * >
+ * > The pairing is now decided SERVER-SIDE by `src/lib/episode-align.ts`, which is also the
+ * > single owner of that argument and of the nine strategies it beat. Everything in this
+ * > file joins on `(season, number)` and is correct by construction, because the rows it is
+ * > handed are already keyed to the skeleton's own coordinates.
+ *
  * The direction of the join follows from that: we walk the SKELETON and look scores up,
  * never the reverse. Walking the scores would silently drop every unaired episode, which
  * is exactly the column a reader opens this to look at.
@@ -137,12 +150,21 @@ export interface ScoredEpisode {
   /** Already rewritten to `/img/f/<key>` by the server. Still guard it before use. */
   image: string | null;
   overview: string | null;
+  /**
+   * Set where this slot is one part of an episode IMDb counts as a single one.
+   *
+   * A DOUBLE EPISODE: the provider numbers a feature-length episode as two, IMDb keeps one
+   * row with one score, so both halves legitimately carry the same number. Without this the
+   * grid shows two identical adjacent cells and a reader has to guess whether that is a
+   * coincidence, a bug, or a genuinely repeated rating.
+   */
+  part?: { index: number; total: number };
 }
 
 function join(episode: Episode, scores: Map<string, EpisodeScore>): ScoredEpisode {
   const score = scores.get(pairKey(episode.season, episode.number));
   const rating = score?.rating ?? null;
-  return {
+  const joined: ScoredEpisode = {
     season: episode.season,
     number: episode.number,
     label: episodeLabel(episode),
@@ -153,6 +175,8 @@ function join(episode: Episode, scores: Map<string, EpisodeScore>): ScoredEpisod
     image: episode.image,
     overview: episode.overview,
   };
+  if (score?.part) joined.part = score.part;
+  return joined;
 }
 
 /**
@@ -168,8 +192,17 @@ function join(episode: Episode, scores: Map<string, EpisodeScore>): ScoredEpisod
  * the number a band is picked from are the same one -- rounding after banding would put
  * an `8.0` label on a `great` cell computed from 7.96.
  */
-export function averageRating(episodes: readonly { rating: number | null }[]): number | null {
-  const rated = episodes.filter((e) => e.rating !== null).map((e) => e.rating as number);
+export function averageRating(
+  episodes: readonly { rating: number | null; part?: { index: number; total: number } }[],
+): number | null {
+  const rated = episodes
+    // A DOUBLE EPISODE COUNTS ONCE, not once per slot. Both halves carry the same score
+    // because IMDb holds one row for them, so counting both would weight that one episode
+    // twice in its season's average -- a number nobody could reconcile with the column
+    // above it, and the more parts a show splits the further it would drift.
+    .filter((e) => (e.part?.index ?? 1) === 1)
+    .filter((e) => e.rating !== null)
+    .map((e) => e.rating as number);
   if (rated.length === 0) return null;
   const mean = rated.reduce((a, b) => a + b, 0) / rated.length;
   return Math.round(mean * 10) / 10;
@@ -335,6 +368,10 @@ export function timeline(
     for (const episode of episodesForSeason(episodes, season.number)) {
       const scored = join(episode, index);
       if (scored.rating === null) continue;
+      // The later halves of a double episode are the SAME episode and the same score, so
+      // plotting them would draw a flat step the show never had. The grid keeps both cells
+      // because a cell is a slot; a line chart is about episodes.
+      if ((scored.part?.index ?? 1) !== 1) continue;
       points.push({ ...scored, x: points.length });
     }
     bands.push({ season: season.number, label: `S${season.number}`, from, to: points.length });

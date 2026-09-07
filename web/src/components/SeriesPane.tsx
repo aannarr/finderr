@@ -51,6 +51,7 @@ import {
   GridSkeleton,
   GridView,
   Legend,
+  partNote,
   ScoreBadge,
   TimelineView,
   useHoverCard,
@@ -539,7 +540,9 @@ function EpisodeRow({
   standing: EpisodeStanding;
   onRequest?: (season: number, episode: number) => void;
   /** Null for an unrated or unaired episode, which draws no badge at all. */
-  score?: { rating: number | null; votes: number } | null;
+  /** The row's aligned score. `EpisodeScore` rather than a narrower literal, so a field
+   *  added to the payload (`part` was) reaches here without a second type to update. */
+  score?: EpisodeScore | null;
 }) {
   return (
     <li className={EPISODE_ROW_CLASS}>
@@ -562,6 +565,7 @@ function EpisodeRow({
             band: bandFor(score.rating),
             image: episode.image,
             overview: episode.overview,
+            part: score.part,
           }}
           className="h-fit shrink-0 px-1.5 py-0.5 text-xs"
         />
@@ -574,6 +578,12 @@ function EpisodeRow({
               {formatCalendarDate(episode.airDate)}
             </time>
           )}
+          {/*
+            Why two rows in a row carry one score. Beside the date rather than under the
+            overview, because it explains the NUMBER to its left and a reader scanning the
+            column of scores never reaches the synopsis.
+          */}
+          {score?.part && <span className="text-xs text-muted italic">{partNote(score.part)}</span>}
         </div>
         {/*
           Two lines, not the whole synopsis: 73 episodes of full overview is a page nobody

@@ -105,7 +105,7 @@ import {
   staticAssetPolicy,
   stripImageExt,
 } from "./cache-policy";
-import { episodeScoresFor } from "./episode-scores";
+import { episodeScoresFor, skeletonFromFacets } from "./episode-scores";
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload, warmHealth } from "./health";
@@ -2157,7 +2157,21 @@ const appRoutes = {
             has no IMDb row and never will until it airs, so the grid renders its skeleton
             from the facet with those cells blank. See `./episode-scores.ts`.
           */
-        episodeScores: episodeScoresFor(live.current, row.tconst, entity.kind === "series"),
+        /*
+            Scores keyed to the PROVIDER's episode numbering, not the index's.
+
+            The two disagree often enough to matter, and the failure is a cell showing a
+            different episode's rating rather than a missing one. Aligning here -- where
+            both halves are already in hand and both are local SQLite -- means the browser
+            keeps joining naively and is correct by construction, and the episode titles
+            the alignment needs never leave this process. See `src/lib/episode-align.ts`.
+          */
+        episodeScores: episodeScoresFor(
+          live.current,
+          row.tconst,
+          entity.kind === "series",
+          skeletonFromFacets(cached),
+        ),
         /*
             The collection's other films as OUR rows, decorated like any search hit.
 
