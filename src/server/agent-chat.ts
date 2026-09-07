@@ -36,6 +36,7 @@ import { makeContext } from "../lib/agent/schemas";
 import { aiGate, assistantOffered, chargeRefusal, chargeRun, localDay } from "../lib/ai-spend";
 import type { Principal, User } from "../lib/auth";
 import type { Config } from "../lib/config";
+import { boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import type { SearchEngine } from "../lib/search";
 import type { SiteSettingsReader } from "../lib/site-settings";
 import type { Store } from "../lib/store";
@@ -463,13 +464,34 @@ export function makeChatHandler(deps: ChatDeps) {
     } catch {
       return json({ error: "bad_request", message: "body must be JSON" }, { status: 400 });
     }
-    const message = typeof body.message === "string" ? body.message.trim() : "";
-    if (!message) return json({ error: "bad_request", message: "message is required" }, { status: 400 });
+    /*
+      THE SPEND GATE BOUNDS THE MONEY AND CANNOT BOUND THE TURN.
 
-    const conversationId =
-      typeof body.conversationId === "string" && body.conversationId
-        ? body.conversationId
-        : crypto.randomUUID();
+      `aiGate` below checks what this account has spent TODAY, which is a check that runs
+      BEFORE the call and therefore cannot see what this one call is about to cost. A 256 KB
+      message -- the largest `maxRequestBodySize` admits -- is one call the budget waves
+      through and then discovers. `LIMITS.message` is what makes the gate's arithmetic
+      meaningful, by bounding the thing it is doing arithmetic about.
+
+      Refused rather than truncated, and here that is not merely a convention: half a
+      question answered confidently is worse than no answer.
+    */
+    const guarded = boundedText(body.message, LIMITS.message);
+    if (!guarded.ok)
+      return json({ error: "bad_request", message: refusalMessage("message", guarded) }, { status: 400 });
+    const message = guarded.value;
+
+    /*
+      A CLIENT-CHOSEN id is a KEY IN OUR STORAGE, so it is bounded like any other.
+
+      Unbounded, a caller could hand us a 256 KB conversation id and we would file every
+      turn under it -- and a fresh one on every request, which is a key space they control
+      the size of. Anything unusable falls back to a UUID rather than being refused: the
+      caller loses the thread they asked to continue and gets a working new one, which is
+      the same outcome an expired conversation already produces.
+    */
+    const claimed = boundedText(body.conversationId, LIMITS.id);
+    const conversationId = claimed.ok ? claimed.value : crypto.randomUUID();
 
     const verdict = aiGate({
       role: user.role,

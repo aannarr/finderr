@@ -87,29 +87,144 @@ describe("the refusal is CONTENTION-gated", () => {
     expect(m.shouldRefuse("alice")).toBe(false);
   });
 
-  test("the greedy caller is refused and the quiet one beside them is not", () => {
+  test("the greedy caller is SLOWED and the quiet one beside them is untouched", () => {
     const m = meter(fakeClock());
-    m.record("greedy", 900);
+    m.record("greedy", 900); // over the 500 ms budget, under the 2,000 ms refusal line
     m.record("quiet", 200);
     expect(m.busy()).toBeGreaterThanOrEqual(m.contendedMs);
-    expect(m.shouldRefuse("greedy")).toBe(true);
-    expect(m.shouldRefuse("quiet")).toBe(false);
+    const g = m.verdict("greedy");
+    expect(g.action).toBe("slow");
+    expect(g.delayMs).toBeGreaterThan(0);
+    expect(m.verdict("quiet").action).toBe("allow");
   });
 
-  test("a refused caller recovers once their spend rolls off", () => {
+  test("a slowed caller recovers once their spend rolls off", () => {
     const c = fakeClock();
     const m = meter(c);
     m.record("greedy", 900);
     m.record("other", 200);
-    expect(m.shouldRefuse("greedy")).toBe(true);
+    expect(m.verdict("greedy").action).toBe("slow");
     c.advance(61_000);
-    expect(m.shouldRefuse("greedy")).toBe(false);
+    expect(m.verdict("greedy").action).toBe("allow");
   });
 
-  test("a budget of zero disables refusal entirely -- the zero-is-unlimited convention", () => {
+  test("a budget of zero disables the whole thing -- the zero-is-unlimited convention", () => {
     const m = meter(fakeClock(), { budgetMs: 0 });
     m.record("greedy", 999_999);
-    expect(m.shouldRefuse("greedy")).toBe(false);
+    expect(m.verdict("greedy").action).toBe("allow");
+  });
+});
+
+describe("the tarpit, which is for a fast agent rather than a hostile one", () => {
+  /** The realistic case: a correct client with no sense of pace, beside a person. */
+  const contended = () => {
+    const m = meter(fakeClock(), { maxDelayMs: 2_000 });
+    m.record("person", 400);
+    return m;
+  };
+
+  test("the delay is PROPORTIONAL, so barely over is barely slowed", () => {
+    const barely = contended();
+    barely.record("agent", 600); // 100 ms into a 1,500 ms band
+    const lots = contended();
+    lots.record("agent", 1_900); // 1,400 ms into the same band
+
+    const a = barely.verdict("agent");
+    const b = lots.verdict("agent");
+    expect(a.action).toBe("slow");
+    expect(b.action).toBe("slow");
+    expect(a.delayMs).toBeLessThan(b.delayMs);
+  });
+
+  test("the delay never exceeds maxDelayMs, whatever the overspend", () => {
+    const m = contended();
+    m.record("agent", 1_999);
+    expect(m.verdict("agent").delayMs).toBeLessThanOrEqual(m.maxDelayMs);
+  });
+
+  test("a slow verdict is a SERVED request -- shouldRefuse stays false", () => {
+    // The distinction the whole design rests on: the agent gets a correct answer, late.
+    const m = contended();
+    m.record("agent", 900);
+    expect(m.verdict("agent").action).toBe("slow");
+    expect(m.shouldRefuse("agent")).toBe(false);
+  });
+
+  test("past refuseAtMs the tarpit gives up and refuses", () => {
+    const m = contended();
+    m.record("agent", 2_500); // over refuseAtMs (4x the 500 ms budget)
+    expect(m.verdict("agent").action).toBe("refuse");
+  });
+
+  test("a lone fast agent is not tarpitted either -- nobody is waiting on it", () => {
+    const m = meter(fakeClock());
+    m.record("agent", 900);
+    expect(m.verdict("agent").action).toBe("allow");
+  });
+});
+
+describe("admit -- the tarpit must not become the attack", () => {
+  /** A sleep the test drives, so nothing here waits on wall time. */
+  const noSleep = async () => {};
+
+  test("an allowed caller waits for nothing", async () => {
+    const m = meter(fakeClock());
+    expect(await m.admit("alice", noSleep)).toEqual({ allowed: true, waitedMs: 0 });
+  });
+
+  test("a slowed caller is allowed THROUGH, after waiting", async () => {
+    const m = meter(fakeClock());
+    m.record("person", 400);
+    m.record("agent", 900);
+    const r = await m.admit("agent", noSleep);
+    expect(r.allowed).toBe(true);
+    expect(r.waitedMs).toBeGreaterThan(0);
+  });
+
+  test("past the concurrency cap a tarpit becomes an immediate refusal", async () => {
+    /*
+      THE FAILURE THIS PINS: each tarpitted request holds a connection, so an unbounded
+      tarpit converts the defence into a connection-exhaustion attack -- and the harder a
+      caller is tarpitted the more sockets they hold. A delay we cannot afford to hold is
+      already a refusal; issuing it as one holds nothing.
+    */
+    const m = meter(fakeClock(), { maxConcurrentTarpits: 2 });
+    m.record("person", 400);
+    m.record("agent", 900);
+
+    // Three at once against a cap of two. Hold them open with a sleep that never resolves
+    // until the test releases it.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const a = m.admit("agent", () => held);
+    const b = m.admit("agent", () => held);
+    // The first two are in the pit; the third has nowhere to wait.
+    expect(m.tarpitted).toBe(2);
+    expect(await m.admit("agent", () => held)).toEqual({ allowed: false, waitedMs: 0 });
+
+    release();
+    expect((await a).allowed).toBe(true);
+    expect((await b).allowed).toBe(true);
+    expect(m.tarpitted).toBe(0);
+  });
+
+  test("the in-flight count is released even when the sleep throws", async () => {
+    const m = meter(fakeClock());
+    m.record("person", 400);
+    m.record("agent", 900);
+    await expect(m.admit("agent", () => Promise.reject(new Error("socket closed")))).rejects.toThrow(
+      "socket closed",
+    );
+    expect(m.tarpitted).toBe(0);
+  });
+
+  test("a refused caller is never put in the pit at all", async () => {
+    const m = meter(fakeClock());
+    m.record("runaway", 5_000);
+    expect(await m.admit("runaway", noSleep)).toEqual({ allowed: false, waitedMs: 0 });
+    expect(m.tarpitted).toBe(0);
   });
 });
 
@@ -186,11 +301,20 @@ describe("report", () => {
 
   test("counts refusals per caller, which is the evidence a slow evening is explained by", () => {
     const m = meter(fakeClock());
-    m.record("greedy", 900);
-    m.record("other", 200);
-    m.shouldRefuse("greedy");
-    m.shouldRefuse("greedy");
-    expect(m.report().refusals).toEqual([{ key: "greedy", count: 2 }]);
+    m.record("runaway", 5_000);
+    m.verdict("runaway");
+    m.verdict("runaway");
+    expect(m.report().refusals).toEqual([{ key: "runaway", count: 2 }]);
+  });
+
+  test("counts tarpitted calls separately -- the system working, not a failure", () => {
+    const m = meter(fakeClock());
+    m.record("agent", 900);
+    m.record("person", 200);
+    m.verdict("agent");
+    m.verdict("agent");
+    expect(m.report().slowed).toEqual([{ key: "agent", count: 2 }]);
+    expect(m.report().refusals).toEqual([]);
   });
 
   test("an idle meter reports zero saturation and no callers", () => {

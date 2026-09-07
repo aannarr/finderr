@@ -1416,14 +1416,32 @@ describe("naming your own passkeys", () => {
     expect(h.auth.getCredential("c1")?.label).toBe("Mac");
   });
 
-  test("a label is capped, so one row cannot render as a wall of text", async () => {
-    const { cookie } = withPasskey();
-    await h.call("/api/auth/credentials/c1", {
+  test("an over-long label is REFUSED, not truncated, and the old one survives", async () => {
+    /*
+      This asserted a 60-character truncation until 2026-09-07. Same thing being defended
+      -- one row must not render as a wall of text -- and a stricter answer: a silently
+      shortened label is one the reader has to notice was shortened, and `slice(0, 60)`
+      did nothing whatsoever about a NUL or a bidi override inside the 60 it kept.
+    */
+    const { cookie } = withPasskey("Mac");
+    const res = await h.call("/api/auth/credentials/c1", {
       method: "PATCH",
       cookie,
       body: JSON.stringify({ label: "x".repeat(500) }),
     });
-    expect(h.auth.getCredential("c1")?.label).toHaveLength(60);
+    expect(res.status).toBe(400);
+    expect(h.auth.getCredential("c1")?.label).toBe("Mac");
+  });
+
+  test("a label is SANITIZED, so a spoofing character never reaches the account page", async () => {
+    const { cookie } = withPasskey("Mac");
+    await h.call("/api/auth/credentials/c1", {
+      method: "PATCH",
+      cookie,
+      // RIGHT-TO-LEFT OVERRIDE between two ordinary words.
+      body: JSON.stringify({ label: `work${String.fromCodePoint(0x202e)}phone` }),
+    });
+    expect(h.auth.getCredential("c1")?.label).toBe("workphone");
   });
 
   test("null clears the name", async () => {

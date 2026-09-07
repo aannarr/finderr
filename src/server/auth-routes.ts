@@ -40,6 +40,7 @@ import type { AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { cookieIsSecure, plexOpenSignupActive } from "../lib/config";
 import { FirstRun } from "../lib/first-run";
+import { boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import {
   createPin,
   type FetchLike,
@@ -87,6 +88,15 @@ const REFUSED = "that did not work";
 export const NO_AUTH_USER = "the_user";
 
 /**
+ * How long a passkey's nickname may be.
+ *
+ * Its own constant rather than one of `LIMITS`, because the bound is a LAYOUT fact rather
+ * than a safety one: this string sits in a row on the account page beside "added 3 Aug",
+ * and 60 is what fits. The safety bound is `LIMITS.text` and it is far above this.
+ */
+const CREDENTIAL_LABEL_MAX = 60;
+
+/**
  * How long "this week" is on the people list: seven UTC days, today included.
  *
  * A rolling window rather than a calendar week, because the question an operator is asking
@@ -104,8 +114,44 @@ async function body(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * A non-empty string off the wire, sanitized and bounded, or `null`.
+ *
+ * > [!IMPORTANT] `null` HERE MEANS "NOT USABLE", AND THAT READING IS ONLY SAFE BECAUSE OF
+ * > WHAT THIS FUNCTION IS USED FOR
+ * > Every caller is reading an OPAQUE IDENTIFIER -- an invite token, a Plex pin id, a
+ * > return path, a credential id. For those, "absent", "blank" and "4 KB long" are one
+ * > answer: there is no such thing, and the handler's existing null branch already says so
+ * > correctly. Refusing with a distinct 400 would also be a free oracle telling an attacker
+ * > which of their guesses was well-formed.
+ * >
+ * > **USER-AUTHORED TEXT DOES NOT GO THROUGH HERE.** A display name, an invite note or a
+ * > credential label that somebody typed reads its own `boundedText` and returns a 400
+ * > naming the limit, because silently dropping a name the reader typed is a worse answer
+ * > than telling them it was too long. `text()` below is that path.
+ *
+ * The cap is `LIMITS.text` rather than something tighter because these ARE different id
+ * spaces with different natural lengths; what matters is that none of them is unbounded.
+ * The sanitizing half matters more than the cap: a NUL or an ANSI escape in a token that
+ * reaches a log line is the problem, and it reached one whether or not the lookup failed.
+ */
 function str(v: unknown): string | null {
-  return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+  const g = boundedText(v, LIMITS.text);
+  return g.ok ? g.value : null;
+}
+
+/**
+ * User-authored text: sanitized, bounded, and REFUSED with a 400 rather than dropped.
+ *
+ * The opposite reading from `str` above and deliberately so -- see its note. `absent` is
+ * still `null`, so an optional field stays optional; only a value that was SENT and is
+ * unusable produces a `Response`, which the caller returns as-is.
+ */
+function text(v: unknown, field: string, max: number): string | null | Response {
+  if (v === undefined || v === null) return null;
+  const g = boundedText(v, max, { allowEmpty: true });
+  if (!g.ok) return json({ error: refusalMessage(field, g) }, { status: 400 });
+  return g.value === "" ? null : g.value;
 }
 
 /**
@@ -550,7 +596,12 @@ export class AuthService {
         if (refused) return refused;
         const b = await body(req);
         const p = this.principal(req);
-        const displayName = str(b.displayName) ?? undefined;
+        // The name somebody chooses for themselves at sign-up -- the ONE piece of
+        // user-authored text an ANONYMOUS caller can put in this database, and therefore
+        // the one most worth bounding.
+        const chosen = text(b.displayName, "displayName", LIMITS.name);
+        if (chosen instanceof Response) return chosen;
+        const displayName = chosen ?? undefined;
 
         try {
           if (p?.user) return json(await this.passkeys.beginRegistration({ user: p.user }));
@@ -909,9 +960,16 @@ export class AuthService {
          * can act on. `registerPasskey` guesses a label from the user agent at creation
          * time; this is how a wrong guess gets corrected.
          *
-         * A label is the one piece of user-authored text in this table, so it is capped and
-         * trimmed. The cap is not a security control -- `maxRequestBodySize` is -- it is
-         * what stops one row rendering as a wall of text on everybody's account page.
+         * A label is the one piece of user-authored text in this table, so it goes through
+         * `text()` like every other. It used to `slice(0, 60)`, which was the right
+         * instinct and the wrong verb: a silently shortened label is one the reader has to
+         * discover was shortened, and slicing did nothing at all about a NUL, a bidi
+         * override or a mark stack in the 60 characters it kept. The refusal now names the
+         * limit and the sanitizer handles the rest.
+         *
+         * `null` stays meaningful and distinct from absent: it CLEARS the label back to the
+         * guess `registerPasskey` made, which is why `raw === null` is admitted rather than
+         * refused as an empty value.
          */
         PATCH: async (req) => {
           const p = this.principal(req);
@@ -922,7 +980,9 @@ export class AuthService {
           if (raw !== null && typeof raw !== "string" && raw !== undefined) {
             return json({ error: "label must be a string or null" }, { status: 400 });
           }
-          const label = typeof raw === "string" ? raw.slice(0, 60) : null;
+          const guarded = text(raw, "label", CREDENTIAL_LABEL_MAX);
+          if (guarded instanceof Response) return guarded;
+          const label = guarded;
           const ok = this.deps.auth.renameCredential(decodeURIComponent(id), p.user.id, label);
           return json({ ok }, { status: ok ? 200 : 404 });
         },
@@ -1071,10 +1131,17 @@ export class AuthService {
             const role: Role = isRole(b.role) ? b.role : "user";
             const hours =
               typeof b.hours === "number" && b.hours > 0 ? b.hours : this.deps.cfg.auth.inviteHours;
+            // Both are text an admin TYPED, so they refuse rather than being quietly
+            // dropped -- see `text` vs `str`. `hours` is clamped rather than refused for
+            // the same reason `clampInt` exists: a bad number is a broken client.
+            const note = text(b.note, "note", LIMITS.text);
+            if (note instanceof Response) return note;
+            const inviteName = text(b.displayName, "displayName", LIMITS.name);
+            if (inviteName instanceof Response) return inviteName;
             const { token, invite } = this.deps.auth.createInvite({
               role,
-              note: str(b.note),
-              displayName: str(b.displayName),
+              note,
+              displayName: inviteName,
               createdBy: p.user?.id ?? "api-key",
               expiresAt: isoIn(hours * 3_600_000),
             });
@@ -1212,8 +1279,10 @@ export class AuthService {
             const losingAdmin = target.role === "admin" && (wantsRole === "user" || wantsDisabled === true);
             if (losingAdmin && this.deps.auth.adminCount() <= 1)
               return json({ error: "that is the last admin" }, { status: 409 });
+            const wantsName = text(b.displayName, "displayName", LIMITS.name);
+            if (wantsName instanceof Response) return wantsName;
             const updated = this.deps.auth.updateUser(id, {
-              displayName: str(b.displayName) ?? undefined,
+              displayName: wantsName ?? undefined,
               role: wantsRole,
               disabled: wantsDisabled,
               quotaPerDay: wantsQuota,
