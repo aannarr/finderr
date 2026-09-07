@@ -930,6 +930,32 @@ export interface Config {
    * > `ADDONS.md` says so at greater length.
    */
   pluginModules: string[];
+
+  /**
+   * PLAYBACK. Where the media actually is, from this process's point of view.
+   *
+   * `volumes` is the whole feature switch: **empty means finderr never opens a media file**,
+   * which is the default and is what every deployment before playback existed behaves like.
+   * Nothing else needs to be turned off.
+   *
+   * The format is `arrPath=localPath` pairs, comma separated, and `parseVolumes` in
+   * `src/lib/media-path.ts` is the single owner of parsing it -- the raw string is kept here
+   * rather than a parsed array so `Config` stays a plain serialisable shape that YAML and
+   * ENV can both express, the same way `pluginModules` is a list of strings rather than
+   * resolved modules.
+   *
+   * > [!IMPORTANT] The cheapest correct value is an IDENTITY, and it is worth aiming for
+   * > Radarr and Sonarr mount the media share at `/plex`. Mount it into finderr at the same
+   * > place, read-only, and this is `/plex=/plex` -- no rewriting, and no second fact that
+   * > can drift out of step with a compose file somebody edits next year.
+   *
+   * This map is a SECURITY boundary rather than a convenience: it enumerates every directory
+   * playback may read from, and `media-path.ts` refuses anything outside it. Adding an entry
+   * is as consequential as adding a `pluginModules` entry.
+   */
+  media: {
+    volumes: string;
+  };
 }
 
 /**
@@ -1061,6 +1087,9 @@ export const DEFAULT_CONFIG: Config = {
   preview: { ratePerMinute: 30, resolvePerMinute: 60 },
   pluginsDir: "",
   pluginModules: [],
+  // Empty by default: a checkout that does not opt in cannot open a media file at all, which
+  // is exactly how every version before playback existed behaved.
+  media: { volumes: "" },
 };
 
 // ---------------------------------------------------------------------------
@@ -1262,6 +1291,9 @@ function envOverrides(): Record<string, unknown> {
       ?.split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    media: {
+      volumes: envStr("FINDERR_MEDIA_VOLUMES"),
+    },
   };
 }
 

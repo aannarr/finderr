@@ -110,6 +110,19 @@ export const LIMITS = {
   /** How many items a client may put in one array field. */
   listItems: 200,
   /**
+   * A filesystem path reported by an arr, before we try to open it.
+   *
+   * It is not typed by a human, which is exactly why it needs a bound: it arrives over HTTP
+   * from Radarr or Sonarr and the fifth rule does not care that the sender is usually
+   * friendly. 4,096 is `PATH_MAX` on Linux, so a path past it cannot name a real file on the
+   * machine the arr is describing -- refusing it is strictly correct rather than cautious.
+   *
+   * The bound is the CHEAP half and it is not the guard. `mapMediaPath` (`media-path.ts`)
+   * decides whether a path may be opened at all, and it is an ALLOW-LIST rather than a
+   * length check.
+   */
+  mediaPath: 4096,
+  /**
    * How many combining marks may stack on ONE base character.
    *
    * Unicode's own stream-safe format (UAX #15) uses 30. Real text never approaches it:
