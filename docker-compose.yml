@@ -92,6 +92,13 @@ services:
       # always admitted. NOT the same setting as FINDERR_REGIONS.
       FINDERR_LANGUAGES: ${LANGUAGES:-}
 
+      # --- Shelves that start switched OFF for everybody who has not said otherwise.
+      # Comma list of shelf ids, e.g. `coming-soon-series,genre-adventure`; a genre row is
+      # `genre-` plus its lowercased name. A DEFAULT and not a removal -- the shelf is still
+      # built, still pre-warmed, and still on /account under "Your front page" marked
+      # hidden, so any reader can turn it back on and keeps it on. Empty = every shelf shows.
+      FINDERR_SHELVES_HIDDEN_BY_DEFAULT: ${SHELVES_HIDDEN_BY_DEFAULT:-}
+
       # --- Plex. OPTIONAL, same `:-` rule as TMDB: without it every title's `plex`
       # field is null and the page loses its Play button, nothing else.
       #

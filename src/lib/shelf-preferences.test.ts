@@ -297,3 +297,98 @@ describe("stored and resolved are the same page", () => {
     ]);
   });
 });
+
+/*
+  THE OPERATOR'S DEFAULT, which decides ONLY the shelves a reader has never had an opinion
+  about. Every test here is about that boundary, because the boundary is the whole feature: a
+  default that outranked a stored choice would be a setting the reader could not keep, and one
+  that a stored choice could not reach would be a shelf they could never get back.
+*/
+describe("shelves the operator ships switched off", () => {
+  const off = (...ids: string[]) => new Set(ids);
+
+  test("a reader who has touched nothing does not see a default-hidden shelf", () => {
+    const page = applyShelfPreference(SHIPPED, [], off("trending"));
+    expect(ids(page)).toEqual(["recently-added", "top-250", "genre-horror"]);
+  });
+
+  test("no default at all leaves today's page untouched, argument for argument", () => {
+    expect(applyShelfPreference(SHIPPED, [], off())).toEqual(SHIPPED);
+    expect(applyShelfPreference(SHIPPED, [])).toEqual(SHIPPED);
+  });
+
+  /*
+    THE ONE THAT MAKES THE SETTINGS SCREEN'S "Show" BUTTON MEAN SOMETHING. Without it, pressing
+    Show on a default-hidden shelf would store `hidden: false`, answer with the shelf still
+    marked hidden, and the reader would press it forever.
+  */
+  test("a reader who turns it back on keeps it on", () => {
+    const page = applyShelfPreference(SHIPPED, pref(["trending"]), off("trending"));
+    expect(ids(page)).toContain("trending");
+  });
+
+  test("and a reader who hides something the operator ships ON still has it hidden", () => {
+    const page = applyShelfPreference(SHIPPED, pref(["top-250"], ["top-250"]), off("trending"));
+    expect(ids(page)).toEqual(["recently-added", "genre-horror"]);
+  });
+
+  /* A configured id naming no shelf is the retired-genre case again, and it is not an error. */
+  test("a default naming a shelf that does not exist changes nothing", () => {
+    expect(applyShelfPreference(SHIPPED, [], off("genre-westerns"))).toEqual(SHIPPED);
+  });
+
+  /*
+    THE CATALOGUE MUST AGREE WITH THE PAGE. It draws the shelf marked hidden rather than
+    dropping it -- a screen that omitted it would be the one-way door `shelfCatalogue`'s own
+    doc comment exists to prevent, except now the door is one the reader never walked through.
+  */
+  test("the arranging screen shows it, marked hidden, so there is something to press", () => {
+    const view = shelfCatalogue(SHIPPED, [], off("trending"));
+    expect(view.map((s) => [s.id, s.hidden])).toEqual([
+      ["recently-added", false],
+      ["trending", true],
+      ["top-250", false],
+      ["genre-horror", false],
+    ]);
+  });
+
+  test("and it stops marking it once the reader has said otherwise", () => {
+    const view = shelfCatalogue(SHIPPED, pref(["trending"]), off("trending"));
+    expect(view.find((s) => s.id === "trending")?.hidden).toBe(false);
+  });
+
+  /*
+    THE WARM LOOP PROPERTY AGAIN, because this is the change most likely to break it. A default
+    may only ever REMOVE from the page it is handed; the day it can add one, `warmShelves` is
+    covering a shelf somebody sees and nothing on `/api/health` says otherwise.
+  */
+  test("a default can only ever shrink the page, never add to it", () => {
+    const shipped = new Set(ids(SHIPPED));
+    for (const defaults of [off(), off("trending"), off("recently-added", "genre-horror"), off("nope")]) {
+      for (const arrangement of [[], pref(["top-250", "trending"]), pref(["trending"], ["trending"])]) {
+        const page = applyShelfPreference(SHIPPED, arrangement, defaults);
+        expect(page.every((shelf) => shipped.has(shelf.id))).toBe(true);
+        expect(new Set(ids(page)).size).toBe(page.length);
+      }
+    }
+  });
+
+  /*
+    A STORED ARRANGEMENT KEEPS ITS ORDER, and the default reaches only the shelf it left out.
+
+    Worth knowing what this implies in practice: the arranging screen sends the WHOLE
+    catalogue, so the moment a reader saves anything, every shelf on the page that day has an
+    explicit opinion and the operator's default stops reaching any of them. That is correct
+    rather than a leak -- the catalogue they arranged from already had the default-hidden rows
+    marked hidden, so saving it stores the operator's choice as their own, and from then on the
+    page is theirs. `trending` here stands in for a shelf shipped AFTER they last arranged.
+  */
+  test("a stored arrangement keeps its order, and the default reaches only what it left out", () => {
+    const page = applyShelfPreference(
+      SHIPPED,
+      pref(["genre-horror", "top-250", "recently-added"]),
+      off("trending"),
+    );
+    expect(ids(page)).toEqual(["genre-horror", "top-250", "recently-added"]);
+  });
+});

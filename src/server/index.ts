@@ -713,16 +713,34 @@ function preferenceOf(req: Request): ShelfChoice[] {
 }
 
 /**
+ * The shelves the operator ships switched off, built ONCE.
+ *
+ * A `Set` per request over a config array nothing can change at runtime would be work bought
+ * on the render path for nothing. It is the SINGLE owner of turning that config field into the
+ * shape the two resolvers take, so the settings screen and the front page cannot be handed
+ * different defaults -- which would draw a shelf the arranging list swore was hidden.
+ */
+const shelvesHiddenByDefault: ReadonlySet<string> = new Set(cfg.shelves.hiddenByDefault);
+
+/**
  * What the preference routes all answer with: the whole catalogue, in this reader's order.
  *
  * ONE PAYLOAD FOR ALL THREE VERBS -- read it, save it, reset it -- so a client never has to
  * guess how the server resolved what it sent. It is built from `currentShelves()` rather than
  * from the stored rows, which is what makes a retired shelf disappear from the screen and a
  * newly shipped one appear on it without either being a special case.
+ *
+ * `customised` still means "has this reader stored anything", NOT "does their page differ from
+ * the shipped one". An operator default is not the reader's arrangement, so a reader who has
+ * touched nothing is offered no reset -- there is nothing of theirs to put back, and a button
+ * that undid the operator's default would be a per-reader override wearing a reset's clothes.
  */
 function preferencePayload(userId: string | null): ShelfPreferencePayload {
   const pref = userId ? shelfPrefs.read(userId) : [];
-  return { customised: pref.length > 0, shelves: shelfCatalogue(currentShelves(), pref) };
+  return {
+    customised: pref.length > 0,
+    shelves: shelfCatalogue(currentShelves(), pref, shelvesHiddenByDefault),
+  };
 }
 
 /**
@@ -2783,10 +2801,9 @@ const appRoutes = {
    */
   "/api/discover": (req: Request) =>
     json({
-      shelves: applyShelfPreference(currentShelves(), preferenceOf(req)).map(({ rows, ...shelf }) => ({
-        ...shelf,
-        titles: decorate(rows),
-      })),
+      shelves: applyShelfPreference(currentShelves(), preferenceOf(req), shelvesHiddenByDefault).map(
+        ({ rows, ...shelf }) => ({ ...shelf, titles: decorate(rows) }),
+      ),
     }),
 
   "/api/requests": {

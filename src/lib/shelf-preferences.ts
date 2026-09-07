@@ -27,6 +27,14 @@
  * than an error. Genre shelves rotate with the nightly index build, so a preference naming a
  * retired shelf is the ordinary state and not a corruption.
  *
+ * ## The one thing an unmentioned shelf's visibility is NOT decided by this file alone
+ *
+ * `config.shelves.hiddenByDefault` lets the OPERATOR start a shelf switched off. It changes
+ * only the unmentioned case above -- a reader who has said anything about a shelf has said it,
+ * and `hiddenIds` never consults the default for a shelf the preference names. So the rule is
+ * still "an unmentioned shelf is shown WHERE THE SHIPPED ORDER PUT IT", with the operator
+ * allowed to move the starting point for shelves nobody has an opinion about yet.
+ *
  * IT IS ITS OWN MODULE for the reason `src/lib/watchlist.ts` gives: `auth-store.ts` is
  * identity, `store.ts` mirrors somebody else's machine, and this is content one reader owns.
  * Every method is synchronous because `bun:sqlite` is and the render path awaits nothing.
@@ -192,17 +200,42 @@ export function orderShelves<T extends { id: string }>(shelves: readonly T[], pr
 }
 
 /**
+ * Shelf ids the OPERATOR has switched off for anybody who has not said otherwise.
+ *
+ * `config.shelves.hiddenByDefault`, and it is deliberately its own type rather than a bare
+ * `Set<string>` at each call site: both functions below take it, and a caller that passed one
+ * and forgot the other would draw a settings screen disagreeing with the page it arranges.
+ */
+export type DefaultHiddenShelves = ReadonlySet<string>;
+
+/** No operator default at all -- the shape every existing caller and test already has. */
+const NOTHING_HIDDEN: DefaultHiddenShelves = new Set<string>();
+
+/**
  * The page this reader actually sees: their order, minus what they hid.
  *
- * A reader with no preference gets the argument back unchanged -- not an equivalent list, the
- * same shelves in the same order -- which is what makes "somebody who never touched this sees
- * exactly today's front page" a property of the code rather than a hope.
+ * A reader with no preference AND no operator default gets the argument back unchanged -- not
+ * an equivalent list, the same shelves in the same order -- which is what makes "somebody who
+ * never touched this sees exactly today's front page" a property of the code rather than a hope.
+ *
+ * > [!IMPORTANT] A READER'S OPINION ALWAYS OUTRANKS THE OPERATOR'S DEFAULT, in both directions
+ * > `byDefault` decides only for a shelf the preference says NOTHING about. Turn one back on
+ * > and the stored `hidden: false` wins from then on, which is what makes the default a
+ * > starting point rather than a rule the reader keeps losing to. It is the same precedence
+ * > `orderShelves` gives a stored position over the shipped one, and it falls out of the same
+ * > place: `hiddenIds` asks the preference first and the default only for what is left.
+ *
+ * The warm loop is UNAFFECTED and must stay that way: it warms the shelves it is handed, and
+ * this still only ever REMOVES from that list, so the union of what readers see is still a
+ * subset of the shipped page. A default-hidden shelf is warmed for the readers who turn it
+ * back on. `shelf-preferences.test.ts` pins the subset property.
  */
 export function applyShelfPreference<T extends { id: string }>(
   shelves: readonly T[],
   pref: ShelfPreference,
+  byDefault: DefaultHiddenShelves = NOTHING_HIDDEN,
 ): T[] {
-  const hidden = hiddenIds(pref);
+  const hidden = hiddenIds(pref, byDefault);
   return orderShelves(shelves, pref).filter((shelf) => !hidden.has(shelf.id));
 }
 
@@ -222,8 +255,9 @@ export interface ShelfChoiceView {
 export function shelfCatalogue(
   shelves: readonly { id: string; title: string }[],
   pref: ShelfPreference,
+  byDefault: DefaultHiddenShelves = NOTHING_HIDDEN,
 ): ShelfChoiceView[] {
-  const hidden = hiddenIds(pref);
+  const hidden = hiddenIds(pref, byDefault);
   return orderShelves(shelves, pref).map((shelf) => ({
     id: shelf.id,
     title: shelf.title,
@@ -251,8 +285,20 @@ export interface ShelfPreferencePayload {
   shelves: ShelfChoiceView[];
 }
 
-function hiddenIds(pref: ShelfPreference): Set<string> {
-  return new Set(pref.filter((choice) => choice.hidden).map((choice) => choice.id));
+/**
+ * Every shelf id that is off for this reader: the ones they hid, plus the operator's defaults
+ * for shelves they have never had an opinion about.
+ *
+ * THE ORDER OF THE TWO CLAUSES IS THE PRECEDENCE RULE and it is the only place it is written.
+ * A shelf named in the preference is decided by the preference and the default is never
+ * consulted for it -- so `hidden: false` on a default-hidden shelf turns it back on, which is
+ * what makes the settings screen's "Show" button mean something.
+ */
+function hiddenIds(pref: ShelfPreference, byDefault: DefaultHiddenShelves): Set<string> {
+  const opinionated = new Set(pref.map((choice) => choice.id));
+  const hidden = new Set(pref.filter((choice) => choice.hidden).map((choice) => choice.id));
+  for (const id of byDefault) if (!opinionated.has(id)) hidden.add(id);
+  return hidden;
 }
 
 /** A well-formed arrangement, or a reason to refuse it. */
