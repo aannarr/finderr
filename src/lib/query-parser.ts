@@ -31,8 +31,18 @@ export interface ParsedQuery {
 const RELEASE_JUNK =
   /\b(?:1080p|720p|2160p|480p|4k|uhd|hdr|hdr10|dolby[ .]?vision|bluray|blu-ray|brrip|bdrip|webrip|web-?dl|hdtv|dvdrip|x264|x265|h ?264|h ?265|hevc|avc|aac\d?(?:\.\d)?|ac3|dts(?:-hd)?|truehd|atmos|ddp?\d(?:\.\d)?|remux|proper|repack|internal|limited|extended|unrated|imax|dual[ .]?audio|multi|subbed|dubbed|yify|yts|rarbg)\b/gi;
 
+/**
+ * PLURALS COUNT. "swedish crime films" and "korean shows" are how people describe a set
+ * rather than name one title, and the singular-only form left `films` and `shows` in the
+ * text to be matched against titles. It is the same trade this list already took on the
+ * singular -- "Scary Movie" has been searched as `scary` with `kind: movie` since v0, and
+ * still resolves, because a kind hint scores rather than filters.
+ *
+ * `season` stays singular deliberately: `seasons` is a plural of the noun, not a way of
+ * saying "a series" ("The Four Seasons"), so reading it as a kind hint would be wrong.
+ */
 const TYPE_WORDS =
-  /\b(tv[ -]?series|tv[ -]?show|miniseries|mini[ -]?series|series|show|season|movie|film)\b/gi;
+  /\b(tv[ -]?series|tv[ -]?shows?|miniseries|mini[ -]?series|series|shows?|season|movies?|films?)\b/gi;
 
 const SEASON_EPISODE = /\bs(?:eason)?[ .]?(\d{1,2})(?:[ .]?[ex](?:pisode)?[ .]?(\d{1,3}))?\b/i;
 const DECADE = /\b((?:19|20)\d0)'?s\b/i;

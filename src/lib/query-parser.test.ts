@@ -62,6 +62,32 @@ describe("parseQuery -- type and season", () => {
     expect(parseQuery("dune movie").kind).toBe("movie");
     expect(parseQuery("the office tv series").kind).toBe("tvSeries");
   });
+
+  /**
+   * The plural is how people describe a SET rather than name one title -- "swedish crime
+   * films", "korean shows" -- and leaving it in the text put `films` up against titles.
+   */
+  test("plural type words set the hint and leave the text", () => {
+    const films = parseQuery("swedish crime films");
+    expect(films.kind).toBe("movie");
+    expect(films.text).toBe("swedish crime");
+
+    const shows = parseQuery("korean shows");
+    expect(shows.kind).toBe("tvSeries");
+    expect(shows.text).toBe("korean");
+
+    expect(parseQuery("scary movies").kind).toBe("movie");
+  });
+
+  /**
+   * `seasons` is a plural noun, not a way of saying "a series" -- "The Four Seasons" is a
+   * title -- so it is the one plural deliberately left out of the list.
+   */
+  test("'seasons' is not a type word", () => {
+    const p = parseQuery("the four seasons");
+    expect(p.kind).toBeUndefined();
+    expect(p.text).toBe("the four seasons");
+  });
 });
 
 describe("parseQuery -- release junk", () => {

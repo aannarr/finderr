@@ -862,6 +862,25 @@ Franchise ordinals (`Rocky 4`) do not auto-resolve to one film, on purpose. A ti
 guess sent `Rocky 4` to *Rocky III* and `Alien 3` to *Alien Nation*, so I ripped it out.
 The OR tier returns the whole franchise and you pick.
 
+#### When the query describes a shelf instead of naming a title
+
+`swedish crime drama` names a language, a genre and no title, and the index has nothing to
+match it against: the ranked list comes back full of plausible strangers. `/browse` answers
+that question exactly, so the search page offers a link to it — *best Crime titles in
+Swedish* — above the results. The results stay where they are; nothing is filtered and
+nothing is reworded.
+
+It stays quiet unless **every word is accounted for**. `True Romance` names a genre and
+leaves a word over, so it gets no suggestion and you get your film. A word we cannot honour
+blocks it just as hard: `/browse` filters by period and has no "newest first", so `new`
+becomes the current decade and the link says so, while `old` produces nothing rather than a
+list from every decade with the word quietly dropped.
+
+The vocabulary is the one `/browse` already speaks — the twelve genres and the language
+codes behind `/lists`, plus what `parseQuery` already extracts. It is not a natural-language
+parser and does not want to be: the first real search log had one reader ask this in Swedish
+and then in English, and only the English half is understood.
+
 ### Tuning it against real queries
 
 Every constant in the scorer was picked to make the canary suite pass, and that suite was

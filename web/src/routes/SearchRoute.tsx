@@ -17,6 +17,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { BrowseSuggestion } from "../components/BrowseSuggestion";
 import { ClearChip } from "../components/Chip";
 import { CollectionJump } from "../components/CollectionJump";
 import { FacetBar } from "../components/FacetBar";
@@ -274,6 +275,13 @@ export function SearchRoute() {
           />
         </div>
       )}
+
+      {/*
+        Keyed off the ANSWER rather than the box, for the reason `reportClick` states: the
+        suggestion belongs to the query whose results are on screen, and re-deriving it from
+        what is being typed would flicker a different shelf into place mid-word.
+      */}
+      {answered && !working && <BrowseSuggestion query={answered.query} />}
 
       {error && (
         <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm">{error}</div>

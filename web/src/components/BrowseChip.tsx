@@ -23,15 +23,26 @@ export function BrowseChip({
   filters,
   label,
   tone = "pill",
+  sort,
 }: {
   filters: Filters;
   label: string;
   tone?: "pill" | "inline";
+  /**
+   * Ask for the RANKED grid rather than the votes-ordered default.
+   *
+   * `rank` is browse's whole sort vocabulary (`BrowseRoute` narrows the shared `sort` key to
+   * it), and it rides here rather than inside `filters` because it selects no rows -- the
+   * same split `filtersOf` enforces on the URL. A chip standing for a facet VALUE wants the
+   * default; one offering a whole shelf -- "best Crime in Swedish" -- has to say "best" in
+   * the destination as well as on the label, or the link disagrees with its own text.
+   */
+  sort?: "rank";
 }) {
   return (
     <Link
       to="/browse"
-      search={filters}
+      search={sort ? { ...filters, sort } : filters}
       className={
         tone === "pill"
           ? `${CHIP_PILL} hover:text-ink`

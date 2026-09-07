@@ -19,7 +19,7 @@ import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   completionNoun,
-  kindNoun,
+  describeFilters,
   listForFilters,
   listLanguageName,
   RANK_EXPLAINER,
@@ -44,25 +44,8 @@ import { useListsIndex } from "../lib/use-lists-index";
 
 const PAGE = 60;
 
-/**
- * "Horror films from the 1980s" -- a sentence, not a list of key=value pairs.
- *
- * A ranked browse says "Best" rather than naming the ordering, because that IS the name of
- * the list: nobody calls it "horror films sorted by weighted rating". The ordering still
- * has to be stated somewhere, and `RANK_EXPLAINER` under the heading is where -- a page
- * that says "Best" without saying whose measure it is, is the one thing the card that
- * built this forbade.
- */
-function describe(f: SearchParams): string {
-  const parts = [f.sort === "rank" ? "best" : undefined, f.genre, kindNoun(f.kind)];
-  // "in Korean" rather than "Korean", for the reason `computedLists` names: we hold the
-  // film's language and not where it was made, and the preposition is what keeps the
-  // heading to the claim the filter actually made.
-  if (f.lang) parts.push(`in ${listLanguageName(f.lang) ?? f.lang}`);
-  if (f.year) parts.push(`from ${f.year}`);
-  else if (f.decade) parts.push(`from the ${f.decade}s`);
-  return parts.filter(Boolean).join(" ");
-}
+/** The heading sentence, owned by `src/lib/lists.ts` so the search page can promise the same one. */
+const describe = (f: SearchParams): string => describeFilters(f, f.sort === "rank");
 
 export function BrowseRoute() {
   const params = useSearch({ strict: false }) as SearchParams;

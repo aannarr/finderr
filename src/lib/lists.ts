@@ -518,6 +518,31 @@ export function completionNoun(kind: string | undefined): string {
 }
 
 /**
+ * "best horror films in Swedish from the 1980s" -- a sentence, not a list of key=value pairs.
+ *
+ * A ranked browse says "best" rather than naming the ordering, because that IS the name of
+ * the list: nobody calls it "horror films sorted by weighted rating". The ordering still has
+ * to be stated somewhere, and `RANK_EXPLAINER` under the heading is where -- a page that says
+ * "best" without saying whose measure it is, is the one thing the card that built `/browse`
+ * forbade.
+ *
+ * It lives here, beside `kindNoun` and `listLanguageName`, because a second surface now says
+ * it: the browse heading, and the suggestion on the search page that offers to take a reader
+ * there. Two spellings of one sentence would leave the link promising a page with a different
+ * name on it.
+ */
+export function describeFilters(f: BrowseFilters, ranked: boolean): string {
+  const parts = [ranked ? "best" : undefined, f.genre, kindNoun(f.kind)];
+  // "in Korean" rather than "Korean", for the reason `computedLists` names: we hold the
+  // film's language and not where it was made, and the preposition is what keeps the
+  // heading to the claim the filter actually made.
+  if (f.lang) parts.push(`in ${listLanguageName(f.lang) ?? f.lang}`);
+  if (f.year) parts.push(`from ${f.year}`);
+  else if (f.decade) parts.push(`from the ${f.decade}s`);
+  return parts.filter(Boolean).join(" ");
+}
+
+/**
  * How a computed list is ranked, said in one sentence the page can print.
  *
  * **The disclaimer is not decoration.** The rank reproduces IMDb's Top 250 head almost

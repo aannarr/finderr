@@ -16,6 +16,7 @@ import {
   CURATED,
   completionNoun,
   computedLists,
+  describeFilters,
   isAllTimeList,
   kindNoun,
   LIST_GENRES,
@@ -232,6 +233,27 @@ describe("completionNoun", () => {
     // which 250 -- so the phrase carries the answer.
     expect(completionNoun("movie")).toBe("top-ranked films");
     expect(completionNoun("tvSeries")).toBe("top-ranked series");
+  });
+});
+
+describe("describeFilters", () => {
+  test("it reads as a sentence, in the order a reader would say it", () => {
+    expect(describeFilters({ genre: "Horror", kind: "movie", decade: 1980 }, true)).toBe(
+      "best Horror films from the 1980s",
+    );
+    expect(describeFilters({ genre: "Crime", lang: "sv" }, true)).toBe("best Crime titles in Swedish");
+  });
+
+  test("only a RANKED browse says 'best'", () => {
+    expect(describeFilters({ genre: "Horror", kind: "movie" }, false)).toBe("Horror films");
+  });
+
+  test("a year is more specific than a decade, so it wins", () => {
+    expect(describeFilters({ kind: "movie", year: 1988, decade: 1980 }, false)).toBe("films from 1988");
+  });
+
+  test("an unknown language code prints itself rather than a guessed name", () => {
+    expect(describeFilters({ lang: "zz" }, false)).toBe("titles in zz");
   });
 });
 
