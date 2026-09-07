@@ -2061,8 +2061,7 @@ export function gateCapabilities(candidate: string, live: string): GateResult {
   const before = capabilitiesOfFile(live);
   if (before === null) return { ok: true, name, detail: "no readable live index, nothing to compare" };
   const after = capabilitiesOfFile(candidate);
-  if (after === null)
-    return { ok: false, name, detail: `the candidate at ${candidate} could not be opened` };
+  if (after === null) return { ok: false, name, detail: `the candidate at ${candidate} could not be opened` };
 
   const lost = [...before].filter((c) => !after.has(c));
   const gained = [...after].filter((c: IndexCapability) => !before.has(c));
