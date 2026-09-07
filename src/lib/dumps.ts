@@ -7,8 +7,9 @@
  * Licence note: these datasets are published for personal, non-commercial use.
  */
 
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
+import { openAppDb } from "./app-db";
 
 export const IMDB_BASE = "https://datasets.imdbws.com";
 
@@ -68,8 +69,12 @@ export interface DumpState {
 export class DumpStateStore {
   private db: Database;
   constructor(path: string) {
-    this.db = new Database(path, { create: true });
-    this.db.run("pragma journal_mode = wal");
+    /*
+      THIS RUNS IN THE BUILD SUBPROCESS, against the file the live server is writing to.
+      `openAppDb` carries the `busy_timeout` that makes that safe -- see `src/lib/app-db.ts`
+      for the measurement. A bare `new Database` here is the bug.
+    */
+    this.db = openAppDb(path);
     this.db.run(
       "create table if not exists dump_state (name text primary key, etag text, last_modified text, fetched_at text, bytes int)",
     );

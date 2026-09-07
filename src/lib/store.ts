@@ -5,9 +5,10 @@
  * this data must survive that. Different lifecycle, different file.
  */
 
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import type { ConversationStore, ConversationTurn } from "./agent/conversation";
 import type { AiCallRow, AiCallSink } from "./ai-spend";
+import { openAppDb } from "./app-db";
 import type { RadarrClient, SonarrClient } from "./arr";
 import { applyAuthSchema } from "./auth-store";
 import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
@@ -981,9 +982,12 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
   readonly db: Database;
 
   constructor(cfg: Config) {
-    this.db = new Database(paths(cfg).appDb, { create: true });
-    this.db.run("pragma journal_mode = wal");
-    this.db.run("pragma synchronous = normal");
+    /*
+      `openAppDb` is the one owner of these pragmas, and the one that matters is
+      `busy_timeout`: the index build writes `dump_state` in this same file from a SPAWNED
+      PROCESS, so this connection is not the only writer. See `src/lib/app-db.ts`.
+    */
+    this.db = openAppDb(paths(cfg).appDb);
     /*
       SQLite enforces foreign keys only when ASKED to, per connection, and its default is
       OFF. Every `on delete cascade` in AUTH_SCHEMA is inert without this line -- deleting a

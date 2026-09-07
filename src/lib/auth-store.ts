@@ -504,6 +504,35 @@ function toSession(r: SessionRow): Session {
  */
 const SWEEP_INTERVAL_MS = 60_000;
 
+/*
+  A BOOKKEEPING WRITE MAY FAIL WITHOUT TAKING THE REQUEST WITH IT.
+
+  `touchSession` and `touchAgentKey` both run from `principal()`, on EVERY authenticated
+  request, and both write a field whose only job is to answer "when was this last used".
+  Neither is part of deciding whether the caller may proceed -- that decision was already
+  made by `readSession` before either is called.
+
+  On 2026-09-07 the live NAS logged three `[finderr] unhandled` SQLITE_BUSY exceptions from
+  `touchSession` during a boot index rebuild, because a *stamp on a timestamp column* was
+  allowed to abort an otherwise valid authenticated request. `openAppDb`'s `busy_timeout`
+  is the fix for the CAUSE and is the important half; this is the fix for the BLAST RADIUS,
+  and it is worth having on its own -- any future fault in this one write should degrade to
+  a slightly stale `last_seen_at`, which is what the field is for.
+
+  It is deliberately NOT a general try/catch helper and is not exported. Wrapping a write
+  that decides anything would hide a real failure; these two decide nothing. Widening it to
+  a third caller is a decision to make on purpose, per caller.
+*/
+function bookkeeping(what: string, write: () => void): void {
+  try {
+    write();
+  } catch (err) {
+    // The message, not the object: this reaches a log and nothing else, and it is the only
+    // record that the stamp was skipped.
+    console.warn(`[auth] ${what} skipped -- ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export class AuthStore {
   /** ms epoch of the last expired-session sweep. Per process, like the limiter windows. */
   private lastSessionSweep = 0;
@@ -915,9 +944,11 @@ export class AuthStore {
    */
   touchSession(idHash: string, now?: Date): void {
     const t = now ?? new Date();
-    this.db
-      .query("update session set last_seen_at = ? where id_hash = ? and last_seen_at <= ?")
-      .run(isoNow(t), idHash, isoIn(-SWEEP_INTERVAL_MS, t));
+    bookkeeping("touchSession", () =>
+      this.db
+        .query("update session set last_seen_at = ? where id_hash = ? and last_seen_at <= ?")
+        .run(isoNow(t), idHash, isoIn(-SWEEP_INTERVAL_MS, t)),
+    );
   }
 
   sessionsFor(userId: string): Session[] {
@@ -1075,11 +1106,13 @@ export class AuthStore {
    */
   touchAgentKey(id: string, now?: Date): void {
     const t = now ?? new Date();
-    this.db
-      .query(
-        "update agent_key set last_used_at = ? where id = ? and (last_used_at is null or last_used_at <= ?)",
-      )
-      .run(isoNow(t), id, isoIn(-SWEEP_INTERVAL_MS, t));
+    bookkeeping("touchAgentKey", () =>
+      this.db
+        .query(
+          "update agent_key set last_used_at = ? where id = ? and (last_used_at is null or last_used_at <= ?)",
+        )
+        .run(isoNow(t), id, isoIn(-SWEEP_INTERVAL_MS, t)),
+    );
   }
 
   // --- push subscriptions --------------------------------------------------
