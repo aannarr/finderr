@@ -12,14 +12,32 @@
  * A control's zone is decided by WHAT IT ACTS ON, and nothing else. Get that right and the
  * placement, the emphasis and the confirmation all follow without a second decision.
  *
- * - **Zone 1, the section action.** Subject is the SECTION, so it sits on the section's own
- *   rule, top right. It is always ADDITIVE -- "Add this device", "Create a key" -- and there
- *   is at most one. A destructive verb may never live here: it is the one control a reader
+ * - **Zone 1, the add action.** Subject is the SECTION. It goes at the END of the list,
+ *   left-aligned, in the reading flow -- and it is always ADDITIVE ("Add this device",
+ *   "Create a key"). A destructive verb may never live here: it is the one control a reader
  *   can press having read only a noun.
  * - **Zone 2, the row action.** Subject is THAT ROW. Right-aligned inside a FIXED-WIDTH
  *   column, safe verbs first, destructive last and always confirmed.
  * - **Zone 3, the page action.** Subject is the whole page -- "Sign out". Bottom, alone,
  *   with nothing under it.
+ *
+ * > [!CAUTION] ZONE 1 WAS TOP-RIGHT ON THE SECTION RULE, and that was wrong on a wide screen
+ * > aannarr, 2026-09-07: *"why is the create button ALLL THE WAY to the right? should it not
+ * > be just under the list of existing keys, or if no keys, just a button?"* -- and he is
+ * > right. Top-right is a CARD convention and it works because a card is bounded: the button
+ * > is a few hundred pixels from the thing it adds to. These sections are full width, so on a
+ * > wide monitor the same slot puts "Create" two thousand pixels from the list it appends to,
+ * > and the eye has to travel the width of the screen between reading the list and acting on
+ * > it.
+ * >
+ * > Under the list it is where the reading ends. And where a section is EMPTY it becomes the
+ * > whole call to action -- a sentence explaining what a key is for, with the button that
+ * > makes one directly beneath it, is far stronger than that sentence and a distant control
+ * > the reader has to connect for themselves.
+ * >
+ * > This holds because these lists are SHORT -- passkeys, sessions, keys, a handful each. A
+ * > list of two hundred rows would want the button pinned where it can be reached without
+ * > scrolling, and that is the version of this rule to revisit if one ever appears.
  *
  * ## WHY THE ACTION COLUMN IS A FIXED WIDTH
  *
@@ -48,27 +66,30 @@ export const ACTION_COL = "flex shrink-0 items-center justify-end gap-2 sm:w-48"
 
 export function Section({
   label,
-  action,
+  add,
   children,
 }: {
   label: string;
-  /** ZONE 1. Additive only -- see the note at the top of this file. */
-  action?: ReactNode;
+  /** ZONE 1. Additive only, and it lands UNDER the list -- see the note at the top. */
+  add?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="mt-8 first:mt-0">
       {/*
-        The label and its rule are ONE unit: the rule starts where the label ends rather than
-        running behind it, so a section reads as a heading with a line under it rather than as
-        a box. `items-baseline` puts the action's text on the label's baseline, which is what
-        stops a button hanging half a line proud of the heading it belongs to.
+        The heading carries the label and nothing else. It was a flex row with the action
+        pushed to the far edge; see the zone-1 caution above for why that moved.
       */}
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 border-b border-line pb-2">
-        <h2 className="text-xs font-medium uppercase tracking-wider text-muted">{label}</h2>
-        {action}
-      </div>
+      <h2 className="border-b border-line pb-2 text-xs font-medium uppercase tracking-wider text-muted">
+        {label}
+      </h2>
       <div className="mt-3">{children}</div>
+      {/*
+        Left-aligned under the list, so it starts where every row's title starts and the eye
+        runs straight down onto it. `mt-3` matches the gap above, so the button reads as the
+        next item in the list rather than as furniture attached to the section's bottom edge.
+      */}
+      {add && <div className="mt-3">{add}</div>}
     </section>
   );
 }

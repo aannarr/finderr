@@ -353,7 +353,7 @@ export function AccountRoute() {
 
       <Section
         label="Signing in"
-        action={
+        add={
           passkeysAvailable() && (
             <Button type="button" size="sm" onClick={addDevice} disabled={busy}>
               Add this device
