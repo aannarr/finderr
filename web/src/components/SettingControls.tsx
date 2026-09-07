@@ -184,8 +184,10 @@ export function QuotaField(props: {
                 step={1}
                 value={draft}
                 // Autofocused because this field only exists once somebody has chosen the
-                // radio above it -- they are already reaching for it.
-                // biome-ignore lint/a11y/noAutofocus: it appears on an explicit choice, never on load
+                // radio above it -- they are already reaching for it. It appears on an explicit
+                // choice, never on page load. Not a suppression: `noAutofocus` only analyses the
+                // DOM `input` element and never a component, so a `biome-ignore` here suppresses
+                // nothing and biome reports it as unused.
                 autoFocus
                 onChange={(e) => setDraft(e.target.value)}
                 aria-invalid={invalid !== null || undefined}
