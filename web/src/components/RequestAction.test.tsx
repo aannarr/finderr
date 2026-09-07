@@ -73,11 +73,38 @@ describe("RequestAction", () => {
     expect(html).not.toContain("Requested");
   });
 
-  /** Owned beats requested, and the arr monitoring something it has not got is its own word. */
+  /**
+   * The ladder, in the order the component reads it: the FILE outranks everything, a verdict
+   * outranks a bare library row, and a bare library row outranks only the offer to ask.
+   *
+   * The middle row is the regression. `if (t.inLibrary)` came first until 2026-09-07, so a
+   * title the arr had accepted -- which is every title, about sixty seconds after Request --
+   * said "Monitored" and lost the verdict, the progress bar and the ETA for the whole time
+   * anybody was watching.
+   */
   test.each([
     [{ inLibrary: true, hasFile: true }, "Available"],
-    [{ inLibrary: true, hasFile: false }, "Monitored"],
-  ])("a title we already hold reads %o as its own state", (over, expected) => {
+    [{ inLibrary: true, hasFile: false }, "Requested"],
+    [{ inLibrary: false, hasFile: false }, "Requested"],
+  ])("a requested title reads %o as its own state", (over, expected) => {
     expect(render({ ...TITLE, ...requestStatePatch("queued"), ...over })).toContain(expected);
+  });
+
+  /**
+   * The other half of the same rule: monitored with NO request row is the arr watching on its
+   * own -- an unreleased title a list sync pulled in -- and it keeps its own word. Renaming
+   * this one "Requested" would claim a requester that `requested_by` says does not exist.
+   */
+  test("monitored with nobody having asked is still Monitored", () => {
+    const html = render({ ...TITLE, inLibrary: true, hasFile: false });
+    expect(html).toContain("Monitored");
+    expect(html).not.toContain("data-card-request");
+  });
+
+  /** A dead end on a monitored title is reported, where it used to be shrugged off as owned. */
+  test("a monitored title whose request found nothing says so", () => {
+    const html = render({ ...TITLE, ...requestStatePatch("no_release"), inLibrary: true });
+    expect(html).toContain("No releases found");
+    expect(html).not.toContain("Monitored");
   });
 });

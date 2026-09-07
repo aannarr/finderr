@@ -15,6 +15,22 @@
  * `owned` is `inLibrary` and NOT `hasFile`: the arr can be monitoring something it has not
  * downloaded, and "Monitored" is a different answer from "Available" but neither of them
  * is "Request". That distinction is the reason this is a component rather than a ternary.
+ *
+ * > [!CAUTION] THE FILE OUTRANKS EVERYTHING; A BARE LIBRARY ROW OUTRANKS NOTHING
+ * > This read `if (t.inLibrary)` first until 2026-09-07, which is "owned beats requested" --
+ * > and it was wrong in a way nothing on screen admitted. The arr accepts a request within
+ * > seconds and `libraryRefreshSeconds` is 60, so about a minute after pressing Request the
+ * > card stopped saying "Searching", dropped the progress bar and the ETA, and sat on a grey
+ * > "Monitored" until the file landed. Every verdict this component exists to draw was
+ * > unreachable for exactly the window a reader is watching. Reported by aannarr from a live
+ * > shelf: `Monitored` and `Available` were also the same colour, so the two ends of the
+ * > ladder were indistinguishable as well.
+ * >
+ * > So the order is HAVE IT -> WORKING ON IT -> WATCHING FOR IT -> ASK. `hasFile` is a fact
+ * > about the disk and nothing outranks it; a verdict is a fact about an ask somebody made;
+ * > `inLibrary` alone means only that the arr is watching, which is the weakest of the three
+ * > and therefore last. A monitored title with a dead-end request now shows the dead end
+ * > instead of shrugging.
  */
 
 import type { Title } from "../lib/api";
@@ -53,12 +69,10 @@ export function RequestAction({
 }) {
   const shell = SHELL[tone];
 
-  if (t.inLibrary) {
-    return (
-      <span className={`${shell} border border-line text-muted`}>
-        {t.hasFile ? "Available" : "Monitored"}
-      </span>
-    );
+  // The file is here. Nothing a request could say refines that, so it is read first and the
+  // chip is the quiet one -- an answered question needs no colour.
+  if (t.hasFile) {
+    return <span className={`${shell} border border-line text-muted`}>Available</span>;
   }
 
   // A dead end and a request still being worked on are both "not yours yet", but only one of
@@ -69,14 +83,28 @@ export function RequestAction({
     return <VerdictChip verdict={t.requestVerdict} progress={t.requestProgress} shell={shell} />;
   }
 
+  /*
+    In the library, no file, and nobody asked through finderr -- the arr is watching on its
+    own. An unreleased title a list sync pulled in is the ordinary case, which is why this is
+    NOT relabelled "Requested": there is no requester, and `requested_by` makes that a claim
+    about a person.
+
+    It wears the SAME tone as a working verdict above, deliberately. Amber here means "keep
+    waiting", which is exactly what a monitored title asks of a reader, and the alternative --
+    matching "Available" -- is the collision this whole change exists to remove.
+  */
+  if (t.inLibrary) {
+    return <span className={`${shell} border border-warn/40 bg-warn/10 text-ink`}>Monitored</span>;
+  }
+
   return (
     <button
       type="button"
       onClick={() => onRequest(t)}
       /*
-        Drawn ONLY for a title that can actually be requested -- the two branches above
-        return a `<span>` instead -- which is what lets the keyboard ask "may this be
-        requested" by looking for this element rather than re-deriving the three-way rule.
+        Drawn ONLY for a title that can actually be requested -- every branch above
+        returns a `<span>` instead -- which is what lets the keyboard ask "may this be
+        requested" by looking for this element rather than re-deriving the four-way rule.
         See `CARD_REQUEST_SELECTOR` in `lib/card-dom.ts`.
       */
       data-card-request=""

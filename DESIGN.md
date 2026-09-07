@@ -16,7 +16,8 @@ Nine colours, in `@theme` in `web/src/styles.css`. Everything else is an alias.
 | `line` | every border |
 | `ink` / `muted` | text, and quieter text |
 | `accent` | the brand green — the primary action, the active state, the focus ring |
-| `danger` / `warn` | this destroys something / this is wrong |
+| `danger` | this destroys something, or it already failed |
+| `warn` | **this is not settled** — keep waiting, or go and look |
 
 **Two shadcn names mean the opposite of ours, and both would ship silently broken.**
 
@@ -28,8 +29,35 @@ Nine colours, in `@theme` in `web/src/styles.css`. Everything else is an alias.
 
 **`.border` emits width and style and no colour.** Always pair: `border-b border-line`.
 
+**`warn` is one meaning, not two.** A download in flight, a monitored title the arr has not got
+yet, and a passkey that dies with its device are all the same instruction: *do not read this as
+finished*. `TONE_SHELL.working` and `RequestAction`'s Monitored chip are the same amber for that
+reason. It was written here as "this is wrong" while already being used for a perfectly healthy
+download — a rule that disagreed with the code it was describing.
+
 **Colour is never the only signal.** A disabled account has a badge *and* a dimmed avatar; a
 destructive button has a colour *and* a confirmation.
+
+## A state ladder
+
+Where a thing has several states at once, ONE component reads them in a fixed order and every
+surface calls it. `RequestAction` is the worked example: *have it* → *working on it* → *watching
+for it* → *ask for it*, and the card, the title header and the request log all read that ladder
+rather than each deciding.
+
+**Order by how much the state settles the question, not by how easy it is to test.** That
+component asked `inLibrary` first because it was the cheapest branch — and the arr accepts a
+request within seconds, so for the whole minute a reader is actually watching, "Searching", the
+progress bar and the ETA were unreachable behind a grey chip.
+
+**The settled end is the QUIET end.** An answered question needs no colour: *Available* is a
+hairline and muted text. Everything unfinished wears `warn`, so the two ends of a ladder can
+never be told apart by the words alone — which is what "In library" and "Monitored" were, both in
+the same green, until 2026-09-07.
+
+**A rename is not a state.** Calling every monitored title "Requested" would have made the ladder
+read better and would have claimed a requester for titles nobody asked for. Say the true thing
+and let the colour carry the urgency.
 
 ## The three action zones
 
