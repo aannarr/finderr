@@ -23,7 +23,6 @@ import {
   WIPE_VARIANTS,
 } from "./lib/easter-eggs";
 import { validatePeopleSearch, validateSearch } from "./lib/search-params";
-import { AccountRoute } from "./routes/AccountRoute";
 import { AdminAddonsRoute } from "./routes/AdminAddonsRoute";
 import { AdminInvitesRoute } from "./routes/AdminInvitesRoute";
 import { AdminLayout } from "./routes/AdminLayout";
@@ -195,10 +194,37 @@ const logRoute = createRoute({
  * In THIS bundle rather than the sign-in one, because managing a passkey is something a
  * signed-in person does. The pre-auth bundle only ever creates the first one.
  */
+/*
+  THE SECOND LAZY ROUTE, and it earned the boundary by MEASUREMENT rather than by being big.
+
+  `/account` is the one view that carries a library nothing else needs:
+  `@atlaskit/pragmatic-drag-and-drop` + its hitbox, for reordering the shelves. Built on the
+  M1 Max, 2026-09-07, `bun run build`, the `main` chunk:
+
+    | | main, raw | main, gzip |
+    |---|---|---|
+    | before the drag existed | 387.60 kB | 118.96 kB |
+    | drag, eagerly imported | 412.00 kB | 126.07 kB |
+    | **drag, behind this boundary** | **352.55 kB** | **108.47 kB** |
+
+  Eager, the library cost +24.4 kB raw and +7.1 kB gzipped on the chunk EVERY reader downloads
+  before they see a poster, for a control on a settings page most of them open once. Under
+  this repo's fourth rule that is not a trade to take, and the shape that costs nothing was
+  one line.
+
+  IT CAME OUT AHEAD OF WHERE IT STARTED, which is the part worth knowing: `/account` had
+  always been in the main chunk and never needed to be, so moving it out paid for the drag
+  library and returned **-35.05 kB raw / -10.49 kB gzipped** against the tree before any of
+  this. The 42.63 kB `AccountRoute` chunk is fetched when somebody opens their settings.
+
+  It differs from `/sources` above only in why: that one is a document nobody passes through,
+  this one is a route whose WEIGHT is not shared. Both are the same test -- is this on the way
+  to a film? -- and neither is licence to split a route that is.
+*/
 const accountRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/account",
-  component: AccountRoute,
+  component: lazyRouteComponent(() => import("./routes/AccountRoute"), "AccountRoute"),
 });
 
 /**

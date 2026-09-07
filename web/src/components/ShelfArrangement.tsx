@@ -49,6 +49,8 @@
  * later; a keyboard-only reader could not be added to a drag-only implementation.
  */
 
+import { monitorForElements } from "@atlaskit/pragmatic-drag-and-drop/adapter/element-adapter";
+import { extractClosestEdge } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getShelfPreference,
@@ -61,13 +63,14 @@ import { type Debouncer, debouncer } from "../lib/debounce";
 import {
   arrangementChoices,
   moveShelf,
+  reorderShelves,
   type ShelfMove,
   sameArrangement,
   toggleShelfHidden,
 } from "../lib/shelf-arrangement";
-import { LINK_BUTTON } from "../lib/ui";
 import { useSaving } from "../lib/use-saving";
 import { ConfirmAction } from "./ConfirmAction";
+import { isShelfRowData, ShelfRow } from "./ShelfRow";
 
 /**
  * How still the list must be before an arrangement is worth a round trip.
@@ -192,14 +195,20 @@ export function ShelfArrangement() {
     run(async () => adopt(await getShelfPreference()));
   }, [run, adopt]);
 
-  /** One edit: draw it now, say what happened, and queue the write behind the debounce. */
-  const edit = (next: readonly ShelfChoiceView[], said: string) => {
+  /**
+   * One edit: draw it now, say what happened, and queue the write behind the debounce.
+   *
+   * `useCallback` with no dependencies, so the drag monitor below can list it honestly and
+   * re-subscribe only when the LIST changes. Every setter it closes over is stable and it
+   * reads nothing from the render, taking the next list as an argument instead.
+   */
+  const edit = useCallback((next: readonly ShelfChoiceView[], said: string) => {
     editSeq.current += 1;
     setDraft(next);
     setAnnouncement(said);
     setSaveState("saving");
     saves.current?.push(next);
-  };
+  }, []);
 
   const move = (shelf: ShelfChoiceView, direction: ShelfMove) => {
     const next = moveShelf(draft, shelf.id, direction);
@@ -215,6 +224,44 @@ export function ShelfArrangement() {
 
   const toggle = (shelf: ShelfChoiceView) =>
     edit(toggleShelfHidden(draft, shelf.id), shelf.hidden ? `${shelf.title} shown` : `${shelf.title} hidden`);
+
+  /*
+    ONE MONITOR FOR THE WHOLE LIST, rather than a handler per row.
+
+    A drop needs the WHOLE list to compute a destination, and a row only knows itself. Wiring
+    the reorder into each row's `onDrop` would have every row closing over a `draft` that goes
+    stale the moment any other row moves -- the classic shape of a list that reorders correctly
+    once and then scrambles. `monitorForElements` is a page-level listener, so this reads the
+    current `draft` from the same render as everything else on screen.
+
+    It re-subscribes whenever `draft` changes, which is correct rather than wasteful: adding
+    and removing one listener is what keeps the closure honest, and it happens on an edit
+    rather than on a pointer move.
+  */
+  useEffect(() => {
+    return monitorForElements({
+      canMonitor: ({ source }) => isShelfRowData(source.data),
+      onDrop: ({ source, location }) => {
+        const target = location.current.dropTargets[0];
+        if (!target || !isShelfRowData(source.data) || !isShelfRowData(target.data)) return;
+
+        const next = reorderShelves(
+          draft,
+          source.data.shelfId,
+          target.data.shelfId,
+          extractClosestEdge(target.data),
+        );
+        // Identity means the row landed where it started. Not an edit, so no write is queued
+        // -- the same rule an arrow at the end of the list follows.
+        if (next === draft) return;
+
+        // Announced in the same words an arrow press uses, because a screen reader following a
+        // pointer drag needs the same fact: which shelf, and where it now sits.
+        const landed = next.findIndex((shelf) => shelf.id === source.data.shelfId);
+        edit(next, `${next[landed].title} moved to ${landed + 1} of ${next.length}`);
+      },
+    });
+  }, [draft, edit]);
 
   /**
    * The reset goes through `adopt` like everything else, and it CANCELS the pending write.
@@ -253,34 +300,20 @@ export function ShelfArrangement() {
 
       {stored !== null && (
         <>
+          {/*
+            A LIST, and the drag lives on the rows rather than here. `monitorForElements` in the
+            effect below is what turns a drop into an edit; this element only draws.
+          */}
           <ul className="mt-3 flex flex-col gap-2">
             {draft.map((shelf, i) => (
-              <li
+              <ShelfRow
                 key={shelf.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-2"
-              >
-                <span className={`min-w-0 truncate text-sm${shelf.hidden ? " text-muted" : ""}`}>
-                  {shelf.title}
-                  {shelf.hidden && <span className="text-muted"> · hidden</span>}
-                </span>
-                <span className="flex shrink-0 items-center gap-3">
-                  <MoveButton shelf={shelf} direction="up" atEnd={i === 0} onMove={() => move(shelf, "up")} />
-                  <MoveButton
-                    shelf={shelf}
-                    direction="down"
-                    atEnd={i === draft.length - 1}
-                    onMove={() => move(shelf, "down")}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggle(shelf)}
-                    aria-label={`${shelf.hidden ? "Show" : "Hide"} ${shelf.title}`}
-                    className={LINK_BUTTON}
-                  >
-                    {shelf.hidden ? "Show" : "Hide"}
-                  </button>
-                </span>
-              </li>
+                shelf={shelf}
+                index={i}
+                total={draft.length}
+                onMove={(direction) => move(shelf, direction)}
+                onToggle={() => toggle(shelf)}
+              />
             ))}
           </ul>
 
@@ -319,38 +352,5 @@ export function ShelfArrangement() {
         {announcement}
       </p>
     </section>
-  );
-}
-
-/**
- * One arrow, which stays pressable at the end of the list.
- *
- * `aria-disabled` and NOT `disabled`, deliberately: a `disabled` button is dropped from the tab
- * order the instant it becomes disabled, so moving a shelf to the top would blow focus back to
- * `<body>` and strand a keyboard reader halfway through arranging their page. Announcing the
- * state and making the press a no-op keeps the caret where the reader left it.
- */
-function MoveButton({
-  shelf,
-  direction,
-  atEnd,
-  onMove,
-}: {
-  shelf: ShelfChoiceView;
-  direction: ShelfMove;
-  /** Is this shelf already as far this way as it goes? */
-  atEnd: boolean;
-  onMove: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onMove}
-      aria-disabled={atEnd}
-      aria-label={`Move ${shelf.title} ${direction}`}
-      className={`text-sm ${atEnd ? "text-line" : "text-muted hover:text-ink"}`}
-    >
-      <span aria-hidden="true">{direction === "up" ? "↑" : "↓"}</span>
-    </button>
   );
 }
