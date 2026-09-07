@@ -38,14 +38,49 @@ const KIND_LABEL: Record<string, string> = {
   tvMovie: "TV film",
 };
 
+/**
+ * One line of context a SURFACE adds to a card, that the title itself does not carry.
+ *
+ * The award mark below is a fact about the TITLE, so it rides on the row from `decorate()`
+ * and every grid in the product draws it without asking. This is the other kind: a fact
+ * about why this card is on THIS page. The filmography's "Ellen Ripley" is true of a
+ * (person, title) pair and means nothing in a search grid, so it cannot be a field on
+ * `Title` -- it arrives from the route that knows the pairing.
+ *
+ * **`full` is the whole truth and `text` is what fits.** The card is about 150px wide, so
+ * the line is clamped and `full` goes in the `title` attribute -- the same hover idiom the
+ * original-title line and the episode title already use here. Pass them equal when there is
+ * nothing more to reveal; the tooltip is then merely the untruncated text, which is still
+ * worth having at that width.
+ *
+ * Deliberately a STRING rather than a `ReactNode`: a slot that takes arbitrary markup is a
+ * slot that will eventually carry a link, a button and a second image, and this card's
+ * layout is already the thing three comments below are defending. A note that needs to be
+ * more than a line of text is a different component.
+ */
+export interface CardNote {
+  /** The one line drawn under the card, clamped to a single line. */
+  text: string;
+  /** Everything `text` was chosen from, revealed on hover. */
+  full: string;
+}
+
 export const TitleCard = memo(function TitleCard({
   title: t,
   onRequest,
   onOpen,
   requestShortcut,
+  note,
 }: {
   title: Title;
   onRequest: (t: Title) => void;
+  /**
+   * What this card means HERE -- a role on a filmography, and nothing anywhere else yet.
+   *
+   * Absent is the ordinary case, exactly like `onOpen` above: a surface with nothing extra
+   * to say passes nothing and draws nothing, so no grid pays a line it did not ask for.
+   */
+  note?: CardNote | null;
   /**
    * The enclosing grid answers `⌘⏎` for whichever card has focus, so this card's request
    * button may say so.
@@ -246,6 +281,26 @@ export const TitleCard = memo(function TitleCard({
             </>
           )}
         </div>
+
+        {/*
+          What the SURFACE has to say about this card, ABOVE the award.
+
+          Ordering is not taste. A note is present on every card of the page that supplies
+          one, and an award is on almost none -- so putting the note first gives it a fixed
+          position a reader's eye can settle on, and the rare award line appears below it
+          rather than shoving it down a row on the two cards that won something.
+
+          It reads as the ANSWER to the page: on a filmography the reader arrived asking
+          "what did they do", so the character or the job outranks a prize the film won.
+
+          `line-clamp-1` rather than `truncate`, matching the original-title line below: both
+          are prose that may be long, and both put the whole of it in `title` for the hover.
+        */}
+        {note && (
+          <p className="line-clamp-1 text-xs text-muted" title={note.full}>
+            {note.text}
+          </p>
+        )}
 
         {/*
           The award mark gets its OWN line, for the reason the date below does: `1994 ·
