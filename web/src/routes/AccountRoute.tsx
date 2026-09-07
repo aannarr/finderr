@@ -7,7 +7,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AgentKeyPanel } from "../components/AgentKeyPanel";
+import { AdminCard, Empty } from "../components/admin/AdminCard";
+import { UserAvatar, UserBadges } from "../components/admin/UserIdentity";
+import { ConfirmAction } from "../components/ConfirmAction";
 import { PushToggle } from "../components/PushToggle";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { clearPersistedCaches } from "../lib/api";
 import {
   type CredentialSummary,
@@ -28,7 +33,6 @@ import {
 import { device } from "../lib/device";
 import { pollPlexPin } from "../lib/plex-poll";
 import { formatStamp } from "../lib/timestamps";
-import { LINK_BUTTON } from "../lib/ui";
 
 export function AccountRoute() {
   const [user, setUser] = useState<PublicUser | null>(null);
@@ -186,70 +190,84 @@ export function AccountRoute() {
   if (!user) return <p className="text-sm text-muted">{error ?? "Loading…"}</p>;
 
   return (
-    <div className="flex flex-col gap-8">
-      <section>
-        <h1 className="text-xl font-semibold tracking-tight">{user.displayName}</h1>
-        <p className="mt-1 text-sm text-muted">
-          {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")}
-        </p>
+    <div className="flex flex-col gap-6">
+      {/*
+        THE SAME IDENTITY HEADER THE ADMIN PERSON PAGE DRAWS, from the same components.
+        aannarr, 2026-09-07: *"the users own settings page MUST have same uplift as admin
+        page"*. It is the same three facts about the same kind of subject -- a disc, a name,
+        what they are -- and two spellings of that would drift the moment either is restyled.
+      */}
+      <section className="flex items-start gap-4">
+        <UserAvatar user={user} size="lg" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <h1 className="truncate text-2xl font-semibold tracking-tight">{user.displayName}</h1>
+            <UserBadges user={user} />
+          </div>
+          <p className="mt-1 text-sm text-muted">
+            {user.role === "admin" ? "" : "Member · "}joined {formatStamp(user.createdAt, "never")}
+          </p>
+        </div>
       </section>
 
       {/*
         Plex was a fact in the subtitle line above and nothing more -- you could sign in
         with it and never see it again, and a broken link had no repair short of asking an
-        admin to reset the whole account. It is a section because it is now something you
+        admin to reset the whole account. It is a card because it is now something you
         can DO, and its two states carry different actions.
       */}
       {(plexEnabled || user.plexConnected) && (
-        <section>
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-sm font-medium">Plex</h2>
-            {!user.plexConnected ? (
-              <button
+        <AdminCard
+          title="Plex"
+          action={
+            !user.plexConnected ? (
+              <Button
                 type="button"
+                size="sm"
+                variant="outline"
                 onClick={connectPlex}
                 disabled={linkingPlex || !plexEnabled}
-                className={LINK_BUTTON}
               >
                 {linkingPlex ? "Waiting for Plex…" : "Connect"}
-              </button>
+              </Button>
             ) : (
-              <button type="button" onClick={disconnectPlex} className={LINK_BUTTON}>
+              <Button type="button" size="sm" variant="outline" onClick={disconnectPlex}>
                 Disconnect
-              </button>
-            )}
-          </div>
-          <p className="mt-2 text-sm text-muted">
+              </Button>
+            )
+          }
+        >
+          <p className="text-sm text-muted">
             {!user.plexConnected
               ? "Not connected. Connecting one lets you sign in with Plex as well as with a passkey."
               : `Connected as ${user.plexUsername ?? "your Plex account"}.`}
           </p>
-        </section>
+        </AdminCard>
       )}
 
-      <section>
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-sm font-medium">Passkeys</h2>
-          {passkeysAvailable() && (
-            <button type="button" onClick={addDevice} disabled={busy} className={LINK_BUTTON}>
+      <AdminCard
+        title="Passkeys"
+        description="One per device, so a lost phone is never a lockout."
+        action={
+          passkeysAvailable() && (
+            <Button type="button" size="sm" onClick={addDevice} disabled={busy}>
               Add this device
-            </button>
-          )}
-        </div>
+            </Button>
+          )
+        }
+      >
         {/*
           One passkey per device is the point: a lost phone must not be a lockout, so the
           empty state here is worth flagging rather than leaving blank.
         */}
         {credentials.length === 0 ? (
-          <p className="mt-2 text-sm text-muted">
-            No passkeys yet. Add one so you are not relying on a single way in.
-          </p>
+          <Empty>No passkeys yet. Add one so you are not relying on a single way in.</Empty>
         ) : (
-          <ul className="mt-2 flex flex-col gap-2">
+          <ul className="flex flex-col gap-2">
             {credentials.map((c) => (
               <li
                 key={c.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2/40 px-3 py-2.5"
               >
                 {editing?.id === c.id ? (
                   /*
@@ -263,8 +281,9 @@ export function AccountRoute() {
                       void saveLabel();
                     }}
                   >
-                    <input
+                    <Input
                       // The caret belongs in the field the click just opened.
+                      // biome-ignore lint/a11y/noAutofocus: it opens on an explicit Rename click
                       autoFocus
                       value={editing.label}
                       maxLength={60}
@@ -273,38 +292,48 @@ export function AccountRoute() {
                       // far more often "done" than "cancel", and the value is one word.
                       onBlur={() => void saveLabel()}
                       aria-label="Passkey name"
-                      className="min-w-0 flex-1 rounded border border-line bg-surface-2 px-2 py-1 text-sm outline-none focus:border-accent/60"
+                      className="min-w-0 flex-1"
                     />
-                    <button type="submit" className={LINK_BUTTON}>
+                    <Button type="submit" size="sm">
                       Save
-                    </button>
+                    </Button>
                   </form>
                 ) : (
                   <>
-                    <span className="min-w-0 truncate text-sm">
-                      {c.label ?? c.deviceType ?? "passkey"}
-                      <span className="text-muted">
-                        {" "}
-                        · added {formatStamp(c.createdAt, "never")} · last used{" "}
+                    <span className="min-w-0 text-sm">
+                      <span className="block truncate text-ink">{c.label ?? c.deviceType ?? "passkey"}</span>
+                      <span className="text-xs text-muted">
+                        added {formatStamp(c.createdAt, "never")} · last used{" "}
                         {formatStamp(c.lastUsedAt, "never")}
                       </span>
                     </span>
-                    <span className="flex shrink-0 gap-3">
+                    <span className="flex shrink-0 gap-2">
                       {/*
                         Renaming is what makes the Remove button next to it usable. Two rows
                         both reading "Mac · added 3 Aug" are two rows nobody can revoke with
                         any confidence, and the label is a guess from the user agent.
                       */}
-                      <button
+                      <Button
                         type="button"
+                        size="sm"
+                        variant="ghost"
                         onClick={() => setEditing({ id: c.id, label: c.label ?? "" })}
-                        className={LINK_BUTTON}
                       >
                         Rename
-                      </button>
-                      <button type="button" onClick={() => remove(c.id)} className={LINK_BUTTON}>
-                        Remove
-                      </button>
+                      </Button>
+                      {/*
+                        The one place on this page that asks first. Removing your own last
+                        passkey is refused by the SERVER, but the ones it allows are still
+                        gone for good and the device cannot be re-enrolled from anywhere but
+                        that device.
+                      */}
+                      <ConfirmAction
+                        label="Remove"
+                        question="Remove this passkey? That device can no longer sign in."
+                        confirmLabel="Yes, remove"
+                        busyLabel="Removing…"
+                        onConfirm={() => remove(c.id)}
+                      />
                     </span>
                   </>
                 )}
@@ -313,39 +342,50 @@ export function AccountRoute() {
           </ul>
         )}
         {!passkeysAvailable() && (
-          <p className="mt-2 text-xs text-muted">
+          <p className="mt-3 text-xs text-muted">
             Passkeys need a secure (https) connection, so one cannot be added from here.
           </p>
         )}
-      </section>
+      </AdminCard>
 
-      <section>
-        <h2 className="text-sm font-medium">Signed in on</h2>
-        <ul className="mt-2 flex flex-col gap-2">
-          {sessions.map((s) => (
-            <li
-              key={s.id}
-              className="flex items-center justify-between rounded-lg border border-line bg-surface px-3 py-2"
-            >
-              <span className="text-sm">
-                {device(s.userAgent)}
-                <span className="text-muted">
-                  {" "}
-                  · since {formatStamp(s.createdAt, "never")}
-                  {s.current ? " · this device" : ""}
+      <AdminCard title="Signed in on" description="End any session that is not yours.">
+        {sessions.length === 0 ? (
+          <Empty>No open sessions.</Empty>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {sessions.map((s) => (
+              <li
+                key={s.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2/40 px-3 py-2.5"
+              >
+                <span className="min-w-0 text-sm">
+                  <span className="block truncate text-ink">
+                    {device(s.userAgent)}
+                    {s.current && <span className="text-accent"> · this device</span>}
+                  </span>
+                  <span className="text-xs text-muted">since {formatStamp(s.createdAt, "never")}</span>
                 </span>
-              </span>
-              {!s.current && (
-                <button type="button" onClick={() => endSession(s.id)} className={LINK_BUTTON}>
-                  End
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
+                {!s.current && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => endSession(s.id)}>
+                    End
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </AdminCard>
 
-      {error && <p className="text-sm text-muted">{error}</p>}
+      {/*
+        A refusal, drawn as one. It was `text-muted` -- the same grey as every explanatory
+        line on the page -- so "that is your only way in" read as a note rather than as the
+        server having declined to do what you just asked.
+      */}
+      {error && (
+        <p className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
 
       {/*
         Below the devices it is about: a notification is delivered to ONE browser, so the
@@ -361,11 +401,16 @@ export function AccountRoute() {
       */}
       <AgentKeyPanel />
 
-      <section>
-        <button type="button" onClick={signOut} className={LINK_BUTTON}>
+      {/*
+        Last, and NOT in a card: it is not a setting, it is the way out. A card would give it
+        the same weight as the things above it, and the things above it are what this page is
+        for.
+      */}
+      <div>
+        <Button type="button" variant="outline" onClick={signOut}>
           Sign out
-        </button>
-      </section>
+        </Button>
+      </div>
     </div>
   );
 }

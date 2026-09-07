@@ -23,8 +23,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { type AgentKeySummary, createAgentKey, getAgentKey, revokeAgentKey } from "../lib/auth-api";
 import { formatStamp } from "../lib/timestamps";
-import { LINK_BUTTON } from "../lib/ui";
+import { AdminCard } from "./admin/AdminCard";
+import { ConfirmAction } from "./ConfirmAction";
 import { ShowOnceSecret } from "./ShowOnceSecret";
+import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 
 export function AgentKeyPanel() {
   const [key, setKey] = useState<AgentKeySummary | null>(null);
@@ -83,22 +86,31 @@ export function AgentKeyPanel() {
   if (!loaded) return null;
 
   return (
-    <section>
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-medium">Agent key</h2>
-        <span className="flex shrink-0 gap-3">
-          <button type="button" onClick={create} disabled={busy} className={LINK_BUTTON}>
+    <AdminCard
+      title="Agent key"
+      action={
+        <span className="flex shrink-0 gap-2">
+          <Button type="button" size="sm" onClick={create} disabled={busy}>
             {key ? "Replace" : "Create"}
-          </button>
+          </Button>
           {key && (
-            <button type="button" onClick={revoke} className={LINK_BUTTON}>
-              Revoke
-            </button>
+            /*
+              The one destructive verb here, and it asks. Revoking is instant and total --
+              whatever is holding that key stops working mid-run -- and it was one unguarded
+              click beside a Replace button of identical weight.
+            */
+            <ConfirmAction
+              label="Revoke"
+              question="Revoke this key? Anything using it stops working immediately."
+              confirmLabel="Yes, revoke"
+              busyLabel="Revoking…"
+              onConfirm={revoke}
+            />
           )}
         </span>
-      </div>
-
-      <p className="mt-2 text-sm text-muted">
+      }
+    >
+      <p className="text-sm text-muted">
         {key
           ? `A ${key.readOnly ? "read-only" : "read-write"} key, added ${formatStamp(key.createdAt, "never")} · last used ${formatStamp(key.lastUsedAt, "never")}.`
           : "Lets a script or an AI agent search, browse and request on your behalf, without a browser."}
@@ -108,16 +120,20 @@ export function AgentKeyPanel() {
         The choice belongs BEFORE the key exists, because it is fixed for that key's life:
         one key per person means read-only is a property of the key rather than something to
         toggle later. Replacing with the box in the other state is how it changes.
+
+        Control LEFT, words right -- the rule `SettingControls` states for these screens.
       */}
-      <label className="mt-2 flex items-center gap-2 text-sm text-muted">
-        <input
-          type="checkbox"
+      <div className="mt-3 flex items-start gap-2.5">
+        <Checkbox
+          id="agent-key-read-only"
           checked={readOnly}
-          onChange={(e) => setReadOnly(e.target.checked)}
-          className="accent-accent"
+          onCheckedChange={(v) => setReadOnly(v === true)}
+          className="mt-0.5 shrink-0"
         />
-        Read-only -- it can look, but it cannot request anything
-      </label>
+        <label htmlFor="agent-key-read-only" className="text-sm leading-5">
+          Read-only — it can look, but it cannot request anything
+        </label>
+      </div>
 
       {snippet && (
         <ShowOnceSecret
@@ -144,7 +160,12 @@ export function AgentKeyPanel() {
         agent&rsquo;s history. Replace it if you stop trusting where it went.
       </p>
 
-      {error && <p className="mt-2 text-sm text-muted">{error}</p>}
-    </section>
+      {/* A refusal, drawn as one -- it was the same grey as the two explanatory lines above. */}
+      {error && (
+        <p className="mt-3 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+    </AdminCard>
   );
 }
