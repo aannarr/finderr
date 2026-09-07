@@ -20,9 +20,11 @@ import {
   cachedDiscover,
   getDiscover,
   getTitleDetail,
+  patchTitleState,
   postRequest,
   postSeasonRequest,
   prefetchTitle,
+  requestStatePatch,
   resetCaches,
   type SearchResponse,
   search,
@@ -113,6 +115,50 @@ describe("getDiscover", () => {
     stubFetch();
     await getDiscover();
     expect(calls).toEqual(["/api/discover"]);
+  });
+});
+
+/**
+ * The other half of "the button changes": the patch has to REACH the shelf row.
+ *
+ * `RequestAction.test.tsx` pins what the control draws for a given title. This pins that
+ * the title on the front page is the one that gets patched -- the two together are the
+ * whole loop, and the live bug was in neither of them separately. `discoverCache` holds
+ * its own copies of the rows, so it has to be walked by name in `cachedRowSets`; a shelf
+ * added there and not here is a card that never updates.
+ */
+describe("requestStatePatch through the caches", () => {
+  const SHELF_TITLE = { tconst: "tt1375666", requestStatus: null, requestVerdict: null };
+
+  beforeEach(() => {
+    stubFetch({ shelves: [{ key: "trending", title: "Trending", titles: [{ ...SHELF_TITLE }] }] });
+  });
+
+  test("a request reaches the row on the front page, verdict and all", async () => {
+    await getDiscover();
+    patchTitleState("tt1375666", requestStatePatch("queued"));
+
+    const row = cachedDiscover()?.shelves[0].titles[0];
+    // Both, and the verdict is the one that matters: `requestStatus` was already being
+    // written when this rendered "Request" forever.
+    expect(row?.requestStatus).toBe("queued");
+    expect(row?.requestVerdict).toBe("queued");
+  });
+
+  test("clearing it clears the verdict too, so a failed POST puts the button back", async () => {
+    await getDiscover();
+    patchTitleState("tt1375666", requestStatePatch("queued"));
+    patchTitleState("tt1375666", requestStatePatch(null));
+
+    const row = cachedDiscover()?.shelves[0].titles[0];
+    expect(row?.requestStatus).toBeNull();
+    expect(row?.requestVerdict).toBeNull();
+  });
+
+  test("a row nobody patched is untouched", async () => {
+    await getDiscover();
+    patchTitleState("tt0000000", requestStatePatch("queued"));
+    expect(cachedDiscover()?.shelves[0].titles[0].requestVerdict).toBeNull();
   });
 });
 

@@ -19,6 +19,7 @@ import {
   patchTitleState,
   postRequest,
   type RequestOverrides,
+  requestStatePatch,
   retryRequest,
   type Title,
 } from "../lib/api";
@@ -297,14 +298,15 @@ export function RootLayout() {
       const id = toasts.push(`Requesting ${t.title}`);
       // Optimistic: mark it immediately so the card updates without a round trip.
       // patchTitleState writes through the shared caches, so every view showing this
-      // title picks the change up -- no per-route copy to update.
-      patchTitleState(t.tconst, { requestStatus: "queued" });
+      // title picks the change up -- no per-route copy to update. It goes through
+      // `requestStatePatch` because a bare `requestStatus` is a field nothing renders.
+      patchTitleState(t.tconst, requestStatePatch("queued"));
 
       try {
         await postRequest(t.tconst, seasons, overrides);
         toasts.resolve(id, "success", summariseSent(t, seasons));
       } catch (e) {
-        patchTitleState(t.tconst, { requestStatus: null });
+        patchTitleState(t.tconst, requestStatePatch(null));
         // The retry carries the SAME selection AND the same overrides. Retrying into "all
         // seasons" would quietly download more than the reader asked for, and retrying into
         // the default quality profile would quietly download something other than what an
