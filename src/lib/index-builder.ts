@@ -171,11 +171,18 @@ import {
   TITLE_CROSSWALK,
 } from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
+import { capabilitiesOfFile, type IndexCapability } from "./index-capabilities";
 import { INDEX_STAGES, stampStages, unreleasedCastCutoffYear } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
 import { buildPersonSearchIndex } from "./people";
 import { POPULAR_TITLE_INDEX } from "./search-stopwords";
-import { loadSpellfix, prepareSqlite, SPELLFIX_MAP_TABLE, SPELLFIX_TABLE } from "./spellfix";
+import {
+  loadSpellfix,
+  prepareSqlite,
+  SPELLFIX_BUILD_HINT,
+  SPELLFIX_MAP_TABLE,
+  SPELLFIX_TABLE,
+} from "./spellfix";
 import { buildVocabTrigrams } from "./vocab-trigrams";
 
 export interface BuildStats {
@@ -2028,6 +2035,51 @@ export function gateVolume(candidate: string, live: string, minRatio = 0.95): Ga
     name: "volume",
     detail: `${a.toLocaleString()} rows vs live ${b.toLocaleString()} (${(ratio * 100).toFixed(1)}%, floor ${(minRatio * 100).toFixed(0)}%)`,
   };
+}
+
+/**
+ * A candidate may not be LESS CAPABLE than the index it is about to replace.
+ *
+ * `gateVolume` above asks whether the rows survived. This asks whether the FEATURES did, and
+ * it is the gate that was missing on 2026-09-07 when a build with no spellfix vocabulary
+ * promoted over one that had it and served for a day with the whole fuzzy tier off. The row
+ * count was identical to six figures, every stage stamp said the file was current, and the
+ * canary excluded the five typo cases rather than failing them -- so all three existing
+ * signals were green. `./index-capabilities.ts` owns the list and the full account.
+ *
+ * IT REFUSES THE PROMOTE rather than warning, on the same principle the volume gate refuses:
+ * the live index keeps serving, which is strictly the better of the two files. The remedy is
+ * named in `detail` because the overwhelmingly likely cause is a build box that cannot load
+ * spellfix1 -- `bun run spellfix:build` in the directory the build runs from.
+ *
+ * A live index that cannot be READ is not a failure here. `capabilitiesOfFile` answers `null`
+ * for a missing, mid-promote or corrupt file, and refusing a good candidate because the file
+ * it would replace is broken would be exactly backwards.
+ */
+export function gateCapabilities(candidate: string, live: string): GateResult {
+  const name = "capabilities";
+  const before = capabilitiesOfFile(live);
+  if (before === null) return { ok: true, name, detail: "no readable live index, nothing to compare" };
+  const after = capabilitiesOfFile(candidate);
+  if (after === null)
+    return { ok: false, name, detail: `the candidate at ${candidate} could not be opened` };
+
+  const lost = [...before].filter((c) => !after.has(c));
+  const gained = [...after].filter((c: IndexCapability) => !before.has(c));
+  // Named on BOTH verdicts. A candidate can lose two capabilities and gain one, and then the
+  // two totals differ by a number that matches neither -- which is exactly what the real
+  // 2026-09-07 pair does, and a reader given only the totals would think the message was wrong.
+  const grew = gained.length > 0 ? ` It gained ${gained.join(", ")}.` : "";
+  if (lost.length > 0) {
+    return {
+      ok: false,
+      name,
+      detail:
+        `the candidate LOST ${lost.join(", ")}.${grew} A stage skipped rather than failed; on macOS ` +
+        `that is almost always spellfix1, so ${SPELLFIX_BUILD_HINT} and rebuild.`,
+    };
+  }
+  return { ok: true, name, detail: `${after.size} capabilities, none lost.${grew}` };
 }
 
 /**
