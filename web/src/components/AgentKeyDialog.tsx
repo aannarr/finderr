@@ -34,6 +34,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 
 /**
@@ -65,17 +67,15 @@ const SCOPES: { value: Scope; label: string; detail: string }[] = [
 
 export default function AgentKeyDialog({
   open,
-  replacing,
   onOpenChange,
   onCreated,
 }: {
   open: boolean;
-  /** True when a key already exists -- creating kills it, and the dialog has to say so. */
-  replacing: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Told once the key exists, so the section behind can redraw its row. */
+  /** Told once the key exists, so the section behind can redraw its list. */
   onCreated: () => void | Promise<void>;
 }) {
+  const [name, setName] = useState("");
   const [scope, setScope] = useState<Scope>("write");
   const [snippet, setSnippet] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,7 +85,7 @@ export default function AgentKeyDialog({
     setBusy(true);
     setError(null);
     try {
-      const made = await createAgentKey({ readOnly: scope === "read" });
+      const made = await createAgentKey({ name: name.trim() || null, readOnly: scope === "read" });
       setSnippet(made.snippet);
       await onCreated();
     } catch (e) {
@@ -100,6 +100,7 @@ export default function AgentKeyDialog({
     onOpenChange(false);
     setSnippet(null);
     setScope("write");
+    setName("");
     setError(null);
   };
 
@@ -146,13 +147,34 @@ export default function AgentKeyDialog({
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>{replacing ? "Replace your agent key" : "Create an agent key"}</DialogTitle>
+              <DialogTitle>Create an agent key</DialogTitle>
               <DialogDescription>
                 A key lets a script or an AI agent search, browse and request on your behalf, without a
-                browser.
-                {replacing && " Your current key stops working the moment this one is made."}
+                browser. Any keys you already have keep working.
               </DialogDescription>
             </DialogHeader>
+
+            {/*
+              THE NAME IS FIRST AND IT IS OPTIONAL, which is the right way round for a field
+              whose value is only felt later. It is what turns a list of identical rows into
+              rows somebody can decide about -- so the placeholder asks the question the name
+              answers rather than saying "Name".
+
+              Not required: a person making their first key does not yet know they will make
+              a second, and blocking them to collect a label they cannot see the point of is
+              how a guided flow becomes an obstacle. The row falls back to the key's kind.
+            */}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="agent-key-name">Name (optional)</Label>
+              <Input
+                id="agent-key-name"
+                value={name}
+                maxLength={60}
+                disabled={busy}
+                placeholder="What is it for? e.g. home-assistant"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
 
             <fieldset className="flex flex-col gap-3">
               <legend className="text-sm font-medium">What may it do?</legend>
@@ -196,7 +218,7 @@ export default function AgentKeyDialog({
                 Cancel
               </Button>
               <Button type="button" onClick={create} disabled={busy}>
-                {busy ? "Creating…" : replacing ? "Replace key" : "Create key"}
+                {busy ? "Creating…" : "Create key"}
               </Button>
             </DialogFooter>
           </>

@@ -716,7 +716,7 @@ describe("one person, whole", () => {
         resetsAt: string;
         applies: boolean;
       };
-      agentKey: { readOnly: boolean } | null;
+      agentKeys: { name: string | null; readOnly: boolean }[];
     };
 
   test("identity, every credential, every session and their requests, in one call", async () => {
@@ -861,13 +861,17 @@ describe("one person, whole", () => {
     HASH is in the row, and this is what stops it being spread into an admin's JSON by a
     later hand reaching for `agentKeyFor` directly.
   */
-  test("an agent key is reported as existing, never as a credential", async () => {
+  test("agent keys are reported as existing, never as credentials", async () => {
     const u = member();
-    expect((await detailOf(u.id)).agentKey).toBeNull();
+    expect((await detailOf(u.id)).agentKeys).toEqual([]);
 
-    const { token } = h.auth.putAgentKey({ userId: u.id, readOnly: true });
+    const { token } = h.auth.putAgentKey({ userId: u.id, name: "watcher", readOnly: true });
     const body = await detailOf(u.id);
-    expect(body.agentKey?.readOnly).toBe(true);
+    // A LIST since 2026-09-07: one key per user is gone, so an operator reading this page
+    // sees how many things are acting for somebody rather than whether anything is.
+    expect(body.agentKeys).toHaveLength(1);
+    expect(body.agentKeys[0].readOnly).toBe(true);
+    expect(body.agentKeys[0].name).toBe("watcher");
     expect(JSON.stringify(body)).not.toContain(token);
     expect(JSON.stringify(body)).not.toContain(hashToken(token));
   });

@@ -492,20 +492,40 @@ export function AdminUserView({ detail, acting }: { detail: AdminUserDetail; act
               </div>
 
               {/*
-                The agent key is the one credential on this page that is not a browser, and an
-                operator wants to know it exists before wondering why requests arrive at 04:00.
-                Present or absent only -- the token itself is stored as a sha256 and does not
-                exist to be shown, to an admin least of all.
+                Agent keys are the credentials on this page that are not browsers, and an
+                operator wants to know they exist before wondering why requests arrive at
+                04:00. Present or absent only -- the token itself is stored as a sha256 and
+                does not exist to be shown, to an admin least of all.
+
+                NAMED, and read-only rather than editable: an operator may need to know that
+                something called "research-bot" is asking, and renaming somebody else's key is
+                not an administrative act. Revoking one is `Reset access`, which takes them
+                all along with every passkey and session.
               */}
               <div>
                 <h3 className="mb-2 text-[0.7rem] font-medium uppercase tracking-wider text-muted">
-                  Agent key
+                  Agent keys
                 </h3>
-                <p className="text-sm text-muted">
-                  {detail.agentKey
-                    ? `A ${detail.agentKey.readOnly ? "read-only" : "read and write"} key exists, made ${formatStamp(detail.agentKey.createdAt, "never")}, last used ${formatStamp(detail.agentKey.lastUsedAt, "never")}.`
-                    : "No agent key. Nothing is acting on this account's behalf."}
-                </p>
+                {detail.agentKeys.length === 0 ? (
+                  <p className="text-sm text-muted">
+                    No agent keys. Nothing is acting on this account&rsquo;s behalf.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1.5">
+                    {detail.agentKeys.map((k) => (
+                      <li key={k.id} className="text-sm">
+                        <span className="text-ink">
+                          {k.name ?? (k.readOnly ? "Read-only key" : "Read and write key")}
+                        </span>
+                        <span className="block text-xs text-muted">
+                          {k.name ? `${k.readOnly ? "read-only" : "read and write"} · ` : ""}
+                          made {formatStamp(k.createdAt, "never")} · last used{" "}
+                          {formatStamp(k.lastUsedAt, "never")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           </Panel>

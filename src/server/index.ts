@@ -892,7 +892,7 @@ function quotaRefusal(asker: Principal | null): Response | null {
  */
 const agentManifest = agentManifestRoute({
   principal: (req) => auth.principal(req),
-  keyFor: (userId) => authStore.agentKeyFor(userId),
+  keyFor: (keyId) => authStore.agentKeyById(keyId),
   limiter: (bucket) => auth.agentLimiter(bucket),
   origin: (req) => publicOrigin(req.url, cfg.auth.origins),
   // Their own allowance where they have one -- a manifest that quoted the site's would

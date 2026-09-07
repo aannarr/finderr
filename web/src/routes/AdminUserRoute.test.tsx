@@ -65,7 +65,7 @@ const detail = (over: Partial<AdminUserDetail> = {}): AdminUserDetail => ({
     resetsAt: "2026-09-06T00:00:00.000Z",
     applies: false,
   },
-  agentKey: null,
+  agentKeys: [],
   ...over,
 });
 
@@ -207,16 +207,30 @@ describe("activity", () => {
   });
 });
 
-describe("the agent key", () => {
-  test("absent says nothing is acting for them", async () => {
-    expect(await render()).toContain("No agent key");
+describe("agent keys", () => {
+  test("none says nothing is acting for them", async () => {
+    expect(await render()).toContain("No agent keys");
   });
 
-  test("present says which kind, and never carries a credential", async () => {
+  test("each one says what it is called and what it may do, and never carries a credential", async () => {
     const html = await render({
-      agentKey: { createdAt: "2026-09-01T00:00:00.000Z", lastUsedAt: null, readOnly: true },
+      agentKeys: [
+        {
+          id: "k1",
+          name: "research-bot",
+          createdAt: "2026-09-01T00:00:00.000Z",
+          lastUsedAt: null,
+          readOnly: true,
+        },
+        { id: "k2", name: null, createdAt: "2026-09-02T00:00:00.000Z", lastUsedAt: null, readOnly: false },
+      ],
     });
-    expect(html).toContain("read-only key exists");
+    // A NAMED key leads with its name and states the kind underneath; an unnamed one falls
+    // back to the kind, so no row is ever identified only by an id.
+    expect(html).toContain("research-bot");
+    expect(html).toContain("read-only");
+    expect(html).toContain("Read and write key");
+    expect(html).not.toContain("k1");
   });
 });
 
