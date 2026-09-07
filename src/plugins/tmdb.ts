@@ -73,8 +73,11 @@ export const meta = {
       key: "watchProviderRegions",
       type: "string",
       label: "Watch provider countries",
+      // "This addon's alone" is said out loud because the two fields ABOVE it on the same
+      // form are not, and an operator reading three settings under one heading has no other
+      // way to tell which of them reaches the rest of finderr.
       description:
-        "Comma-separated ISO 3166-1 alpha-2 codes. Empty keeps every country, which is ~25 KB a title.",
+        "This addon's alone: which countries its Where to watch pane covers. Comma-separated ISO 3166-1 alpha-2 codes. Empty keeps every country, which is ~25 KB a title.",
       env: "FINDERR_TMDB_WATCH_PROVIDER_REGIONS",
     },
   ],

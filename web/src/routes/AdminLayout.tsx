@@ -2,9 +2,10 @@
  * `/admin` -- the chrome every administration screen shares, and nothing else.
  *
  * Administration used to be ONE page carrying invitations, people with four inline buttons
- * each, and a link to the log. It is four now because they are four questions -- how is the
- * server doing, who is here, who has been asked, and what has one person been up to -- and a
- * single scroll answered none of them without answering all of them.
+ * each, and a link to the log. It is five now because they are five questions -- how is the
+ * server doing, who is here, who has been asked, what is installed and waiting on a setting,
+ * and what has one person been up to -- and a single scroll answered none of them without
+ * answering all of them.
  *
  * > [!IMPORTANT] This screen is a CONVENIENCE, not the security boundary
  * > Every endpoint behind it refuses a non-admin on the server with a 404, so a user who
@@ -25,6 +26,7 @@ const TABS = [
   { to: "/admin", label: "Overview" },
   { to: "/admin/users", label: "People" },
   { to: "/admin/invites", label: "Invitations" },
+  { to: "/admin/addons", label: "Addons" },
   { to: "/log", label: "Request log" },
 ] as const;
 

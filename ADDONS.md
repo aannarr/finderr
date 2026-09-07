@@ -278,7 +278,18 @@ when somebody types into a form -- which is also when a change starts being used
 `init` reads its configuration once. **So a config change needs a restart to take effect**,
 the same as an edit to your source.
 
-### Driving it without a form
+### Where an operator sets it
+
+**Administration → Addons** (`/admin/addons`) lists every loaded addon and draws a form from
+the declaration above -- your labels, your descriptions, your defaults, and a status line
+saying which of the two sources won. You write no UI to get one, and nothing in `web/` is
+edited to add your addon to it.
+
+A `secret` is the one field that is not drawn: the box is empty however long a value has been
+stored, because the report carries none to draw. What the page says instead is whether it is
+set and where it came from.
+
+### Driving it without the form
 
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" localhost:7979/api/admin/addons | jq
@@ -643,11 +654,10 @@ other way; this one could be, and was.
 The one people hit first:
 
 **Addon-authored UI is PART built.** `panes` shipped, so an addon can draw its own block on
-the title page (see the section above), and `config` shipped, so an addon's settings are
-declared and set through the admin API. What is missing is `routes` -- an addon still has no
-page of its own -- and the admin FORM that draws a `meta.config` declaration, which is a card
-in flight rather than a decision; `curl` against `/api/admin/addons` is the whole surface
-until it lands.
+the title page (see the section above), and `config` shipped -- declared, stored, and drawn
+as a real form on **Administration → Addons**. What is missing is `routes`: an addon still has
+no page of its own. Everything it puts on screen goes through a pane or through the settings
+form core generates from its declaration.
 
 ---
 

@@ -40,6 +40,14 @@ export const TMDB_DEFAULT_IMAGE_BASE = "https://image.tmdb.org/t/p";
  *
  * It keeps `FINDERR_TMDB_API_KEY` as its env seed, so every deployment configured by
  * environment variable behaves exactly as it did before any of this existed.
+ *
+ * > [!IMPORTANT] The DESCRIPTION says "the whole instance" on purpose, and it is not padding
+ * > These two fields are drawn on `/admin/addons` under the `tmdb` addon's heading, because
+ * > that is the namespace they are stored in -- so a description reading "this configures the
+ * > tmdb addon" would put the drift this file exists to remove straight back, relocated into
+ * > prose. Whoever changes this key changes the upcoming and trending shelves too, and the
+ * > form is where they find that out. `watchProviderRegions` in `src/plugins/tmdb.ts` is the
+ * > contrast: it genuinely is the addon's alone, and it reads that way.
  */
 export const TMDB_API_KEY_FIELD = {
   key: "apiKey",
@@ -47,7 +55,7 @@ export const TMDB_API_KEY_FIELD = {
   required: true,
   label: "API key",
   description:
-    "A TMDB v3 API key. Without it the tmdb addon answers nothing and the upcoming and trending shelves stay empty.",
+    "A TMDB v3 API key, used by this whole instance rather than by the tmdb addon alone -- the upcoming and trending shelves read the same one. Without it those shelves stay empty and the addon answers nothing.",
   env: "FINDERR_TMDB_API_KEY",
 } as const satisfies AddonConfigField;
 
@@ -56,7 +64,7 @@ export const TMDB_IMAGE_BASE_FIELD = {
   type: "string",
   label: "Image base URL",
   description:
-    "Where a TMDB image path becomes a URL, for the poster proxy and for cast headshots. Change it only for a TMDB mirror.",
+    "Where a TMDB image path becomes a URL. Instance-wide as well: the poster proxy resolves every cached image through it, addon or no addon. Change it only for a TMDB mirror.",
   env: "FINDERR_TMDB_IMAGE_BASE",
   default: TMDB_DEFAULT_IMAGE_BASE,
 } as const satisfies AddonConfigField;

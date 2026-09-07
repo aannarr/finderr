@@ -684,7 +684,7 @@ rebuild.
 | `FINDERR_SONARR_*` | | The same five keys; compose falls back to `http://sonarr:8989` and `/media/tv` |
 | `FINDERR_EPISODE_REFRESH_SECONDS` | `21600` | How stale one series' episode list may get before it is walked again. Sonarr answers per series, so this is a load dial, not a freshness one |
 | `FINDERR_EPISODE_REFRESH_BATCH` | `25` | Series walked per library refresh, neediest first. `0` turns the episode mirror off, and with it the per-episode marks and requests |
-| `FINDERR_TMDB_API_KEY` | | Optional. **The SEED for one setting, not the setting.** It is the key the `tmdb` addon uses (streaming availability, and a series' keywords, cast, trailer, "more like this" and official site) **and** the one the upcoming and trending sync uses -- one value, one place it is stored. Save a key through `/api/admin/addons/tmdb` and it wins over this variable for both from then on, so rotating it rotates the whole product |
+| `FINDERR_TMDB_API_KEY` | | Optional. **The SEED for one setting, not the setting.** It is the key the `tmdb` addon uses (streaming availability, and a series' keywords, cast, trailer, "more like this" and official site) **and** the one the upcoming and trending sync uses -- one value, one place it is stored. Save a key on **Administration → Addons** and it wins over this variable for both from then on, so rotating it rotates the whole product |
 | `FINDERR_TMDB_IMAGE_BASE` | `https://image.tmdb.org/t/p` | Where a TMDB image path becomes a URL, for the poster proxy and for cast headshots. The same shape as the key above: a seed for a setting the admin page can take over. Change it only for a TMDB mirror |
 | `FINDERR_PLEX_URL` | | Optional, e.g. `http://plex:32400`. With a token, owned titles get a Play button |
 | `FINDERR_PLEX_TOKEN` | | Sent as `X-Plex-Token`, never in a URL. finderr only reads, but the token itself is full account access |
@@ -1227,10 +1227,11 @@ Every line here is a real limitation. It is not a roadmap.
   up on `/requests` or `/log` and neither spends anybody's daily quota.
 - A request that finds nothing goes `no_release` on its own after a day and nine
   reconcile passes, rather than showing "Processing" forever. You can retry it.
-- Configuring an addon needs a restart, and there is no form for it yet. An addon declares
-  what it needs and a secret never comes back out, but the values are set through
-  `/api/admin/addons` with an admin key rather than on a page, and a change takes effect at
-  the next restart because an addon reads its settings once at load.
+- Configuring an addon needs a restart. **Administration → Addons** lists everything
+  installed and generates a form from what each one declared, so a key no longer needs a
+  shell on the host -- but an addon reads its settings once at load, so a change reaches it
+  when finderr next starts. A secret still never comes back out: the page reports whether one
+  is set and where the value came from, never the value.
 - The rate limiter is in memory, per process, and resets on restart. See
   [Putting it on the internet](#putting-it-on-the-internet).
 - A series gets its trailer, its "more like this" and its official-site link **only with a
