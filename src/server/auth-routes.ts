@@ -40,7 +40,7 @@ import type { AuthStore } from "../lib/auth-store";
 import type { Config } from "../lib/config";
 import { cookieIsSecure, plexOpenSignupActive } from "../lib/config";
 import { FirstRun } from "../lib/first-run";
-import { boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
+import { boundedHeader, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import {
   createPin,
   type FetchLike,
@@ -418,7 +418,11 @@ export class AuthService {
     const token = this.deps.auth.createSession({
       userId,
       expiresAt: isoIn(cfg.auth.sessionDays * 86_400_000),
-      userAgent: req.headers.get("user-agent"),
+      // A header is user input, and this one is DRAWN on the account page as "which device
+      // is this" -- the list a reader uses to decide what to revoke. Unbounded it is a wall
+      // of text there; unsanitized, a bidi override lets one device impersonate another in
+      // exactly that list. `boundedHeader` never fails the sign-in over it.
+      userAgent: boundedHeader(req.headers.get("user-agent"), LIMITS.userAgent),
     });
     this.deps.auth.touchUser(userId);
     this.authLimiter.clear(this.ip(req));

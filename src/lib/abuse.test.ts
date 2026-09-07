@@ -22,6 +22,7 @@
 import { describe, expect, test } from "bun:test";
 import { FORBIDDEN_PATTERNS, HOSTILE, HOSTILE_CASES, NON_STRINGS, RLO } from "./abuse-corpus";
 import {
+  boundedHeader,
   boundedList,
   boundedQuery,
   boundedText,
@@ -76,6 +77,12 @@ const TEXT_ENTRY_POINTS: {
   { name: "clampInt", run: (v) => clampInt(v, { min: 0, max: 100 }), accepts: "unknown" },
   { name: "boundedList", run: (v) => boundedList(v, (x) => boundedText(x, 10)), accepts: "unknown" },
   { name: "urlWithinBounds", run: (v) => urlWithinBounds(v as string), accepts: "string" },
+  {
+    name: "boundedHeader",
+    run: (v) => boundedHeader(v as string, LIMITS.userAgent),
+    accepts: "unknown",
+    textOut: (r) => r as string | null,
+  },
   /*
     The `normalize` family is `accepts: "string"`, and that is a claim about the CALL GRAPH
     rather than a shrug.

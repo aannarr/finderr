@@ -86,6 +86,27 @@ export const LIMITS = {
   message: 8000,
   /** An opaque id we echo back or key a map on -- a conversation id, a token, a slug. */
   id: 64,
+  /**
+   * A browser-supplied `User-Agent`, as STORED and later RENDERED.
+   *
+   * It is a header rather than a body field, which is exactly why it gets forgotten: nobody
+   * thinks of a header as user input, and this one is written into a session row and a push
+   * subscription and then drawn on the account page as "which device is this". A header is
+   * as attacker-controlled as any JSON field and this one is displayed, so it takes the same
+   * sanitizing as a display name.
+   *
+   * 300 rather than `name`'s 100: real user agents are genuinely long (Chrome on Android is
+   * around 130) and this string is never something a person chose.
+   */
+  userAgent: 300,
+  /**
+   * A Web Push `p256dh` or `auth` key, base64url.
+   *
+   * They are fixed-size in practice -- 87 and 22 characters -- but they are somebody else's
+   * format rather than ours, so the bound is generous and its job is only to stop an
+   * unbounded string reaching the database.
+   */
+  pushKey: 200,
   /** How many items a client may put in one array field. */
   listItems: 200,
   /**
@@ -260,6 +281,26 @@ export function boundedList<T>(
     out.push(g.value);
   }
   return { ok: true, value: out };
+}
+
+/**
+ * A header, bounded and sanitized, or `null`.
+ *
+ * > [!IMPORTANT] A HEADER IS USER INPUT, and it is the kind that gets forgotten
+ * > Nothing about `req.headers.get("user-agent")` looks like a form field, so it does not
+ * > read as untrusted -- and finderr STORES that one on a session row and a push
+ * > subscription and then DRAWS it on the account page as "which device is this". An
+ * > attacker controls it completely. Unbounded and unsanitized it is a wall of text in
+ * > somebody's device list, or a right-to-left override making one device impersonate
+ * > another in the one UI a reader uses to revoke access.
+ *
+ * `null` rather than a refusal, because a header is not a field the caller can be told to
+ * fix and no request should fail over one: the device row simply records nothing.
+ */
+export function boundedHeader(v: string | null | undefined, max: number): string | null {
+  if (typeof v !== "string") return null;
+  const g = boundedText(v, max);
+  return g.ok ? g.value : null;
 }
 
 /**

@@ -116,8 +116,12 @@ export const HOSTILE_CASES: readonly [string, string][] = Object.entries(HOSTILE
  * whole file exists: a character class of invisible characters is a line nobody can review.
  */
 export const FORBIDDEN_PATTERNS: readonly { name: string; re: RegExp }[] = [
+  // biome-ignore lint/complexity/useRegexLiterals: a literal would contain the invisible characters themselves
   { name: "C0 controls", re: new RegExp("[\\u0000-\\u001F]", "u") },
+  // biome-ignore lint/complexity/useRegexLiterals: as above
   { name: "C1 controls", re: new RegExp("[\\u007F-\\u009F]", "u") },
+  // biome-ignore lint/complexity/useRegexLiterals: as above
   { name: "bidi overrides", re: new RegExp("[\\u202A-\\u202E\\u2066-\\u2069]", "u") },
+  // biome-ignore lint/complexity/useRegexLiterals: as above
   { name: "zero-width", re: new RegExp("[\\u200B-\\u200F\\u2060-\\u2064\\uFEFF]", "u") },
 ];

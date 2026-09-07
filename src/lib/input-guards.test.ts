@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACUTE, HOSTILE, RLO, SHY } from "./abuse-corpus";
 import {
+  boundedHeader,
   boundedList,
   boundedQuery,
   boundedText,
@@ -167,6 +168,28 @@ describe("boundedList", () => {
 
   test("refuses the WHOLE list when one item is bad, never a partial", () => {
     expect(boundedList(["fine", "x".repeat(50), "fine"], item).ok).toBe(false);
+  });
+});
+
+describe("boundedHeader", () => {
+  test("keeps a real user agent whole", () => {
+    const ua =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+    expect(boundedHeader(ua, LIMITS.userAgent)).toBe(ua);
+  });
+
+  test("drops a header past the cap rather than failing the request", () => {
+    // A header is not a field the caller can be told to fix, so no sign-in fails over one.
+    expect(boundedHeader("x".repeat(LIMITS.userAgent + 1), LIMITS.userAgent)).toBeNull();
+  });
+
+  test("sanitizes, so a spoofing character cannot reach the device list", () => {
+    expect(boundedHeader(HOSTILE.rlo, LIMITS.userAgent)).not.toContain(RLO);
+  });
+
+  test("a missing header is null, not an empty device name", () => {
+    expect(boundedHeader(null, LIMITS.userAgent)).toBeNull();
+    expect(boundedHeader(undefined, LIMITS.userAgent)).toBeNull();
   });
 });
 

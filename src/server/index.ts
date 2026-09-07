@@ -38,7 +38,7 @@ import {
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
-import { boundedQuery, refusalMessage } from "../lib/input-guards";
+import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import type { RequestRemovalView } from "../lib/media-removal";
@@ -3342,10 +3342,19 @@ const appRoutes = {
         return bad("body must be JSON");
       }
 
-      const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
-      const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
-      const authSecret = typeof body.keys?.auth === "string" ? body.keys.auth : "";
-      if (!endpoint || !p256dh || !authSecret) return bad("endpoint and both keys are required");
+      /*
+        All three are BOUNDED before anything is parsed or stored. They are somebody else's
+        format -- a push service's URL and two base64url keys -- so the caps are generous
+        and their only job is that no unbounded string reaches the database; the `https`
+        check below is the one that decides whether the endpoint is acceptable.
+      */
+      const endpointG = boundedText(body.endpoint, LIMITS.url);
+      const p256dhG = boundedText(body.keys?.p256dh, LIMITS.pushKey);
+      const authG = boundedText(body.keys?.auth, LIMITS.pushKey);
+      if (!endpointG.ok || !p256dhG.ok || !authG.ok) return bad("endpoint and both keys are required");
+      const endpoint = endpointG.value;
+      const p256dh = p256dhG.value;
+      const authSecret = authG.value;
       /*
         THE ENDPOINT IS A URL THIS SERVER WILL LATER POST TO, so it is validated before it
         is stored rather than at send time. A row that only fails when a film arrives is a
@@ -3367,8 +3376,10 @@ const appRoutes = {
         p256dh,
         auth: authSecret,
         // Which device this is, for the account page. It is the same string the session
-        // row already records, so this discloses nothing new about the reader.
-        userAgent: req.headers.get("user-agent"),
+        // row already records, so this discloses nothing new about the reader -- and it is
+        // guarded for the same reason that row's is: a header is user input, and this one
+        // is DRAWN, in the list a reader uses to decide what to revoke.
+        userAgent: boundedHeader(req.headers.get("user-agent"), LIMITS.userAgent),
       });
       /*
         Subscribing IS an answer, so it closes the offer here rather than relying on the
