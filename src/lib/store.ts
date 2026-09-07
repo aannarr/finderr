@@ -178,6 +178,33 @@ export function createsNewRequest(held: Pick<MediaRequest, "status"> | null): bo
 }
 
 /**
+ * The dead ends a fresh ask REVIVES IN PLACE. Both of them are "we looked and came back
+ * empty-handed", which is a thing that stops being true on its own as indexers gain releases.
+ */
+const REVIVED_BY_A_FRESH_ASK: ReadonlySet<RequestStatus> = new Set(["failed", "no_release"]);
+
+/**
+ * Does a fresh ask for this title put the row ALREADY THERE back on the worker's queue?
+ *
+ * The other half of `createsNewRequest`, and deliberately its opposite for these two statuses:
+ * a `removed` title was taken out by an admin and asking again is a NEW ask that writes a new
+ * row and spends a quota slot, while a `failed` or `no_release` title is the SAME ask that
+ * never delivered anything. Charging somebody a second time for an indexer having had nothing
+ * is a quota that punishes bad luck, so a re-ask here is free and keeps its `created_at` --
+ * which is also exactly what `POST /api/requests/:tconst/retry` has always done, and two
+ * prices for one act decided by which button the reader found is the drift this pair exists to
+ * prevent. (Werk-master ruling, 2026-09-07. If a failed re-ask should ever cost a quota row,
+ * this function and `retry` move TOGETHER or the disagreement comes straight back.)
+ *
+ * Without it the ask is a SILENT NO-OP: `createRequest`'s conflict arm never rewrites `status`,
+ * `RequestWorker.process` opens with `if (req.status !== "queued") return`, and the reader gets
+ * a `202` echoing the old dead-end status back at them.
+ */
+export function revivesHeldRequest(held: Pick<MediaRequest, "status"> | null): boolean {
+  return held !== null && REVIVED_BY_A_FRESH_ASK.has(held.status);
+}
+
+/**
  * One removal, as it happened. Mirrors the `media_removal` table exactly.
  *
  * EVERY FIELD IS A FACT AT THE MOMENT OF REMOVAL and none of them is re-derived later: the
@@ -1445,6 +1472,9 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
       again" control on `/requests` reaching `POST /api/requests/:tconst/retry`. `removed` is
       deliberately the one that does not: undoing an admin's decision should cost a real,
       quota-counted request rather than one click. See `RequestStatus.removed`.
+
+      The other two dead ends are REVIVED rather than dropped, below the upsert -- see
+      `revivesHeldRequest` for why the treatment differs.
     */
     const held = this.getRequest(r.tconst);
     if (held && createsNewRequest(held)) this.deleteRequest(r.tconst);
@@ -1472,7 +1502,32 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
         now,
       ],
     );
+    // AFTER the upsert, because the conflict arm deliberately leaves `status` alone -- see
+    // the comment on it. This is the one status a second ask is allowed to move, and moving
+    // it is what stops the ask being a silent no-op.
+    if (revivesHeldRequest(held)) this.requeueRequest(r.tconst);
     return this.getRequest(r.tconst) as MediaRequest;
+  }
+
+  /**
+   * Put a request that already exists back on the worker's queue for another attempt.
+   *
+   * ONE OWNER of what a second attempt resets, because there are two doors into it -- a fresh
+   * ask on a `failed`/`no_release` row (`createRequest` above) and the "Try again" button
+   * (`POST /api/requests/:tconst/retry`) -- and they must not be able to disagree about it.
+   *
+   * `search_attempts` goes back to zero, and that is the half a caller would forget. The
+   * counter is how many times we have looked for a release for the attempt IN PROGRESS, and
+   * `RequestWorker.reconcile` gives up once it passes nine on a row older than a day. Leaving
+   * a revived row on the old count means the very next reconcile pass -- about thirty seconds
+   * later -- takes it straight back to `no_release`, so the re-queue would be true for half a
+   * minute and then undone, which is the same silent nothing from the reader's side.
+   *
+   * `created_at` and `requested_by` are untouched: this is the SAME ask trying again, so it
+   * keeps its place in `/log` and the name of whoever made it.
+   */
+  requeueRequest(tconst: string): void {
+    this.updateRequest(tconst, { status: "queued", error: null, search_attempts: 0 });
   }
 
   getRequest(tconst: string): MediaRequest | null {

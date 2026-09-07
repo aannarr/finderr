@@ -2977,6 +2977,11 @@ const appRoutes = {
         re-inserted by `createRequest`, so asking again for a title an admin took back out
         DOES write a new row and DOES cost a request. Two spellings of that rule would have
         made an admin's removal a permanent free request on that title for everybody.
+
+        A `failed` or `no_release` row is the other way round -- FREE, because `createRequest`
+        revives it in place rather than writing a row, and because "Try again" on `/requests`
+        has always been free for exactly the same title. The reasoning is on
+        `revivesHeldRequest`, which is where a decision to start charging for it would go.
       */
       if (createsNewRequest(store.getRequest(row.tconst))) {
         const refused = quotaRefusal(asker);
@@ -3433,7 +3438,9 @@ const appRoutes = {
     POST: (req: Bun.BunRequest<"/api/requests/:tconst/retry">) => {
       const r = store.getRequest(req.params.tconst);
       if (!r) return bad("unknown request", 404);
-      store.updateRequest(r.tconst, { status: "queued", error: null });
+      // The same store method a fresh ask on a dead-end row goes through, so this button and
+      // the Request button cannot drift about what a second attempt resets.
+      store.requeueRequest(r.tconst);
       worker.enqueue(r.tconst);
       return json({ ok: true });
     },
