@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ACUTE, HOSTILE, RLO, SHY } from "./abuse-corpus";
 import {
   boundedList,
   boundedQuery,
@@ -11,46 +12,13 @@ import {
   urlWithinBounds,
 } from "./input-guards";
 
-/**
- * Every interesting character in this file is INVISIBLE, so none of them is written as
- * itself.
- *
- * A fixture containing a literal U+202E is a line no reviewer can read and no diff can
- * show -- and this suite exists precisely to prove those characters are handled, so a
- * fixture that silently lost one would go on passing while testing nothing. Naming each
- * code point is the documentation.
- */
-const cp = (...codes: number[]) => String.fromCodePoint(...codes);
-const NUL = cp(0x00);
-const ESC = cp(0x1b);
-/** RIGHT-TO-LEFT OVERRIDE. The classic display spoof. */
-const RLO = cp(0x202e);
-/** ZERO WIDTH SPACE. */
-const ZWSP = cp(0x200b);
-/** COMBINING ACUTE ACCENT. */
-const ACUTE = cp(0x0301);
-/** SOFT HYPHEN -- ordinary in text pasted out of a word processor, and deliberately kept. */
-const SHY = cp(0xad);
+/*
+  The fixtures come from `abuse-corpus.ts` and are NOT redeclared here.
 
-/** The hostile strings, in one place, so every abuse suite shares one vocabulary. */
-export const HOSTILE = {
-  /** The 22 KB, 3,200-token query that measured 26,631 ms against the real index. */
-  longQuery: Array.from({ length: 3200 }, () => '"a* OR').join(" "),
-  /** A NUL: stored by SQLite, truncated at by anything that speaks C. */
-  nul: `good${NUL}name`,
-  /** An ANSI escape: executed by whatever terminal reads the log line it lands in. */
-  ansiEscape: `name${ESC}[2Jcleared`,
-  /** Renders to an admin reading the user list as "adminexe.jpg". */
-  rlo: `admin${RLO}gpj.exe`,
-  /** Renders as "admin" and is a different database row from "admin". */
-  zeroWidth: `a${ZWSP}d${ZWSP}m${ZWSP}i${ZWSP}n`,
-  /** A name with no visible content at all. */
-  invisibleOnly: ZWSP.repeat(3),
-  /** Zalgo: 60 combining acutes on one base, which overflows its line box. */
-  zalgo: `e${ACUTE.repeat(60)}`,
-  /** Three code points, six UTF-16 units -- the case a naive length check charges double for. */
-  astral: "\u{1f3ac}\u{1f3ac}\u{1f3ac}",
-} as const;
+  They lived in this file first, which made them importable only by other test files and
+  meant the corpus was available to whoever already knew to look. They are a source module
+  now, and this suite is one of its readers rather than its owner -- see that file's header.
+*/
 
 describe("sanitizeText", () => {
   test("strips a NUL, which SQLite stores and C truncates at", () => {
@@ -72,7 +40,7 @@ describe("sanitizeText", () => {
 
   test("composes to NFC, so one name has exactly one stored form", () => {
     // "e" + combining acute and the precomposed character must not be two different users.
-    expect(sanitizeText(`e${ACUTE}`)).toBe(sanitizeText(cp(0xe9)));
+    expect(sanitizeText(`e${ACUTE}`)).toBe(sanitizeText(String.fromCodePoint(0xe9)));
   });
 
   test("keeps ordinary text in any script untouched", () => {
