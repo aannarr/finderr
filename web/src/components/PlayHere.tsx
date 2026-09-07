@@ -99,12 +99,35 @@ export function PlayHere({
         return;
       }
       const hls = new Hls({
-        // The server writes an EVENT playlist that grows as ffmpeg encodes, so the player
-        // must tolerate asking for a segment that is not written yet -- those come back 404
-        // by design (hls.js retries a 404 and gives up on a 500).
+        // The playlist names the whole film before any of it has been produced, so a
+        // fragment request is what CAUSES its segment to be made. Two settings follow from
+        // that and neither is a default worth keeping.
+        //
+        // The retries cover a segment the server declined to start right now -- too many
+        // productions already in flight, which is the back-pressure a viewer dragging the
+        // scrubber runs into. Those come back 404 by design (hls.js retries a 404 and gives
+        // up on a 500).
         manifestLoadingMaxRetry: 8,
         levelLoadingMaxRetry: 8,
         fragLoadingMaxRetry: 8,
+        // The timeout has to cover PRODUCING the fragment, not just transferring it. A
+        // copy-mode segment is 0.08 s on the NAS; a 4K software re-encode of one is seconds,
+        // and the default 20 s would abandon it just as it finished.
+        fragLoadingTimeOut: 60_000,
+        /*
+          BRIDGE THE AUDIO SEAM AT EACH BOUNDARY. Measured in Chromium 2026-09-08 and it is a
+          known limit of producing every segment from its own ffmpeg run.
+
+          The muxer cuts a segment on the video keyframe, and the audio packets that arrive
+          after it go to the segment AFTER -- which a different run produces, starting past
+          them. So roughly 60 ms of sound is missing at every boundary, and the buffered
+          intersection of the two tracks shows a ~0.16 s hole. The default 0.1 s tolerance
+          makes hls.js stall there before jumping; 0.25 s makes it jump straight away.
+
+          This is a mitigation, not the fix -- the fix is to stop losing the audio, and it has
+          its own card. Video is frame-exact either way.
+        */
+        maxBufferHole: 0.25,
       });
       hlsRef.current = hls;
       hls.loadSource(session.playlist);

@@ -14,62 +14,53 @@
  *
  * > [!CAUTION] SEGMENT NAMES ARE MATCHED AGAINST A CLOSED PATTERN, never sanitised
  * > A session directory is a real directory and the file name arrives from the wire, so this
- * > is the classic traversal surface. `SEGMENT_NAME` admits exactly the three shapes ffmpeg
- * > is configured to produce and nothing else -- no `..`, no slash, no dot-file, no
- * > extension we did not write. A pattern that ENUMERATES what is allowed cannot be walked
- * > out of; one that strips what is forbidden is a guessing game with an attacker.
+ * > is the classic traversal surface. `serveFromSession` admits exactly three shapes and
+ * > nothing else: the generated playlist, and the two `PRODUCED_NAME` patterns, whose
+ * > captures are turned into a NUMBER before anything touches the filesystem. So no caller's
+ * > text ever becomes a path component -- no `..`, no slash, no dot-file, no extension we
+ * > did not write. A pattern that ENUMERATES what is allowed cannot be walked out of; one
+ * > that strips what is forbidden is a guessing game with an attacker.
  * >
  * > This is the second such boundary in the playback path and they guard different things:
  * > `media-path.ts` decides which INPUT files may be opened, this decides which OUTPUT files
  * > may be handed out. Neither substitutes for the other.
  */
 
-import { join } from "node:path";
 import type { EncoderChoice } from "../lib/encoder";
+import { SEGMENT_TARGET_SEC, segmentCount, vodPlaylist } from "../lib/hls-timeline";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
+import { cutTimeline } from "../lib/keyframes";
 import { NOT_AN_EPISODE } from "../lib/media-file";
 import { type MediaVolume, resolveMediaFile } from "../lib/media-path";
 import { probeMedia } from "../lib/media-probe";
 import { type ClientCapabilities, CONSERVATIVE_CLIENT, planPlayback } from "../lib/playback-plan";
 import type { Store } from "../lib/store";
-import { SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
+import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
+
+/** The playlist name, which is generated rather than written by ffmpeg. */
+const PLAYLIST_NAME = "index.m3u8";
 
 /**
- * The only file names a session directory may hand out.
+ * The only file names a session directory may hand out, besides the generated playlist.
  *
- * Matches exactly what `ffmpegArgs` configures ffmpeg to write: the playlist, the fMP4
- * init segment, and numbered media segments. Closed by construction.
+ * One per thing a session produces, and each capture is how the request names WHICH segment
+ * it wants. Closed by construction: a name matching neither is refused rather than sanitised.
  */
-const SEGMENT_NAME = /^(?:index\.m3u8|init\.mp4|seg\d{5}\.m4s)$/;
-
-/** How far into a title a caller may seek. 24 hours is past any real runtime. */
-const MAX_SEEK_SEC = 24 * 60 * 60;
+const PRODUCED_NAME: { pattern: RegExp; of: keyof Pick<TranscodeSessions, "segmentPath" | "initPath"> }[] = [
+  { pattern: /^seg(\d{5})\.m4s$/, of: "segmentPath" },
+  { pattern: /^init(\d{5})\.mp4$/, of: "initPath" },
+];
 
 /**
- * How long the start request will wait for ffmpeg to write its first playlist.
+ * How long the start request will wait for the first segment before answering anyway.
  *
- * Measured on an M1 Max over SMB 2026-09-08: a remux plus an audio track produces the
- * manifest in about a second, and a software 4K re-encode takes several. Five seconds
- * covers the cheap case comfortably and gives up on the expensive one rather than holding
- * a connection -- which is correct, because giving up here costs nothing.
+ * Measured on the NAS over the array 2026-09-08: producing one copy-mode segment takes
+ * 0.07-0.08 s, and a software 4K re-encode of one takes seconds. Five seconds covers the
+ * cheap case many times over and gives up on the expensive one rather than holding a
+ * connection -- which costs nothing, because the client's own request for that segment will
+ * join the production already running.
  */
-const MANIFEST_WAIT_MS = 5_000;
-const MANIFEST_POLL_MS = 100;
-
-async function waitForManifest(dir: string): Promise<boolean> {
-  const path = join(dir, "index.m3u8");
-  const deadline = Date.now() + MANIFEST_WAIT_MS;
-  while (Date.now() < deadline) {
-    // A FRESH `Bun.file` each pass. Hoisting it out of the loop looks like the tidier
-    // version and silently never returns true: the handle caches its answer, so a file that
-    // did not exist on the first check never exists on any later one, and the wait always
-    // spends its full budget. Measured 2026-09-08 -- a remux that writes its manifest in
-    // about a second took the whole five.
-    if (await Bun.file(path).exists()) return true;
-    await Bun.sleep(MANIFEST_POLL_MS);
-  }
-  return false;
-}
+const FIRST_SEGMENT_WAIT_MS = 5_000;
 
 export interface PlaybackDeps {
   store: Store;
@@ -81,8 +72,6 @@ export interface PlaybackDeps {
   actorId: (req: Request) => string | null;
   /** Which encoder a re-encode should use. Probed once at boot. */
   encoder?: EncoderChoice;
-  /** Seconds to burst-read before throttling. Probed once at boot; 0 means plain `-re`. */
-  readrateBurstSec?: number;
   log?: (m: string) => void;
 }
 
@@ -119,29 +108,73 @@ function capabilitiesFrom(v: unknown): ClientCapabilities {
   };
 }
 
+/**
+ * The path of the produced file this name asks for, producing it if nobody has yet.
+ *
+ * Null for a name that is not one of ours, which is the traversal guard: the index comes
+ * out of a closed pattern and is then a NUMBER, so nothing a caller writes ever reaches the
+ * filesystem as text.
+ */
+function producedFile(sessions: TranscodeSessions, id: string, name: string): Promise<string | null> {
+  for (const { pattern, of } of PRODUCED_NAME) {
+    const index = pattern.exec(name)?.[1];
+    if (index !== undefined) return sessions[of](id, Number(index));
+  }
+  return Promise.resolve(null);
+}
+
+/**
+ * Get the first segment on its way before answering the start request.
+ *
+ * Not politeness: a player asks for the initialisation segment and the first media segment
+ * within milliseconds of reading the playlist, and both of those would otherwise arrive
+ * while ffmpeg was still starting. Bounded, and a timeout is NOT an error -- the production
+ * carries on and the client's own request joins it.
+ */
+async function warmFirstSegment(sessions: TranscodeSessions, session: Session): Promise<void> {
+  await Promise.race([sessions.segmentPath(session.id, 0), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
+}
+
 export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
   const log = deps.log ?? (() => {});
 
-  /** Serve one file out of a session directory, having touched the session. */
+  /**
+   * Serve one file of a session: the playlist, the init segment, or one media segment.
+   *
+   * The playlist is GENERATED here rather than read off disk, and it is the whole point of
+   * the redesign -- it names every segment of the film before any of them exists, so the
+   * player offers a full scrub bar. The media, by contrast, is produced on demand: asking
+   * for a segment is what causes it to be made.
+   */
   const serveFromSession = async (id: string, name: string): Promise<Response> => {
-    if (!SEGMENT_NAME.test(name)) return bad("no such file", 404);
-    const session = deps.sessions.touch(id);
-    if (!session) return bad("no such session", 404);
+    if (name === PLAYLIST_NAME) {
+      const session = deps.sessions.touch(id);
+      if (!session) return bad("no such session", 404);
+      return new Response(vodPlaylist(session.timeline), {
+        headers: {
+          "content-type": "application/vnd.apple.mpegurl",
+          // The timeline is fixed for the life of the session, but the session is not: a
+          // reaped one must not be served from a cache after its segments are gone.
+          "cache-control": "no-store",
+        },
+      });
+    }
 
-    const file = Bun.file(join(session.dir, name));
-    if (!(await file.exists())) {
-      // ffmpeg has not written it YET, which is the ordinary state for the first second of
-      // a session and for the segment just past the live edge. 404 rather than 5xx: hls.js
-      // retries a 404 and gives up on a 500.
+    const path = await producedFile(deps.sessions, id, name);
+    if (!path) {
+      // Either the session is gone, the name is not one we produce, or ffmpeg could not make
+      // this segment right now. 404 rather than 5xx: hls.js retries a 404 and gives up on a
+      // 500, and every one of those states is one a retry can get out of.
       return bad("not ready", 404);
     }
     // Zero-copy: the bytes never enter the JS heap. This is the one route that runs
-    // thousands of times per playback and it must stay a stat plus an fd handoff.
-    return new Response(file, {
+    // hundreds of times per playback and it must stay a stat plus an fd handoff.
+    return new Response(Bun.file(path), {
       headers: {
-        "content-type": name.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/iso.segment",
-        // A live playlist must never be cached; a written segment never changes.
-        "cache-control": name.endsWith(".m3u8") ? "no-store" : "public, max-age=31536000, immutable",
+        "content-type": "video/iso.segment",
+        // A produced segment is byte-identical whenever it is produced, and the URL names
+        // both the session and the exact range, so it can be cached hard.
+        "cache-control": "public, max-age=31536000, immutable",
       },
     });
   };
@@ -171,7 +204,6 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
         const b = (body ?? {}) as {
           season?: unknown;
           episode?: unknown;
-          seekSec?: unknown;
           wantSubtitles?: unknown;
         };
 
@@ -206,43 +238,49 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           return bad("this file could not be read", 409);
         }
 
-        const seekSec = clampInt(b.seekSec, { min: 0, max: MAX_SEEK_SEC }) ?? 0;
         const plan = planPlayback(probe, capabilitiesFrom(body), { wantSubtitles: b.wantSubtitles === true });
+
+        /*
+          THE TIMELINE IS THE FEATURE, and it cannot be built without a runtime.
+
+          Every segment boundary is stated up front so the player offers a full scrub bar,
+          and the last boundary is the end of the film. A container that will not say how
+          long it is leaves nothing to state, so this refuses rather than serving a timeline
+          that is a guess -- a playlist which is wrong about the runtime sends every seek to
+          the wrong place. ffprobe reports a duration for every real file in this library.
+        */
+        if (probe.durationSec === null) {
+          log(`playback: refused ${tconst.value} (container states no duration)`);
+          return bad("this file does not say how long it is", 409);
+        }
+
+        const { timeline, source } = await cutTimeline(resolved.path, probe.durationSec, SEGMENT_TARGET_SEC, {
+          copiesVideo: plan.video.action === "copy",
+        });
+        plan.reasons.push(
+          source === "keyframes"
+            ? `segments follow the source keyframes, ${segmentCount(timeline)} of them`
+            : `segments are a ${SEGMENT_TARGET_SEC}s grid, ${segmentCount(timeline)} of them`,
+        );
 
         try {
           const session = deps.sessions.start({
             input: resolved.path,
             plan,
-            seekSec,
+            timeline,
             encoder: deps.encoder,
-            readrateBurstSec: deps.readrateBurstSec,
             owner: deps.actorId(req) ?? undefined,
           });
-
-          /*
-            WAIT FOR THE MANIFEST BEFORE ANSWERING, and this is not politeness.
-
-            ffmpeg needs a second or two to write `index.m3u8`, so returning the moment the
-            process is spawned hands the client a playlist URL that 404s. hls.js does retry
-            a 404 -- but its retry budget is spent in well under the time a 4K software
-            re-encode needs to produce a first segment, after which it gives up silently and
-            the player sits at `readyState 0` with an empty console. Measured in a real
-            browser 2026-09-08; it is exactly the failure that looks like nothing happening.
-
-            Bounded, and a timeout is NOT an error: the session is running and the manifest
-            will appear, so the client gets its URL either way and hls.js's retries cover the
-            remainder. This wait removes the common case, it does not promise anything.
-          */
-          await waitForManifest(session.dir);
+          await warmFirstSegment(deps.sessions, session);
 
           return json({
             sessionId: session.id,
             // RELATIVE, so a client may retarget it at any endpoint that serves this server
             // -- the property multi-homed playback needs and the reason the playlist itself
             // carries relative segment names too.
-            playlist: `/api/play/s/${session.id}/index.m3u8`,
+            playlist: `/api/play/s/${session.id}/${PLAYLIST_NAME}`,
             durationSec: probe.durationSec,
-            seekSec,
+            segments: segmentCount(timeline),
             plan,
           });
         } catch (err) {
@@ -289,6 +327,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           sessions: deps.sessions.list().map((s) => ({
             id: s.id,
             expensive: s.expensive,
+            segments: segmentCount(s.timeline),
             startedAt: new Date(s.startedAt).toISOString(),
             lastAccessAt: new Date(s.lastAccessAt).toISOString(),
             owner: s.owner,

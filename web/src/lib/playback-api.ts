@@ -100,7 +100,8 @@ export interface PlaybackSession {
   sessionId: string;
   playlist: string;
   durationSec: number | null;
-  seekSec: number;
+  /** How many segments the playlist names. The whole film, not what has been produced. */
+  segments: number;
   plan: PlaybackPlan;
 }
 
@@ -113,10 +114,17 @@ export class PlaybackRefused extends Error {
   }
 }
 
-/** Ask the server to start a session for this title, at this position, for this browser. */
+/**
+ * Ask the server to start a session for this title, for this browser.
+ *
+ * There is no start POSITION any more and that absence is the feature: the session covers
+ * the whole film, the playlist names every segment of it, and seeking is something the
+ * player does by asking for a different segment. A start offset used to be part of the
+ * session's identity because a session WAS a position.
+ */
 export async function startPlayback(
   tconst: string,
-  opts: { season?: number; episode?: number; seekSec?: number; wantSubtitles?: boolean } = {},
+  opts: { season?: number; episode?: number; wantSubtitles?: boolean } = {},
 ): Promise<PlaybackSession> {
   const res = await fetch(`/api/play/${encodeURIComponent(tconst)}/session`, {
     method: "POST",

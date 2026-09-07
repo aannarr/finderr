@@ -48,7 +48,7 @@ function servingSession() {
         sessionId: "s1",
         playlist: "/api/play/s/s1/index.m3u8",
         durationSec: 100,
-        seekSec: 0,
+        segments: 17,
         plan: {
           video: { action: "copy", sourceIndex: 0, codec: "h264" },
           audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
