@@ -32,7 +32,7 @@ import { loadConfig } from "./config";
 import { buildTitleSearchIndex, SCHEMA } from "./index-builder";
 import { despace, normalizeStripped } from "./normalize";
 import { anticipationWeight } from "./query-parser";
-import { SearchEngine } from "./search";
+import { type Candidate, exactMatchBonus, hasTypoTwin, SearchEngine } from "./search";
 
 const dir = mkdtempSync(join(tmpdir(), "finderr-exact-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -170,6 +170,136 @@ describe("an exact title match", () => {
     }
   });
 });
+
+/**
+ * THE INVARIANT ABOVE, ENFORCED RATHER THAN ASSERTED, AND THE ONE THING THAT MAY LIFT IT.
+ *
+ * The block at the top of this file pins the invariant at ZERO votes, which is where it was
+ * patched. It was false everywhere else: `14 * exactPlausibility(v)` only reaches
+ * `FULL_COVERAGE_MATCH` at about 10,650 votes, so an exact match with 25 votes was paid 4.6
+ * where a title merely containing every query word was paid 12 -- and the branch stepped DOWN
+ * from 12 to 3.1 between 0 votes and 1, which made the second-most-obscure title on the page
+ * the best-treated one.
+ *
+ * `exactMatchBonus` is a floor now, and the plausibility discount reaches it only when
+ * `hasTypoTwin` says the query could be a misspelling of something famous on the same page.
+ */
+describe("the exact-match bonus", () => {
+  test("never falls as votes arrive -- in either mode", () => {
+    // The card's headline defect, as the property rather than as a sample of it. Two titles
+    // sharing a name are ordered by how many people have seen them; a bonus that dips as
+    // votes arrive orders them by where a logarithm crosses a constant instead.
+    for (const typoTwin of [false, true]) {
+      let previous = Number.NEGATIVE_INFINITY;
+      for (const votes of [0, 1, 2, 10, 25, 100, 439, 1_000, 10_000, 10_653, 50_000, 300_000, 3_000_000]) {
+        const bonus = exactMatchBonus(votes, typoTwin);
+        expect(bonus).toBeGreaterThanOrEqual(previous);
+        previous = bonus;
+      }
+    }
+  });
+
+  test("is never below what containing every query word pays, unless the query could be a typo", () => {
+    // The invariant itself, across the range where it used to be false -- everything under
+    // the ~10,650 votes at which the discount finally reaches `FULL_COVERAGE_MATCH` on its
+    // own. The `typoTwin` case is the deliberate exception and the only one: `interstelar`
+    // rides on it.
+    for (const votes of [0, 1, 25, 439, 5_000, 10_000]) {
+      expect(exactMatchBonus(votes, false)).toBe(12);
+      expect(exactMatchBonus(votes, true)).toBeLessThan(12);
+    }
+    // And above it the floor stops binding, so a famous exact match still outranks a
+    // container -- the two points `EXACT_MATCH` is above `FULL_COVERAGE_MATCH`.
+    expect(exactMatchBonus(300_000, false)).toBe(14);
+    expect(exactMatchBonus(300_000, true)).toBe(14);
+  });
+});
+
+describe("a query could be a misspelling", () => {
+  /** A twin that qualifies on every clause, so each test can spoil exactly one of them. */
+  type Rival = Pick<Candidate, "exact" | "coverage" | "textSim" | "votes">;
+  const candidate = (over: Partial<Rival>): Rival => ({
+    exact: false,
+    textSim: 0.9,
+    coverage: 0,
+    votes: 1_000_000,
+    ...over,
+  });
+
+  test("when a famous title is nearly the same string and does not contain the query", () => {
+    // "Interstellar" against `interstelar`: one letter out, 2.6M votes, and the query's one
+    // word is not in it, so no reader reaches it by typing correctly.
+    expect(hasTypoTwin([candidate({})])).toBe(true);
+  });
+
+  test("but not when the rival CONTAINS every query word", () => {
+    // "Interstellar Ella" scores 0.870 against `Interstellar` -- higher than the real typo
+    // pair -- and is not a misspelling of anything: it is an answer to the query as typed.
+    expect(hasTypoTwin([candidate({ coverage: 1 })])).toBe(false);
+  });
+
+  test("and not against another exact match, where there is no typo hypothesis at all", () => {
+    // The card's own sentence: between two titles sharing a name, both were named letter for
+    // letter, so votes alone should order them.
+    expect(hasTypoTwin([candidate({ exact: true })])).toBe(false);
+  });
+
+  test("and not against an obscure near-twin, however close it is", () => {
+    // The clause neither gate suite covers. `heart of the beast` has a 339-vote "The Heart of
+    // the Bear" one edit away; reading the query as a misspelling of THAT re-buries the film
+    // the reader named exactly.
+    expect(hasTypoTwin([candidate({ votes: 339 })])).toBe(false);
+  });
+
+  test("and not against a title that merely shares a word", () => {
+    // `Reel rivals` against "Rivals", the highest-scoring twin in the measured population
+    // that must not fire: 0.545, well under the 0.7 floor.
+    expect(hasTypoTwin([candidate({ textSim: 0.545, coverage: 0.5, votes: 20_764 })])).toBe(false);
+  });
+});
+
+describe("an exact title match with a small but real audience", () => {
+  test("beats a title that merely contains every query word and is just as obscure", () => {
+    // The defect at 25 votes, end to end. Both rows carry the same votes, so the popularity
+    // term cannot decide it and the match branch is the whole of the difference: the exact
+    // match was paid 4.6 against the container's 12 and lost the page it named exactly.
+    const engine = engineOf([
+      { tconst: "tt-exact", title: "Reel Rivals", year: 2025, votes: 25 },
+      { tconst: "tt-contains", title: "Two Reel Rivals", year: 2025, votes: 25 },
+    ]);
+    try {
+      expect(engine.search("reel rivals", { limit: 10 }).hits[0]?.tconst).toBe("tt-exact");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("but still loses to a container everybody has actually watched", () => {
+    // The cost of the floor, bounded, exactly as the unvoted case is bounded two describes
+    // up. Lifting the exact branch to 12 buys at most a two-point head start; a title that
+    // covers the query AND is watched by half a million people still comes first.
+    const engine = engineOf([
+      { tconst: "tt-exact", title: "Reel Rivals", year: 2025, votes: 25 },
+      { tconst: "tt-contains", title: "Two Reel Rivals", year: 2025, votes: 500_000 },
+    ]);
+    try {
+      expect(engine.search("reel rivals", { limit: 10 }).hits[0]?.tconst).toBe("tt-contains");
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+/*
+  THE `interstelar` PAIR IS NOT PINNED HERE, AND THAT IS DELIBERATE.
+
+  It only exists as a ranking question when the FUZZY tier is present -- "Interstellar" is not
+  an FTS match for `interstelar`, so a fixture index without a spellfix vocabulary never puts
+  the two on the same page and a test built on one would pass without measuring anything.
+  `CANARY_CASES` owns it (`{ query: "interstelar", want: "Interstellar", fuzzyOnly: true }`)
+  against the real 1.28M-row index, which is where it can actually fail. What IS pinned here
+  is the gate that decides it: `hasTypoTwin` above, clause by clause.
+*/
 
 /**
  * The anticipation curve, through the whole engine.
