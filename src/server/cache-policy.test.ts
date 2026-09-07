@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import {
   type CachePolicy,
   cacheHeaders,
@@ -19,8 +19,11 @@ import {
   NO_STORE,
   PER_SESSION_REVALIDATED,
   perSession,
+  publicFor,
   REVALIDATED,
+  STATIC_IMAGE_MAX_AGE,
   sharedPerSession,
+  staticAssetPolicy,
   stripImageExt,
   withImageExt,
 } from "./cache-policy";
@@ -40,6 +43,8 @@ const EVERY_POLICY = {
   "shared-per-session": { policy: sharedPerSession(600), dependsOnReader: true },
   // Same bytes for everybody: an icon, the manifest, an unhashed asset.
   revalidated: { policy: REVALIDATED, dependsOnReader: false },
+  // Same bytes for everybody, held for a bounded while: a logo, a favicon.
+  "public-for": { policy: publicFor(600), dependsOnReader: false },
   // Content-addressed bytes: a poster keyed by a title id, a hashed bundle.
   "immutable-public": { policy: IMMUTABLE_PUBLIC, dependsOnReader: false },
 } satisfies Record<CachePolicy["kind"], { policy: CachePolicy; dependsOnReader: boolean }>;
@@ -162,6 +167,91 @@ describe("the image cache extension", () => {
   /** The whole point: the extension we issue is one a CDN treats as a static image. */
   test("the issued extension is one a CDN caches by default", () => {
     expect([".jpg", ".jpeg", ".png", ".webp", ".gif"]).toContain(IMAGE_CACHE_EXT);
+  });
+});
+
+/**
+ * The static-asset classifier, tested against the REAL build output.
+ *
+ * > [!CAUTION] THE BUG THIS FILE EXISTS TO HAVE CAUGHT was a regex nobody ran against a
+ * > real filename
+ * > The rule was `/\.[0-9a-f]{8,}\.(js|css|woff2?|png|jpg|svg)$/` -- a dot-delimited,
+ * > lowercase-hex hash, `main.deadbeef12.js`. **Vite emits `main-BAA2t8bY.js`**: hyphen
+ * > delimiter, base64url alphabet. So it matched NOTHING this project has ever built, the
+ * > `immutable` branch was dead code, and every JS chunk, CSS file and hashed font went out
+ * > `no-cache` -- measured live 2026-09-07 as `cf-cache-status: BYPASS` on
+ * > `/assets/main-ChJg8Krm.js`. It cost a conditional request per chunk per page load,
+ * > which is invisible on a LAN and is the whole bill on a phone.
+ * >
+ * > It hid because `no-cache` is not `no-store`: the browser keeps the bytes and the
+ * > revalidation 304s, so nothing rendered wrong and no test could tell.
+ * >
+ * > **So this suite reads `web/dist` rather than a fixture.** A rule about what the bundler
+ * > emits can only be checked against what the bundler emitted.
+ */
+describe("staticAssetPolicy", () => {
+  const dist = new URL("../../web/dist/", import.meta.url).pathname;
+  const built = existsSync(`${dist}assets`);
+
+  /**
+   * THE REGRESSION TEST. Every file the bundler actually wrote must be recognised, so the
+   * next hash-format change fails here instead of silently costing a round trip forever.
+   */
+  test.if(built)("every real hashed asset is immutable-public", () => {
+    const files = readdirSync(`${dist}assets`);
+    expect(files.length).toBeGreaterThan(0);
+    const wrong = files.filter((f) => staticAssetPolicy(`/assets/${f}`).kind !== "immutable-public");
+    expect(wrong).toEqual([]);
+  });
+
+  /**
+   * A DIRECTORY, not a filename pattern -- and that is the fix rather than a tighter regex.
+   * `vite.config.ts` routes hashed output to `assets/[name]-[hash].js` itself, so the
+   * directory is the build's own declaration of what is content-addressed. A regex is a
+   * second guess at a hash alphabet Rollup is free to change; this cannot drift, and it
+   * cannot false-positive onto `apple-touch-icon.png` the way a loose one would.
+   */
+  test("the hashed bucket is decided by directory, not by guessing a hash format", () => {
+    expect(staticAssetPolicy("/assets/main-BAA2t8bY.js").kind).toBe("immutable-public");
+    expect(staticAssetPolicy("/assets/index-DkPq2Xy1.css").kind).toBe("immutable-public");
+    // The shape the OLD rule wanted. Still immutable -- it is in the bucket -- but nothing
+    // about the answer now depends on which of the two shapes the name happens to have.
+    expect(staticAssetPolicy("/assets/main.deadbeef12.js").kind).toBe("immutable-public");
+  });
+
+  /**
+   * An unhashed static IMAGE may be held, but never forever: `logos:import` and
+   * `icons:build` rewrite these paths in place, so `immutable` would strand the old art on
+   * every device that had seen it. A bounded public TTL is the shape that lets a CDN hold
+   * 826 logo files and still self-heals.
+   */
+  test("an unhashed image gets a bounded public TTL", () => {
+    for (const p of ["/logos/rating/imdb.png", "/favicon.svg", "/apple-touch-icon.png", "/icon-512.png"]) {
+      expect(staticAssetPolicy(p)).toEqual({ kind: "public-for", seconds: STATIC_IMAGE_MAX_AGE });
+    }
+  });
+
+  /**
+   * > [!CAUTION] `sw.js` MUST KEEP REVALIDATING and it is the reason this is not "cache
+   * > everything unhashed"
+   * > It is deliberately the one UNHASHED entry point (`vite.config.ts` says why: a hashed
+   * > worker registers a new one per release while the old keeps controlling the page). A
+   * > service worker held at the edge or in a browser for a week is a bricked PWA that no
+   * > deploy can reach. Same for the two shells and the manifest, which change per release.
+   */
+  test("a document, the manifest and the service worker still revalidate", () => {
+    for (const p of ["/sw.js", "/index.html", "/login.html", "/site.webmanifest", "/offline.html"]) {
+      expect(staticAssetPolicy(p).kind).toBe("revalidated");
+    }
+  });
+
+  /** A bounded TTL that is not, by some later edit, secretly forever. */
+  test("the bounded TTL is actually bounded", () => {
+    expect(STATIC_IMAGE_MAX_AGE).toBeGreaterThan(0);
+    expect(STATIC_IMAGE_MAX_AGE).toBeLessThan(31_536_000);
+    expect(cacheHeaders(staticAssetPolicy("/favicon.svg"))).toEqual({
+      "Cache-Control": `public, max-age=${STATIC_IMAGE_MAX_AGE}`,
+    });
   });
 });
 

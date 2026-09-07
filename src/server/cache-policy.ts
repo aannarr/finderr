@@ -53,6 +53,13 @@ export type CachePolicy =
    */
   | { readonly kind: "revalidated" }
   /**
+   * Anyone may keep it for `seconds`, then must ask again. For bytes that are the same for
+   * every reader at a URL that OUTLIVES them but can still be rewritten in place -- an
+   * unhashed logo, a favicon. `revalidated` is correct for these and too conservative: it
+   * forbids a CDN from ever serving one, and there are 826 logo files.
+   */
+  | { readonly kind: "public-for"; readonly seconds: number }
+  /**
    * Anyone may keep it forever. ONLY for content-addressed bytes with no reader in them:
    * a poster keyed by a title id, a hashed bundle, a facet image keyed by a hash of its
    * upstream URL. These carry no session state, which is why they too have no `Vary`.
@@ -76,6 +83,9 @@ export const sharedPerSession = (seconds: number): CachePolicy => ({
 
 /** Anyone, revalidated every time. Same bytes for everybody, at a URL that outlives them. */
 export const REVALIDATED: CachePolicy = { kind: "revalidated" };
+
+/** Anyone, for `seconds`. Same bytes for everybody, and the URL may be rewritten in place. */
+export const publicFor = (seconds: number): CachePolicy => ({ kind: "public-for", seconds });
 
 /** Anyone, forever. Content-addressed bytes only. */
 export const IMMUTABLE_PUBLIC: CachePolicy = { kind: "immutable-public" };
@@ -163,7 +173,47 @@ export function cacheHeaders(policy: CachePolicy): Record<string, string> {
       return { "Cache-Control": `public, max-age=0, s-maxage=${policy.seconds}`, Vary: "Cookie" };
     case "revalidated":
       return { "Cache-Control": "no-cache" };
+    case "public-for":
+      return { "Cache-Control": `public, max-age=${policy.seconds}` };
     case "immutable-public":
       return { "Cache-Control": `public, max-age=${ONE_YEAR_SECONDS}, immutable` };
   }
+}
+
+/**
+ * How long an unhashed static image may be held. A week.
+ *
+ * The two jobs that rewrite one of these paths -- `logos:import` and `icons:build` -- are
+ * hand-run and rare, so a week bounds the staleness at something nobody will meet while
+ * removing essentially all repeat traffic. Unlike `immutable` it self-heals: get it wrong
+ * and the wrong art is gone in seven days rather than stranded on every device that saw it.
+ */
+export const STATIC_IMAGE_MAX_AGE = 604_800;
+
+/** An image extension, as it appears at the END of a path we serve off disk. */
+const STATIC_IMAGE = /\.(?:png|jpe?g|svg|webp|avif|gif|ico)$/i;
+
+/**
+ * What the static branch may say about a file on disk.
+ *
+ * > [!CAUTION] THE HASHED BUCKET IS A DIRECTORY, AND IT IS NOT A REGEX ON PURPOSE
+ * > This was `/\.[0-9a-f]{8,}\.(js|css|woff2?|png|jpg|svg)$/` and it matched **nothing this
+ * > project has ever built**. Vite emits `main-BAA2t8bY.js` -- hyphen delimiter, base64url
+ * > alphabet -- against a rule wanting `main.deadbeef12.js`. The `immutable` branch was
+ * > dead code from the day it was written, every bundle asset went out `no-cache`, and it
+ * > measured `cf-cache-status: BYPASS` on the live deployment on 2026-09-07.
+ * >
+ * > A TIGHTER REGEX WOULD BE THE SAME MISTAKE AGAIN: it is still a guess at a hash format
+ * > Rollup may change, and a loose one false-positives onto `apple-touch-icon.png` and
+ * > hands a year of `immutable` to a file that gets rewritten. `vite.config.ts` already
+ * > states where hashed output goes -- `assets/[name]-[hash].js` -- so the DIRECTORY is the
+ * > build's own declaration and nothing here has to know what a hash looks like.
+ * >
+ * > `sw.js` is deliberately the one unhashed entry point and sits at the root, outside the
+ * > bucket, which is what this rule needs to be true. A cached service worker is a bricked
+ * > PWA no deploy can reach, so it lands on `revalidated` with the two shells.
+ */
+export function staticAssetPolicy(path: string): CachePolicy {
+  if (path.startsWith("/assets/")) return IMMUTABLE_PUBLIC;
+  return STATIC_IMAGE.test(path) ? publicFor(STATIC_IMAGE_MAX_AGE) : REVALIDATED;
 }

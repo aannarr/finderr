@@ -99,11 +99,10 @@ import { AuthService, withAuth } from "./auth-routes";
 import { type AwardsDeps, ceremonyPayload, peoplePayload, timelinePayload } from "./awards";
 import {
   cacheHeaders,
-  IMMUTABLE_PUBLIC,
   NO_STORE,
   PER_SESSION_REVALIDATED,
   perSession,
-  REVALIDATED,
+  staticAssetPolicy,
   stripImageExt,
 } from "./cache-policy";
 import { episodeScoresFor } from "./episode-scores";
@@ -3865,11 +3864,10 @@ const server: Bun.Server<undefined> = Bun.serve({
     const file = Bun.file(`${staticDir}${rel}`);
     return file.exists().then((ok) => {
       if (ok) {
-        const hashed = /\.[0-9a-f]{8,}\.(js|css|woff2?|png|jpg|svg)$/.test(rel);
         const html = rel.endsWith(".html");
         return new Response(file, {
           headers: {
-            ...cacheHeaders(hashed ? IMMUTABLE_PUBLIC : REVALIDATED),
+            ...cacheHeaders(staticAssetPolicy(rel)),
             "X-Content-Type-Options": "nosniff",
             ...(html ? HTML_HEADERS : {}),
           },
