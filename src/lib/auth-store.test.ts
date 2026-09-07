@@ -418,6 +418,72 @@ describe("push subscriptions", () => {
     auth.deleteUser(u.id);
     expect(auth.pushSubscriptionCount()).toBe(0);
   });
+
+  /**
+   * "Turn it off everywhere", and the reason it cannot be a loop of `deletePushSubscription`
+   * in the browser: an endpoint lives in the browser that owns it, so a phone that was sold
+   * or reset can never unsubscribe itself. This is the only reach the account has over it.
+   */
+  test("every device at once, scoped to the one account", () => {
+    const ana = auth.createUser({ displayName: "Ana", role: "user" });
+    const ben = auth.createUser({ displayName: "Ben", role: "user" });
+    auth.putPushSubscription(sub("https://push.example/ana-1", ana.id));
+    auth.putPushSubscription(sub("https://push.example/ana-2", ana.id));
+    auth.putPushSubscription(sub("https://push.example/ben", ben.id));
+
+    expect(auth.deletePushSubscriptionsFor(ana.id)).toBe(2);
+    expect(auth.listPushSubscriptions(ana.id)).toHaveLength(0);
+    expect(auth.listPushSubscriptions(ben.id)).toHaveLength(1);
+  });
+});
+
+/**
+ * ASKED ONCE, EVER -- aannarr, 2026-09-07: *"USER TO OPT IN ... we NEVER repeat, so once
+ * only"*.
+ *
+ * On the ACCOUNT rather than in the browser's storage, which is what makes it survive a new
+ * device and a cleared cache. The offer is `PushOffer` on `/requests`; this column is the
+ * only thing standing between it and being a nag.
+ */
+describe("the notifications question is put to a person once", () => {
+  test("a new account has never been asked", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    expect(u.pushOfferedAt).toBeNull();
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBeNull();
+  });
+
+  test("marking it sticks, and is read back off the row", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id, new Date("2026-09-07T10:00:00.000Z"));
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBe("2026-09-07T10:00:00.000Z");
+  });
+
+  /*
+    FIRST WRITE WINS. Every route that records an answer calls this -- subscribing, declining
+    and dismissing -- so a reader who says yes on a phone and then dismisses on a laptop
+    would otherwise walk the timestamp forward. The first time we asked is the fact worth
+    keeping.
+  */
+  test("asking again never moves the date", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id, new Date("2026-09-07T10:00:00.000Z"));
+    auth.markPushOffered(u.id, new Date("2026-09-08T10:00:00.000Z"));
+    expect(auth.getUser(u.id)?.pushOfferedAt).toBe("2026-09-07T10:00:00.000Z");
+  });
+
+  /** Turning notifications off is an ANSWER, not a reason to ask again. */
+  test("de-registering every device leaves the question answered", () => {
+    const u = auth.createUser({ displayName: "Ada", role: "user" });
+    auth.markPushOffered(u.id);
+    auth.putPushSubscription({
+      endpoint: "https://push.example/1",
+      userId: u.id,
+      p256dh: "p",
+      auth: "a",
+    });
+    auth.deletePushSubscriptionsFor(u.id);
+    expect(auth.getUser(u.id)?.pushOfferedAt).not.toBeNull();
+  });
 });
 
 describe("the hot path stays cheap without ever trusting the sweep", () => {

@@ -3298,6 +3298,13 @@ const appRoutes = {
         // row already records, so this discloses nothing new about the reader.
         userAgent: req.headers.get("user-agent"),
       });
+      /*
+        Subscribing IS an answer, so it closes the offer here rather than relying on the
+        client to post `/api/push/offer` afterwards. Not merely belt and braces: a reader who
+        says yes on their phone must not be asked again on their laptop, where the local
+        `subscribed` flag is false and would otherwise let the offer through.
+      */
+      authStore.markPushOffered(me);
       return json({ ok: true });
     },
   },
@@ -3318,6 +3325,89 @@ const appRoutes = {
       // Scoped to the caller in the STORE, not here: an endpoint URL is not a secret, and a
       // delete keyed on it alone would be a stranger's off switch for your notifications.
       return json({ removed: authStore.deletePushSubscription(me, body.endpoint) });
+    },
+  },
+
+  /**
+   * Turn notifications off on EVERY device this person has, including ones they are not
+   * holding.
+   *
+   * > [!IMPORTANT] This is the only off switch that can reach a device you no longer own
+   * > `/api/push/unsubscribe` needs the endpoint, and the endpoint lives in the browser that
+   * > owns it -- so a phone that was sold, reset or simply left in a drawer can never
+   * > unsubscribe itself. Its row sits in the table being delivered to until a send happens
+   * > to come back 404 or 410, which for somebody who requests nothing is never. The person
+   * > whose news it is has to be able to say "stop, everywhere", from whatever device they
+   * > do have.
+   *
+   * It takes NO BODY, deliberately: there is nothing to name. The caller's session decides
+   * whose devices these are, exactly as `listPushSubscriptions` does on the way out.
+   *
+   * The browser this was pressed from still holds a live `PushSubscription` afterwards, and
+   * the CLIENT unsubscribes that one locally -- see `disablePushEverywhere`. Nothing here
+   * can reach into the other browsers, and nothing pretends to: deleting the row is what
+   * stops this server sending, which is the whole of what it controls.
+   */
+  "/api/push/unsubscribe-all": {
+    POST: (req: Request) => {
+      const me = readerId(req);
+      if (!me) return json({ removed: 0 });
+      return json({ removed: authStore.deletePushSubscriptionsFor(me) });
+    },
+  },
+
+  /*
+    HAVE WE ASKED THIS PERSON YET, and a way to say that we now have.
+
+    > [!IMPORTANT] ONCE PER USER, NOT ONCE PER BROWSER -- aannarr, 2026-09-07
+    > *"USER TO OPT IN ... not automatically be asked ... make sure we NEVER repeat, so once
+    > only"*. The contextual offer on `/requests` is made exactly once to a person and then
+    > never again on any device, whatever they answered. `PushToggle` on the account page is
+    > how a decision gets changed afterwards, and it is always there.
+
+    > [!CAUTION] This must NOT ride on `/api/push/key`, and the reason is that route's cache
+    > `/api/push/key` is `perSession(3600)`, which is right for a VAPID key that changes
+    > about never -- and fatal for a field the reader can flip. A dismissal would sit behind
+    > an hour-old cached `false` and the offer would come back on the next page load, which
+    > is the exact failure this whole field exists to prevent. A mutable per-user fact needs
+    > its own uncached route; that is the whole reason there are two.
+  */
+
+  /**
+   * The per-user push facts the VAPID key's response cannot carry: have we asked, and how
+   * many devices are subscribed.
+   *
+   * `devices` is what makes "turn it off everywhere" an honest control rather than a button
+   * whose effect nobody can see. It counts ROWS, which is the only thing this server can
+   * know -- a browser that cleared its storage still has a row here until a send finds out
+   * otherwise, and that row is exactly what the reader wants removed.
+   */
+  "/api/push/state": (req: Request) => {
+    const me = readerId(req);
+    const user = me ? authStore.getUser(me) : null;
+    return json(
+      {
+        // No user is "already offered": there is nobody to make an offer to.
+        offered: user ? user.pushOfferedAt !== null : true,
+        devices: me ? authStore.listPushSubscriptions(me).length : 0,
+      },
+      { cache: NO_STORE },
+    );
+  },
+
+  "/api/push/offer": {
+    /**
+     * They answered. Which way is deliberately not recorded here.
+     *
+     * Subscribing, declining the browser's prompt and dismissing the offer are three
+     * different answers and produce one identical consequence -- do not ask again -- so
+     * storing which would be a fact with no reader. The subscription table already knows
+     * who said yes.
+     */
+    POST: (req: Request) => {
+      const me = readerId(req);
+      if (me) authStore.markPushOffered(me);
+      return json({ ok: true }, { cache: NO_STORE });
     },
   },
 

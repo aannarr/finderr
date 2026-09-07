@@ -76,6 +76,63 @@ function isIosLike(): boolean {
   return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
+/** What the SERVER knows about this person's notifications, as opposed to this browser's. */
+export interface PushState {
+  /** Have they already been asked, on any device? */
+  offered: boolean;
+  /** How many devices are subscribed, this one included. */
+  devices: number;
+}
+
+/**
+ * Read the per-user state.
+ *
+ * Its own request rather than a field on `/api/push/key`, because that route is cached in
+ * the browser for an hour and both of these change the moment the reader acts. See the
+ * route's own comment in `src/server/index.ts`.
+ *
+ * A failure reads as "already offered, no devices". The offer is the one thing here that can
+ * annoy somebody, so the safe direction when we cannot tell is to say nothing -- the account
+ * page still carries the switch.
+ */
+export async function pushState(): Promise<PushState> {
+  try {
+    const res = await fetch("/api/push/state");
+    if (!res.ok) return { offered: true, devices: 0 };
+    return (await res.json()) as PushState;
+  } catch {
+    return { offered: true, devices: 0 };
+  }
+}
+
+/**
+ * Record that they answered, whichever way.
+ *
+ * Never throws and its result is never awaited for correctness: the caller has already
+ * acted, and failing to write this down must not turn a successful subscribe into an error
+ * on screen. The cost of losing it is one more offer, once.
+ */
+export async function markPushOffered(): Promise<void> {
+  await fetch("/api/push/offer", { method: "POST" }).catch(() => undefined);
+}
+
+/**
+ * Turn notifications off on every device this account has.
+ *
+ * The server drops every row; this browser then unsubscribes ITS OWN endpoint locally, which
+ * is the half no server can do. The other devices keep a live `PushSubscription` object that
+ * nothing will ever send to -- there is no API anywhere that lets one browser revoke
+ * another's, and the row being gone is what actually stops the messages.
+ */
+export async function disablePushEverywhere(): Promise<number> {
+  const res = await fetch("/api/push/unsubscribe-all", { method: "POST" });
+  if (!res.ok) throw new Error(`the server refused (${res.status})`);
+  const { removed } = (await res.json()) as { removed: number };
+  const subscription = await currentSubscription();
+  await subscription?.unsubscribe().catch(() => undefined);
+  return removed;
+}
+
 /** Is this browser already subscribed? Null when there is no worker to ask. */
 export async function currentSubscription(): Promise<PushSubscription | null> {
   const registration = await serviceWorker();

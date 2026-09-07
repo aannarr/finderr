@@ -1363,7 +1363,8 @@ export class AuthService {
        * The passkey equivalent of forcing a password reset.
        *
        * There are no passwords, so "reset" means: every credential revoked, every session
-       * killed, any Plex link broken, and a fresh invite minted so they can enrol again.
+       * killed, every subscribed device de-registered, any Plex link broken, and a fresh
+       * invite minted so they can enrol again.
        * That combination is also the decisive fix for a device carrying stranded passkeys
        * from a failed sign-up -- with no server-side credential left, every passkey in
        * their keychain is dead and there is no longer a right one to hunt for.
@@ -1377,6 +1378,15 @@ export class AuthService {
             const b = await body(req);
             const credentials = this.deps.auth.deleteCredentialsFor(id);
             const sessions = this.deps.auth.deleteSessionsFor(id);
+            /*
+              THE SUBSCRIBED DEVICES GO TOO, and they were the one thing this route left
+              standing. A reset is the move an operator makes when an account has gone
+              somewhere it should not have -- and a push endpoint is the one artefact that
+              keeps WORKING after every credential is dead, because delivery does not
+              authenticate anybody. So the phone that belonged to yesterday's holder went on
+              being told what today's holder asked for.
+            */
+            const devices = this.deps.auth.deletePushSubscriptionsFor(id);
             this.deps.auth.unlinkPlex(id);
             const hours =
               typeof b.hours === "number" && b.hours > 0 ? b.hours : this.deps.cfg.auth.inviteHours;
@@ -1387,10 +1397,12 @@ export class AuthService {
               createdBy: p.user?.id ?? "api-key",
               expiresAt: isoIn(hours * 3_600_000),
             });
-            this.deps.log(`user ${id} reset: ${credentials} credential(s), ${sessions} session(s) revoked`);
+            this.deps.log(
+              `user ${id} reset: ${credentials} credential(s), ${sessions} session(s), ${devices} device(s) revoked`,
+            );
             return json({
               ok: true,
-              revoked: { credentials, sessions },
+              revoked: { credentials, sessions, devices },
               token,
               url: `${this.originFor(req)}/invite/${token}`,
               expiresAt: invite.expiresAt,

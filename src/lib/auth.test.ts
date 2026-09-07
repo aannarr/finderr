@@ -26,6 +26,7 @@ const user: User = {
   disabledAt: null,
   quotaPerDay: null,
   assistantAllowed: true,
+  pushOfferedAt: null,
 };
 
 describe("secrets", () => {

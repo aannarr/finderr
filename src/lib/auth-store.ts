@@ -244,6 +244,33 @@ export const AUTH_ADDED_COLUMNS: AddedColumn[] = [
     column: "assistant_allowed",
     ddl: "alter table app_user add column assistant_allowed integer not null default 1",
   },
+  /*
+    WHEN THIS PERSON WAS ASKED ABOUT NOTIFICATIONS. Null means never, and null is the only
+    state in which finderr offers.
+
+    ON THE USER RATHER THAN ON THE DEVICE, which is aannarr's call of 2026-09-07 and the
+    whole shape of the feature: *"USER TO OPT IN"*, *"we NEVER repeat -- so once only"*. The
+    device-scoped alternative was to keep this in `localStorage`, and it is the reading that
+    looks right at first, because a SUBSCRIPTION genuinely is per-device -- a new phone has
+    never been subscribed and never can be by an old one. It loses on what the field
+    actually records: not "is this browser subscribed", which `PushManager` already answers,
+    but "have we put this question to this human". A human who has already said no is the
+    same human on their laptop, and asking again there is the nagging this exists to stop.
+    It also cannot survive cleared site data, which is the one moment a reader is most
+    likely to be annoyed at being asked twice.
+
+    A TIMESTAMP RATHER THAN A FLAG, for nothing cleverer than that it costs the same and
+    answers "when" as well as "whether". Nothing reads the value; if something ever wants to
+    re-offer after a year, the fact is already here rather than needing a migration.
+
+    NULLABLE with no default, so every existing account is "never asked" and gets the offer
+    once, which is the behaviour they had before this column existed.
+  */
+  {
+    table: "app_user",
+    column: "push_offered_at",
+    ddl: "alter table app_user add column push_offered_at text",
+  },
 ];
 
 /**
@@ -325,6 +352,7 @@ interface UserRow {
   disabled_at: string | null;
   quota_per_day: number | null;
   assistant_allowed: number;
+  push_offered_at: string | null;
 }
 
 interface CredentialRow {
@@ -413,6 +441,7 @@ function toUser(r: UserRow): User {
     disabledAt: r.disabled_at,
     quotaPerDay: r.quota_per_day,
     assistantAllowed: r.assistant_allowed !== 0,
+    pushOfferedAt: r.push_offered_at,
   };
 }
 
@@ -549,6 +578,8 @@ export class AuthStore {
       disabledAt: null,
       quotaPerDay: null,
       assistantAllowed,
+      // Never asked, which is what makes a new account eligible for the one offer.
+      pushOfferedAt: null,
     };
   }
 
@@ -1101,6 +1132,25 @@ export class AuthStore {
   }
 
   /**
+   * Forget EVERY device this person has subscribed, and say how many there were.
+   *
+   * Two callers and they want it for opposite reasons, which is why it is one method rather
+   * than a loop at each site. A reader turning notifications off "everywhere" is answering
+   * for devices they may no longer be holding -- an old phone can never unsubscribe itself,
+   * because `disablePush` needs the browser that owns the endpoint. And `/reset` is an
+   * operator taking an account away from whoever had it, where leaving a live endpoint
+   * behind would go on pushing one person's news to another's lock screen.
+   *
+   * The BROWSER side of this cannot be done from here and is not attempted: a subscription
+   * the push service still considers live keeps its permission until that browser calls
+   * `unsubscribe()` or the endpoint 404s on the next send. Deleting the row is what stops us
+   * sending, which is the whole of what this server controls.
+   */
+  deletePushSubscriptionsFor(userId: string): number {
+    return this.db.query("delete from push_subscription where user_id = ?").run(userId).changes;
+  }
+
+  /**
    * Drop a dead endpoint, whoever it belonged to.
    *
    * The 404/410 path, and the one place the owner is NOT part of the key: the push service
@@ -1114,6 +1164,20 @@ export class AuthStore {
     return this.db
       .query("select * from push_subscription where user_id = ? order by created_at asc")
       .all(userId) as PushSubscriptionRow[];
+  }
+
+  /**
+   * Record that this person has been asked about notifications, and will not be asked again.
+   *
+   * IDEMPOTENT AND FIRST-WRITE-WINS -- `where push_offered_at is null`. Every route that
+   * records an answer calls it, and a reader who subscribes on one device and dismisses on
+   * another would otherwise move the timestamp forward. The FIRST time we asked is the fact
+   * worth keeping; the later calls are the same answer arriving twice.
+   */
+  markPushOffered(userId: string, now?: Date): void {
+    this.db
+      .query("update app_user set push_offered_at = ? where id = ? and push_offered_at is null")
+      .run(isoNow(now), userId);
   }
 
   /** Stamped after a successful send, so an admin can see which devices are still real. */

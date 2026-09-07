@@ -398,15 +398,40 @@ describe("resetting an account is the passkey answer to a forced password reset"
 
     const res = await h.call(`/api/admin/users/${u.id}/reset`, { method: "POST", bearer: API_KEY });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { revoked: { credentials: number; sessions: number }; token: string };
+    const body = (await res.json()) as {
+      revoked: { credentials: number; sessions: number; devices: number };
+      token: string;
+    };
 
-    expect(body.revoked).toEqual({ credentials: 2, sessions: 1 });
+    expect(body.revoked).toEqual({ credentials: 2, sessions: 1, devices: 0 });
     expect(h.auth.credentialsFor(u.id)).toHaveLength(0);
     expect(h.auth.sessionsFor(u.id)).toHaveLength(0);
     expect(h.auth.getUser(u.id)?.plexId).toBeNull();
     // The account survives -- a reset is not a delete, and their request history stays.
     expect(h.auth.getUser(u.id)?.displayName).toBe("Guest");
     expect(h.auth.getInvite(hashToken(body.token))?.role).toBe("user");
+  });
+
+  /*
+    THE DEVICES GO TOO, and this was the hole.
+
+    A reset revoked every credential, every session and the Plex link, and left
+    `push_subscription` standing -- so the phone belonging to whoever had that account
+    yesterday went on receiving notifications about the person who holds it now. Deleting a
+    user cascades to this table by declaration; resetting one had no such guarantee, and a
+    reset is exactly the move an operator makes when an account has gone somewhere it should
+    not have.
+  */
+  test("every subscribed device is de-registered as well", async () => {
+    const u = h.auth.createUser({ displayName: "Guest", role: "user" });
+    h.auth.putPushSubscription({ endpoint: "https://push.example/1", userId: u.id, p256dh: "p", auth: "a" });
+    h.auth.putPushSubscription({ endpoint: "https://push.example/2", userId: u.id, p256dh: "p", auth: "a" });
+
+    const res = await h.call(`/api/admin/users/${u.id}/reset`, { method: "POST", bearer: API_KEY });
+    const body = (await res.json()) as { revoked: { devices: number } };
+
+    expect(body.revoked.devices).toBe(2);
+    expect(h.auth.listPushSubscriptions(u.id)).toHaveLength(0);
   });
 });
 

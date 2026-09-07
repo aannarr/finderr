@@ -64,6 +64,16 @@ export interface User {
    * this field beside a `configured` check of its own.
    */
   assistantAllowed: boolean;
+  /**
+   * When finderr last put the notifications question to this person, or null for never.
+   *
+   * NULL IS THE ONLY STATE THAT OFFERS. Set on any answer at all -- subscribing, declining
+   * the browser prompt, or dismissing the offer -- because all three are the same person
+   * having decided, and the account page's permanent switch is where a decision gets
+   * changed. It is deliberately NOT cleared by turning notifications off again: an off
+   * switch somebody pressed on purpose is not an invitation to ask them once more.
+   */
+  pushOfferedAt: string | null;
 }
 
 export interface Credential {
