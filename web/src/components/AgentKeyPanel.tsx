@@ -189,7 +189,10 @@ export function AgentKeyPanel() {
                   }}
                 >
                   <Input
-                    // biome-ignore lint/a11y/noAutofocus: it opens on an explicit Rename click
+                    // Autofocused because this field opens on an explicit Rename click, never on
+                    // page load. Not a suppression: `noAutofocus` only analyses the DOM `input`
+                    // element and never a component, so a `biome-ignore` here suppresses nothing
+                    // and biome reports it as unused.
                     autoFocus
                     value={editing.name}
                     maxLength={60}

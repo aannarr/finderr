@@ -484,7 +484,11 @@ export function RootLayout() {
             <div className="relative overflow-hidden">
               <input
                 ref={searchBox}
-                // Search IS the product, so the caret belongs here the moment the app loads.
+                // Search IS the product, so the caret belongs here the moment the app loads. This
+                // is the ONE site in the tree that autofocuses on PAGE LOAD rather than on an
+                // explicit press, which is exactly what the rule is about -- and it is the whole
+                // reason `noAutofocus` was globally `off` in `biome.json` until 2026-09-07.
+                // biome-ignore lint/a11y/noAutofocus: the caret belongs in search on load
                 autoFocus
                 type="search"
                 value={query}

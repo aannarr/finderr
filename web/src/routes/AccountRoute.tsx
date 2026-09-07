@@ -404,8 +404,10 @@ export function AccountRoute() {
                     }}
                   >
                     <Input
-                      // The caret belongs in the field the click just opened.
-                      // biome-ignore lint/a11y/noAutofocus: it opens on an explicit Rename click
+                      // The caret belongs in the field the click just opened -- an explicit Rename
+                      // press, never page load. Not a suppression: `noAutofocus` only analyses the
+                      // DOM `input` element and never a component, so a `biome-ignore` here
+                      // suppresses nothing and biome reports it as unused.
                       autoFocus
                       value={editing.label}
                       maxLength={60}

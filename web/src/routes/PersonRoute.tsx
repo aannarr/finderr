@@ -25,6 +25,7 @@ import { PERSON_LINK_CLASS } from "../components/TitlePanes";
 import {
   type Collaborator,
   cachedPerson,
+  cachedPersonRun,
   getPerson,
   type PersonAwards,
   type PersonPage,
@@ -273,7 +274,12 @@ export function PersonRoute() {
   if (seededFor !== requestKey) {
     setSeededFor(requestKey);
     setError(null);
-    const cached = cachedPerson(nconst, creditsQuery(role, byYear));
+    // EVERY cached page, not just the first. `loadMore` caches each fetch under its own
+    // offset and appends into `shown`, so seeding from the offset-0 entry alone handed a
+    // reader who had pressed "Show more" twice their first 60 rows back -- on a page whose
+    // scroll was then restored against a document half the height it had been. See
+    // `cachedPersonRun`, which carries the measurement.
+    const cached = cachedPersonRun(nconst, { category: role, sort: byYear, limit: PAGE });
     if (cached) setShown({ key: requestKey, page: cached });
     else if (shown && shown.page.person.nconst !== nconst) setShown(null);
   }

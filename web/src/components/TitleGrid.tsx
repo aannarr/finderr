@@ -16,8 +16,15 @@ import { Skeleton } from "./FacetPane";
 import { moveRovingFocus, type RovingItems } from "./RovingFocus";
 import { TitleCard } from "./TitleCard";
 
-/** The one grid class list, shared with `GridSkeleton` so the two cannot drift apart. */
-const GRID_CLASS = "card-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
+/**
+ * The one grid class list, shared with `GridSkeleton` so the two cannot drift apart.
+ *
+ * It led with `card-grid`, which existed for one rule -- `content-visibility: auto` -- and
+ * that rule is gone because it broke Back on every grid in the product. `styles.css` carries
+ * the measurement above where the rule used to be. The hook is dropped with it rather than
+ * left behind as a class nothing styles.
+ */
+const GRID_CLASS = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
 
 /** Arrows move between CARDS; the element that takes focus is the card's primary link. */
 const CARD_ITEMS: RovingItems = { selector: CARD_SELECTOR, focusable: CARD_LINK_SELECTOR };

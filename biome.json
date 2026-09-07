@@ -17,9 +17,6 @@
       "style": {
         "noNonNullAssertion": "off"
       },
-      "a11y": {
-        "noAutofocus": "off"
-      },
       "complexity": {
         "noImportantStyles": "off"
       }

@@ -18,9 +18,11 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { AuthStore, applyAuthSchema } from "./auth-store";
+import { DEFAULT_CONFIG } from "./config";
 import {
   applyShelfPreference,
   applyShelfPreferenceSchema,
+  defaultHiddenShelves,
   MAX_SHELF_CHOICES,
   parseShelfChoices,
   type ShelfPreference,
@@ -305,7 +307,7 @@ describe("stored and resolved are the same page", () => {
   that a stored choice could not reach would be a shelf they could never get back.
 */
 describe("shelves the operator ships switched off", () => {
-  const off = (...ids: string[]) => new Set(ids);
+  const off = (...patterns: string[]) => defaultHiddenShelves(patterns);
 
   test("a reader who has touched nothing does not see a default-hidden shelf", () => {
     const page = applyShelfPreference(SHIPPED, [], off("trending"));
@@ -390,5 +392,116 @@ describe("shelves the operator ships switched off", () => {
       off("trending"),
     );
     expect(ids(page)).toEqual(["genre-horror", "top-250", "recently-added"]);
+  });
+});
+
+/*
+  THE TRAILING `*`, and the one id space that needs it.
+
+  The genre rows are named from `engine.topGenres(5)`, so which five exist is decided by the
+  nightly index build. An operator who switched off today's five by name would get a SIXTH
+  one switched ON the first night the corpus shifted -- one visible row among five hidden
+  ones, which reads as the feature being broken rather than the config being stale.
+*/
+describe("a default that has to survive the genre rows rotating", () => {
+  const ROTATED = [
+    { id: "recently-added", title: "Recently added to your library" },
+    { id: "genre-horror", title: "Best in Horror" },
+    { id: "genre-thriller", title: "Best in Thriller" },
+    { id: "top-250", title: "finderr Top 250" },
+  ];
+
+  test("`genre-*` hides a genre row nobody had heard of when it was configured", () => {
+    const page = applyShelfPreference(ROTATED, [], defaultHiddenShelves(["genre-*"]));
+    expect(ids(page)).toEqual(["recently-added", "top-250"]);
+  });
+
+  test("naming the genres one by one is what goes stale, which is why the wildcard exists", () => {
+    const byName = applyShelfPreference(ROTATED, [], defaultHiddenShelves(["genre-horror"]));
+    expect(ids(byName)).toContain("genre-thriller");
+  });
+
+  test("an exact id and a prefix compose in one list", () => {
+    const page = applyShelfPreference(ROTATED, [], defaultHiddenShelves(["top-250", "genre-*"]));
+    expect(ids(page)).toEqual(["recently-added"]);
+  });
+
+  test("a reader still outranks the wildcard, one genre at a time", () => {
+    const page = applyShelfPreference(ROTATED, pref(["genre-thriller"]), defaultHiddenShelves(["genre-*"]));
+    // Still in the SHIPPED order: naming a shelf in a preference makes it visible, it does
+    // not promote it. `genre-horror` is the one the wildcard still reaches.
+    expect(ids(page)).toEqual(["recently-added", "genre-thriller", "top-250"]);
+  });
+
+  /*
+    A BARE `*` IS REFUSED. It is indistinguishable from a typo, and honouring it would empty
+    the whole front page for every reader at once -- the one input here with a blast radius
+    bigger than the mistake that produced it.
+  */
+  test.each([
+    ["a bare star", ["*"]],
+    ["an empty entry", [""]],
+    ["whitespace", ["   "]],
+  ])("%s hides nothing", (_name, patterns) => {
+    expect(applyShelfPreference(ROTATED, [], defaultHiddenShelves(patterns))).toEqual(ROTATED);
+  });
+
+  test("entries are trimmed, because a comma list is written by a human", () => {
+    const page = applyShelfPreference(ROTATED, [], defaultHiddenShelves([" top-250 ", " genre-* "]));
+    expect(ids(page)).toEqual(["recently-added"]);
+  });
+});
+
+/*
+  THE SHIPPED DEFAULT ITSELF. aannarr named these from a screenshot on 2026-09-07, and the
+  point of pinning it is that it is a PRODUCT decision rather than an incidental value: a
+  change to what a fresh install shows should have to edit a test that says so out loud.
+*/
+describe("the front page finderr ships", () => {
+  test("nine of the sixteen rows are drawn, and the other seven are one press away", () => {
+    const shipped = [
+      { id: "recently-added", title: "Recently added to your library" },
+      { id: "recently-requested", title: "Recently requested" },
+      { id: "trending", title: "Popular right now" },
+      { id: "top-250", title: "finderr Top 250" },
+      { id: "top-movies", title: "Highly rated, not in your library" },
+      { id: "top-series", title: "Series worth starting" },
+      { id: "airing-soon-series", title: "Airing soon" },
+      { id: "airing-soon-movies", title: "Releasing soon" },
+      { id: "coming-soon-movies", title: "Coming soon: Movies" },
+      { id: "coming-soon-series", title: "Coming soon: Series" },
+      { id: "new-decade", title: "New this decade" },
+      { id: "genre-drama", title: "Best in Drama" },
+      { id: "genre-comedy", title: "Best in Comedy" },
+      { id: "genre-crime", title: "Best in Crime" },
+      { id: "genre-action", title: "Best in Action" },
+      { id: "genre-adventure", title: "Best in Adventure" },
+    ];
+    const byDefault = defaultHiddenShelves(DEFAULT_CONFIG.shelves.hiddenByDefault);
+
+    expect(ids(applyShelfPreference(shipped, [], byDefault))).toEqual([
+      "recently-added",
+      "trending",
+      "top-movies",
+      "top-series",
+      "airing-soon-series",
+      "airing-soon-movies",
+      "coming-soon-movies",
+      "coming-soon-series",
+      "new-decade",
+    ]);
+
+    // And every one of the seven is still on the arranging screen, marked, so it can come back.
+    const view = shelfCatalogue(shipped, [], byDefault);
+    expect(view.filter((s) => s.hidden).map((s) => s.id)).toEqual([
+      "recently-requested",
+      "top-250",
+      "genre-drama",
+      "genre-comedy",
+      "genre-crime",
+      "genre-action",
+      "genre-adventure",
+    ]);
+    expect(view).toHaveLength(shipped.length);
   });
 });

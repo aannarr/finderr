@@ -773,6 +773,43 @@ export function cachedPerson(nconst: string, opts: PersonQuery = {}): PersonPage
   return personCache.get(personKey(nconst, opts));
 }
 
+/**
+ * Every consecutive page of a filmography we hold, concatenated -- the state a paged grid
+ * was in when the reader left it. `cachedBrowseRun`'s twin, and it exists for the same
+ * measured reason.
+ *
+ * `loadMore` appends into the component's own state and caches each fetch under its OWN
+ * offset, so the offset-0 entry is only ever the first 60 rows. `PersonRoute` unmounts
+ * whenever a title is opened, so seeding from that entry alone threw away every "Show more"
+ * the reader had pressed. Measured on the M1 Max, 2026-09-07, `/person/nm0000168`: 119
+ * credits on screen at `scrollHeight` 12721, scrolled to 9000, open a title, press Back --
+ * 60 credits, 6823, and the scroll restore clamped to 6103. Walking the pages restores all
+ * 119 and the scroll lands where it was left.
+ *
+ * The FIRST page owns everything that is not the rows -- `total`, `categories`, `awards`,
+ * `collaborators` -- because every one of them is a fact about the whole filmography rather
+ * than about a page of it, and the server sends the same values on each.
+ *
+ * Stops at the first miss rather than skipping it, exactly as browse does: a gap in the
+ * middle would render rows out of order under a "Show more" that then fetches the wrong
+ * offset.
+ */
+export function cachedPersonRun(
+  nconst: string,
+  opts: Omit<PersonQuery, "offset"> & { limit: number },
+): PersonPage | undefined {
+  const first = cachedPerson(nconst, { ...opts, offset: 0 });
+  if (!first) return undefined;
+
+  const credits = [...first.credits];
+  for (let offset = opts.limit; ; offset += opts.limit) {
+    const page = cachedPerson(nconst, { ...opts, offset });
+    if (!page) break;
+    credits.push(...page.credits);
+  }
+  return { ...first, credits };
+}
+
 export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise<PersonPage> {
   const key = personKey(nconst, opts);
   const hit = personCache.fresh(key);
