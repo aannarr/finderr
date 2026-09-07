@@ -327,6 +327,30 @@ describe("ratings", () => {
     ]);
   });
 
+  /**
+   * The live defect: `api.radarr.video` sends `Tmdb: { Value: 0, Count: 0 }` for a title
+   * nobody has rated yet, and that drew a TMDB tile reading `0.0` beside a real IMDb score.
+   */
+  test("a zero score is not a score, so it draws no tile", () => {
+    expect(mergeRatings(null, [{ source: "Tmdb", kind: "user", value: 0, outOf: 10 }])).toEqual([]);
+    const merged = mergeRatings(localImdbRating(6.6, 21, "u"), [
+      { source: "Tmdb", kind: "user", value: 0, outOf: 10 },
+      rt({ value: 0 }),
+    ]);
+    expect(merged.map((r) => r.source)).toEqual(["IMDb"]);
+  });
+
+  /** A zero must not win a tile and then be dropped -- the real score has to survive it. */
+  test("a zero never displaces a real contribution to the same tile", () => {
+    const real = rt({ value: 86, url: "https://rottentomatoes.com/m/x" });
+    expect(
+      mergeRatings(null, [rt({ value: 0, url: "https://rottentomatoes.com/m/x", count: 9 }), real]),
+    ).toEqual([real]);
+    expect(
+      mergeRatings(null, [real, rt({ value: 0, url: "https://rottentomatoes.com/m/x", count: 9 })]),
+    ).toEqual([real]);
+  });
+
   test("prints each scale the way its source does", () => {
     expect(formatRatingValue(rt())).toBe("86%");
     expect(formatRatingValue(rt({ source: "IMDb", kind: "user", value: 8.4, outOf: 10 }))).toBe("8.4");

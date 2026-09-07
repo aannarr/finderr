@@ -241,8 +241,28 @@ export function localImdbRating(rating: number, votes: number, url: string): Rat
 export function mergeRatings(local: Rating | null, provided: readonly Rating[]): Rating[] {
   const byKey = new Map<string, Rating>();
   if (local) byKey.set(ratingKey(local), local);
-  for (const [key, contribution] of richestPerKey(provided)) byKey.set(key, contribution);
+  for (const [key, contribution] of richestPerKey(provided.filter(isScored))) byKey.set(key, contribution);
   return [...byKey.values()];
+}
+
+/**
+ * A zero is a source saying "nobody has rated this", so it draws nothing.
+ *
+ * `api.radarr.video` sends `Tmdb: { Value: 0, Count: 0 }` for an unrated title rather than
+ * omitting the source, which rendered a TMDB tile reading `0.0` beside a real IMDb score --
+ * a tile that looks like a verdict and is an absence. Same refusal `localImdbRating` already
+ * makes for the local seed, applied to every provider.
+ *
+ * It is filtered BEFORE `richestPerKey`, not after, or a zero carrying a link would win its
+ * tile on richness and take the real score's slot away with it.
+ *
+ * The cost, stated: a genuine Rotten Tomatoes 0% disappears too. Nothing in the payload
+ * separates the two -- `RottenTomatoes` also arrives with `Count: 0` meaning "not told", and
+ * the `rotten-tomatoes` plugin sends no count at all -- so there is no signal to split on,
+ * and a handful of films scoring a true 0% is the cheaper thing to lose.
+ */
+function isScored(r: Rating): boolean {
+  return r.value > 0;
 }
 
 /**
