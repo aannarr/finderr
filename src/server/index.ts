@@ -41,6 +41,7 @@ import { rollback } from "../lib/index-builder";
 import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
+import { parseVolumes } from "../lib/media-path";
 import type { RequestRemovalView } from "../lib/media-removal";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
@@ -88,6 +89,7 @@ import {
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { TmdbSettingsStore } from "../lib/tmdb-settings";
+import { TranscodeSessions } from "../lib/transcode-session";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
 import { addonConfigRoutes } from "./addon-config-routes";
@@ -116,6 +118,7 @@ import { json } from "./json-response";
 import { completionPayload, type ListsDeps } from "./lists";
 import { LiveIndex } from "./live-index";
 import { withPayloadGuard } from "./payload-guard";
+import { playbackRoutes } from "./playback-routes";
 import { type PersonPreviewDeps, type PreviewDeps, personPreviewResponse, previewResponse } from "./preview";
 import {
   PREVIEW_IMAGE_PATH,
@@ -230,6 +233,29 @@ const sonarr = cfg.sonarr ? new SonarrClient(cfg.sonarr) : undefined;
   verdict, nothing else. See `src/lib/prowlarr.ts`.
 */
 const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
+
+/*
+  PLAYBACK. Off unless `FINDERR_MEDIA_VOLUMES` names at least one mount.
+
+  The empty map is the whole feature switch and it is the default: with no volume, every
+  path resolution refuses, so a checkout that has not opted in cannot open a media file
+  at all. There is no second flag to forget.
+
+  `vaapiDevice` is probed ONCE at boot rather than per session -- it is a device node, so
+  its presence does not change while the process runs, and `existsSync` per playback would
+  be a syscall answering a question whose answer we already had. Absent means software
+  encoding, which is correct rather than degraded: the plan only reaches for an encoder at
+  all on the minority of titles that need one.
+*/
+const mediaVolumes = parseVolumes(cfg.media.volumes);
+const vaapiDevice = existsSync("/dev/dri/renderD128") ? "/dev/dri/renderD128" : null;
+mkdirSync(p.transcode, { recursive: true });
+const transcodeSessions = new TranscodeSessions({ root: p.transcode });
+if (mediaVolumes.length > 0) {
+  log(
+    `playback: ${mediaVolumes.length} media volume(s), ${vaapiDevice ? "QuickSync at /dev/dri/renderD128" : "software encoding"}`,
+  );
+}
 
 /*
   Addon configuration, and the one TMDB key this instance uses.
@@ -3714,6 +3740,15 @@ const appRoutes = {
  */
 const allRoutes = {
   ...appRoutes,
+  ...playbackRoutes({
+    store,
+    sessions: transcodeSessions,
+    volumes: mediaVolumes,
+    requireAdmin: (req) => auth.requireAdmin(req),
+    actorId: (req) => auth.principal(req)?.user?.id ?? null,
+    vaapiDevice: vaapiDevice ?? undefined,
+    log,
+  }),
   ...auth.routes(),
   ...addonConfigRoutes({
     registry: plugins,

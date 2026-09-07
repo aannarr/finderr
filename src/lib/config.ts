@@ -1436,5 +1436,13 @@ export function paths(c: Config = loadConfig()) {
     appDb: `${c.dataDir}/finderr.db`,
     dumps: `${c.dataDir}/dumps`,
     images: `${c.dataDir}/images`,
+    /**
+     * Transcode session directories, one per running ffmpeg.
+     *
+     * Its own directory rather than the data root because everything in it is DISPOSABLE
+     * and short-lived: a stale session dir left by a hard kill is litter to sweep, and
+     * sweeping is only safe when nothing durable shares the parent.
+     */
+    transcode: `${c.dataDir}/transcode`,
   };
 }
