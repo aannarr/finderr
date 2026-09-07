@@ -198,8 +198,25 @@ export const TitleCard = memo(function TitleCard({
         {/* Over the poster, above the link, only while navigation mode is open. */}
         {jumpLabel && <JumpBadge label={jumpLabel} />}
 
+        {/*
+          The badge answers ONE question -- is the file here -- and the colour is what
+          answers it. The footer's `RequestAction` answers the other one (what is happening
+          about it), so the two never restate each other.
+
+          Both states wore `bg-accent/85` until 2026-09-07, which made "Monitored" as loud
+          and as green as "In library" and left the words as the only difference between
+          having a film and not having it. aannarr, from a live shelf. Amber is the same
+          "keep waiting" this product already uses for a download in flight
+          (`TONE_SHELL.working`), so the badge and the chip under it agree by construction.
+        */}
         {owned && (
-          <span className="pointer-events-none absolute bottom-2 left-2 z-20 rounded bg-accent/85 px-1.5 py-0.5 text-[10px] font-medium text-black">
+          <span
+            className={[
+              "pointer-events-none absolute bottom-2 left-2 z-20 rounded px-1.5 py-0.5",
+              "text-[10px] font-medium text-black",
+              t.hasFile ? "bg-accent/85" : "bg-warn/85",
+            ].join(" ")}
+          >
             {t.hasFile ? "In library" : "Monitored"}
           </span>
         )}

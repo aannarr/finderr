@@ -368,12 +368,9 @@ export function TitleRoute() {
                 push the header around.
               */
               <PlayOnPlex plex={title.plex} />
-            ) : title.inLibrary ? (
+            ) : title.hasFile ? (
               <span className="block rounded-lg border border-line px-3 py-2 text-center text-sm text-muted">
-                {title.hasFile ? "Available in your library" : "Monitored, not downloaded"}
-                {title.progress !== null && title.progress > 0 && title.progress < 1 && (
-                  <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
-                )}
+                Available in your library
               </span>
             ) : title.requestVerdict ? (
               /*
@@ -381,8 +378,25 @@ export function TitleRoute() {
                 how far along the download is, and one honest sentence about why it is
                 taking as long as it is. The grid gets the short form of the same fact from
                 `RequestAction`, off the same `VERDICT_COPY` table.
+
+                It sits ABOVE the monitored span rather than below it, and `RequestAction`
+                carries the argument: a bare library row means only that the arr is watching,
+                so it must not shadow a verdict about an ask somebody actually made.
               */
               <RequestVerdictPanel state={title} error={title.requestError} />
+            ) : title.inLibrary ? (
+              /*
+                Monitored, nobody asked here. Same amber as a working verdict, same reason as
+                the card's chip -- and the percentage stays, because `progress` is the arr's
+                own download figure off the library mirror rather than anything a request
+                diagnostic supplies, so it is the only thing this branch can report.
+              */
+              <span className="block rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-center text-sm text-ink">
+                Monitored, not downloaded
+                {title.progress !== null && title.progress > 0 && title.progress < 1 && (
+                  <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
+                )}
+              </span>
             ) : (
               <button
                 type="button"
