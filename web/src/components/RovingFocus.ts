@@ -57,14 +57,17 @@ function focusedIndex(items: readonly HTMLElement[]): number {
 /**
  * Focus an element and make sure the reader can see it.
  *
- * > [!CAUTION] `scrollIntoView` IS THE `content-visibility` FIX, not belt and braces
- * > `.card-grid` sets `content-visibility: auto`, so the browser skips rendering rows that
- * > are off screen. Skipped content stays focusable -- that part the spec guarantees -- but
- * > it is skipped precisely because it is not on screen, and focus that lands there is
- * > invisible: the reader presses ↓, nothing appears to happen, and the next ↓ moves a
+ * > [!IMPORTANT] `scrollIntoView` is what makes an arrow key visible, not belt and braces
+ * > A grid is taller than the viewport, so ↓ from the last visible row focuses a card that
+ * > is off screen: the reader presses ↓, nothing appears to happen, and the next ↓ moves a
  * > selection they cannot see. `block: "nearest"` scrolls the minimum that brings it into
  * > view, which for a one-step move is usually a single row, and does nothing at all when
  * > the target was already visible.
+ * >
+ * > It was written for a sharper version of the same failure -- `.card-grid` carried
+ * > `content-visibility: auto`, which SKIPS RENDERING offscreen rows entirely -- and that
+ * > property is gone (`styles.css` carries why). The line stays because the ordinary case
+ * > above it is reason enough on its own.
  */
 function revealAndFocus(el: HTMLElement): void {
   el.focus();

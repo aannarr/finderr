@@ -313,6 +313,53 @@ describe("posters that are direct flex children start at the top of the row", ()
 });
 
 /**
+ * `content-visibility: auto` MAKES `document.scrollHeight` A LIE, AND THAT BREAKS BACK.
+ *
+ * A skipped subtree reports its `contain-intrinsic-size` placeholder rather than its real
+ * height. Every grid in this product is in the document's own scroll flow, so a skipped one
+ * shortens the WHOLE PAGE -- and the router restores scroll against that short page.
+ *
+ * Measured on the M1 Max, 2026-09-07, `/person/nm0000141?sort=year`: scroll to 1500, open a
+ * title, press Back. At the moment scroll is restored the 66 cards are already in the DOM and
+ * `document.body.scrollHeight` is 1109px against a real 4260px, so `scrollTo(1500)` clamps to
+ * 389 and one frame later the grid measures 4260 with nothing left to re-apply the scroll.
+ * Forcing `content-visibility: visible` in the same browser session restored 1500 exactly.
+ *
+ * Nothing in either suite can see that -- happy-dom computes no layout, and the defect is a
+ * clamp against a height only a real engine produces. So what is pinned is the property's
+ * ABSENCE, which is the one thing a test can hold: the rule looks like a free optimisation
+ * and reads as an obvious thing to add back.
+ *
+ * It is not free and it was not buying anything. Same machine, same day, three alternating
+ * runs each way: typing into a 50-card search grid measured p50 16.7ms / p95 33.4ms with the
+ * property and without it, identical long-animation-frame counts; scrolling a 66-card person
+ * page end to end measured p50 16.8ms both ways.
+ */
+describe("nothing in the scroll flow skips its own rendering", () => {
+  /*
+    COMMENTS ARE STRIPPED FIRST, and both assertions below failed on their own explanation
+    until they were. The note above the deleted rule quotes the property by name -- it has
+    to, or a reader cannot tell what is banned -- so a match against the raw file is a test
+    that can never go green and never measured a declaration at all. Stripping is also what
+    keeps the ban honest: the rule may be DESCRIBED here as often as it needs to be, and
+    only a live declaration fails.
+  */
+  const DECLARATIONS = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  test("no rule sets `content-visibility: auto`", () => {
+    // `visible` and `hidden` are fine and neither lies about height -- it is `auto`, the
+    // "skip it while it is off screen" value, that swaps a real height for a guess.
+    expect(DECLARATIONS).not.toMatch(/content-visibility:\s*auto/);
+  });
+
+  test("and no rule declares the placeholder size that only `auto` consumes", () => {
+    // `contain-intrinsic-size` does nothing on its own, so a surviving declaration is the
+    // other half of a rule somebody is part-way through restoring.
+    expect(DECLARATIONS).not.toMatch(/contain-intrinsic-size:/);
+  });
+});
+
+/**
  * THE DRAWER'S MOTION, WHICH THREE FILES HAVE TO AGREE ON.
  *
  * The enter keyframe and the exit transition are CSS; the timer that keeps the panel mounted

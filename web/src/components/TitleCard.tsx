@@ -196,9 +196,9 @@ export const TitleCard = memo(function TitleCard({
       <div className="flex flex-1 flex-col gap-1 p-2.5">
         {/*
           Always reserve two lines. Clamping alone still lets a one-line title make a
-          shorter block, and relying on the grid to stretch is fragile here because
-          `.card-grid` uses content-visibility, which skips layout for offscreen rows.
-          Reserving the space makes every card the same height by construction.
+          shorter block, so a row of cards would end up ragged and the grid's own row
+          height would depend on whichever title happened to wrap. Reserving the space
+          makes every card the same height by construction.
         */}
         <h3 className="line-clamp-2 min-h-[2.5rem] text-sm leading-snug font-medium" title={t.title}>
           {/* Also a link, so the destination is reachable from the text as well as
