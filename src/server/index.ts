@@ -50,7 +50,7 @@ import { RateLimiter } from "../lib/rate-limit";
 import { requestStateOf } from "../lib/request-diagnostics";
 import { hasOverrides, parseRequestOverrides } from "../lib/request-overrides";
 import { quotaLimitFor, quotaStateFor, quotaVerdict, utcDayReset, utcDayStart } from "../lib/request-quota";
-import { ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
+import { PeakMemory, ResourceMonitor, snapshot as runtimeSnapshot } from "../lib/runtime-stats";
 import { type BrowseSort, isBrowseSort, languageFilter, type TitleRow } from "../lib/search";
 import {
   NO_SEARCH_LOG,
@@ -554,22 +554,35 @@ function indexHasRow(tconst: string): boolean {
   return live.current.byTconst(tconst) !== null;
 }
 
+/*
+  The high-water mark the mirror walks are measured against, reported as `runtime.peak`.
+
+  These two walks are the largest transient allocation this process makes on a schedule, and
+  they are the ones a thirty-second health probe structurally cannot see -- read `PeakMemory`
+  for the sixteen days of green health checks that motivated it. Wrapped SEPARATELY rather
+  than around `refreshLibrary` as a whole, so the field names which walk set the record; the
+  two are bounded by different mechanisms and can regress independently.
+*/
+const mirrorPeak = new PeakMemory();
+
 // Mirror the arr libraries on a timer so "do we have it?" is a local lookup.
 async function refreshLibrary(): Promise<void> {
   // The episode half is SLICED rather than swept: it costs one Sonarr call per series, so
   // walking the whole library on this 60s timer would be hundreds of requests a minute.
   // `syncEpisodes` in `../lib/store` has the arithmetic.
-  const res = await syncLibrary(
-    store,
-    { radarr, sonarr },
-    { batch: cfg.episodeRefreshBatch, staleSeconds: cfg.episodeRefreshSeconds },
-    log,
+  const res = await mirrorPeak.during("arr-library", () =>
+    syncLibrary(
+      store,
+      { radarr, sonarr },
+      { batch: cfg.episodeRefreshBatch, staleSeconds: cfg.episodeRefreshSeconds },
+      log,
+    ),
   );
   for (const e of res.errors) log(`library sync error -- ${e}`);
   // Same cadence, one function: "can I request it" and "can I play it" go stale together.
   // A failed walk leaves the previous mirror in place rather than emptying it -- a
   // ratingKey is stable, so stale beats absent for the one thing this feeds.
-  const mirrored = await syncPlex(store, plex, log);
+  const mirrored = await mirrorPeak.during("plex-mirror", () => syncPlex(store, plex, log));
   if (mirrored.error) log(`library sync error -- ${mirrored.error}`);
 
   /*
@@ -1791,6 +1804,7 @@ const appRoutes = {
               : null,
             cpuSeconds: Math.round(rt.cpu.totalSeconds),
             gcSeconds: rt.cpu.gcSeconds === null ? null : Math.round(rt.cpu.gcSeconds),
+            peak: mirrorPeak.highest,
             // Through the holder, because this payload is built for EVERY health request
             // including the anonymous one, and the container probes it while the boot-time
             // build is still running. `current` throws then -- see `LiveIndex.poolStats`.

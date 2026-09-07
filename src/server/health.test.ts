@@ -102,6 +102,7 @@ function deps(onCoverage: () => void): HealthDeps {
       },
       cpuSeconds: 8,
       gcSeconds: 0,
+      peak: { job: "arr-library", rssMb: 231, heapMb: 42, at: "2026-09-07T03:00:00.000Z", ms: 3759 },
       fuzzy: "vocab 257,540 words (disk)",
     },
     coverage: () => {

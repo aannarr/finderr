@@ -14,6 +14,7 @@
  * precisely so the test can assert it was never invoked.
  */
 
+import type { PeakSample } from "../lib/runtime-stats";
 import type { WarmAttempt, WarmState, WarmStatus } from "./live-index";
 import type { ShelfCoverage } from "./shelves";
 
@@ -31,6 +32,20 @@ export interface HealthRuntime {
   } | null;
   cpuSeconds: number;
   gcSeconds: number | null;
+  /**
+   * The largest this process has ever been while doing a named background job, and which one.
+   *
+   * `rss` above is a GAUGE and cannot answer the question this field exists for. The container
+   * probes health every thirty seconds; a library walk that briefly doubles the process is
+   * over long before the next probe, so every reading is taken between spikes and the process
+   * looks steady right up until the kernel kills it. That is not hypothetical -- it is what
+   * Seerr's #3307 reporter observed for sixteen days while Docker called the container
+   * healthy. Read this beside `cgroup.limit`: a peak approaching it is the warning that a
+   * gauge structurally cannot give you.
+   *
+   * `null` until a job has run, which on a fresh boot is the first minute.
+   */
+  peak: PeakSample | null;
   /**
    * The fuzzy pool's report, or `null` while there is no index open to ask.
    *

@@ -183,6 +183,102 @@ export function snapshot(): RuntimeSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// The high-water mark
+// ---------------------------------------------------------------------------
+
+/** The largest this process was ever seen to be, and what it was doing at the time. */
+export interface PeakSample {
+  /** Which job was running. A fixed name from the call site, never anything user-supplied. */
+  job: string;
+  rssMb: number;
+  heapMb: number;
+  /** When the job that set this mark finished, as an ISO instant. */
+  at: string;
+  /** How long that job took. A peak with a duration beside it says whether it was a spike. */
+  ms: number;
+}
+
+/**
+ * How often to look while a job runs. Fine enough to catch a spike inside a walk that takes a
+ * few seconds, coarse enough that a minute-by-minute background job is not paying for it --
+ * about 150 samples across the live library sync, which takes ~3.8 s.
+ */
+const SAMPLE_MS = 25;
+
+/**
+ * The largest RSS this process reached while doing a named job.
+ *
+ * > [!IMPORTANT] A GAUGE CANNOT SEE THIS FAILURE, WHICH IS THE ENTIRE REASON THIS EXISTS
+ * > `runtime.rss` is what the process holds at the moment somebody asks, and the failure it
+ * > has to catch has always already finished by then. Seerr measured their library scanner
+ * > stepping from 165.4 MB to 499.6 MB inside ONE ten-second sampling interval, and ~450 MB of
+ * > it was still unreturned seven hours later (their issue #3307). Through 59 heap aborts and
+ * > 4 cgroup OOM kills in sixteen days, Docker reported `ExitCode=0`, `OOMKilled=false`,
+ * > `Health=healthy`. finderr's own probe is on a THIRTY-second timer, so it would have missed
+ * > the same thing by a wider margin.
+ *
+ * So the sampling goes inside the job rather than beside it, and the answer is kept as a
+ * HIGH-WATER MARK: the point is to be able to ask, after the fact, how big this process has
+ * ever needed to be. It is deliberately not reset -- a mark that expired would put the reader
+ * back to catching the spike live.
+ *
+ * The clock and the reading are both injected, so a test can drive this without sleeping and
+ * without hoping the collector cooperates.
+ */
+export class PeakMemory {
+  private best: PeakSample | null = null;
+  /** The record in BYTES. `PeakSample.rssMb` is rounded, so comparing on it would lose ties. */
+  private bestRss = 0;
+
+  constructor(
+    private readonly read: () => { rss: number; heapUsed: number } = () => process.memoryUsage(),
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** The all-time largest, or `null` before any job has run. */
+  get highest(): PeakSample | null {
+    return this.best;
+  }
+
+  /**
+   * Run `job`, sampling throughout, and keep the reading if it beats the record.
+   *
+   * The job's own result and its exceptions both pass straight through: this is an observer,
+   * and a mirror walk that fails must fail exactly as it would without it. The final reading
+   * is taken in `finally` for the same reason the sampler exists -- the last allocation before
+   * a job returns is often its largest, and an interval can land either side of it.
+   */
+  async during<T>(job: string, run: () => Promise<T>): Promise<T> {
+    const started = this.now();
+    let rss = 0;
+    let heap = 0;
+    const take = () => {
+      const u = this.read();
+      rss = Math.max(rss, u.rss);
+      heap = Math.max(heap, u.heapUsed);
+    };
+    take();
+    const timer = setInterval(take, SAMPLE_MS);
+    try {
+      return await run();
+    } finally {
+      clearInterval(timer);
+      take();
+      if (!this.best || rss > this.bestRss) {
+        this.bestRss = rss;
+        this.best = {
+          job,
+          rssMb: Math.round(rss / 1e6),
+          heapMb: Math.round(heap / 1e6),
+          at: new Date(this.now()).toISOString(),
+          ms: this.now() - started,
+        };
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The periodic log line
 // ---------------------------------------------------------------------------
 
