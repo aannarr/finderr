@@ -488,7 +488,13 @@ const previewResolver = new PreviewResolver(cfg.preview.resolvePerMinute);
 
   Every number is `src/lib/cost-meter.ts`'s to defend; nothing here restates one.
 */
-const searchCost = new CostMeter();
+const searchCost = new CostMeter({
+  budgetMs: cfg.auth.searchBudgetMs,
+  contendedMs: cfg.auth.searchContendedMs,
+  soloBudgetMs: cfg.auth.searchSoloBudgetMs,
+  refuseAtMs: cfg.auth.searchRefuseAtMs,
+  maxDelayMs: cfg.auth.searchMaxDelayMs,
+});
 
 /*
   How long every request took, and which of them were slow enough to keep the arguments of.
