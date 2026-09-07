@@ -26,6 +26,11 @@ import type { PlexLinks } from "../../../src/lib/plex";
 import type { RequestStateView } from "../../../src/lib/request-diagnostics";
 import type { QuotaState } from "../../../src/lib/request-quota";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
+import type {
+  ShelfChoice,
+  ShelfChoiceView,
+  ShelfPreferencePayload,
+} from "../../../src/lib/shelf-preferences";
 import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
@@ -49,6 +54,9 @@ export type {
   PaneBlock,
   PersonLinks,
   RenderedPane,
+  ShelfChoice,
+  ShelfChoiceView,
+  ShelfPreferencePayload,
   Term,
   TermDimension,
 };
@@ -1329,6 +1337,74 @@ export async function getDiscover(): Promise<{ shelves: DiscoverShelf[] }> {
  */
 function staleDiscover(): void {
   discoverCache.stale(DISCOVER_KEY);
+}
+
+/**
+ * Read the shelves this reader could arrange, in their order, hidden ones marked.
+ *
+ * NOT CACHED, unlike everything else in this file. It is read by one screen the reader
+ * opened in order to change it, so a hit would be a stale answer at exactly the moment
+ * freshness is the point -- and a cache entry that has to be invalidated by both writes
+ * below is a third thing to keep true for no gain.
+ */
+export async function getShelfPreference(): Promise<ShelfPreferencePayload> {
+  const res = await fetch(SHELF_PREFERENCE_PATH);
+  return readShelfPreference(res, `shelf preference failed: ${res.status}`);
+}
+
+/**
+ * Save an arrangement, and answer with the page the SERVER resolved it to.
+ *
+ * The answer is what the caller must draw, never the list it sent: an id that stopped
+ * naming a shelf while the screen was open is dropped, and a shelf shipped since is added
+ * back where the release put it. Both are ordinary (the genre rows rotate with the nightly
+ * index build), so the round trip is the only thing that knows what a save meant.
+ */
+export function saveShelfPreference(shelves: readonly ShelfChoice[]): Promise<ShelfPreferencePayload> {
+  return writeShelfPreference({
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shelves }),
+  });
+}
+
+/** Put the front page back to the shipped default. */
+export function resetShelfPreference(): Promise<ShelfPreferencePayload> {
+  return writeShelfPreference({ method: "DELETE" });
+}
+
+const SHELF_PREFERENCE_PATH = "/api/shelves/preference";
+
+/**
+ * One write, and one owner for what a write does to the front page already on screen.
+ *
+ * `staleDiscover` is the whole reason these two live in this file rather than beside the
+ * screen that calls them: the page the reader is about to go back to was assembled under
+ * the OLD arrangement, and without this it would be served from the session cache -- so
+ * arranging your shelves would appear to do nothing until the next reload. Which mutations
+ * move a shelf is a fact about the shelves, exactly as `withdrawRequest` says.
+ */
+async function writeShelfPreference(init: RequestInit): Promise<ShelfPreferencePayload> {
+  const res = await fetch(SHELF_PREFERENCE_PATH, init);
+  const payload = await readShelfPreference(res, `shelf preference write failed: ${res.status}`);
+  staleDiscover();
+  return payload;
+}
+
+/**
+ * The payload, or the SERVER's own sentence for why there is not one.
+ *
+ * "sign in to arrange your front page" is a fact the reader can act on and a status code is
+ * not, which is the same rule `postRequestGrain` and `withdrawRequest` follow. `fallback`
+ * covers the answer that carried no message at all -- a proxy page, or a network the
+ * request never left.
+ */
+async function readShelfPreference(res: Response, fallback: string): Promise<ShelfPreferencePayload> {
+  const body = (await res.json().catch(() => ({}))) as Partial<ShelfPreferencePayload> & {
+    error?: string;
+  };
+  if (!res.ok) throw new Error(body.error ?? fallback);
+  return { customised: body.customised === true, shelves: body.shelves ?? [] };
 }
 
 export interface BrowseResponse {

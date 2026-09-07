@@ -65,7 +65,7 @@ import {
   applyShelfPreference,
   parseShelfChoices,
   type ShelfChoice,
-  type ShelfChoiceView,
+  type ShelfPreferencePayload,
   ShelfPreferenceStore,
   shelfCatalogue,
 } from "../lib/shelf-preferences";
@@ -681,10 +681,7 @@ function preferenceOf(req: Request): ShelfChoice[] {
  * from the stored rows, which is what makes a retired shelf disappear from the screen and a
  * newly shipped one appear on it without either being a special case.
  */
-function preferencePayload(userId: string | null): {
-  customised: boolean;
-  shelves: ShelfChoiceView[];
-} {
+function preferencePayload(userId: string | null): ShelfPreferencePayload {
   const pref = userId ? shelfPrefs.read(userId) : [];
   return { customised: pref.length > 0, shelves: shelfCatalogue(currentShelves(), pref) };
 }

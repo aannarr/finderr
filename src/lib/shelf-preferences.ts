@@ -231,6 +231,26 @@ export function shelfCatalogue(
   }));
 }
 
+/**
+ * What all three preference routes answer with, read it, save it or reset it.
+ *
+ * Named here rather than spelt out at the route, because the BROWSER draws from it:
+ * `web/src/lib/api.ts` imports this type the same way it imports `QuotaState`, so the
+ * screen that arranges the page and the server that resolves the arrangement cannot drift
+ * about what a payload carries.
+ */
+export interface ShelfPreferencePayload {
+  /**
+   * Has this reader arranged anything, or are they looking at the shipped page?
+   *
+   * Its own field rather than "is the list non-empty": the list is the whole CATALOGUE and
+   * is never empty, so a screen with only that could not tell an arrangement from a default
+   * and would offer to reset a page nobody had touched.
+   */
+  customised: boolean;
+  shelves: ShelfChoiceView[];
+}
+
 function hiddenIds(pref: ShelfPreference): Set<string> {
   return new Set(pref.filter((choice) => choice.hidden).map((choice) => choice.id));
 }

@@ -1,5 +1,5 @@
 /**
- * `/account` -- your devices and your open sessions.
+ * `/account` -- your devices, your open sessions, and the shape of your front page.
  *
  * Everything here is scoped to the caller by the SERVER, not by this component: the
  * endpoints read the session and never take a user id, so there is no id to tamper with.
@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AgentKeyPanel } from "../components/AgentKeyPanel";
 import { PushToggle } from "../components/PushToggle";
+import { ShelfArrangement } from "../components/ShelfArrangement";
 import { clearPersistedCaches } from "../lib/api";
 import {
   type CredentialSummary,
@@ -193,6 +194,17 @@ export function AccountRoute() {
           {user.role === "admin" ? "Administrator" : "Member"} · joined {formatStamp(user.createdAt, "never")}
         </p>
       </section>
+
+      {/*
+        FIRST, above the ways in.
+
+        Everything below this is administrative -- how you sign in, which browsers hold a
+        session, what to revoke. This is the one section a reader opens `/account` to CHANGE
+        rather than to audit, and it is the only place in the product that offers it: the
+        header's own name link is how anybody gets here. It draws its own section and loads
+        its own state, so nothing above it needs to know shelves exist.
+      */}
+      <ShelfArrangement />
 
       {/*
         Plex was a fact in the subtitle line above and nothing more -- you could sign in

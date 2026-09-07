@@ -19,29 +19,7 @@
 
 import { type ReactNode, useState } from "react";
 import { LINK_BUTTON } from "../lib/ui";
-
-/**
- * The in-flight state every control here shares: busy while saving, and the server's own words
- * if it refused.
- *
- * `run` never throws. A rejected save is a message beside the control, not an unhandled
- * rejection that takes the page down -- these are settings, and the failure a person needs to
- * see is "that setting could not be saved", in the place they were looking.
- */
-function useSaving(): { busy: boolean; error: string | null; run: (save: () => Promise<void>) => void } {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const run = (save: () => Promise<void>): void => {
-    setBusy(true);
-    setError(null);
-    void save()
-      .catch((e: unknown) => setError((e as Error).message))
-      .finally(() => setBusy(false));
-  };
-
-  return { busy, error, run };
-}
+import { useSaving } from "../lib/use-saving";
 
 /**
  * A daily title limit, typed and saved.

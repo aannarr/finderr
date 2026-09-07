@@ -1248,11 +1248,12 @@ Every line here is a real limitation. It is not a roadmap.
 - English only. The UI has no translation layer and synopses arrive in English from
   upstream. The facet vocabulary carries `language` and `country`, so a translated-synopsis
   addon is possible today; the app's own chrome is not translatable yet.
-- The front page has no screen for arranging it yet. The server side is there --
-  `/api/shelves/preference` stores your order and the shelves you hid, and `/api/discover`
-  serves the page that way -- but nothing in the UI calls it, so in a browser the page is
-  still the same for everyone. What it will never be is a recommendation: shelves come from
-  the index and the library, with no watch history and no "because you watched".
+- The front page is arrangeable but never personal in the recommendation sense. `/account`
+  reorders the shelves, hides the ones you never scroll to, and puts it all back with one
+  control -- but that is order and visibility over the shelves that already exist. A
+  preference can never ADD a shelf, which is exactly what keeps a personal front page a row
+  lookup rather than a per-reader assembly. Shelves come from the index and the library,
+  with no watch history and no "because you watched".
 - Installed, it still needs the server to be reachable. The service worker keeps posters
   and bundles on the device and restores the front page you left, but HTML is deliberately
   never cached -- which shell this origin serves depends on your session cookie -- so
