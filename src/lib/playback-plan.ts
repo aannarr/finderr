@@ -38,7 +38,7 @@
  */
 
 import { type EncoderChoice, SOFTWARE } from "./encoder";
-import { INIT_FILE_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
+import { RUN_INIT_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
 
 /** What the browser told us it can decode. Codec names are ffmpeg's, lowercased. */
 export interface ClientCapabilities {
@@ -246,14 +246,48 @@ export interface FfmpegOpts {
 }
 
 /**
- * `-hls_time` for a run that must emit exactly ONE segment.
+ * How far PAST the segment's end a COPY reads, so the muxer can close the segment.
  *
- * A day, so the muxer never reaches its own cutting rule and the run's only boundary is the
- * `-to` that ends it. The segmentation decision belongs to `hls-timeline.ts`, which chose
- * this range; letting the muxer also have an opinion is how the playlist and the media stop
- * agreeing.
+ * > [!CAUTION] THE MUXER CUTS THE SEGMENT, `-to` ONLY STOPS THE READ, and the difference
+ * > shows up as a stutter
+ * > `-to` is not a frame-accurate cut for a stream copy: it stops on decode order, and with
+ * > B-frames the last packets written have presentation times PAST it. Measured 2026-09-08
+ * > on a 1080p h264 file, `-to 2416.414` produced video running to 2416.581 -- four frames
+ * > long. hls.js sizes a fragment from the samples it received, so those four frames made
+ * > every fragment 0.167 s longer than its `#EXTINF`; hls.js then placed the next fragment
+ * > that much further along, and Chromium's buffer ended up with a ~0.29 s HOLE at every
+ * > boundary, reported as `bufferStalledError` and `bufferSeekOverHole` once per segment.
+ * >
+ * > The HLS muxer, told `-hls_time` equal to the segment's own length, cuts exactly at the
+ * > next keyframe -- which IS the next boundary -- and writes an `#EXTINF` matching ours to
+ * > the microsecond. So the muxer does the cutting and the read simply has to outlast it:
+ * > this is how much further it reads so the muxer sees that keyframe and closes. Whatever
+ * > the run writes past the segment we asked for is dropped with its working directory.
  */
-const ONE_SEGMENT_HLS_TIME = 86_400;
+const SEGMENT_TAIL_SLACK_SEC = 2;
+
+/**
+ * How far PAST a copy-mode boundary to ask ffmpeg to seek, so that it lands ON it.
+ *
+ * > [!CAUTION] ffmpeg's `-ss` DELIBERATELY UNDERSHOOTS, and without this the segment is wrong
+ * > `ffmpeg.c` subtracts `3/23` of a second -- about 130 ms -- from a seek target on any input
+ * > whose video has a reorder delay, to be safe about DTS. On a container seeking by index
+ * > that is not a small imprecision: it drops the search below the index entry you asked for
+ * > and lands on the PREVIOUS one. Measured 2026-09-08 on a 2160p HEVC file, `-ss 3969.382`
+ * > -- an exact index entry -- produced a segment starting at 3962.876, **6.5 s early**, while
+ * > `-ss 3969.582` produced one starting at 3969.382 exactly.
+ * >
+ * > That 6.5 s is not a cosmetic overshoot. hls.js re-times a fragment from the media it
+ * > actually received, so a segment longer than its `#EXTINF` stretches the timeline, and the
+ * > buffer ends up with a hole at every boundary -- measured in Chromium as ~1.3 s gaps and a
+ * > steady stream of `bufferAppendNoProgress`.
+ * >
+ * > 200 ms is comfortably more than 130 and comfortably less than the gap between two index
+ * > entries, which is a cluster -- seconds. It applies ONLY to a copy: a re-encode decodes
+ * > from the previous keyframe and discards, so it starts exactly where it was asked to and a
+ * > nudge would make it skip 200 ms of film.
+ */
+const SEEK_NUDGE_SEC = 0.2;
 
 /**
  * The argv that produces ONE segment, derived from the plan.
@@ -320,9 +354,23 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     }
   }
 
-  if (opts.segment.startSec > 0) args.push("-ss", opts.segment.startSec.toFixed(6));
+  const copying = plan.video.action === "copy";
+  if (opts.segment.startSec > 0) {
+    if (copying) {
+      // See SEEK_NUDGE_SEC. `-noaccurate_seek` is the other half: without it ffmpeg discards
+      // everything before the nudged target, and since every AUDIO packet is a key packet it
+      // discards those happily -- leaving a nudge-sized hole in the sound at every boundary
+      // while the video, which can only start at a keyframe, starts in the right place.
+      args.push("-noaccurate_seek", "-ss", (opts.segment.startSec + SEEK_NUDGE_SEC).toFixed(6));
+    } else {
+      // A re-encode decodes from the previous keyframe and discards, so it starts exactly
+      // where it is asked to and needs neither the nudge nor the slack below.
+      args.push("-ss", opts.segment.startSec.toFixed(6));
+    }
+  }
   args.push("-i", opts.input);
-  args.push("-copyts", "-avoid_negative_ts", "disabled", "-to", opts.segment.endSec.toFixed(6));
+  const readUntil = opts.segment.endSec + (copying ? SEGMENT_TAIL_SLACK_SEC : 0);
+  args.push("-copyts", "-avoid_negative_ts", "disabled", "-to", readUntil.toFixed(6));
 
   if (plan.video.sourceIndex !== null) args.push("-map", `0:${plan.video.sourceIndex}`);
   if (plan.audio.sourceIndex !== null) args.push("-map", `0:${plan.audio.sourceIndex}`);
@@ -346,8 +394,10 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   args.push(
     "-f",
     "hls",
+    // The segment's own length, so the muxer's cutting rule -- the first keyframe at or past
+    // this -- lands on the NEXT boundary, which is a keyframe by construction.
     "-hls_time",
-    String(ONE_SEGMENT_HLS_TIME),
+    (opts.segment.endSec - opts.segment.startSec).toFixed(6),
     "-hls_playlist_type",
     "vod",
     "-hls_segment_type",
@@ -363,7 +413,7 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     // directory, so both must name the same place or ffmpeg fails at header-write time with
     // "Failed to open segment".
     "-hls_fmp4_init_filename",
-    INIT_FILE_NAME,
+    RUN_INIT_NAME,
     "-hls_segment_filename",
     `${opts.outDir}/${SEGMENT_FILE_PATTERN}`,
     // ffmpeg insists on a playlist output. Nothing reads this one -- the client is served

@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
-import { INIT_FILE_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
+import { RUN_INIT_NAME, SEGMENT_FILE_PATTERN } from "./hls-timeline";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -300,8 +300,34 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
     const a = args(plan).join(" ");
     expect(a).toContain("-copyts");
     expect(a).toContain("-avoid_negative_ts disabled");
-    expect(a).toContain("-to 48.000000");
+    // Past the segment's own end, because the read has to outlast the muxer's cut -- see
+    // SEGMENT_TAIL_SLACK_SEC. Absolute, not a duration: `-t` would count from the seek target.
+    expect(a).toContain("-to 50.000000");
     expect(a).not.toContain("-t 6");
+  });
+
+  /**
+   * A re-encode starts exactly where it is asked to and ends exactly where it is told, so it
+   * needs neither the seek nudge nor the read slack -- and giving it either would skip 200 ms
+   * of film or encode two seconds nobody asked for.
+   */
+  test("a re-encode gets the plain seek and stops at the boundary", () => {
+    const a = args(planPlayback(parseProbe(RANGO), FIREFOX)).join(" ");
+    expect(a).toContain("-ss 42.000000");
+    expect(a).toContain("-to 48.000000");
+    expect(a).not.toContain("-noaccurate_seek");
+  });
+
+  /**
+   * ffmpeg's `-ss` subtracts 3/23 of a second on any input whose video has a reorder delay,
+   * which on an index-seeking container drops it to the PREVIOUS entry -- measured 6.5 s
+   * early on a 2160p file. `-noaccurate_seek` is the other half: it stops ffmpeg discarding
+   * the audio between the nudged target and the boundary.
+   */
+  test("a copy is nudged past its boundary so the demuxer lands on it", () => {
+    const a = args(plan);
+    expect(a.join(" ")).toContain("-ss 42.200000");
+    expect(a.indexOf("-noaccurate_seek")).toBeLessThan(a.indexOf("-i"));
   });
 
   /**
@@ -332,12 +358,14 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
   });
 
   /**
-   * The segmentation decision belongs to `hls-timeline.ts`. If the muxer also had an opinion
-   * the run could emit two segments, and the second would overwrite the number after it.
+   * THE MUXER DOES THE CUTTING, and telling it the segment's own length is what makes its cut
+   * land on the next boundary -- which is a keyframe, so the cut is frame-exact. `-to` is not:
+   * it stops on decode order and lets four frames of presentation past it, which hls.js then
+   * turns into a hole at every boundary.
    */
-  test("the muxer is told never to cut, so one run makes one segment", () => {
+  test("the muxer is told to cut at exactly this segment's length", () => {
     const a = args(plan);
-    expect(Number(a[a.indexOf("-hls_time") + 1])).toBeGreaterThan(3600);
+    expect(a[a.indexOf("-hls_time") + 1]).toBe("6.000000");
     expect(a.join(" ")).toContain("-hls_playlist_type vod");
   });
 
@@ -410,6 +438,6 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment", () => {
     const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", segment: SEG7 });
     expect(a).toContain("/tmp/w42/produced.m3u8");
     expect(a.join(" ")).toContain(`/tmp/w42/${SEGMENT_FILE_PATTERN}`);
-    expect(a.join(" ")).toContain(`-hls_fmp4_init_filename ${INIT_FILE_NAME}`);
+    expect(a.join(" ")).toContain(`-hls_fmp4_init_filename ${RUN_INIT_NAME}`);
   });
 });

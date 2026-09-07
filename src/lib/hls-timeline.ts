@@ -131,8 +131,18 @@ export function segmentFileName(index: number): string {
  */
 export const SEGMENT_FILE_PATTERN = "seg%05d.m4s";
 
-/** The fMP4 initialisation segment's name. Shared by every segment of a playback. */
-export const INIT_FILE_NAME = "init.mp4";
+/**
+ * What one ffmpeg run calls the initialisation segment it writes.
+ *
+ * A fixed name inside that run's own private working directory, so it never collides; the
+ * session renames it to `initFileName(index)` on the way out.
+ */
+export const RUN_INIT_NAME = "init.mp4";
+
+/** How a published initialisation segment is named. The one owner of that spelling. */
+export function initFileName(index: number): string {
+  return `init${String(index).padStart(5, "0")}.mp4`;
+}
 
 /**
  * The complete VOD playlist, as text.
@@ -141,13 +151,23 @@ export const INIT_FILE_NAME = "init.mp4";
  * total duration, and enables the full scrub bar. Version 7 is the floor for fMP4
  * (`EXT-X-MAP` with a media initialisation section).
  *
- * > [!IMPORTANT] ONE `EXT-X-MAP` FOR THE WHOLE FILM, and that is measured rather than assumed
- * > Every segment is produced by its own ffmpeg run, so each run writes its own init segment.
- * > Compared byte for byte across two different seek offsets on 2026-09-08 they differed in
- * > SIX bytes, in two runs of three inside the duration fields -- the codec configuration a
- * > decoder actually reads was identical, because it comes from the source stream and the
- * > source stream does not change halfway through a film. So the first init produced is kept
- * > and every segment is decoded against it.
+ * > [!CAUTION] EVERY SEGMENT NAMES ITS OWN `EXT-X-MAP`, and sharing one is a MEASURED BUG
+ * > The tidy version emits a single `EXT-X-MAP` for the film, on the reasoning that the codec
+ * > configuration cannot change halfway through -- and two inits produced at different seek
+ * > offsets really do differ in only six bytes. **Those six bytes are the EDIT LIST**, and it
+ * > encodes where its own run started. Measured 2026-09-08: playing segment 401 against the
+ * > init produced for segment 400 shifted its whole presentation by 6.882 s, which is exactly
+ * > the distance between the two boundaries. It would have shifted further the further apart
+ * > they were, so the failure grows with the seek that caused it.
+ * >
+ * > `-use_editlist 0` does make the inits byte-identical, and it buys that by REBASING each
+ * > segment's decode times to zero -- which throws away the one thing that places an
+ * > independently produced segment on a timeline. So the offset lives either in the init or
+ * > in the media, never in neither, and the honest answer is to keep the init that belongs to
+ * > the segment. That is correct under a player which applies edit lists and under one which
+ * > ignores them, which is the reason to prefer it over betting on which this browser is.
+ * >
+ * > The cost is one four-kilobyte request per segment, for a file every run already wrote.
  */
 export function vodPlaylist(t: Timeline): string {
   const lines = [
@@ -157,14 +177,14 @@ export function vodPlaylist(t: Timeline): string {
     `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(longestSegmentSec(t)))}`,
     "#EXT-X-MEDIA-SEQUENCE:0",
     "#EXT-X-INDEPENDENT-SEGMENTS",
-    // RELATIVE names, which is what lets a client retarget the media at a different endpoint
-    // from the playlist. An absolute base here would weld every segment to one address and
-    // make multi-homed playback impossible without rewriting the playlist.
-    `#EXT-X-MAP:URI="${INIT_FILE_NAME}"`,
   ];
   for (let i = 0; i < t.starts.length; i++) {
     const range = segmentRange(t, i);
     if (!range) continue;
+    // RELATIVE names, which is what lets a client retarget the media at a different endpoint
+    // from the playlist. An absolute base here would weld every segment to one address and
+    // make multi-homed playback impossible without rewriting the playlist.
+    lines.push(`#EXT-X-MAP:URI="${initFileName(i)}"`);
     lines.push(`#EXTINF:${(range.endSec - range.startSec).toFixed(6)},`);
     lines.push(segmentFileName(i));
   }

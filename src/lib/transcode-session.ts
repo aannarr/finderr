@@ -48,7 +48,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { EncoderChoice } from "./encoder";
-import { INIT_FILE_NAME, segmentFileName, segmentRange, type Timeline } from "./hls-timeline";
+import { initFileName, RUN_INIT_NAME, segmentFileName, segmentRange, type Timeline } from "./hls-timeline";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
 /**
@@ -255,31 +255,37 @@ export class TranscodeSessions {
    * failed, or too many productions are already in flight. Every one of those is a state a
    * player retries out of, which is why they share an answer.
    */
-  async segmentPath(id: string, index: number): Promise<string | null> {
-    const state = this.states.get(id);
-    if (!state) return null;
-    state.session.lastAccessAt = this.now();
-    const path = join(state.session.dir, segmentFileName(index));
-    if (existsSync(path)) return path;
-    const produced = await this.produce(state, index);
-    return produced && existsSync(path) ? path : null;
+  segmentPath(id: string, index: number): Promise<string | null> {
+    return this.published(id, index, segmentFileName(index));
   }
 
   /**
-   * The path of the fMP4 initialisation segment, producing the first segment to get it.
+   * The path of segment `index`'s fMP4 initialisation segment, producing it if need be.
    *
-   * Every run writes an init; the first one to land is kept and the rest are dropped, for
-   * the measured reason in `vodPlaylist`'s note -- they differ only in duration fields. A
-   * player asks for this before it asks for any media, so on a cold session this is what
-   * pays for segment 0, which is also the segment a player that is not seeking wants next.
+   * Every run writes its own init and the session keeps it BESIDE its segment rather than
+   * sharing one, for the measured reason in `vodPlaylist`'s note: the init carries an edit
+   * list naming where its run started, so the wrong one shifts the whole segment. A player
+   * asks for this immediately before the media, so on a cold session this call is usually
+   * what pays for the segment too, and the request that follows it is already satisfied.
    */
-  async initPath(id: string): Promise<string | null> {
+  initPath(id: string, index: number): Promise<string | null> {
+    return this.published(id, index, initFileName(index));
+  }
+
+  /**
+   * One published file of segment `index` -- its media or its init -- produced if need be.
+   *
+   * Both come out of the SAME ffmpeg run, so both questions are the same question and asking
+   * them through one method is what stops a player's init request and its media request
+   * costing two transcodes of the same six seconds.
+   */
+  private async published(id: string, index: number, name: string): Promise<string | null> {
     const state = this.states.get(id);
     if (!state) return null;
     state.session.lastAccessAt = this.now();
-    const path = join(state.session.dir, INIT_FILE_NAME);
+    const path = join(state.session.dir, name);
     if (existsSync(path)) return path;
-    await this.produce(state, 0);
+    await this.produce(state, index);
     return existsSync(path) ? path : null;
   }
 
@@ -359,16 +365,20 @@ export class TranscodeSessions {
     return published;
   }
 
-  /** Move the finished segment (and the first init we see) out of the working directory. */
+  /**
+   * Move the finished media segment and its init out of the working directory.
+   *
+   * BOTH, together: an init belongs to the segment its run produced and is useless beside any
+   * other one. The media is renamed LAST so that a segment file appearing implies its init is
+   * already there -- a player asks for them in the other order, but nothing enforces that.
+   */
   private publish(state: SessionState, work: string, index: number): boolean {
-    const name = segmentFileName(index);
     const { dir } = state.session;
+    const media = segmentFileName(index);
     try {
-      if (!existsSync(join(dir, INIT_FILE_NAME)) && existsSync(join(work, INIT_FILE_NAME))) {
-        renameSync(join(work, INIT_FILE_NAME), join(dir, INIT_FILE_NAME));
-      }
-      if (!existsSync(join(work, name))) return false;
-      renameSync(join(work, name), join(dir, name));
+      if (!existsSync(join(work, RUN_INIT_NAME)) || !existsSync(join(work, media))) return false;
+      renameSync(join(work, RUN_INIT_NAME), join(dir, initFileName(index)));
+      renameSync(join(work, media), join(dir, media));
     } catch {
       return false;
     }
@@ -377,12 +387,13 @@ export class TranscodeSessions {
     return true;
   }
 
-  /** Drop the oldest productions once a session holds more than `SEGMENT_CACHE`. */
+  /** Drop the oldest productions, both files of each, once a session holds too many. */
   private evict(state: SessionState): void {
     while (state.produced.length > SEGMENT_CACHE) {
       const oldest = state.produced.shift();
       if (oldest === undefined) return;
       rmSync(join(state.session.dir, segmentFileName(oldest)), { force: true });
+      rmSync(join(state.session.dir, initFileName(oldest)), { force: true });
     }
   }
 

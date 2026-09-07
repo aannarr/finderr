@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  INIT_FILE_NAME,
+  initFileName,
   SEGMENT_FILE_PATTERN,
   SEGMENT_TARGET_SEC,
   segmentCount,
@@ -144,9 +144,25 @@ describe("the VOD playlist", () => {
     }
   });
 
-  test("one init segment covers the whole film", () => {
-    expect(text.match(/#EXT-X-MAP/g)).toHaveLength(1);
-    expect(text).toContain(`#EXT-X-MAP:URI="${INIT_FILE_NAME}"`);
+  /**
+   * NOT one shared init, and that is measured. The init carries an edit list naming where its
+   * own ffmpeg run started, so playing segment 401 against segment 400's init shifted it by
+   * 6.882 s -- exactly the distance between the two boundaries.
+   */
+  test("every segment names the init produced with it", () => {
+    expect(text.match(/#EXT-X-MAP/g)).toHaveLength(segmentCount(t));
+    for (let i = 0; i < segmentCount(t); i++) {
+      expect(text).toContain(`#EXT-X-MAP:URI="${initFileName(i)}"`);
+    }
+  });
+
+  test("each init is declared before the segment it belongs to", () => {
+    const lines = text.split("\n");
+    for (let i = 0; i < segmentCount(t); i++) {
+      expect(lines.indexOf(`#EXT-X-MAP:URI="${initFileName(i)}"`)).toBeLessThan(
+        lines.indexOf(segmentFileName(i)),
+      );
+    }
   });
 
   /** Relative names are what let a client retarget the media at another endpoint. */
@@ -163,4 +179,9 @@ describe("the VOD playlist", () => {
  */
 test("the ffmpeg template and the generated name are the same spelling", () => {
   expect(SEGMENT_FILE_PATTERN.replace("%05d", "00042")).toBe(segmentFileName(42));
+});
+
+/** The two published names have to be distinguishable, or one route serves the other's file. */
+test("a media segment and an init segment can never be confused", () => {
+  expect(initFileName(42)).not.toBe(segmentFileName(42));
 });

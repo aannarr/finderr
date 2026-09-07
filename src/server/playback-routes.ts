@@ -15,8 +15,8 @@
  * > [!CAUTION] SEGMENT NAMES ARE MATCHED AGAINST A CLOSED PATTERN, never sanitised
  * > A session directory is a real directory and the file name arrives from the wire, so this
  * > is the classic traversal surface. `serveFromSession` admits exactly three shapes and
- * > nothing else: the generated playlist, the init segment, and `SEGMENT_INDEX`, whose
- * > capture is turned into a NUMBER before anything touches the filesystem. So no caller's
+ * > nothing else: the generated playlist, and the two `PRODUCED_NAME` patterns, whose
+ * > captures are turned into a NUMBER before anything touches the filesystem. So no caller's
  * > text ever becomes a path component -- no `..`, no slash, no dot-file, no extension we
  * > did not write. A pattern that ENUMERATES what is allowed cannot be walked out of; one
  * > that strips what is forbidden is a guessing game with an attacker.
@@ -27,7 +27,7 @@
  */
 
 import type { EncoderChoice } from "../lib/encoder";
-import { INIT_FILE_NAME, SEGMENT_TARGET_SEC, segmentCount, vodPlaylist } from "../lib/hls-timeline";
+import { SEGMENT_TARGET_SEC, segmentCount, vodPlaylist } from "../lib/hls-timeline";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
 import { cutTimeline } from "../lib/keyframes";
 import { NOT_AN_EPISODE } from "../lib/media-file";
@@ -41,13 +41,15 @@ import { type Session, SessionRefused, type TranscodeSessions } from "../lib/tra
 const PLAYLIST_NAME = "index.m3u8";
 
 /**
- * The only file names a session directory may hand out.
+ * The only file names a session directory may hand out, besides the generated playlist.
  *
- * Matches exactly what a session produces: the generated playlist, the fMP4 init segment,
- * and numbered media segments. Closed by construction, and the capture group is how a
- * segment request names which segment it wants.
+ * One per thing a session produces, and each capture is how the request names WHICH segment
+ * it wants. Closed by construction: a name matching neither is refused rather than sanitised.
  */
-const SEGMENT_INDEX = /^seg(\d{5})\.m4s$/;
+const PRODUCED_NAME: { pattern: RegExp; of: keyof Pick<TranscodeSessions, "segmentPath" | "initPath"> }[] = [
+  { pattern: /^seg(\d{5})\.m4s$/, of: "segmentPath" },
+  { pattern: /^init(\d{5})\.mp4$/, of: "initPath" },
+];
 
 /**
  * How long the start request will wait for the first segment before answering anyway.
@@ -107,16 +109,18 @@ function capabilitiesFrom(v: unknown): ClientCapabilities {
 }
 
 /**
- * The path of the media segment this file name asks for, producing it if nobody has yet.
+ * The path of the produced file this name asks for, producing it if nobody has yet.
  *
  * Null for a name that is not one of ours, which is the traversal guard: the index comes
  * out of a closed pattern and is then a NUMBER, so nothing a caller writes ever reaches the
  * filesystem as text.
  */
-function segmentFor(sessions: TranscodeSessions, id: string, name: string): Promise<string | null> {
-  const match = SEGMENT_INDEX.exec(name);
-  if (!match?.[1]) return Promise.resolve(null);
-  return sessions.segmentPath(id, Number(match[1]));
+function producedFile(sessions: TranscodeSessions, id: string, name: string): Promise<string | null> {
+  for (const { pattern, of } of PRODUCED_NAME) {
+    const index = pattern.exec(name)?.[1];
+    if (index !== undefined) return sessions[of](id, Number(index));
+  }
+  return Promise.resolve(null);
 }
 
 /**
@@ -128,7 +132,7 @@ function segmentFor(sessions: TranscodeSessions, id: string, name: string): Prom
  * carries on and the client's own request joins it.
  */
 async function warmFirstSegment(sessions: TranscodeSessions, session: Session): Promise<void> {
-  await Promise.race([sessions.initPath(session.id), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
+  await Promise.race([sessions.segmentPath(session.id, 0), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
 }
 
 export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
@@ -156,8 +160,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
       });
     }
 
-    const path =
-      name === INIT_FILE_NAME ? await deps.sessions.initPath(id) : await segmentFor(deps.sessions, id, name);
+    const path = await producedFile(deps.sessions, id, name);
     if (!path) {
       // Either the session is gone, the name is not one we produce, or ffmpeg could not make
       // this segment right now. 404 rather than 5xx: hls.js retries a 404 and gives up on a

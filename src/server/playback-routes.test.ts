@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { INIT_FILE_NAME, segmentFileName, type Timeline } from "../lib/hls-timeline";
+import { initFileName, segmentFileName, type Timeline } from "../lib/hls-timeline";
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
@@ -63,7 +63,7 @@ function fakeSessions(dir: string) {
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
     segmentPath: (id: string, index: number) => found(id, segmentFileName(index)),
-    initPath: (id: string) => found(id, INIT_FILE_NAME),
+    initPath: (id: string, index: number) => found(id, initFileName(index)),
     stop: (id: string) => {
       stopped.push(id);
     },
@@ -112,8 +112,8 @@ beforeEach(() => {
   mkdtempSync(`${root}/x-`);
   require("node:fs").mkdirSync(sessionDir, { recursive: true });
   writeFileSync(join(sessionDir, "index.m3u8"), "#EXTM3U\n");
-  writeFileSync(join(sessionDir, "init.mp4"), "init");
-  writeFileSync(join(sessionDir, "seg00001.m4s"), "segment-bytes");
+  writeFileSync(join(sessionDir, initFileName(1)), "init");
+  writeFileSync(join(sessionDir, segmentFileName(1)), "segment-bytes");
   // A file OUTSIDE the session directory, next door -- the thing traversal would reach.
   writeFileSync(join(root, "secret.txt"), "the admin api key");
 
@@ -129,6 +129,8 @@ beforeEach(() => {
   writeFileSync(join(sessionDir, "index.m3u8.bak"), "the admin api key");
   writeFileSync(join(sessionDir, "seg1.m4s"), "the admin api key");
   writeFileSync(join(sessionDir, "seg00001.m4s.txt"), "the admin api key");
+  writeFileSync(join(sessionDir, "init1.mp4"), "the admin api key");
+  writeFileSync(join(sessionDir, "init.mp4"), "the admin api key");
   writeFileSync(join(sessionDir, "..%2Fsecret.txt"), "the admin api key");
   require("node:fs").mkdirSync(join(sessionDir, "etc"), { recursive: true });
   writeFileSync(join(sessionDir, "etc", "passwd"), "the admin api key");
@@ -183,7 +185,9 @@ describe("a segment name cannot walk out of its session directory", () => {
     "index.m3u8.bak",
     "seg1.m4s",
     "seg00001.m4s.txt",
-    "INIT.MP4",
+    "INIT00001.MP4",
+    "init1.mp4",
+    "init.mp4",
   ])("refuses %s with a 404", async (name) => {
     const { routes } = build({});
     const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
@@ -191,9 +195,9 @@ describe("a segment name cannot walk out of its session directory", () => {
     expect(await res.text()).not.toContain("admin api key");
   });
 
-  test("serves exactly the three names a session produces", async () => {
+  test("serves exactly the three shapes a session produces", async () => {
     const { routes } = build({});
-    for (const name of ["index.m3u8", "init.mp4", "seg00001.m4s"]) {
+    for (const name of ["index.m3u8", initFileName(1), segmentFileName(1)]) {
       const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
       expect(res.status).toBe(200);
     }

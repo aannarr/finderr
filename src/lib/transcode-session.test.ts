@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { INIT_FILE_NAME, segmentFileName, type Timeline } from "./hls-timeline";
+import { initFileName, RUN_INIT_NAME, segmentFileName, type Timeline } from "./hls-timeline";
 import type { PlaybackPlan } from "./playback-plan";
 import {
   EXPENSIVE_SESSIONS,
@@ -77,7 +77,7 @@ function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number } = {}) {
       const code = signalled ? 143 : (opts.exitCode ?? 0);
       if (code !== 0) return code;
       const { work, index } = outputOf(argv);
-      writeFileSync(join(work, INIT_FILE_NAME), `init for ${index}`);
+      writeFileSync(join(work, RUN_INIT_NAME), `init for ${index}`);
       writeFileSync(join(work, segmentFileName(index)), `media for ${index}`);
       return code;
     };
@@ -190,9 +190,11 @@ describe("producing a segment on demand", () => {
     expect(path).toBe(join(s.dir, segmentFileName(12)));
     expect(existsSync(path as string)).toBe(true);
     expect(f.spawned).toHaveLength(1);
-    // The range comes from the timeline, so the segment covers 72s..78s of the film.
-    expect(f.spawned[0]?.join(" ")).toContain("-ss 72.000000");
-    expect(f.spawned[0]?.join(" ")).toContain("-to 78.000000");
+    // The range comes from the timeline, so the segment covers 72s..78s of the film. The seek
+    // and the read both carry playback-plan's offsets; what matters here is that the SESSION
+    // handed the right range down.
+    expect(f.spawned[0]?.join(" ")).toContain("-ss 72.2");
+    expect(f.spawned[0]?.join(" ")).toContain("-hls_time 6.000000");
   });
 
   /** Producing it twice would cost a second ffmpeg for bytes already on disk. */
@@ -268,7 +270,7 @@ describe("producing a segment on demand", () => {
   test("a session that no longer exists yields null rather than throwing", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     expect(await m.segmentPath("nope", 0)).toBeNull();
-    expect(await m.initPath("nope")).toBeNull();
+    expect(await m.initPath("nope", 0)).toBeNull();
   });
 
   /**
@@ -286,29 +288,34 @@ describe("producing a segment on demand", () => {
   });
 
   /**
-   * ONE init for the whole film. Every run writes its own, and they differ only in duration
-   * fields -- measured across two seek offsets 2026-09-08 -- so the first one is kept and a
-   * player never sees the initialisation section change under it.
+   * EACH SEGMENT KEEPS ITS OWN INIT, because the init carries an edit list naming where its
+   * run started -- measured 2026-09-08, the wrong one shifted a segment by 6.882 s, exactly
+   * the distance between the two boundaries.
    */
-  test("the first init segment produced is the one that is kept", async () => {
-    const f = fakeFfmpeg();
-    const m = mgr(f.spawn);
+  test("every produced segment keeps the init that was produced with it", async () => {
+    const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
     await m.segmentPath(s.id, 2);
     await m.segmentPath(s.id, 9);
 
-    expect(await Bun.file(join(s.dir, INIT_FILE_NAME)).text()).toBe("init for 2");
+    expect(await Bun.file(join(s.dir, initFileName(2))).text()).toBe("init for 2");
+    expect(await Bun.file(join(s.dir, initFileName(9))).text()).toBe("init for 9");
   });
 
-  /** A player asks for the init before any media, so a cold session must be able to make it. */
-  test("asking for the init on a cold session produces the first segment to get it", async () => {
+  /**
+   * A player asks for the init immediately before the media, so the pair must cost ONE
+   * transcode of those six seconds rather than two.
+   */
+  test("the init and its segment come out of a single run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.initPath(s.id)).toBe(join(s.dir, INIT_FILE_NAME));
-    expect(f.spawned[0]?.join(" ")).toContain("-start_number 0");
+    expect(await m.initPath(s.id, 7)).toBe(join(s.dir, initFileName(7)));
+    expect(await m.segmentPath(s.id, 7)).toBe(join(s.dir, segmentFileName(7)));
+    expect(f.spawned).toHaveLength(1);
+    expect(f.spawned[0]?.join(" ")).toContain("-start_number 7");
   });
 
   /**
@@ -316,18 +323,21 @@ describe("producing a segment on demand", () => {
    * Re-producing an evicted segment costs the measured 0.08 s, so a rewind past the window is
    * cheap rather than broken.
    */
-  test("only the most recent SEGMENT_CACHE segments stay on disk", async () => {
+  test("only the most recent SEGMENT_CACHE segments stay on disk, init and all", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
     for (let i = 0; i < SEGMENT_CACHE + 3; i++) await m.segmentPath(s.id, i);
 
-    expect(existsSync(join(s.dir, segmentFileName(0)))).toBe(false);
-    expect(existsSync(join(s.dir, segmentFileName(2)))).toBe(false);
-    expect(existsSync(join(s.dir, segmentFileName(3)))).toBe(true);
-    expect(existsSync(join(s.dir, segmentFileName(SEGMENT_CACHE + 2)))).toBe(true);
-    // The init is not a segment and eviction must never take it.
-    expect(existsSync(join(s.dir, INIT_FILE_NAME))).toBe(true);
+    for (const gone of [0, 2]) {
+      expect(existsSync(join(s.dir, segmentFileName(gone)))).toBe(false);
+      // An init outlives its segment for nothing: it is useless beside any other one.
+      expect(existsSync(join(s.dir, initFileName(gone)))).toBe(false);
+    }
+    for (const kept of [3, SEGMENT_CACHE + 2]) {
+      expect(existsSync(join(s.dir, segmentFileName(kept)))).toBe(true);
+      expect(existsSync(join(s.dir, initFileName(kept)))).toBe(true);
+    }
   });
 
   test("reading a segment counts as being wanted", async () => {

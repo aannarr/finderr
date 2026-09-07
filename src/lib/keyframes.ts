@@ -40,7 +40,7 @@ import { type Timeline, timelineFrom, uniformTimeline } from "./hls-timeline";
 import { type ProbeRunner, spawnFfprobe } from "./media-probe";
 
 /** How long the whole keyframe probe may take before the caller gives up on it. */
-export const KEYFRAME_PROBE_TIMEOUT_MS = 8_000;
+export const KEYFRAME_PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * The most points one probe will ask about.
