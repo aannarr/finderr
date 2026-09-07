@@ -272,6 +272,50 @@ describe("ffmpegArgs turns a plan into flags", () => {
     expect(a.indexOf("-ss")).toBeLessThan(a.indexOf("-i"));
   });
 
+  /**
+   * WITHOUT `-re` ONE VIEWER OWNS THE MACHINE. ffmpeg encodes as fast as the hardware
+   * allows and stops when the film is finished -- measured at 344% CPU for a single 4K
+   * software re-encode on an M1 Max, for a viewer who had watched nine seconds. This is
+   * what makes `EXPENSIVE_SESSIONS` a budget rather than a number multiplied by clock speed.
+   */
+  test("reads the input at playback speed rather than flat out", () => {
+    const a = ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1" });
+    expect(a).toContain("-re");
+    // Before `-i`, or it paces the OUTPUT and reads the input as fast as it can anyway.
+    expect(a.indexOf("-re")).toBeLessThan(a.indexOf("-i"));
+  });
+
+  test("paces the expensive path too, which is the one that matters", () => {
+    const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
+    expect(ffmpegArgs(encoding, { input: "/a.mkv", outDir: "/o" })).toContain("-re");
+  });
+
+  /**
+   * Burst then throttle beats either extreme: flat realtime leaves the player one segment
+   * from starving, and unpaced encodes the whole film for somebody watching a minute.
+   */
+  test("bursts a buffer and then throttles when ffmpeg supports it", () => {
+    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", readrateBurstSec: 30 });
+    expect(a.join(" ")).toContain("-readrate 1");
+    expect(a.join(" ")).toContain("-readrate_initial_burst 30");
+    expect(a.join(" ")).toContain("-readrate_catchup 2");
+    // The two forms are alternatives; emitting both would be an ffmpeg error.
+    expect(a).not.toContain("-re");
+  });
+
+  /**
+   * `-readrate_initial_burst` landed in ffmpeg 6.1 and `-readrate_catchup` in 7.1, and an
+   * unknown option is a HARD ERROR. So an older binary must get the flag that has existed
+   * for a decade rather than a server where nothing plays.
+   */
+  test("falls back to plain -re when the burst flags are unavailable", () => {
+    for (const burst of [undefined, 0]) {
+      const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/o", readrateBurstSec: burst });
+      expect(a).toContain("-re");
+      expect(a.join(" ")).not.toContain("readrate");
+    }
+  });
+
   test("no seek emits no -ss at all", () => {
     expect(ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1" })).not.toContain("-ss");
     expect(ffmpegArgs(plan, { input: "/plex/a.mkv", outDir: "/tmp/s1", seekSec: 0 })).not.toContain("-ss");

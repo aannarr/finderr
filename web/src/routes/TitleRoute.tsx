@@ -18,6 +18,7 @@ import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { useKeyAction } from "../components/Kbd";
+import { PlayHere } from "../components/PlayHere";
 import { PlayOnPlex } from "../components/PlayOnPlex";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
@@ -417,6 +418,26 @@ export function TitleRoute() {
                 {requestKey.hint}
               </button>
             )}
+
+            {/*
+              Play it HERE, in this tab. Additive to whichever branch above drew: an owned
+              title may have a Plex link, or only the arr's word that the file landed, and
+              this works in both cases because it reads the file the ARR imported rather
+              than anything Plex scanned.
+
+              `hasFile` is the right signal and it is the opposite of `PlayOnPlex`'s rule,
+              deliberately. That control ignores `hasFile` because Plex holding a scanned
+              item is the stronger statement ABOUT PLEX; this one plays the arr's file, so
+              the arr's own answer is the only one that matters -- and it is true for the
+              window where the file exists and Plex has not scanned it yet.
+
+              Admin-only for now, and the SERVER is what enforces that; `isAdmin` decides
+              only whether to draw a control nobody else could use. Legitimately in the
+              header for the same reason `PlayOnPlex` is: `hasFile` rides the local row at
+              t=0 and cannot pop in late, and the player itself is an overlay, so nothing
+              here reflows.
+            */}
+            {title.hasFile && <PlayHere tconst={title.tconst} isAdmin={isAdmin} />}
 
             {/*
               A series we hold with holes in it: the SAME chooser, under whichever control

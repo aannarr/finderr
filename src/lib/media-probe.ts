@@ -145,6 +145,51 @@ export async function probeMedia(
   return probe;
 }
 
+/**
+ * How many seconds of input to burst-read before throttling to realtime.
+ *
+ * 30 is a comfortable buffer against a hiccup without being an invitation to encode the
+ * whole film: at realtime afterwards, a viewer who quits at ten minutes has cost ten
+ * minutes of encoding plus this, rather than the entire runtime.
+ */
+export const READRATE_BURST_SEC = 30;
+
+/**
+ * Whether this ffmpeg understands burst-then-throttle pacing.
+ *
+ * Probed ONCE at boot, because it is a property of the binary and cannot change while the
+ * process runs -- the same shape as the `/dev/dri` check. **An unknown option is a hard
+ * error in ffmpeg rather than a warning**, so assuming the flag would turn an older
+ * container into a server where nothing plays at all, with the reason buried in a stderr
+ * nobody reads. `-readrate_initial_burst` arrived in 6.1 and `-readrate_catchup` in 7.1.
+ *
+ * Returns 0 when unsupported, which `ffmpegArgs` reads as "use plain `-re`".
+ */
+export async function probeReadrateBurst(
+  run: (argv: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }> = async (argv) => {
+    const proc = Bun.spawn(["ffmpeg", ...argv], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { ok: code === 0, stdout, stderr };
+  },
+): Promise<number> {
+  try {
+    const res = await run(["-hide_banner", "-h", "full"]);
+    // Both streams: ffmpeg has printed help to either depending on version.
+    const help = `${res.stdout}${res.stderr}`;
+    return help.includes("readrate_initial_burst") && help.includes("readrate_catchup")
+      ? READRATE_BURST_SEC
+      : 0;
+  } catch {
+    // No ffmpeg at all. Playback will fail later with a message about the file; there is
+    // nothing useful to say here that boot has not already said about the media volumes.
+    return 0;
+  }
+}
+
 const spawnFfprobe: ProbeRunner = async (argv, timeoutMs) => {
   const proc = Bun.spawn(["ffprobe", ...argv], { stdout: "pipe", stderr: "pipe" });
   const timer = setTimeout(() => proc.kill(), timeoutMs);

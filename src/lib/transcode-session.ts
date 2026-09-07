@@ -37,7 +37,7 @@
  * > writing one `index.m3u8` and produce a corrupt playlist for both of them.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
@@ -88,6 +88,8 @@ export interface StartOpts {
   seekSec?: number;
   /** `/dev/dri/renderD128` when QuickSync is available. */
   vaapiDevice?: string;
+  /** Seconds to burst-read before throttling; see `FfmpegOpts.readrateBurstSec`. */
+  readrateBurstSec?: number;
   /** Who asked, for the health report. Never used for a decision. */
   owner?: string;
 }
@@ -163,7 +165,13 @@ export class TranscodeSessions {
     const dir = mkdtempSync(join(this.opts.root, "sess-"));
     const argv = [
       this.ffmpeg,
-      ...ffmpegArgs(o.plan, { input: o.input, outDir: dir, seekSec: o.seekSec, vaapiDevice: o.vaapiDevice }),
+      ...ffmpegArgs(o.plan, {
+        input: o.input,
+        outDir: dir,
+        seekSec: o.seekSec,
+        vaapiDevice: o.vaapiDevice,
+        readrateBurstSec: o.readrateBurstSec,
+      }),
     ];
     const proc = this.spawn(argv);
     const id = crypto.randomUUID();
@@ -264,9 +272,46 @@ export class TranscodeSessions {
     return dropped;
   }
 
-  /** Stop everything. For a clean shutdown. */
+  /**
+   * Stop everything.
+   *
+   * > [!CAUTION] A PROCESS THAT EXITS WITHOUT CALLING THIS ORPHANS EVERY RUNNING ffmpeg
+   * > A child outlives its parent. When finderr goes away -- a redeploy, a `--watch`
+   * > restart, an operator's Ctrl-C -- the new process starts with an empty session map
+   * > while the old ffmpegs keep running, reparented to init, at whatever CPU they were
+   * > using, forever. Nothing reaps them, because the only thing that knew about them was
+   * > the map that just went away.
+   * >
+   * > Observed 2026-09-08 on the dev server: one orphan from a restart three edits earlier
+   * > was still at 344% CPU when somebody noticed the fans. `bindShutdown` is what stops
+   * > this being possible, and it is not optional wiring.
+   */
   stopAll(): void {
     for (const s of this.list()) this.stop(s.id);
+  }
+
+  /**
+   * Sweep session directories left by a PREVIOUS life of this process.
+   *
+   * Called at boot, before anything starts. A hard kill (SIGKILL, an OOM, a pulled plug)
+   * skips `stopAll` by definition, so the disk keeps whatever those sessions had written --
+   * and an HLS session is megabytes per minute. The directories are safe to remove
+   * unconditionally because nothing durable lives here: the whole tree is regenerable
+   * output, which is exactly why `paths.transcode` is its own directory rather than a
+   * corner of the data root.
+   */
+  sweepStale(): number {
+    let removed = 0;
+    try {
+      for (const name of readdirSync(this.opts.root)) {
+        if (!name.startsWith("sess-")) continue;
+        rmSync(join(this.opts.root, name), { recursive: true, force: true });
+        removed++;
+      }
+    } catch {
+      // No directory yet, or no permission. Neither is worth failing a boot over.
+    }
+    return removed;
   }
 
   private forget(id: string): void {
@@ -284,6 +329,29 @@ export class TranscodeSessions {
 }
 
 /**
+ * Make the process kill its transcodes before it dies.
+ *
+ * Separate from the class so the class stays testable without touching global process
+ * state, and so the wiring is one visible line at the call site rather than a side effect
+ * of construction.
+ *
+ * **Every one of these signals matters and they arrive from different places.** `SIGTERM` is
+ * what `docker stop` and a redeploy send; `SIGINT` is Ctrl-C on the dev server; `exit`
+ * catches an ordinary return and an uncaught throw. What CANNOT be caught is `SIGKILL` --
+ * which is why `sweepStale` exists as the second half of this.
+ *
+ * The handlers do not exit the process themselves. Something else owns shutdown ordering
+ * (the database has a checkpoint to finish, and hard-killing it has cost this project a
+ * file before), so this only ever adds a cleanup and never takes over the sequence.
+ */
+export function bindShutdown(sessions: TranscodeSessions): void {
+  const stop = () => sessions.stopAll();
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  process.once("exit", stop);
+}
+
+/**
  * What makes two requests the same session.
  *
  * The seek offset is part of it BECAUSE ffmpeg starts writing at that point: two viewers at
@@ -295,6 +363,9 @@ export function sessionKey(o: StartOpts): string {
   return [
     o.input,
     o.seekSec ?? 0,
+    // Pacing is part of the key because it changes the ARGV, and two sessions that would
+    // run different ffmpegs must not share one output directory.
+    o.readrateBurstSec ?? 0,
     p.video.action,
     p.video.sourceIndex,
     p.audio.action,

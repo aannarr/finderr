@@ -42,6 +42,7 @@ import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { parseVolumes } from "../lib/media-path";
+import { probeReadrateBurst } from "../lib/media-probe";
 import type { RequestRemovalView } from "../lib/media-removal";
 import { renderPanes } from "../lib/panes";
 import type { PersonHit } from "../lib/people";
@@ -89,7 +90,7 @@ import {
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { TmdbSettingsStore } from "../lib/tmdb-settings";
-import { TranscodeSessions } from "../lib/transcode-session";
+import { bindShutdown, TranscodeSessions } from "../lib/transcode-session";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { WatchlistStore } from "../lib/watchlist";
 import { addonConfigRoutes } from "./addon-config-routes";
@@ -249,8 +250,16 @@ const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
 */
 const mediaVolumes = parseVolumes(cfg.media.volumes);
 const vaapiDevice = existsSync("/dev/dri/renderD128") ? "/dev/dri/renderD128" : null;
+// Whether this ffmpeg can burst-then-throttle. One probe, at boot, for the reason
+// `probeReadrateBurst` gives: an unknown option is a hard error, not a warning.
+const readrateBurstSec = mediaVolumes.length > 0 ? await probeReadrateBurst() : 0;
 mkdirSync(p.transcode, { recursive: true });
 const transcodeSessions = new TranscodeSessions({ root: p.transcode });
+// Both halves of "a previous life of this process left something behind": the signal
+// handlers stop transcodes on the way out, and the sweep clears what a kill -9 could not.
+bindShutdown(transcodeSessions);
+const sweptSessions = transcodeSessions.sweepStale();
+if (sweptSessions > 0) log(`playback: swept ${sweptSessions} stale session director(ies)`);
 if (mediaVolumes.length > 0) {
   log(
     `playback: ${mediaVolumes.length} media volume(s), ${vaapiDevice ? "QuickSync at /dev/dri/renderD128" : "software encoding"}`,
@@ -3747,6 +3756,7 @@ const allRoutes = {
     requireAdmin: (req) => auth.requireAdmin(req),
     actorId: (req) => auth.principal(req)?.user?.id ?? null,
     vaapiDevice: vaapiDevice ?? undefined,
+    readrateBurstSec,
     log,
   }),
   ...auth.routes(),

@@ -44,6 +44,32 @@ const SEGMENT_NAME = /^(?:index\.m3u8|init\.mp4|seg\d{5}\.m4s)$/;
 /** How far into a title a caller may seek. 24 hours is past any real runtime. */
 const MAX_SEEK_SEC = 24 * 60 * 60;
 
+/**
+ * How long the start request will wait for ffmpeg to write its first playlist.
+ *
+ * Measured on an M1 Max over SMB 2026-09-08: a remux plus an audio track produces the
+ * manifest in about a second, and a software 4K re-encode takes several. Five seconds
+ * covers the cheap case comfortably and gives up on the expensive one rather than holding
+ * a connection -- which is correct, because giving up here costs nothing.
+ */
+const MANIFEST_WAIT_MS = 5_000;
+const MANIFEST_POLL_MS = 100;
+
+async function waitForManifest(dir: string): Promise<boolean> {
+  const path = join(dir, "index.m3u8");
+  const deadline = Date.now() + MANIFEST_WAIT_MS;
+  while (Date.now() < deadline) {
+    // A FRESH `Bun.file` each pass. Hoisting it out of the loop looks like the tidier
+    // version and silently never returns true: the handle caches its answer, so a file that
+    // did not exist on the first check never exists on any later one, and the wait always
+    // spends its full budget. Measured 2026-09-08 -- a remux that writes its manifest in
+    // about a second took the whole five.
+    if (await Bun.file(path).exists()) return true;
+    await Bun.sleep(MANIFEST_POLL_MS);
+  }
+  return false;
+}
+
 export interface PlaybackDeps {
   store: Store;
   sessions: TranscodeSessions;
@@ -53,6 +79,8 @@ export interface PlaybackDeps {
   /** For attributing a session in the health report. Never used for a decision. */
   actorId: (req: Request) => string | null;
   vaapiDevice?: string;
+  /** Seconds to burst-read before throttling. Probed once at boot; 0 means plain `-re`. */
+  readrateBurstSec?: number;
   log?: (m: string) => void;
 }
 
@@ -185,8 +213,26 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             plan,
             seekSec,
             vaapiDevice: deps.vaapiDevice,
+            readrateBurstSec: deps.readrateBurstSec,
             owner: deps.actorId(req) ?? undefined,
           });
+
+          /*
+            WAIT FOR THE MANIFEST BEFORE ANSWERING, and this is not politeness.
+
+            ffmpeg needs a second or two to write `index.m3u8`, so returning the moment the
+            process is spawned hands the client a playlist URL that 404s. hls.js does retry
+            a 404 -- but its retry budget is spent in well under the time a 4K software
+            re-encode needs to produce a first segment, after which it gives up silently and
+            the player sits at `readyState 0` with an empty console. Measured in a real
+            browser 2026-09-08; it is exactly the failure that looks like nothing happening.
+
+            Bounded, and a timeout is NOT an error: the session is running and the manifest
+            will appear, so the client gets its URL either way and hls.js's retries cover the
+            remainder. This wait removes the common case, it does not promise anything.
+          */
+          await waitForManifest(session.dir);
+
           return json({
             sessionId: session.id,
             // RELATIVE, so a client may retarget it at any endpoint that serves this server

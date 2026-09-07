@@ -286,13 +286,42 @@ describe("ending a session", () => {
     expect(m.touch("nope")).toBeNull();
   });
 
-  test("stopAll clears everything", () => {
+  /**
+   * THE ORPHAN CASE. A child outlives its parent, so a process that exits without stopping
+   * its sessions leaves every ffmpeg running forever at whatever CPU it was using.
+   * Observed on the dev server 2026-09-08: an orphan from a restart three edits earlier was
+   * still at 344% CPU.
+   */
+  test("stopAll signals every running ffmpeg", () => {
     const f = fakeSpawner();
     const m = mgr(f.spawn);
     m.start({ input: "/plex/a.mkv", plan: CHEAP });
     m.start({ input: "/plex/b.mkv", plan: CHEAP });
+
     m.stopAll();
+
     expect(m.list()).toHaveLength(0);
+    expect(f.killed.filter((k) => k.signal === 15)).toHaveLength(2);
+  });
+
+  /** The other half of the orphan problem: what a SIGKILL leaves on disk. */
+  test("sweepStale removes session directories from a previous life", () => {
+    const f = fakeSpawner();
+    const m = mgr(f.spawn);
+    const a = m.start({ input: "/plex/a.mkv", plan: CHEAP });
+    const b = m.start({ input: "/plex/b.mkv", plan: CHEAP });
+    expect(existsSync(a.dir)).toBe(true);
+
+    // A fresh manager over the same root is exactly what a restarted process sees.
+    const reborn = mgr(fakeSpawner().spawn);
+    expect(reborn.sweepStale()).toBe(2);
+    expect(existsSync(a.dir)).toBe(false);
+    expect(existsSync(b.dir)).toBe(false);
+  });
+
+  test("sweeping an empty or missing root is not an error", () => {
+    const m = new TranscodeSessions({ root: `${root}/never-created`, spawn: fakeSpawner().spawn, now });
+    expect(m.sweepStale()).toBe(0);
   });
 
   /** A stopped session's key must be free, or that file can never be played again. */

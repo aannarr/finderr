@@ -237,6 +237,13 @@ export interface FfmpegOpts {
   vaapiDevice?: string;
   /** Seconds per segment. */
   segmentSec?: number;
+  /**
+   * How many seconds of input to burst-read before throttling to realtime.
+   *
+   * Undefined, zero, or an ffmpeg too old for the flag all fall back to plain `-re`. See
+   * the pacing block in `ffmpegArgs` for why this is gated rather than assumed.
+   */
+  readrateBurstSec?: number;
 }
 
 /**
@@ -275,6 +282,52 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     );
 
   if (opts.seekSec && opts.seekSec > 0) args.push("-ss", String(opts.seekSec));
+
+  /*
+    PACE THE READ, or one viewer owns the machine.
+
+    ffmpeg has no reason to pace itself: told to transcode a 93-minute film it encodes as
+    fast as the hardware allows and stops when the film is done. Measured on an M1 Max
+    2026-09-08 -- ONE software 4K HEVC-to-h264 session sat at **344% CPU** and pushed the
+    load average past 30, producing an hour of video for somebody who had watched nine
+    seconds of it. On the deployment target, a four-thread Celeron, that is the whole box.
+
+    Head to head on the same 1080p HEVC re-encode, 15 seconds of wall clock:
+
+    | | CPU | video produced |
+    |---|---|---|
+    | unpaced | 214.7% | 32 s |
+    | `-readrate 1` | 87.4% | 8 s |
+
+    **BURST FIRST, THEN THROTTLE**, which is better than either extreme and is what
+    `readrateBurstSec` buys. Flat realtime keeps the player permanently one segment from
+    starving, so any hiccup is a stall; bursting a buffer and then settling gives an instant
+    start AND a bounded steady state. `-readrate_catchup` lets it briefly exceed realtime if
+    it falls behind, which is the recovery the flat form has no way to express.
+
+    The flags are gated on `readrateBurstSec` because they are NOT universal --
+    `-readrate_initial_burst` arrived in ffmpeg 6.1 and `-readrate_catchup` in 7.1, and an
+    unknown option is a hard error rather than a warning, so guessing would turn an older
+    container into a server where nothing plays. The caller probes once at boot, the same
+    shape as `vaapiDevice`, and passing nothing falls back to plain `-re`, which every
+    ffmpeg worth running has had for a decade.
+
+    The cost, already paid before this existed: the player cannot buffer the whole film, so
+    seeking past the buffer needs a new session rather than a scrub. Seeking already works
+    that way here -- the offset is part of the session key.
+  */
+  if (opts.readrateBurstSec && opts.readrateBurstSec > 0) {
+    args.push(
+      "-readrate",
+      "1",
+      "-readrate_initial_burst",
+      String(opts.readrateBurstSec),
+      "-readrate_catchup",
+      "2",
+    );
+  } else {
+    args.push("-re");
+  }
   args.push("-i", opts.input);
 
   if (plan.video.sourceIndex !== null) args.push("-map", `0:${plan.video.sourceIndex}`);
