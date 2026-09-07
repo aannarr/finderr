@@ -246,38 +246,21 @@ const FULL_COVERAGE_MATCH = 12;
 const FULL_COVERAGE = 0.999;
 
 /**
- * What an EXACT title match with NO VOTES AT ALL is credited with having.
- *
- * The same 1,000 the browse floor and the cast floor use, and the same meaning: the line
- * above which a title is taken to have an audience at all.
- *
- * > [!IMPORTANT] ZERO VOTES IS THE ABSENCE OF A MEASUREMENT, NOT A LOW ONE
- * > That boundary is the whole rule, and it is the same distinction `applyRank` draws when
- * > it gives an unrated title NULL rather than the prior mean. A title that has not come
- * > out yet has no votes BY CONSTRUCTION and nothing about it has been judged; a title with
- * > 439 votes has been seen by 439 people, and that is a real if small signal that must not
- * > be overwritten.
- * >
- * > **Extending this to any positive vote count breaks the `interstelar` canary case, and
- * > it was measured rather than reasoned about.** Crediting the 439-vote "Interstelar"
- * > (2014) takes it from 44.96 to 49.06 against the 2.6M-vote "Interstellar" at 48.67 --
- * > a 0.39-point flip, and the suite goes 41/42. `exactPlausibility` exists precisely
- * > because an obscure exact match is usually a typo of something famous; that argument is
- * > sound at 439 votes and vacuous at none.
- *
- * It buys such a title ~11 points of the popularity term's 24.8-point span -- enough to
- * clear a popular PARTIAL match, not enough to disturb the ordering AMONG exact matches,
- * where votes still decide. Both halves are pinned in `search-exact.test.ts`.
- */
-const UNVOTED_EXACT_MATCH_VOTES = 1_000;
-
-/**
  * What an exact title match is worth at FULL plausibility -- a title everybody has heard of.
  *
  * Above `FULL_COVERAGE_MATCH` by two points, which is the whole of the ordering it buys: an
  * exact match on something famous outranks a title that merely contains every query word.
  * `exactPlausibility` scales it down from here, and {@link FULL_COVERAGE_MATCH} floors how
  * far down it may go whenever nothing on the page could have been mistyped into the query.
+ *
+ * > [!IMPORTANT] THE 14 WAS SWEPT AND IT IS STAYING, AND THE REASON IS MARGIN
+ * > 18 and 20 both measure better on the real log (mean clicked rank 1.41 against 1.47)
+ * > with the canary still 46/46, so the temptation is real. `interstelar` has 3.71 points
+ * > of headroom today and the 439-vote "Interstelar" gains `(bonus - 14) * 0.5644` of it,
+ * > which leaves **0.32 points at 20** and flips the case at 24. The canary is a promote
+ * > gate at 100%, so a nightly vote drift inside that margin stops the index refresh for a
+ * > live household -- and what it buys is ONE clicked title out of seventeen. Do not spend
+ * > 91% of a build gate's margin on a sample of that size. Measured 2026-09-08.
  */
 const EXACT_MATCH = 14;
 
@@ -347,7 +330,7 @@ const TYPO_TWIN_SIMILARITY = 0.7;
  * > silence as a verdict. Measured by hand instead, on the real index: with the clause the
  * > 2026 "Heart of the Beast" is rank 0; without it, both 0-vote rows fall out of the top
  * > four and the 160k-vote "In the Heart of the Sea" takes the page -- which is verbatim the
- * > bug `UNVOTED_EXACT_MATCH_VOTES` was written for. The near-twin that fires it is the
+ * > bug the since-deleted `UNVOTED_EXACT_MATCH_VOTES` was written for. The near-twin that fires it is the
  * > 339-vote "The Heart of the Bear" (2001), so any bar above a few hundred votes protects
  * > this case; 50,000 is chosen for the reason above rather than to clear that one row.
  * > `search-exact.test.ts` pins it on fixtures, which is where the coverage now lives.
@@ -435,37 +418,73 @@ export function exactMatchBonus(votes: number, typoTwin: boolean): number {
 const ANTICIPATED_VOTES = 1_500;
 
 /**
- * The popularity term, and the two reasons a zero in it may not mean what it says.
+ * The popularity term, and the one reason a zero in it may not mean what it says.
  *
  * Saturating in votes: the difference between 300k and 2.6M is not informative -- both are
  * famous -- but 439 against 300k is decisive. Without the cap, blockbusters bulldoze every
  * correct-but-smaller match.
  *
- * ## The imputations, and why they cannot double-count
+ * ## The imputation, and why it cannot double-count
  *
- * Both are the same move -- replace a measurement we do not have with a prior -- so they
- * combine with `max` rather than by adding, and neither can lift a title past what the
- * prior itself is worth:
+ * `anticipation` shrinks the score toward `ANTICIPATED_VOTES` in proportion to how close the
+ * title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that already
+ * has 50,000 votes scores above the prior, so the gap is negative and the lift is exactly
+ * zero. It shrinks continuously to nothing as real votes arrive, which is what stops it
+ * double-counting with the votes it is standing in for.
  *
- *   - **`anticipation`** shrinks toward `ANTICIPATED_VOTES` in proportion to how close the
- *     title is to release. `max(0, ...)` makes it self-extinguishing: a 2026 film that
- *     already has 50,000 votes scores above the prior, so the gap is negative and the lift
- *     is exactly zero. It shrinks continuously to nothing as real votes arrive, which is
- *     what stops it double-counting with the votes it is standing in for.
- *   - **`exact`** floors an exact-title match with NO votes at `UNVOTED_EXACT_MATCH_VOTES`.
- *     Independent of the first: a reader naming a 1974 title exactly gets it, and a 2027
- *     title nobody named exactly gets the other.
+ * > [!IMPORTANT] THERE USED TO BE A SECOND IMPUTATION HERE, AND IT WAS THE SAME ONE
+ * > An exact-title match with no votes was ALSO floored, at `UNVOTED_EXACT_MATCH_VOTES`
+ * > (1,000), unconditionally and at every age. Both were "replace a measurement we do not
+ * > have with a prior", and the doc block here argued they were independent. They are not:
+ * > the exact floor fired only on rows with zero votes, so the two priors always applied to
+ * > the same rows, and 1,000 votes' worth is strictly less than the 1,500 the anticipation
+ * > prior already gives a title at full weight. **On the case it was written for -- the 2026
+ * > `heart of the beast` -- it contributed nothing at all.**
+ * >
+ * > What it DID do was fire at ages where the anticipation curve has deliberately decayed to
+ * > nothing. `anticipationWeight`'s own table says a title two years out with nobody rating
+ * > it "IS evidence now", and three years and older is "ordinary obscurity, judged on its
+ * > votes like everything else" -- and the exact floor overrode exactly that judgement,
+ * > handing a thirteen-year-old row with zero votes more popularity than a rival of the same
+ * > name with a real, if small, audience. Measured against the live search log on 2026-09-08:
+ * > it put a 0-vote 2013 "Reel Rivals" above the 25-vote 2025 one somebody clicked, a 0-vote
+ * > 1999 "Look Into My Eyes" above the 711-vote 2024 one, and an undated 0-vote
+ * > "Honeymoon/Funeral" at the top of a page whose reader wanted a 184k-vote film.
+ * >
+ * > So there is one imputation, gated by one curve. `zero votes is unmeasured, not unpopular`
+ * > survives intact -- it is just no longer read as true forever.
  */
-function popularity(votes: number, why: { exact: boolean; anticipation: number } = NO_IMPUTATION): number {
+export function popularity(votes: number, anticipation = 0): number {
   const raw = saturating(votes);
-  const anticipated = raw + why.anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
-  return why.exact ? Math.max(anticipated, saturating(UNVOTED_EXACT_MATCH_VOTES)) : anticipated;
+  return raw + anticipation * Math.max(0, saturating(ANTICIPATED_VOTES) - raw);
 }
 
-const NO_IMPUTATION = { exact: false, anticipation: 0 };
+/**
+ * Where more votes stop being informative. Q2 of the tuning card, and it is ANSWERED.
+ *
+ * The question was whether 300,000 is right, and the parent card was correct that a log
+ * cannot say -- it needs an experiment: move the cap, replay every clicked title, count how
+ * many ranks move. `bun run search:replay` is that experiment, and against the first real log
+ * (91 queries, 18 clicks, 2026-09-03..07) the answer is that **the cap has slack above it and
+ * none below it**:
+ *
+ * | cap | canary | mean rank of a clicked title |
+ * |---|---|---|
+ * | 30,000 | 45/46 -- loses `interstelar` | 2.18 |
+ * | 100,000 | 46/46 | 1.47 |
+ * | **300,000** | 46/46 | **1.47** |
+ * | 1,000,000 | 46/46 | 1.47 |
+ *
+ * Not one rank moves anywhere between 100k and 1M, so this sits in the middle of a plateau
+ * rather than on a slope, and the reason is structural: a query is decided by the few
+ * candidates whose text matches, and above 100k votes every one of them is already famous.
+ * Below the plateau the cap starts deciding between famous titles, which is exactly what it
+ * exists NOT to do. Leave it alone; it is the one constant here with measured headroom.
+ */
+const VOTE_SATURATION = 300_000;
 
 function saturating(votes: number): number {
-  return 2.4 * Math.log(Math.min(votes, 300_000) + 10);
+  return 2.4 * Math.log(Math.min(votes, VOTE_SATURATION) + 10);
 }
 
 /**
@@ -1291,23 +1310,20 @@ export class SearchEngine {
       }
 
       /*
-        AN EXACT MATCH WITH NO VOTES IS JUDGED AS UNMEASURED, NOT AS UNPOPULAR.
+        THE 22 WAS SWEPT TOO, AND IT HAS NO OPTIMUM IN THIS DATA.
 
-        The popularity half of that rule, and now the only half: the match term above no
-        longer needs a zero-vote special case, because its floor already pays an unvoted
-        exact match exactly what it used to be patched up to. What is left here is the
-        separate claim `UNVOTED_EXACT_MATCH_VOTES` argues -- that a title nobody has rated
-        has not been judged, so it must not be scored as though it had been.
-
-        The bug it exists for: `heart of the beast` put the film actually called that at
-        position 112, on zero votes, costing it 11 points of the popularity term.
+        Against the 17 clicked titles in the first real log: 22 -> mean rank 1.47, 24 -> 1.53,
+        26 -> 1.47, 28 -> 1.47, 32 -> 1.71, 40 -> 1.82, canary 46/46 throughout. A curve that
+        gets WORSE at 24 and better again at 26 is not a curve with a minimum in it, it is
+        seventeen samples of noise -- and the one thing the higher values buy is a single
+        title crossing a 1.2-point gap, at the price of a fifth of `interstelar`'s margin.
+        Anybody re-running this with a bigger log should expect the shape to change; anybody
+        re-running it with this one is reading the same noise again.
       */
-      const unvotedExact = c.exact && r.votes === 0;
-
       const score =
         22 * c.textSim +
         match +
-        popularity(r.votes, { exact: unvotedExact, anticipation: anticipationOf(r.year) }) +
+        popularity(r.votes, anticipationOf(r.year)) +
         c.ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);

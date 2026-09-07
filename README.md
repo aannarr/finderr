@@ -880,6 +880,7 @@ search of its own.
 ```bash
 bun run search:report                # replay every logged query against the live index
 bun run search:report -- --no-replay # counts only, no index needed
+bun run search:replay                # where every clicked title ranks NOW, against then
 ```
 
 The report answers the questions the constants were guesses about: how many queries carry
@@ -887,6 +888,14 @@ a year, which tier actually answers them, whether anyone searches in a non-Engli
 which queries found nothing — and it lists the real queries whose reader had to look past
 the top row. Those are the cases that have earned a place in the canary. Adding one is a
 person's decision; inventing more cases is the problem this replaces.
+
+`search:replay` is the half a report cannot do. The rank in a click row is where that title
+sat when somebody clicked it, so re-reading the table can never say where it sits under a
+scorer that has since changed. This puts then beside now for every clicked title and prints
+one mean. Change a constant in `SearchEngine.rank`, run it again, and the difference between
+the two means is what that constant was worth — measured against real readers rather than
+against invented cases. A title that has fallen out of the window entirely is scored as the
+window rather than dropped, so burying one title while lifting another cannot read as a win.
 
 `FINDERR_SEARCH_LOG=false` turns the whole thing off.
 

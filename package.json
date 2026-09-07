@@ -20,6 +20,7 @@
     "lists:audit": "bun src/jobs/audit-lists.ts",
     "gate": "bun src/jobs/gate.ts",
     "search:report": "bun src/jobs/search-report.ts",
+    "search:replay": "bun src/jobs/search-replay.ts",
     "bench": "bun src/jobs/bench-index.ts",
     "agent:eval": "bun src/jobs/agent-eval.ts",
     "icons:build": "bun src/jobs/build-icons.ts",
