@@ -110,6 +110,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { type BreakoutRow, scoreBreakout } from "./breakout";
 import { type Config, paths } from "./config";
 import {
   COUNTRY_CROSSWALK,
@@ -278,6 +279,28 @@ create table title_genre (
   -- through title, 59 ms from this column. The unfiltered path is untouched at 0.01 ms.
   -- (No backticks in here: this block is inside a template literal.)
   year        integer
+);
+-- How far a title travelled beyond its own locale, and how much better it was rated than
+-- its locale's peers. Written by breakoutStage(); the scoring rules live in ./breakout.
+--
+-- SPARSE, and that is the whole reason it is a table rather than two columns on title.
+-- A locale stratum needs MIN_STRATUM members before its median means anything, so only a
+-- small share of the corpus is scoreable at all -- two REAL columns on title would be
+-- 1.27M mostly-null floats to store a fact about a few tens of thousands of rows. Absent
+-- and zero are also genuinely different answers here: zero says "exactly typical for its
+-- locale", absent says "we cannot say", and a nullable column invites a reader to conflate
+-- them.
+--
+-- local is DENORMALISED from title.country by isLocalMarket() so the shelf filters on an
+-- indexed integer rather than running a string test over a comma-joined column for every
+-- candidate row. A US or GB production credit means a title is not breaking out of
+-- anywhere -- see MAJOR_MARKETS for the three blockbusters that proved it.
+-- (No backticks in here: this block is inside a template literal.)
+create table title_breakout (
+  title_rowid integer primary key,
+  reach       real not null,
+  love        real not null,
+  local       integer not null
 );
 create table meta (key text primary key, value text not null);
 
@@ -736,6 +759,25 @@ export const INDEXES = {
     "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english, year)",
     "create index ix_lang_votes on title_lang(lang, kind, votes desc, non_english, year)",
   ],
+
+  /**
+   * Built by `breakoutStage`, after `title_breakout` is filled.
+   *
+   * ONE index, and it is the only shape anything asks for: the shelf wants local-market
+   * titles in descending `love`, so the flag leads as the equality column and the sort
+   * column follows it. `reach` is last because it is only ever FILTERED, never ordered on --
+   * the same rule the three rank indexes above follow.
+   *
+   * **`title_rowid` is deliberately NOT named here.** It is declared `integer primary key`,
+   * which in SQLite makes it an alias for the rowid, so every index on this table carries it
+   * for free. Listing it would be a second copy of the same integer in every entry.
+   *
+   * COVERING for the shelf's own predicate -- but the shelf then joins `title` for the row it
+   * draws, and the vote and year filters are applied there. Denormalising those two columns
+   * here was considered and NOT done: this query reads a few dozen rows once per front page,
+   * so the third rule's "widen the row" trade has nothing to buy at that size.
+   */
+  breakout: ["create index ix_breakout on title_breakout(local, love desc, reach)"],
 } satisfies Record<string, readonly string[]>;
 
 /**
@@ -1104,10 +1146,14 @@ export async function buildIndex(
   // so running it first would restrict against an empty table and keep nothing.
   const personIdRows = personCrosswalkStage(db, dumpDir, log);
   const origin = originStage(db, dumpDir, log);
+  // AFTER originStage, never beside it: this reads title.lang and title.country, which that
+  // stage is what fills. Run it first and every title looks locale-less.
+  const breakoutRows = breakoutStage(db, log);
 
   log("building secondary indexes ...");
   for (const sql of INDEXES.secondary) db.run(sql);
   for (const sql of INDEXES.origin) db.run(sql);
+  for (const sql of INDEXES.breakout) db.run(sql);
 
   log("counting every browse slice ...");
   const countRows = buildBrowseCounts(db);
@@ -1131,6 +1177,7 @@ export async function buildIndex(
   setMeta.run("person_id_rows", String(personIdRows));
   setMeta.run("origin_lang_titles", String(origin.withLang));
   setMeta.run("origin_country_titles", String(origin.withCountry));
+  setMeta.run("breakout_rows", String(breakoutRows));
   // How the lists were ranked, so a list page can say it rather than restate a constant
   // that has since moved. `rank_prior_mean` is the measured corpus mean, not a setting.
   setMeta.run("rank_prior_votes", String(prior.c));
@@ -1266,6 +1313,57 @@ function originStage(
 /** How many titles this index holds, for the one percentage `originStage` prints. */
 function kept(db: Database): number {
   return (db.query("select count(*) c from title").get() as { c: number }).c;
+}
+
+/**
+ * Score how far each title travelled beyond its own locale, into `title_breakout`.
+ *
+ * ADDITIVE AND OPTIONAL like every stage around it. With no origin data on disk every title
+ * is filed as unknown, `localeKeys` returns nothing for all of them, no stratum reaches
+ * `MIN_STRATUM`, and the table is simply empty -- at which point `hasBreakout` is false and
+ * the shelf does not render. Nothing throws and nothing else changes.
+ *
+ * **MUST RUN AFTER `originStage`**, which is what fills `title.lang` and `title.country`.
+ * Run it before, and every title looks locale-less and the table comes out empty on a build
+ * that had the data all along.
+ *
+ * It reads `title.lang` -- the comma-joined DISPLAY column -- rather than joining
+ * `title_lang`, and that is deliberate rather than lazy. `title_lang` carries a backfilled
+ * `UNKNOWN_LANG` row for every title that has no language, which is a storage device for the
+ * browse filter's `in (...)` list and is not a fact about a title; scoring against it would
+ * invent a single vast "unknown" locale and file a third of the corpus in it. `title.lang`
+ * is NULL in exactly that case, which is the answer this stage wants.
+ *
+ * The vote floor is `BROWSE_VOTE_FLOOR`, the same one the browse grid curates at, because a
+ * locale median computed over titles nobody has voted on describes nothing.
+ */
+function breakoutStage(db: Database, log: (m: string) => void): number {
+  log("scoring locale breakouts ...");
+  const rows = db
+    .query(
+      `select rowid_ rowid, year, kind, votes, rating,
+              coalesce(country, '') country, coalesce(lang, '') lang
+       from title where votes >= ? and year is not null`,
+    )
+    .all(BROWSE_VOTE_FLOOR) as (Omit<BreakoutRow, "langs"> & { lang: string })[];
+
+  const scores = scoreBreakout(
+    rows.map((r) => ({ ...r, langs: r.lang.split(",").filter(Boolean) })),
+  );
+
+  const ins = db.prepare(
+    "insert into title_breakout (title_rowid, reach, love, local) values (?, ?, ?, ?)",
+  );
+  db.transaction(() => {
+    for (const s of scores) ins.run(s.rowid, s.reach, s.love, s.local ? 1 : 0);
+  })();
+
+  const local = scores.filter((s) => s.local).length;
+  log(
+    `  ${scores.length.toLocaleString()} titles scored of ${rows.length.toLocaleString()} eligible, ` +
+      `${local.toLocaleString()} from a local market`,
+  );
+  return scores.length;
 }
 
 /**

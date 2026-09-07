@@ -323,6 +323,23 @@ export const INDEX_STAGES = {
   origin: () => JSON.stringify({ v: 7 }),
 
   /**
+   * `title_breakout` -- how far each title travelled beyond its own locale.
+   *
+   * DEPENDS ON `origin` having run, because it scores against `title.lang` and
+   * `title.country`. It carries no config of its own: every threshold that decides a score
+   * lives in `./breakout.ts` as a constant, and the shelf's cutoffs are percentiles computed
+   * at query time rather than baked in. So the recipe is a bare version, and the thing to
+   * bump is the OUTPUT shape.
+   *
+   * Bump `v` whenever a scoring rule moves -- `MIN_STRATUM`, the locale ladder, the
+   * major-market set, the love shrinkage. Every one of those changes the numbers in the
+   * table while leaving its schema and its row count broadly alone, which is precisely the
+   * silent-staleness shape this whole mechanism was built for: an index would go on serving
+   * yesterday's scores, correct-looking and wrong, until an unrelated dump drifted.
+   */
+  breakout: () => JSON.stringify({ v: 1 }),
+
+  /**
    * The spellfix1 vocabulary and, since `v: 2`, the trigram shortlist beside it
    * (`vocab_tri` + `vocab_tri_df`, see `./vocab-trigrams.ts`).
    *

@@ -100,6 +100,9 @@ const SLIM_INDEXES: readonly string[] = [
   "create index ix_lang_rank on title_lang(lang, rank desc)",
   // Was `(lang, kind, votes desc, non_english, year)`. Narrowed the same way as its sibling.
   "create index ix_lang_votes on title_lang(lang, votes desc)",
+  // Was `(local, love desc, reach)`. Drops the one covered FILTER column and keeps the
+  // equality column and the sort, the same narrowing every `_rank` sibling above takes.
+  "create index ix_breakout on title_breakout(local, love desc)",
   // Was `(parent, season, number, tconst, title, rating, votes, year)`. THIS narrow form is
   // quoted verbatim in `ix_ep_parent`'s own docstring as what it was benchmarked against --
   // "20-30% slower warm, 4-13 ms cold on a title page, and up to 496 ms cold on a
@@ -157,6 +160,11 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   "create index ix_lang_rank on title_lang(lang, kind, rank desc, non_english, year)",
   // Unchanged for the same reason, one ORDER over. It is the `ix_tg_votes` line of this list.
   "create index ix_lang_votes on title_lang(lang, kind, votes desc, non_english, year)",
+  // Unchanged, and it is the `ix_lang_rank` argument in miniature: `reach` is the only
+  // trailing column and it is read as a COVERED FILTER, so dropping it would not save a row
+  // fetch -- it would add one per candidate row. Nothing here is payload in this profile's
+  // sense.
+  "create index ix_breakout on title_breakout(local, love desc, reach)",
   // Drops five payload columns, keeps the whole key. The pure case, and the one whose
   // docstring already claims 20-30% warm and up to 496 ms cold.
   "create index ix_ep_parent on episode(parent, season, number)",
