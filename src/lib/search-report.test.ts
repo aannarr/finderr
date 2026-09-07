@@ -37,12 +37,22 @@ describe("buildSearchReport", () => {
     ]);
   });
 
-  test("finds the non-English queries -- the whole case for the akas dump", () => {
+  test("finds the non-ASCII queries -- the whole case for the akas dump", () => {
     // Q5. If this is always empty, `finderr-localized-release-titles-via-title-akas` is a
     // 512 MB download bought on a guess.
     const r = buildSearchReport([search("Jägarna", 1), search("hunters", 2)], []);
 
     expect(r.nonAscii).toEqual([{ query: "Jägarna", n: 1 }]);
+  });
+
+  test("a pure-ASCII query in another language is invisible here, and that is the limit", () => {
+    // The counter-example off the live NAS log, 2026-09-07: `Svenska kriminaldrama nya` was
+    // the worst ranking failure in the whole log (rank 20, 3 clicks) and Q5 reported 0. It is
+    // Swedish with no å, ä or ö in it, so the ASCII test cannot see it. Pinned so nobody reads
+    // a zero from this field as "nobody searches in another language" -- see the field comment.
+    const r = buildSearchReport([search("Svenska kriminaldrama nya", 1), search("Swedish criminal", 2)], []);
+
+    expect(r.nonAscii).toEqual([]);
   });
 
   test("a refinement typed minutes later is a retype, one typed mid-word is not", () => {
@@ -164,6 +174,20 @@ describe("formatSearchReport", () => {
     expect(text).toContain("chip refinements:    1");
     expect(text).toContain("searches with chips: 1 (50.0%)");
     expect(text).toContain("genre 1");
+  });
+
+  test("the Q5 heading names the characters it counts, never a language it cannot detect", () => {
+    // The defect this pins: the field counted non-ASCII characters and the heading called
+    // them non-English queries, so a log whose worst ranking failure was pure-ASCII Swedish
+    // printed "non-English queries: 0" and read as evidence that nobody searches in another
+    // language. A heading that overstates its detector is a check that measures nothing.
+    const text = formatSearchReport(
+      buildSearchReport([search("Jägarna", 1), search("Svenska kriminaldrama nya", 2)], []),
+      false,
+    );
+
+    expect(text).toContain("non-ASCII queries:   1 (1 distinct)");
+    expect(text).not.toContain("non-English");
   });
 
   test("prints canary candidates with the rank that condemns them", () => {
