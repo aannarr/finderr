@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { creditLabels, creditNote, mergedCategories } from "./credits";
+import { characterNote, creditLabels, creditNote, mergedCategories, noteForFilmography } from "./credits";
 
 describe("mergedCategories", () => {
   test("actor and actress are one chip carrying both IMDb values", () => {
@@ -121,6 +121,64 @@ describe("creditNote", () => {
       text: "Acting",
       full: "Acting",
     });
+  });
+});
+
+describe("characterNote", () => {
+  test("names who they played and never what the job was called", () => {
+    expect(characterNote({ tconst: "tt0", categories: ["actor"], characters: "Philip J. Fry" })).toEqual({
+      text: "Philip J. Fry",
+      full: "Philip J. Fry",
+    });
+  });
+
+  test("the job is withheld from the HOVER too, not merely from the line", () => {
+    // Half-suppressing it would put "Acting" back on screen the moment anybody hovered,
+    // which is the repetition this variant exists to remove.
+    expect(characterNote({ tconst: "tt0", categories: ["actor"], characters: "Hank Hall, Hawk" })).toEqual({
+      text: "Hank Hall",
+      full: "Hank Hall · Hawk",
+    });
+  });
+
+  test("no character means NO LINE, where creditNote would have printed the job", () => {
+    // An Inconvenient Truth on Billy West's page: a real acting credit we hold no character
+    // for. The card simply says nothing rather than repeating the chip above the grid.
+    const credit = { tconst: "tt0", categories: ["actor"], characters: null };
+    expect(characterNote(credit)).toBeNull();
+    expect(creditNote(credit)).toEqual({ text: "Acting", full: "Acting" });
+  });
+});
+
+describe("noteForFilmography", () => {
+  const acting = [{ label: "Acting" }];
+  const several = [{ label: "Directing" }, { label: "Production" }, { label: "Writing" }];
+
+  test("one role means the job is never printed -- it would be the same word on every card", () => {
+    expect(noteForFilmography(acting, false)).toBe(characterNote);
+  });
+
+  test("several roles means the job IS printed, because it tells the cards apart", () => {
+    expect(noteForFilmography(several, false)).toBe(creditNote);
+  });
+
+  test("a role filter suppresses the job however many roles the person has", () => {
+    // The reader pressed "Directing". Repeating it under all sixty cards answers a question
+    // nobody asked, and `personPage` has stripped the other categories from these rows
+    // anyway -- so the note could not name a second job even if it tried.
+    expect(noteForFilmography(several, true)).toBe(characterNote);
+    expect(noteForFilmography(acting, true)).toBe(characterNote);
+  });
+
+  test("no roles at all is not a crash and prints no job", () => {
+    expect(noteForFilmography([], false)).toBe(characterNote);
+  });
+
+  test("returns a STABLE reference, which is what keeps TitleGrid's memo working", () => {
+    // Not an implementation detail: `noteFor` is a prop on a `memo`'d component, so a fresh
+    // closure per render would re-render every card in the grid on every keystroke.
+    expect(noteForFilmography(several, false)).toBe(noteForFilmography(several, false));
+    expect(noteForFilmography(acting, false)).toBe(noteForFilmography(acting, false));
   });
 });
 

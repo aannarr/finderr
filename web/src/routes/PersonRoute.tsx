@@ -34,7 +34,7 @@ import {
   titleStateVersion,
 } from "../lib/api";
 import { prettyCategory } from "../lib/awards-format";
-import { creditLabels, creditNote, mergedCategories } from "../lib/credits";
+import { creditLabels, mergedCategories, noteForFilmography } from "../lib/credits";
 import type { SearchParams } from "../lib/search-params";
 
 const PAGE = 60;
@@ -375,6 +375,15 @@ export function PersonRoute() {
   const page = shown.page;
 
   const roles = mergedCategories(page.categories);
+  /*
+    What each card says this person did here -- the character, and the job only when the job
+    varies across the filmography. `noteForFilmography` owns that rule and returns one of two
+    module-level functions, so this is a STABLE reference and `TitleGrid`'s `memo` holds.
+
+    `roles` is reused rather than re-derived: the chip row below hides itself on a single
+    role for the same reason this suppresses the job, and one merge answers both.
+  */
+  const noteFor = noteForFilmography(roles, role !== undefined);
   /** Both chip rows below go to the same place with a different question. */
   const showCredits = (search: Pick<SearchParams, "role" | "sort">) =>
     navigate({ to: "/person/$nconst", params: { nconst }, search });
@@ -451,13 +460,7 @@ export function PersonRoute() {
         stays put, which is what keeps focus on the chip that was just pressed.
       */}
       <StaleResults stale={!showingCurrentCredits}>
-        {/*
-          `creditNote` is passed by REFERENCE and must stay that way -- `TitleGrid` is
-          `memo`'d, so an inline `(c) => creditNote(c)` would be a new function on every
-          render of this route and defeat it for the whole grid. It is a module-level pure
-          function precisely so this line can be a bare name.
-        */}
-        <TitleGrid titles={page.credits} noteFor={creditNote} />
+        <TitleGrid titles={page.credits} noteFor={noteFor} />
 
         {page.credits.length < page.total && (
           <div className="mt-6 flex justify-center">

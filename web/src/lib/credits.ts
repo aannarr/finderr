@@ -68,17 +68,93 @@ type CreditLike = Pick<Title, "tconst"> & Partial<Pick<Credit, "categories" | "c
  *
  * `null` for a credit carrying neither, which draws no line at all rather than an empty one.
  *
- * > [!IMPORTANT] Under a ROLE FILTER this is narrowed, and that is the server's doing
+ * **This is the variant that PRINTS THE JOB, and a page only wants it sometimes** -- see
+ * `rolesWorthPrinting` and `characterNote` below. Choose between the two there rather than
+ * reaching for this one directly.
+ *
+ * > [!IMPORTANT] Under a ROLE FILTER the categories are narrowed, and that is the server's doing
  * > `personPage` applies `where ... tp.category in (...)` to the grouped query as well as to
  * > the count (`src/lib/people.ts`), so filtering to Directing returns `categories:
- * > ["director"]` for a film somebody also wrote, and no characters at all. The note then
- * > reads "Directing" and the hover agrees with it. That is honest for the question asked --
- * > the reader narrowed to one job and is being shown that job -- but it means the hover is
- * > "all credits MATCHING THE FILTER", never all credits full stop.
+ * > ["director"]` for a film somebody also wrote -- the hover would then be "every credit
+ * > MATCHING THE FILTER" rather than every credit. `rolesWorthPrinting` returns false for
+ * > exactly that case, so the filtered page draws `characterNote` and never makes the
+ * > narrowed claim at all. Anything else calling this directly inherits the caveat.
  */
 export function creditNote(credit: CreditLike): CardNote | null {
+  return noteOf(credit, true);
+}
+
+/**
+ * The same line with the JOB withheld -- who they played, or nothing at all.
+ *
+ * For a filmography where the role cannot vary: everything Billy West is credited for is
+ * acting, so a "Acting" under all nineteen cards restates the chip above them nineteen
+ * times and pushes the one fact that does vary -- Philip J. Fry, Sorcerio, Zapp Brannigan --
+ * no further up the card. `rolesWorthPrinting` decides which of the two a page wants, and
+ * the reason it can decide it ONCE is that `PersonPage.categories` is the person's whole
+ * role breakdown rather than the loaded page's.
+ *
+ * **A pair of module-level functions rather than one taking a flag**, because `TitleGrid` is
+ * `memo`'d and `noteFor` must be a STABLE reference: `rolesWorthPrinting(...) ? creditNote :
+ * characterNote` picks between two constants and allocates nothing, where a bound or
+ * arrow-wrapped variant would be a new function on every render of the route.
+ *
+ * The rule this leaves is worth stating plainly: **a character always draws, a job draws
+ * only when it distinguishes one card from another.**
+ */
+export function characterNote(credit: CreditLike): CardNote | null {
+  return noteOf(credit, false);
+}
+
+/**
+ * Which of the two lines THIS filmography wants, as a function its grid can hold.
+ *
+ * A job is worth printing only when it distinguishes one card from another. Two ways it
+ * cannot, and both end with every card printing one identical word:
+ *
+ * - **The person only ever does one job.** Nineteen acting credits under an "Acting (19)"
+ *   chip; the word is already on screen, once, where it belongs -- and repeating it buries
+ *   the fact that does vary (Philip J. Fry, Sorcerio, Zapp Brannigan) under a column of
+ *   "Acting".
+ * - **A role filter is active.** A chip carries every IMDb value behind ONE label
+ *   (`mergedCategories` merges `actor` and `actress` precisely so it does), so narrowing to
+ *   a chip narrows to a single label by construction -- the reader pressed "Directing" and
+ *   does not need it repeated sixty times. `personPage` also strips the other categories
+ *   from each row under a filter, so the note could not name a second job even if it wanted
+ *   to, and `creditNote`'s own caveat about a narrowed hover stops applying here.
+ *
+ * **It takes the MERGED roles the chip row already built, not the raw categories.** The
+ * route computes `mergedCategories(page.categories)` to decide whether a filter row is worth
+ * drawing at all -- "one role means every chip is a no-op" -- and that is the same question
+ * in different words, so it is the same value rather than a second derivation of it.
+ *
+ * **Those counts are over ALL of the person's credits, which is what keeps this stable.**
+ * `personPage` builds them `where person_rowid = ?` with no category predicate and says so
+ * in its own docstring. So the answer is identical on the first page and the fifth. Deriving
+ * it from the cards currently ON SCREEN would make notes appear and vanish as somebody
+ * presses "Show 60 more" -- a worse failure than the repetition it set out to fix, and the
+ * reason this takes the person's breakdown rather than the loaded rows.
+ *
+ * **Returns one of two MODULE-LEVEL constants and allocates nothing**, because `TitleGrid`
+ * is `memo`'d and `noteFor` has to be a stable reference. A closure built per render, or a
+ * `.bind`, would defeat the memo for every card on the page.
+ */
+export function noteForFilmography(
+  roles: readonly { label: string }[],
+  roleFilterActive: boolean,
+): (credit: CreditLike) => CardNote | null {
+  return roleFilterActive || roles.length < 2 ? characterNote : creditNote;
+}
+
+/**
+ * The shared body: pick the line, then say everything it was picked from.
+ *
+ * One owner for the character-beats-role rule and for the hover string, so the two exported
+ * entry points cannot drift into disagreeing about either.
+ */
+function noteOf(credit: CreditLike, withRoles: boolean): CardNote | null {
   const characters = splitCharacters(credit.characters ?? null);
-  const roles = creditLabels(credit.categories ?? []);
+  const roles = withRoles ? creditLabels(credit.categories ?? []) : [];
   const text = characters[0] ?? roles[0];
   if (text === undefined) return null;
 
