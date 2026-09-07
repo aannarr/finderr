@@ -25,6 +25,7 @@ import { AWARDS, type AwardDef, awardById, OSCARS } from "../lib/award-registry"
 import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
+import { CostMeter } from "../lib/cost-meter";
 import {
   type EpisodeState,
   episodeStateOf,
@@ -37,6 +38,7 @@ import {
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
+import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import type { RequestRemovalView } from "../lib/media-removal";
@@ -112,6 +114,7 @@ import { IndexRefresher, staleIndexReason } from "./index-refresh";
 import { json } from "./json-response";
 import { completionPayload, type ListsDeps } from "./lists";
 import { LiveIndex } from "./live-index";
+import { withPayloadGuard } from "./payload-guard";
 import { type PersonPreviewDeps, type PreviewDeps, personPreviewResponse, previewResponse } from "./preview";
 import {
   PREVIEW_IMAGE_PATH,
@@ -469,6 +472,29 @@ log(`plugins: ${plugins.list().length} loaded`);
 */
 const previewLimiter = new RateLimiter(cfg.preview.ratePerMinute);
 const previewResolver = new PreviewResolver(cfg.preview.resolvePerMinute);
+
+/*
+  WHAT EACH CALLER ACTUALLY COST, over the last sixty seconds.
+
+  The third mechanism on the search path and the only one that counts TIME. `searchLimiter`
+  counts requests and `previewResolver` counts one expensive upstream operation; neither can
+  see that two searches differ in cost by three orders of magnitude, so neither notices the
+  caller who stays inside every count and owns the event loop anyway.
+
+  Keyed on `auth.limitKey`, which is the ACCOUNT when we can name one and the address
+  otherwise -- so an agent key is its own caller and its spend is never pooled with the
+  household's. That matters because an agent is the realistic heavy caller: it is fast by
+  nature rather than hostile, and pooling it with a person hides both.
+
+  Every number is `src/lib/cost-meter.ts`'s to defend; nothing here restates one.
+*/
+const searchCost = new CostMeter({
+  budgetMs: cfg.auth.searchBudgetMs,
+  contendedMs: cfg.auth.searchContendedMs,
+  soloBudgetMs: cfg.auth.searchSoloBudgetMs,
+  refuseAtMs: cfg.auth.searchRefuseAtMs,
+  maxDelayMs: cfg.auth.searchMaxDelayMs,
+});
 
 /*
   How long every request took, and which of them were slow enough to keep the arguments of.
@@ -1812,6 +1838,7 @@ const appRoutes = {
           },
           // Passed as a thunk, never a value -- see health.ts.
           coverage: shelfCoverage,
+          load: () => searchCost.report(),
         },
         { coverage: new URL(req.url).searchParams.get("coverage") === "1", detailed },
       ),
@@ -1826,7 +1853,7 @@ const appRoutes = {
    */
   [AGENT_MANIFEST_PATH]: (req: Request) => agentManifest(req),
 
-  "/api/search": (req: Request) => {
+  "/api/search": async (req: Request) => {
     /*
         The one route with its own limiter on top of the login wall.
 
@@ -1847,8 +1874,38 @@ const appRoutes = {
       );
     }
 
+    /*
+      THE SECOND LIMITER, AND IT COUNTS MILLISECONDS RATHER THAN REQUESTS.
+
+      The one above is a request budget, which is the right defence against a retry loop and
+      the WRONG one against expense: every request it counts is worth the same to it, while
+      two searches on this index differ in cost by three orders of magnitude. So a caller
+      running 25 deliberately expensive queries a minute is inside their request budget and
+      owns the event loop. `searchCost` is what notices -- and it only refuses once somebody
+      else is actually being denied, so a lone reader on a quiet evening is never throttled
+      for using a server that was doing nothing else. See `src/lib/cost-meter.ts`.
+    */
+    const admission = await searchCost.admit(key);
+    if (!admission.allowed) {
+      return json(
+        { error: "too much search work in the last minute" },
+        { status: 429, headers: { "Retry-After": String(searchCost.retryAfter()) } },
+      );
+    }
+
     const u = new URL(req.url);
-    const q = u.searchParams.get("q")?.trim() ?? "";
+    /*
+      MEASURED 2026-09-07 against the real index: an unbounded `q` reached 26,631 ms of
+      single-threaded CPU on one 22 KB request, because `matchExpr` unions one FTS5 prefix
+      term per token and the cost is quadratic in the token count. `boundedQuery` owns both
+      caps and the numbers behind them; nothing here re-decides them.
+
+      A refusal, never a truncation: a shortened query answers a question the reader did not
+      ask and looks exactly like a working search.
+    */
+    const guarded = boundedQuery(u.searchParams.get("q"));
+    if (!guarded.ok) return bad(refusalMessage("q", guarded));
+    const q = guarded.value;
     if (!q)
       return json({
         hits: [],
@@ -1876,25 +1933,40 @@ const appRoutes = {
       kind: u.searchParams.get("kind") ?? undefined,
     };
 
-    const res = live.current.search(q, { limit: Math.min(num("limit") ?? 25, 100), ...filters });
-
     /*
-      PEOPLE, beside the titles rather than among them.
+      BOTH INDEX READS ARE INSIDE ONE `measure`, and that is the honest boundary.
 
-      Its own key because a person and a title are different nouns: merging them would put
-      `Hit`'s title-shaped fields on somebody's name, and the facet chips below the box
-      narrow titles and mean nothing to a person.
+      What the meter is for is "how much of the event loop did this caller take", so it has
+      to charge for everything a caller's query makes this process do -- the title search
+      and the people search are one request's worth of work whatever the internal split.
+      Timing them separately would also charge the caller twice for one `Bun.nanoseconds`
+      pair's worth of overhead.
 
-      NOT filtered by the facet scalars, for the same reason: "Christopher Nolan" is not a
-      1990s Comedy. A chip narrows the grid and leaves the people row alone.
-
-      One more local SQLite read on a request that already does several. Measured on the
-      real 353,117-person index: 0.06ms for "christopher nolan", 0.13ms for "nolan", 1.5ms
-      for "tom" and 4.3ms for the worst shape the length floor admits -- beside a 7.8ms
-      mean for the title search it rides with. Cheap enough to stay on this request rather
-      than becoming the separate endpoint the card offered as the escape hatch.
+      The TARPIT WAIT IS DELIBERATELY OUTSIDE IT. A caller must never be charged for time we
+      chose to make them sit still, or a tarpitted caller accrues spend for waiting, which
+      lengthens the next delay, which accrues more spend -- a feedback loop that turns a
+      one-off overspend into a permanent penalty.
     */
-    const people = withFaces(live.current.searchPeople(q));
+    const [res, people] = searchCost.measure(key, () => {
+      const hits = live.current.search(q, { limit: Math.min(num("limit") ?? 25, 100), ...filters });
+      /*
+        PEOPLE, beside the titles rather than among them.
+
+        Its own key because a person and a title are different nouns: merging them would put
+        `Hit`'s title-shaped fields on somebody's name, and the facet chips below the box
+        narrow titles and mean nothing to a person.
+
+        NOT filtered by the facet scalars, for the same reason: "Christopher Nolan" is not a
+        1990s Comedy. A chip narrows the grid and leaves the people row alone.
+
+        One more local SQLite read on a request that already does several. Measured on the
+        real 353,117-person index: 0.06ms for "christopher nolan", 0.13ms for "nolan", 1.5ms
+        for "tom" and 4.3ms for the worst shape the length floor admits -- beside a 7.8ms
+        mean for the title search it rides with. Cheap enough to stay on this request rather
+        than becoming the separate endpoint the card offered as the escape hatch.
+      */
+      return [hits, withFaces(live.current.searchPeople(q))] as const;
+    });
 
     // Resolve artwork for whatever the user is about to look at, in the
     // background. Never blocks the response.
@@ -3270,10 +3342,19 @@ const appRoutes = {
         return bad("body must be JSON");
       }
 
-      const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
-      const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
-      const authSecret = typeof body.keys?.auth === "string" ? body.keys.auth : "";
-      if (!endpoint || !p256dh || !authSecret) return bad("endpoint and both keys are required");
+      /*
+        All three are BOUNDED before anything is parsed or stored. They are somebody else's
+        format -- a push service's URL and two base64url keys -- so the caps are generous
+        and their only job is that no unbounded string reaches the database; the `https`
+        check below is the one that decides whether the endpoint is acceptable.
+      */
+      const endpointG = boundedText(body.endpoint, LIMITS.url);
+      const p256dhG = boundedText(body.keys?.p256dh, LIMITS.pushKey);
+      const authG = boundedText(body.keys?.auth, LIMITS.pushKey);
+      if (!endpointG.ok || !p256dhG.ok || !authG.ok) return bad("endpoint and both keys are required");
+      const endpoint = endpointG.value;
+      const p256dh = p256dhG.value;
+      const authSecret = authG.value;
       /*
         THE ENDPOINT IS A URL THIS SERVER WILL LATER POST TO, so it is validated before it
         is stored rather than at send time. A row that only fails when a film arrives is a
@@ -3295,8 +3376,10 @@ const appRoutes = {
         p256dh,
         auth: authSecret,
         // Which device this is, for the account page. It is the same string the session
-        // row already records, so this discloses nothing new about the reader.
-        userAgent: req.headers.get("user-agent"),
+        // row already records, so this discloses nothing new about the reader -- and it is
+        // guarded for the same reason that row's is: a header is user input, and this one
+        // is DRAWN, in the list a reader uses to decide what to revoke.
+        userAgent: boundedHeader(req.headers.get("user-agent"), LIMITS.userAgent),
       });
       /*
         Subscribing IS an answer, so it closes the offer here rather than relying on the
@@ -3663,33 +3746,41 @@ const server: Bun.Server<undefined> = Bun.serve({
   // response, a few KB -- so 256 KB is generous headroom, not a constraint anyone hits.
   maxRequestBodySize: 256 * 1024,
 
-  // Four wrappers, and the ORDER is deliberate. The index gate is OUTSIDE the auth guard,
+  // Five wrappers, and the ORDER is deliberate. The index gate is OUTSIDE the auth guard,
   // so a caller during a first build gets one 503 about the index rather than a 401 about
   // credentials for a server that has no data yet (see `withIndexGate`) -- and the TIMER is
-  // outside both, so what it records is the whole request as the client experienced it,
-  // including a refusal. A 401 that takes two seconds is a fact worth having.
+  // outside everything, so what it records is the whole request as the client experienced
+  // it, including a refusal. A 401 that takes two seconds is a fact worth having.
+  //
+  // The PAYLOAD GUARD sits directly inside the timer and outside everything else, because
+  // it is the only check that costs nothing and needs to know nothing: a URL past
+  // `LIMITS.url` is refused before the index gate opens a file, before the auth guard reads
+  // a cookie and before any handler parses it. It is still INSIDE the timer, so a refusal
+  // shows up in the timings like any other answer rather than vanishing from the record.
   //
   // The agent guard is INNERMOST, inside `withAuth`: it decides what a caller we have
   // already NAMED may do, so it must never be the thing that answers an anonymous request.
   // An unauthenticated call gets one 401 about credentials, never a 429 about a budget.
   routes: withTiming(
-    withIndexGate(
-      withAuth(
-        withAgentApi(allRoutes, {
-          principal: (req) => auth.principal(req),
-          limiter: (bucket) => auth.agentLimiter(bucket),
-          log,
-        }),
+    withPayloadGuard(
+      withIndexGate(
+        withAuth(
+          withAgentApi(allRoutes, {
+            principal: (req) => auth.principal(req),
+            limiter: (bucket) => auth.agentLimiter(bucket),
+            log,
+          }),
+          {
+            authService: auth,
+            publicPaths: auth.publicPaths(),
+          },
+        ),
         {
-          authService: auth,
-          publicPaths: auth.publicPaths(),
+          ready: () => live.ready,
+          state: () => indexBuild?.state ?? null,
+          open: INDEX_GATE_PUBLIC_PATHS,
         },
       ),
-      {
-        ready: () => live.ready,
-        state: () => indexBuild?.state ?? null,
-        open: INDEX_GATE_PUBLIC_PATHS,
-      },
     ),
     {
       timings: requestTimings,

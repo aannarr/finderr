@@ -14,6 +14,7 @@
  * precisely so the test can assert it was never invoked.
  */
 
+import type { MeterReport } from "../lib/cost-meter";
 import type { PeakSample } from "../lib/runtime-stats";
 import type { WarmAttempt, WarmState, WarmStatus } from "./live-index";
 import type { ShelfCoverage } from "./shelves";
@@ -363,6 +364,12 @@ export interface HealthDeps {
    * lookup per shelf title, and it must not be called unless the caller asked.
    */
   coverage: () => ShelfCoverage[];
+  /**
+   * Per-caller spend over the last minute. A thunk for a different reason from `coverage`:
+   * it is cheap, but it is a SNAPSHOT of a rolling window, so reading it at call time is
+   * what keeps it from being a number captured when the deps object was built.
+   */
+  load: () => MeterReport;
 }
 
 /**
@@ -408,6 +415,24 @@ export function healthPayload(
     // there would have made the one key a reader goes looking for on a slow page the
     // hardest one to find. Nothing consumed the old key.
     timings: deps.timings,
+    /*
+      WHO ATE THE MACHINE IN THE LAST MINUTE, and what was done about them.
+
+      `timings` above says how long requests TOOK. This says who they took it FOR, which is
+      the question an operator actually has when somebody reports that searching felt slow
+      last night -- and it is the only field in this document that can answer it. Read
+      `load.callers` for the spend, `load.slowed` for who is being paced, `load.refusals`
+      for who was turned away.
+
+      `contended: true` with one caller holding most of `busyMs` is the whole diagnosis in
+      two fields. A non-empty `slowed` is NOT an alert: it is the tarpit working, and a fast
+      agent living there permanently is the designed outcome.
+
+      ADMIN-ONLY, like everything past `ok`, and for a sharper reason than the rest of this
+      document: the caller keys are account ids and IP addresses. `healthPayload`'s early
+      return is what keeps them off the internet.
+    */
+    load: deps.load(),
     services: deps.services,
     auth: deps.auth,
     watchlist: deps.watchlist,

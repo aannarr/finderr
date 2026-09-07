@@ -491,6 +491,29 @@ export interface Config {
     /** Requests per minute per IP on /api/search, which is genuinely CPU-bound. */
     searchRatePerMinute: number;
     /**
+     * The COST budget on search, in milliseconds of event-loop time per caller per minute.
+     *
+     * > [!IMPORTANT] This is not a second spelling of `searchRatePerMinute`, and neither
+     * > replaces the other
+     * > That one counts REQUESTS, which is the right defence against a retry loop because
+     * > every attempt costs the same. This counts TIME, because on this server they do not:
+     * > a cached shelf read is ~0.1 ms and a fuzzy search over 1.27M rows is tens of ms, so
+     * > a caller can sit inside a 120/minute request budget and still own the event loop.
+     *
+     * `0` disables the whole cost meter, the same zero-is-unlimited reading every other
+     * limit here uses. Every other number, and the reasoning for it, belongs to
+     * `src/lib/cost-meter.ts` -- these fields only let an operator move them.
+     */
+    searchBudgetMs: number;
+    /** Metered ms in the window past which the server counts as contended and delays arm. */
+    searchContendedMs: number;
+    /** What ONE caller may spend with nobody else about, before being refused regardless. */
+    searchSoloBudgetMs: number;
+    /** Where the tarpit stops and the 429 starts. */
+    searchRefuseAtMs: number;
+    /** The longest a tarpit may hold one request. Must stay well under `idleTimeout`. */
+    searchMaxDelayMs: number;
+    /**
      * Calls per minute per AGENT KEY on everything that costs a local SQLite seek.
      *
      * > [!IMPORTANT] Per KEY, and IN ADDITION to the per-IP limits rather than instead of them
@@ -948,6 +971,15 @@ const DEFAULTS: Config = {
     trustProxy: false,
     authRatePerMinute: 20,
     searchRatePerMinute: 120,
+    // The cost meter's defaults, as fractions of one core-minute (60,000 ms) -- 5% budget,
+    // 10% before the server counts as contended, 20% solo, refusing at 4x the budget. A
+    // real search runs 0.1-8 ms, so no human reaches any of them. `cost-meter.ts` argues
+    // each one; these are the same numbers, here so an operator can move them.
+    searchBudgetMs: 3_000,
+    searchContendedMs: 6_000,
+    searchSoloBudgetMs: 12_000,
+    searchRefuseAtMs: 12_000,
+    searchMaxDelayMs: 2_000,
     // Generous for reads a local index answers in under a millisecond; tight for the three
     // operations that cost real work. See the fields for the reasoning behind each number.
     agentCheapRatePerMinute: 120,
@@ -1131,6 +1163,11 @@ function envOverrides(): Record<string, unknown> {
       adminApiKey: envStr("FINDERR_ADMIN_API_KEY"),
       authRatePerMinute: envInt("FINDERR_AUTH_RATE_PER_MINUTE"),
       searchRatePerMinute: envInt("FINDERR_SEARCH_RATE_PER_MINUTE"),
+      searchBudgetMs: envInt("FINDERR_SEARCH_BUDGET_MS"),
+      searchContendedMs: envInt("FINDERR_SEARCH_CONTENDED_MS"),
+      searchSoloBudgetMs: envInt("FINDERR_SEARCH_SOLO_BUDGET_MS"),
+      searchRefuseAtMs: envInt("FINDERR_SEARCH_REFUSE_AT_MS"),
+      searchMaxDelayMs: envInt("FINDERR_SEARCH_MAX_DELAY_MS"),
       agentCheapRatePerMinute: envInt("FINDERR_AGENT_CHEAP_RATE_PER_MINUTE"),
       agentExpensiveRatePerMinute: envInt("FINDERR_AGENT_EXPENSIVE_RATE_PER_MINUTE"),
       noAuth: envBool("FINDERR_NO_AUTH"),

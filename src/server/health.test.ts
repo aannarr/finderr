@@ -109,6 +109,16 @@ function deps(onCoverage: () => void): HealthDeps {
       onCoverage();
       return [{ shelf: "recently-added", titles: 24, warm: 24 }];
     },
+    load: () => ({
+      windowSeconds: 60,
+      busyMs: 1234,
+      saturation: 0.02,
+      contended: false,
+      callers: [{ key: "user-1", ms: 1234, share: 1 }],
+      tracked: 1,
+      refusals: [],
+      slowed: [],
+    }),
   };
 }
 
@@ -142,6 +152,7 @@ const LANDS_AT: Record<keyof HealthDeps, string | null> = {
   shelves: "shelves",
   searchLog: "searchLog",
   timings: "timings",
+  load: "load",
   runtime: "runtime",
   plugins: "plugins.loaded",
   facetRows: "facets.rows",
@@ -163,9 +174,15 @@ describe("healthPayload", () => {
 
     for (const [key, path] of Object.entries(LANDS_AT) as [keyof HealthDeps, string | null][]) {
       if (path === null) continue;
+      // A dep declared as a THUNK lands as its RESULT, never as the function -- `load` is
+      // one, because it snapshots a rolling window and must be read at call time rather
+      // than when this object was built. Comparing the function itself would fail for
+      // every such dep and would say nothing about whether the value arrived.
+      const dep = d[key];
+      const expected = typeof dep === "function" ? (dep as () => unknown)() : dep;
       // Keyed rather than bare, so a failure names the field that went missing instead of
       // printing two anonymous values.
-      expect({ [key]: valueAt(out, path) }).toEqual({ [key]: d[key] });
+      expect({ [key]: valueAt(out, path) }).toEqual({ [key]: expected });
     }
   });
 
