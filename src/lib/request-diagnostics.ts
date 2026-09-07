@@ -65,7 +65,12 @@ export type VerdictTone = "working" | "done" | "dead_end";
  */
 export const VERDICT_COPY: Record<RequestVerdict, { label: string; sentence: string; tone: VerdictTone }> = {
   queued: {
-    label: "Queued",
+    // "Requested" and not "Queued", aannarr 2026-09-07. This is the word the reader sees a
+    // beat after pressing Request, and it has to answer "did that work" -- which "Queued"
+    // does not: it describes OUR send pacing, a fact about finderr's internals that nobody
+    // outside this repo asked about. The sentence still explains the queue for anyone who
+    // wants it. One label, so the card, the title panel and the request log all say it.
+    label: "Requested",
     tone: "working",
     sentence: "Waiting its turn to be sent. Requests go out one at a time so the indexers are not flooded.",
   },

@@ -23,7 +23,13 @@
 
 import { useState } from "react";
 import { isRemovable, type MediaRemovalPreview } from "../../../src/lib/media-removal";
-import { getRemovalPreview, type MediaRequest, patchTitleState, removeMedia } from "../lib/api";
+import {
+  getRemovalPreview,
+  type MediaRequest,
+  patchTitleState,
+  removeMedia,
+  requestStatePatch,
+} from "../lib/api";
 import { count, formatBytes } from "../lib/units";
 import { ConfirmAction } from "./ConfirmAction";
 
@@ -84,7 +90,11 @@ export function RemoveMediaControl({
           // Every cached view of this title still says it is in the library and still carries
           // the request badge, so both are corrected through the shared caches rather than by
           // reloading each view -- the same call `WithdrawControl` makes for the same reason.
-          patchTitleState(request.tconst, { requestStatus: "removed", inLibrary: false, hasFile: false });
+          patchTitleState(request.tconst, {
+            ...requestStatePatch("removed"),
+            inLibrary: false,
+            hasFile: false,
+          });
           onRemoved();
         }}
       />

@@ -51,6 +51,7 @@ import {
   type MediaRequest,
   markRequestsSeen,
   patchTitleState,
+  requestStatePatch,
   retryRequest,
   withdrawRequest,
 } from "../lib/api";
@@ -95,7 +96,7 @@ export function WithdrawControl({
           // Every cached view of this title still carries the request badge, so it is cleared
           // through the shared caches rather than by reloading each of them -- the same call
           // `RootLayout` makes when a request fails to go out.
-          patchTitleState(request.tconst, { requestStatus: null });
+          patchTitleState(request.tconst, requestStatePatch(null));
           onWithdrawn();
         }}
       />
@@ -134,7 +135,7 @@ export function RetryControl({ request, onRetried }: { request: MediaRequest; on
       // Every cached view of this title still shows the failure, so it is corrected through
       // the shared caches rather than by reloading each of them -- the same call and the same
       // reason as `WithdrawControl` above.
-      patchTitleState(request.tconst, { requestStatus: "queued" });
+      patchTitleState(request.tconst, requestStatePatch("queued"));
       onRetried();
     } catch (e) {
       setError((e as Error).message);

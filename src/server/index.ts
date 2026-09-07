@@ -2954,7 +2954,7 @@ const appRoutes = {
             Attached ONLY to a `removed` row, deliberately. The audit record is keyed on the
             title and survives a later re-request -- it is the record of a decision, not of a
             row -- so a re-requested title would otherwise carry a removal note above a
-            "Queued" verdict and read as if it had just been deleted.
+            "Requested" verdict and read as if it had just been deleted.
 
             The name is resolved the same way `attributedRequest` resolves a requester's, and
             through the same `names` table: an admin whose account has since been deleted

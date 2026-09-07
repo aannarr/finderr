@@ -23,7 +23,11 @@ import type { PaneBlock, RenderedPane } from "../../../src/lib/panes";
 import type { PersonLinks } from "../../../src/lib/people";
 import type { PersonLeaderboard } from "../../../src/lib/people-leaderboard";
 import type { PlexLinks } from "../../../src/lib/plex";
-import type { RequestStateView } from "../../../src/lib/request-diagnostics";
+// `requestStateOf` is a VALUE import and is deliberate: it is the one derivation from a
+// status to a verdict, and `RequestProgress.tsx` already pulls `VERDICT_COPY` out of the
+// same module. It touches no server-only API -- a copy of the mapping here is what
+// `requestStatePatch` exists to avoid.
+import { type RequestStateView, requestStateOf } from "../../../src/lib/request-diagnostics";
 import type { QuotaState } from "../../../src/lib/request-quota";
 import type { HiddenByFloor, HiddenByLanguage } from "../../../src/lib/search";
 import type {
@@ -31,6 +35,7 @@ import type {
   ShelfChoiceView,
   ShelfPreferencePayload,
 } from "../../../src/lib/shelf-preferences";
+import type { RequestStatus } from "../../../src/lib/store";
 import type { Term, TermDimension } from "../../../src/lib/terms";
 import type { EpisodeScoreRow as EpisodeScore } from "../../../src/server/episode-scores";
 import type { CompletionPayload, ListCompletion } from "../../../src/server/lists";
@@ -1761,6 +1766,28 @@ export async function removeMedia(tconst: string, opts: { deleteFiles: boolean }
   // shelf built from either is now describing something that is gone -- the same reason
   // `withdrawRequest` above marks the held page stale.
   staleDiscover();
+}
+
+/**
+ * Everything a title shows about a request, derived from the one status that changed.
+ *
+ * THE ONLY WAY TO WRITE `requestStatus` THROUGH `patchTitleState`, and the reason is a bug
+ * that shipped: four callers each wrote `{ requestStatus: "queued" }` on its own, and
+ * NOTHING in the tree renders `requestStatus`. Every surface reads `requestVerdict` -- see
+ * `Title`, which says so about itself -- so a card on the shelves page went on offering
+ * "Request" after a successful request, and the request log went on showing a dead end
+ * after a retry. The patch was applied, reached every cache, and was invisible.
+ *
+ * It DERIVES rather than listing, through the server's own `requestStateOf`: a status maps
+ * to a verdict in exactly one place, and a client copy of that mapping is a copy that
+ * disagrees with the very next response. `null` clears the whole set, which is what a
+ * withdrawal and a failed POST both mean.
+ *
+ * The verdict this produces is deliberately the OPTIMISTIC one -- no diagnostic exists yet
+ * for a request a moment old -- and the next poll replaces it with the server's.
+ */
+export function requestStatePatch(status: RequestStatus | null): Partial<Title> {
+  return { requestStatus: status, ...requestStateOf(status ? { status } : null, null) };
 }
 
 /**
