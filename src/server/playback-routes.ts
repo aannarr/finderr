@@ -34,9 +34,11 @@ import {
   mediaPlaylistName,
   parseProducedName,
   SEGMENT_TARGET_SEC,
+  segmentContentType,
   segmentCount,
   type Timeline,
   TRACKS,
+  TRACKS_BLOCKING_FIRST_FRAME,
   type Track,
   type TrackTimelines,
   uniformTimeline,
@@ -120,43 +122,59 @@ function capabilitiesFrom(v: unknown): ClientCapabilities {
   };
 }
 
-/**
- * The path of the produced file this name asks for, producing it if nobody has yet.
- *
- * Null for a name that is not one of ours, which is the traversal guard: the index comes out
- * of a closed vocabulary and is then a NUMBER, so nothing a caller writes ever reaches the
- * filesystem as text.
- */
-function producedFile(sessions: TranscodeSessions, id: string, name: string): Promise<string | null> {
-  const asked = parseProducedName(name);
-  if (!asked) return Promise.resolve(null);
-  const of = asked.kind === "segment" ? sessions.segmentPath : sessions.initPath;
-  return of.call(sessions, id, asked.track, asked.index);
+/** One produced file: where it is on disk, and which rendition it belongs to. */
+interface ProducedFile {
+  path: string;
+  track: Track;
 }
 
 /**
- * Get the first segment of every rendition on its way before answering the start request.
+ * The produced file this name asks for, producing it if nobody has yet.
+ *
+ * Null for a name that is not one of ours, which is the traversal guard: the index comes out
+ * of a closed vocabulary and is then a NUMBER, so nothing a caller writes ever reaches the
+ * filesystem as text. The track comes back with the path because it is what decides the
+ * content type -- an fMP4 segment and a WebVTT one are not served as the same thing.
+ */
+async function producedFile(
+  sessions: TranscodeSessions,
+  id: string,
+  name: string,
+): Promise<ProducedFile | null> {
+  const asked = parseProducedName(name);
+  if (!asked) return null;
+  const of = asked.kind === "segment" ? sessions.segmentPath : sessions.initPath;
+  const path = await of.call(sessions, id, asked.track, asked.index);
+  return path === null ? null : { path, track: asked.track };
+}
+
+/**
+ * Get the first segment of every rendition a first frame needs on its way, before answering
+ * the start request.
  *
  * Not politeness: a player asks for the initialisation segment and the first media segment
  * within milliseconds of reading the playlist, and both of those would otherwise arrive
- * while ffmpeg was still starting. **Both renditions**, because the player fetches them in
- * parallel and it cannot show a frame until it has one of each. Bounded, and a timeout is NOT
- * an error -- the production carries on and the client's own request joins it.
+ * while ffmpeg was still starting. **Video AND audio**, because the player fetches them in
+ * parallel and it cannot show a frame until it has one of each -- and NOT subtitles, which no
+ * player fetches until somebody switches them on. Bounded, and a timeout is NOT an error --
+ * the production carries on and the client's own request joins it.
  */
 async function warmFirstSegments(sessions: TranscodeSessions, session: Session): Promise<void> {
-  const first = TRACKS.filter((track) => session.timelines[track]).map((track) =>
+  const first = TRACKS_BLOCKING_FIRST_FRAME.filter((track) => session.timelines[track]).map((track) =>
     sessions.segmentPath(session.id, track, 0),
   );
   await Promise.race([Promise.all(first), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
 }
 
 /**
- * The timelines a title publishes: the video grid it is stuck with, and a plain audio grid.
+ * The timelines a title publishes: the video grid it is stuck with, and a plain grid for
+ * everything else.
  *
- * The audio grid has no keyframe constraint to honour -- every audio packet is a key packet
- * -- so it is uniform whatever the video is doing, which is exactly what lets an audio
- * segment cover its whole declared range and leave no hole at the boundary. The two grids do
- * not have to agree, and making them agree would bring the constraint back.
+ * Audio has no keyframe constraint to honour -- every audio packet is a key packet -- and
+ * neither has a subtitle cue, so both are uniform whatever the video is doing. That is
+ * exactly what lets an audio segment cover its whole declared range and leave no hole at the
+ * boundary. The grids do not have to agree, and making them agree would bring the constraint
+ * back.
  */
 async function timelinesFor(
   path: string,
@@ -174,7 +192,9 @@ async function timelinesFor(
     timelines.video = cut.timeline;
     video = { source: cut.source, cached: cut.cached };
   }
-  if (plan.audio.sourceIndex !== null) timelines.audio = uniformTimeline(durationSec, SEGMENT_TARGET_SEC);
+  const uniform = uniformTimeline(durationSec, SEGMENT_TARGET_SEC);
+  if (plan.audio.sourceIndex !== null) timelines.audio = uniform;
+  if (plan.subtitles.sourceIndex !== null) timelines.subtitles = uniform;
   return { timelines, video };
 }
 
@@ -240,8 +260,8 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
       });
     }
 
-    const path = await producedFile(deps.sessions, id, name);
-    if (!path) {
+    const produced = await producedFile(deps.sessions, id, name);
+    if (!produced) {
       // Either the session is gone, the name is not one we produce, or ffmpeg could not make
       // this segment right now. 404 rather than 5xx: hls.js retries a 404 and gives up on a
       // 500, and every one of those states is one a retry can get out of.
@@ -249,9 +269,12 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
     }
     // Zero-copy: the bytes never enter the JS heap. This is the one route that runs
     // hundreds of times per playback and it must stay a stat plus an fd handoff.
-    return new Response(Bun.file(path), {
+    return new Response(Bun.file(produced.path), {
       headers: {
-        "content-type": "video/iso.segment",
+        // From the rendition rather than from the name: fMP4 segments and WebVTT segments are
+        // served through this one route and a browser will not read a caption file handed to
+        // it as `video/iso.segment`.
+        "content-type": segmentContentType(produced.track),
         // A produced segment is byte-identical whenever it is produced, and the URL names
         // both the session and the exact range, so it can be cached hard.
         "cache-control": "public, max-age=31536000, immutable",

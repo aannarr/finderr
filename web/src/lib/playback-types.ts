@@ -13,7 +13,13 @@
  */
 
 export type StreamAction = "copy" | "transcode";
-export type SubtitleAction = "none" | "extract" | "burn";
+
+/**
+ * What happened to subtitles. There is no `burn`: nothing draws a bitmap subtitle onto the
+ * picture, so the server declines those and says why in `reasons` -- see `SubtitleAction` in
+ * `src/lib/playback-plan.ts`.
+ */
+export type SubtitleAction = "none" | "extract";
 
 export interface PlaybackPlan {
   video: { action: StreamAction; sourceIndex: number | null; codec: string };
@@ -42,7 +48,6 @@ export function planSummary(plan: PlaybackPlan): string {
   parts.push(
     plan.audio.action === "copy" ? `audio ${plan.audio.codec} copied` : `audio → ${plan.audio.codec}`,
   );
-  if (plan.subtitles.action === "burn") parts.push("subtitles burned in");
   if (plan.subtitles.action === "extract") parts.push("subtitles as WebVTT");
   return parts.join(" · ");
 }

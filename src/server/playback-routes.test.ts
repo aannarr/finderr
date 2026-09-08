@@ -21,6 +21,7 @@ import {
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
+import { initName } from "../test/playback-names";
 import { playbackRoutes } from "./playback-routes";
 
 const PLAN: PlaybackPlan = {
@@ -35,7 +36,7 @@ let sessionDir: string;
 
 /** Three six-second segments -- enough for the routes to have a timeline to state. */
 const TIMELINE: Timeline = { starts: [0, 6, 12], endSec: 18 };
-const TIMELINES = { video: TIMELINE, audio: TIMELINE };
+const TIMELINES = { video: TIMELINE, audio: TIMELINE, subtitles: TIMELINE };
 
 /**
  * Enough of the manager for the routes; the real one is proved in its own suite.
@@ -71,7 +72,11 @@ function fakeSessions(dir: string) {
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
     segmentPath: (id: string, track: Track, index: number) => found(id, segmentFileName(track, index)),
-    initPath: (id: string, track: Track, index: number) => found(id, initFileName(track, index)),
+    initPath: (id: string, track: Track, index: number) => {
+      // Mirrors the real manager: a rendition with no init has no name to look for.
+      const name = initFileName(track, index);
+      return name === null ? Promise.resolve(null) : found(id, name);
+    },
     stop: (id: string) => {
       stopped.push(id);
     },
@@ -121,10 +126,11 @@ beforeEach(() => {
   mkdtempSync(`${root}/x-`);
   require("node:fs").mkdirSync(sessionDir, { recursive: true });
   writeFileSync(join(sessionDir, MASTER_PLAYLIST_NAME), "#EXTM3U\n");
-  writeFileSync(join(sessionDir, initFileName("video", 1)), "init");
+  writeFileSync(join(sessionDir, initName("video", 1)), "init");
   writeFileSync(join(sessionDir, segmentFileName("video", 1)), "segment-bytes");
-  writeFileSync(join(sessionDir, initFileName("audio", 1)), "init");
+  writeFileSync(join(sessionDir, initName("audio", 1)), "init");
   writeFileSync(join(sessionDir, segmentFileName("audio", 1)), "segment-bytes");
+  writeFileSync(join(sessionDir, segmentFileName("subtitles", 1)), "WEBVTT\n");
   // A file OUTSIDE the session directory, next door -- the thing traversal would reach.
   writeFileSync(join(root, "secret.txt"), "the admin api key");
 
@@ -210,16 +216,18 @@ describe("a segment name cannot walk out of its session directory", () => {
     expect(await res.text()).not.toContain("admin api key");
   });
 
-  test("serves exactly the shapes a session publishes, and both renditions", async () => {
+  test("serves exactly the shapes a session publishes, across all three renditions", async () => {
     const { routes } = build({});
     const published = [
       MASTER_PLAYLIST_NAME,
       mediaPlaylistName("video"),
       mediaPlaylistName("audio"),
-      initFileName("video", 1),
+      mediaPlaylistName("subtitles"),
+      initName("video", 1),
       segmentFileName("video", 1),
-      initFileName("audio", 1),
+      initName("audio", 1),
       segmentFileName("audio", 1),
+      segmentFileName("subtitles", 1),
     ];
     for (const name of published) {
       const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
@@ -239,6 +247,23 @@ describe("a segment name cannot walk out of its session directory", () => {
       segReq("sess-1", segmentFileName("video", 1)),
     )) as Response;
     expect(seg.headers.get("cache-control")).toContain("immutable");
+  });
+
+  /**
+   * ONE ROUTE SERVES TWO KINDS OF SEGMENT NOW, and a browser will not read a caption file
+   * handed to it as `video/iso.segment`. The type comes from the RENDITION rather than from
+   * the file extension, so it agrees with the naming table that produced the name.
+   */
+  test("a WebVTT segment is served as text/vtt and an fMP4 one is not", async () => {
+    const { routes } = build({});
+    const typeOf = async (name: string) => {
+      const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
+      return res.headers.get("content-type");
+    };
+
+    expect(await typeOf(segmentFileName("subtitles", 1))).toBe("text/vtt");
+    expect(await typeOf(segmentFileName("video", 1))).toBe("video/iso.segment");
+    expect(await typeOf(initName("audio", 1))).toBe("video/iso.segment");
   });
 
   test("an unknown session is a 404 rather than a read of some other directory", async () => {

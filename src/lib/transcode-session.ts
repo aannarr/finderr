@@ -7,10 +7,10 @@
  * for the length of one segment and exits. `hls-timeline.ts` owns the segmentation,
  * `playback-plan.ts` owns the argv, and this module owns the bookkeeping between them.
  *
- * **A segment belongs to a TRACK as well as to an index.** Video and audio are published as
- * separate renditions cut on separate grids -- see `hls-timeline.ts` for why that is what
- * closes the audio hole -- so every question this module answers is asked per track, and the
- * concurrency ceiling and the disk cache are per track too.
+ * **A segment belongs to a TRACK as well as to an index.** Video, audio and subtitles are
+ * published as separate renditions cut on separate grids -- see `hls-timeline.ts` for why
+ * that is what closes the audio hole -- so every question this module answers is asked per
+ * track, and the concurrency ceiling and the disk cache are per track too.
  *
  * Segments are handed out by the route with `Bun.file`, which is zero-copy, so **segment
  * bytes never enter the JS heap and the event loop pays a stat and an fd handoff per
@@ -177,8 +177,9 @@ export interface StartOpts {
   /**
    * Every segment of every rendition this title publishes, from `hls-timeline.ts`.
    *
-   * Two grids, not one: video is cut on the source's keyframes and audio on a plain uniform
-   * grid, which is what stops the muxer dropping ~60 ms of sound at every boundary.
+   * Two grids, not one: video is cut on the source's keyframes while audio and subtitles get
+   * a plain uniform grid, which is what stops the muxer dropping ~60 ms of sound at every
+   * boundary.
    */
   timelines: TrackTimelines;
   /** Which encoder to use for a re-encode. From `chooseEncoder`, probed once at boot. */
@@ -346,9 +347,15 @@ export class TranscodeSessions {
    * rendition's inits are byte-identical whatever the seek offset. A player asks for this
    * immediately before the media, so on a cold session this call is usually what pays for the
    * segment too, and the request that follows it is already satisfied.
+   *
+   * Null without producing anything for a rendition that has no init at all -- WebVTT. No
+   * playlist names one, so reaching here for subtitles means the name came from somewhere
+   * other than a playlist this server wrote.
    */
   initPath(id: string, track: Track, index: number): Promise<string | null> {
-    return this.published(id, track, index, initFileName(track, index));
+    const name = initFileName(track, index);
+    if (!name) return Promise.resolve(null);
+    return this.published(id, track, index, name);
   }
 
   /**
@@ -451,20 +458,28 @@ export class TranscodeSessions {
   }
 
   /**
-   * Move the finished media segment and its init out of the working directory.
+   * Move the finished media segment, and its init where it has one, out of the working
+   * directory.
    *
-   * BOTH, together: an init belongs to the segment its run produced and is useless beside any
-   * other one. The media is renamed LAST so that a segment file appearing implies its init is
-   * already there -- a player asks for them in the other order, but nothing enforces that.
+   * BOTH together where there are both: an init belongs to the segment its run produced and is
+   * useless beside any other one. The media is renamed LAST so that a segment file appearing
+   * implies its init is already there -- a player asks for them in the other order, but nothing
+   * enforces that.
+   *
+   * A WebVTT rendition has no init, so there is nothing to move first and nothing to wait for.
    */
   private publish(state: SessionState, track: Track, work: string, index: number): boolean {
     const trackState = state.tracks.get(track);
     if (!trackState) return false;
     const { dir } = state.session;
     const media = segmentFileName(track, index);
+    const init = initFileName(track, index);
     try {
-      if (!existsSync(join(work, RUN_INIT_NAME)) || !existsSync(join(work, media))) return false;
-      renameSync(join(work, RUN_INIT_NAME), join(dir, initFileName(track, index)));
+      if (!existsSync(join(work, media))) return false;
+      if (init) {
+        if (!existsSync(join(work, RUN_INIT_NAME))) return false;
+        renameSync(join(work, RUN_INIT_NAME), join(dir, init));
+      }
       renameSync(join(work, media), join(dir, media));
     } catch {
       return false;
@@ -474,13 +489,14 @@ export class TranscodeSessions {
     return true;
   }
 
-  /** Drop the oldest productions, both files of each, once a rendition holds too many. */
+  /** Drop the oldest productions, every file of each, once a rendition holds too many. */
   private evict(state: SessionState, track: Track, trackState: TrackState): void {
     while (trackState.produced.length > SEGMENT_CACHE) {
       const oldest = trackState.produced.shift();
       if (oldest === undefined) return;
       rmSync(join(state.session.dir, segmentFileName(track, oldest)), { force: true });
-      rmSync(join(state.session.dir, initFileName(track, oldest)), { force: true });
+      const init = initFileName(track, oldest);
+      if (init) rmSync(join(state.session.dir, init), { force: true });
     }
   }
 

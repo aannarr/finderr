@@ -46,16 +46,42 @@
  *
  * The grids do NOT have to match, and forcing them to would bring the constraint straight
  * back: hls.js aligns renditions by timestamp, not by segment index.
+ *
+ * ## SUBTITLES ARE THE THIRD RENDITION, and they are segmented for the same reason
+ *
+ * A text subtitle track becomes a WebVTT rendition cut on the same plain grid as audio. It is
+ * segmented rather than extracted whole, and that is measured rather than assumed: a
+ * `-c:s webvtt` pass over one 6.65 GB film took **92.3 s**, because subtitle packets are
+ * interleaved through every cluster so ffmpeg has to demux the entire container to collect
+ * them. The same extraction bounded to one six-second segment took **0.07 s** -- the identical
+ * figure a copy-mode video segment costs. Measured 2026-09-08 over the array.
+ *
+ * A WebVTT rendition has NO initialisation segment, which is the one way it differs in shape
+ * from the other two: there is no fMP4 header to carry, so `TRACK_FILES` leaves `init` off it
+ * and every reader of that table asks whether there is one rather than assuming.
  */
 
 /**
- * A rendition. Video and audio are published separately and cut on different grids, so
- * almost everything named in this module is named per track.
+ * A rendition. Video, audio and subtitles are published separately and cut on different
+ * grids, so almost everything named in this module is named per track.
+ *
+ * The names are the `PlaybackPlan` field names on purpose: `playback-plan.ts` looks a track's
+ * source stream up as `plan[track]`, which is one structural correspondence rather than a
+ * switch that has to be reopened for every new rendition.
  */
-export type Track = "video" | "audio";
+export type Track = "video" | "audio" | "subtitles";
 
-/** Both tracks, in the order a reader expects them. The one owner of that list. */
-export const TRACKS: readonly Track[] = ["video", "audio"];
+/** Every track, in the order a reader expects them. The one owner of that list. */
+export const TRACKS: readonly Track[] = ["video", "audio", "subtitles"];
+
+/**
+ * The renditions a player must have before it can show a frame.
+ *
+ * Subtitles are deliberately absent: a viewer sees the film without them, hls.js does not
+ * even fetch a subtitle fragment until the track is switched on, and warming one would spend
+ * an ffmpeg run on the start request for something nobody has asked to see.
+ */
+export const TRACKS_BLOCKING_FIRST_FRAME: readonly Track[] = ["video", "audio"];
 
 /**
  * Where every segment of one rendition starts, and where the last one ends.
@@ -156,25 +182,45 @@ export function uniformTimeline(durationSec: number, segmentSec: number): Timeli
 }
 
 /**
- * What each rendition's published files are called.
+ * What each rendition's published files are called, and what they are served as.
  *
  * ONE table, because these names are written in four languages -- generated here, matched by
  * the route, handed to ffmpeg as a `%05d` template, and read back off disk by the session --
  * and four independent spellings is the classic pair that drifts into a file published under
  * a name the playlist never mentions.
+ *
+ * `init` is ABSENT on subtitles rather than empty: a WebVTT rendition has no fMP4
+ * initialisation segment to publish, so there is nothing to name and no `EXT-X-MAP` to write.
  */
-const TRACK_FILES: Record<Track, { playlist: string; segment: FileNaming; init: FileNaming }> = {
+const TRACK_FILES: Record<Track, TrackFiles> = {
   video: {
     playlist: "video.m3u8",
     segment: { prefix: "vseg", extension: ".m4s" },
     init: { prefix: "vinit", extension: ".mp4" },
+    contentType: "video/iso.segment",
   },
   audio: {
     playlist: "audio.m3u8",
     segment: { prefix: "aseg", extension: ".m4s" },
     init: { prefix: "ainit", extension: ".mp4" },
+    contentType: "video/iso.segment",
+  },
+  subtitles: {
+    playlist: "subtitles.m3u8",
+    segment: { prefix: "sseg", extension: ".vtt" },
+    contentType: "text/vtt",
   },
 };
+
+/** Everything about one rendition's published files that has to be spelled the same way twice. */
+interface TrackFiles {
+  playlist: string;
+  segment: FileNaming;
+  /** Absent when the rendition has no initialisation segment. WebVTT has none. */
+  init?: FileNaming;
+  /** What a produced media segment of this rendition is served as. */
+  contentType: string;
+}
 
 /** How one kind of published file is spelled: a fixed prefix, an index, a fixed extension. */
 interface FileNaming {
@@ -194,9 +240,21 @@ export function segmentFileName(track: Track, index: number): string {
   return publishedName(TRACK_FILES[track].segment, index);
 }
 
-/** How a published initialisation segment is named. The one owner of that spelling. */
-export function initFileName(track: Track, index: number): string {
-  return publishedName(TRACK_FILES[track].init, index);
+/**
+ * How a published initialisation segment is named, or null for a rendition that has none.
+ *
+ * Null is a real answer rather than a failure: WebVTT segments carry no fMP4 header, so a
+ * subtitle rendition publishes nothing beside its media and every caller decides what that
+ * means for it -- no `EXT-X-MAP` in the playlist, nothing to rename, nothing to evict.
+ */
+export function initFileName(track: Track, index: number): string | null {
+  const naming = TRACK_FILES[track].init;
+  return naming ? publishedName(naming, index) : null;
+}
+
+/** What a produced media segment of this rendition is served as. The one owner of that. */
+export function segmentContentType(track: Track): string {
+  return TRACK_FILES[track].contentType;
 }
 
 /**
@@ -242,7 +300,11 @@ export interface ProducedName {
 export function parseProducedName(name: string): ProducedName | null {
   for (const track of TRACKS) {
     for (const kind of ["segment", "init"] as const) {
-      const index = indexIn(TRACK_FILES[track][kind], name);
+      const naming = TRACK_FILES[track][kind];
+      // A rendition with no initialisation segment has no name to match, and matching one
+      // would admit a file this server never writes.
+      if (!naming) continue;
+      const index = indexIn(naming, name);
       if (index !== null) return { track, kind, index };
     }
   }
@@ -279,6 +341,16 @@ export const MASTER_PLAYLIST_NAME = "index.m3u8";
 const NOMINAL_BANDWIDTH = 8_000_000;
 
 /**
+ * The rendition group names, written once each.
+ *
+ * A `GROUP-ID` is spelled twice by construction -- on the `EXT-X-MEDIA` line that defines the
+ * group and on the `EXT-X-STREAM-INF` that joins it -- and a variant naming a group that does
+ * not exist is a manifest a player rejects outright.
+ */
+const AUDIO_GROUP = "audio";
+const SUBTITLE_GROUP = "subs";
+
+/**
  * The master playlist: which renditions exist, and where each one's own playlist is.
  *
  * > [!IMPORTANT] NO `CODECS` ATTRIBUTE, DELIBERATELY
@@ -294,11 +366,25 @@ export function masterPlaylist(timelines: TrackTimelines): string {
   const separateAudio = timelines.video !== undefined && timelines.audio !== undefined;
   if (separateAudio) {
     lines.push(
-      `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${mediaPlaylistName("audio")}"`,
+      `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="${AUDIO_GROUP}",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${mediaPlaylistName("audio")}"`,
+    );
+  }
+  // `DEFAULT=NO,AUTOSELECT=NO` is the whole subtitle policy and it is deliberate: the
+  // rendition is OFFERED and never switched on for you. hls.js leaves it unselected, so it
+  // fetches no subtitle fragment -- and produces no ffmpeg run -- until a viewer picks it out
+  // of the player's own caption menu.
+  const hasSubtitles = timelines.subtitles !== undefined;
+  if (hasSubtitles) {
+    lines.push(
+      `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="${SUBTITLE_GROUP}",NAME="Subtitles",DEFAULT=NO,AUTOSELECT=NO,URI="${mediaPlaylistName("subtitles")}"`,
     );
   }
   const variant: Track = timelines.video !== undefined ? "video" : "audio";
-  lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${NOMINAL_BANDWIDTH}${separateAudio ? ',AUDIO="audio"' : ""}`);
+  const groups = [
+    separateAudio ? `,AUDIO="${AUDIO_GROUP}"` : "",
+    hasSubtitles ? `,SUBTITLES="${SUBTITLE_GROUP}"` : "",
+  ].join("");
+  lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${NOMINAL_BANDWIDTH}${groups}`);
   // RELATIVE, like every other name this module writes -- see `mediaPlaylist`.
   lines.push(mediaPlaylistName(variant));
   return `${lines.join("\n")}\n`;
@@ -326,6 +412,11 @@ export function masterPlaylist(timelines: TrackTimelines): string {
  * > It is kept because collapsing it to a single `EXT-X-MAP` is a change to the playlist that
  * > buys one saved request per segment and needs its own browser verification. Card:
  * > `one-ext-x-map-per-rendition-now-that-every-init-is-byte-iden`.
+ *
+ * > [!NOTE] A SUBTITLE RENDITION WRITES NO `EXT-X-MAP` AT ALL, and that is not an omission
+ * > WebVTT segments are plain text with no initialisation section, so there is nothing to map
+ * > to. `initFileName` answers null for that rendition and this loop skips the line rather
+ * > than publishing a URI that would 404 once per segment.
  */
 export function mediaPlaylist(track: Track, t: Timeline): string {
   const lines = [
@@ -342,7 +433,8 @@ export function mediaPlaylist(track: Track, t: Timeline): string {
     // RELATIVE names, which is what lets a client retarget the media at a different endpoint
     // from the playlist. An absolute base here would weld every segment to one address and
     // make multi-homed playback impossible without rewriting the playlist.
-    lines.push(`#EXT-X-MAP:URI="${initFileName(track, i)}"`);
+    const init = initFileName(track, i);
+    if (init) lines.push(`#EXT-X-MAP:URI="${init}"`);
     lines.push(`#EXTINF:${(range.endSec - range.startSec).toFixed(6)},`);
     lines.push(segmentFileName(track, i));
   }

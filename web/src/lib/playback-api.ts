@@ -181,6 +181,10 @@ export class PlaybackRefused extends Error {
  * the whole film, the playlist names every segment of it, and seeking is something the
  * player does by asking for a different segment. A start offset used to be part of the
  * session's identity because a session WAS a position.
+ *
+ * `wantSubtitles` asks the server to PUBLISH a WebVTT rendition when the file carries a text
+ * subtitle track. It never switches subtitles on and it can never make the video expensive:
+ * a bitmap-only title is declined in words rather than burned into the picture.
  */
 export async function startPlayback(
   tconst: string,

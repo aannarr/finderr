@@ -8,9 +8,9 @@
  * - `ANNA_AND_THE_KING` -- h264 + eac3 + subrip in matroska. **The common case**: video
  *   copies everywhere, audio has to be re-encoded for anything but Safari, subtitles are
  *   free. Cheap.
- * - `RANGO` -- hevc + eac3 + five PGS tracks in matroska. **The expensive case**: video
- *   copies only for a client that decodes HEVC, and asking for subtitles at all forces a
- *   full re-encode because every track is a bitmap.
+ * - `RANGO` -- hevc + eac3 + PGS tracks in matroska. **The expensive case**: video copies
+ *   only for a client that decodes HEVC, and every subtitle track is a bitmap, so asking for
+ *   subtitles gets a named refusal rather than any subtitles at all.
  *
  * Recorded rather than invented on purpose: the shapes that break a parser are the ones
  * nobody would think to write down -- `tags.language` absent on the video stream,
@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
-import { RUN_INIT_NAME, segmentFilePattern } from "./hls-timeline";
+import { RUN_INIT_NAME, segmentFileName, segmentFilePattern } from "./hls-timeline";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -231,20 +231,43 @@ describe("the expensive case is named as expensive", () => {
   });
 
   /**
-   * THE DECISION THIS MODULE EXISTS FOR. Rango's video would copy in Safari; asking for its
-   * bitmap subtitles turns that into a full 1080p re-encode. It must be a choice, and the
-   * plan must say so in words.
+   * THE TRAP THIS CARD REMOVED. Rango's video copies in Safari, and asking for its PGS
+   * subtitles used to turn that into a full 1080p re-encode -- which then burned nothing in,
+   * so it bought the most expensive outcome in the module and returned a picture with no
+   * subtitles on it. Now it is DECLINED, in words, and the video is still copied.
    */
-  test("asking for PGS subtitles forces a video re-encode, and says why", () => {
+  test("asking for bitmap subtitles is refused by name and buys no re-encode", () => {
     const without = planPlayback(parseProbe(RANGO), SAFARI);
     expect(without.video.action).toBe("copy");
     expect(without.subtitles.action).toBe("none");
 
     const withSubs = planPlayback(parseProbe(RANGO), SAFARI, { wantSubtitles: true });
-    expect(withSubs.subtitles.action).toBe("burn");
-    expect(withSubs.video.action).toBe("transcode");
-    expect(isExpensive(withSubs)).toBe(true);
-    expect(withSubs.reasons.join(" ")).toContain("bitmap");
+    expect(withSubs.subtitles.action).toBe("none");
+    expect(withSubs.subtitles.sourceIndex).toBeNull();
+    expect(withSubs.video.action).toBe("copy");
+    expect(isExpensive(withSubs)).toBe(false);
+    // It NAMES the codec: "no subtitles" alone leaves a viewer with nowhere to go.
+    expect(withSubs.reasons.join(" ")).toContain("hdmv_pgs_subtitle");
+    expect(withSubs.reasons.join(" ")).toContain("not supported");
+  });
+
+  /**
+   * The argv is the half that decides what a re-encode COSTS, and the plan's own `action`
+   * field could say "copy" while the flags said otherwise. Measured on the video run for
+   * every track, because a subtitle run must not drag the video along either.
+   */
+  test("a bitmap-subtitle request produces the same argv as asking for none", () => {
+    const asked = planPlayback(parseProbe(RANGO), SAFARI, { wantSubtitles: true });
+    const not = planPlayback(parseProbe(RANGO), SAFARI);
+    const argv = (p: typeof asked, track: "video" | "audio") =>
+      ffmpegArgs(p, {
+        input: "/plex/a.mkv",
+        outDir: "/tmp/s1",
+        track,
+        segment: { index: 3, startSec: 18, endSec: 24 },
+      });
+    expect(argv(asked, "video")).toEqual(argv(not, "video"));
+    expect(argv(asked, "audio")).toEqual(argv(not, "audio"));
   });
 
   /**
@@ -277,7 +300,7 @@ describe("the expensive case is named as expensive", () => {
     });
   });
 
-  /** Subtitles are off by default so nobody buys that re-encode without asking. */
+  /** A caller that has not asked for a subtitle rendition is not handed one. */
   test("subtitles are not requested by default", () => {
     expect(planPlayback(parseProbe(RANGO), SAFARI).subtitles.action).toBe("none");
     expect(planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI).subtitles.action).toBe("none");
@@ -286,13 +309,15 @@ describe("the expensive case is named as expensive", () => {
   test("a text subtitle track costs nothing and keeps the video copied", () => {
     const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI, { wantSubtitles: true });
     expect(plan.subtitles.action).toBe("extract");
+    expect(plan.subtitles.sourceIndex).toBe(2);
     expect(plan.video.action).toBe("copy");
     expect(isExpensive(plan)).toBe(false);
+    expect(plan.reasons.join(" ")).toContain("WebVTT");
   });
 
   /**
-   * A file carrying BOTH kinds must choose the text one -- not for tidiness, but because
-   * that choice is the difference between a copy and a full re-encode.
+   * A file carrying BOTH kinds must choose the text one: the bitmap track cannot be shown at
+   * all, so choosing it would mean publishing nothing for a file that has subtitles.
    */
   test("text wins over bitmap when a file has both", () => {
     const both = JSON.stringify({
@@ -656,6 +681,90 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
         expect(options).toContain("use_editlist=0");
       }
     }
+  });
+
+  /**
+   * THE SUBTITLE RENDITION, which is the third one and the only one that is not fMP4.
+   *
+   * It is segmented like the others rather than extracted whole, and that is measured: a
+   * `-c:s webvtt` pass over one 6.65 GB film took 92.3 s, because subtitle packets are
+   * interleaved through every cluster and ffmpeg has to demux the lot to collect them. The
+   * same extraction bounded to one six-second segment took 0.07 s. Measured 2026-09-08 over
+   * the array.
+   */
+  describe("a subtitle run", () => {
+    const withSubs = planPlayback(parseProbe(ANNA_AND_THE_KING), CHROME_HEVC, { wantSubtitles: true });
+    const subs = (over: Partial<Parameters<typeof ffmpegArgs>[1]> = {}) =>
+      ffmpegArgs(withSubs, {
+        input: "/plex/a.mkv",
+        outDir: "/tmp/s1",
+        track: "subtitles",
+        segment: SEG7,
+        ...over,
+      });
+
+    test("carries the subtitle stream, converted to WebVTT, and nothing else", () => {
+      const a = subs();
+      expect(a.join(" ")).toContain("-map 0:2");
+      expect(a.join(" ")).toContain("-c:s webvtt");
+      expect(a).toContain("-vn");
+      expect(a).toContain("-an");
+    });
+
+    /**
+     * `-copyts` is what puts the cue times on the FILM's timeline rather than on the
+     * segment's own. Without it every segment's first cue would claim to be at 00:00 and the
+     * player would show the opening line an hour in.
+     */
+    test("keeps the source timestamps, so a cue says where in the film it belongs", () => {
+      expect(subs().join(" ")).toContain("-copyts");
+    });
+
+    /**
+     * IT STARTS EARLY, by `SUBTITLE_LEAD_SEC`. A cue that begins before the boundary and is
+     * still on screen after it belongs to both segments, and a viewer who SEEKS into the
+     * middle of one fetches only that segment. hls.js keys a cue on a hash of its start, end
+     * and text, so the duplicate is dropped rather than shown twice.
+     */
+    test("reads from before its own boundary, and never from before the film", () => {
+      expect(subs().join(" ")).toContain("-ss 36.000000");
+      expect(subs().join(" ")).toContain("-to 48.000000");
+      expect(subs({ segment: { index: 0, startSec: 0, endSec: 6 } }).join(" ")).toContain("-ss 0.000000");
+    });
+
+    /** No keyframe to wait for, so neither the video nudge nor the read slack applies. */
+    test("takes neither the video seek nudge nor the tail slack", () => {
+      expect(subs()).not.toContain("-noaccurate_seek");
+      expect(subs().join(" ")).not.toContain("-to 50.000000");
+    });
+
+    /**
+     * The HLS muxer exists to cut fMP4 on a keyframe and to make a fragment carry its own
+     * position. WebVTT has neither problem, so the run writes its one file directly -- under
+     * the name the subtitle playlist already points at.
+     */
+    test("writes its published name directly, with no HLS muxer at all", () => {
+      const a = subs();
+      expect(a.join(" ")).toContain(`-f webvtt /tmp/s1/${segmentFileName("subtitles", 7)}`);
+      expect(a).not.toContain("-f hls");
+      expect(a).not.toContain("-hls_segment_options");
+      expect(a).not.toContain("-hls_fmp4_init_filename");
+    });
+
+    /** A subtitle run never touches a pixel, so there is nothing for a GPU to accelerate. */
+    test("wires up no hardware even when the video is being re-encoded", () => {
+      const encoding = planPlayback(parseProbe(ANNA_AND_THE_KING), FIREFOX, { wantSubtitles: true });
+      const a = ffmpegArgs(encoding, {
+        input: "/plex/a.mkv",
+        outDir: "/tmp/s1",
+        track: "subtitles",
+        segment: SEG7,
+        encoder: VAAPI,
+      });
+      expect(a).not.toContain("-hwaccel");
+      expect(a).not.toContain("-vaapi_device");
+      expect(a.join(" ")).not.toContain("-c:v");
+    });
   });
 });
 

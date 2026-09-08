@@ -17,13 +17,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import {
-  initFileName,
-  RUN_INIT_NAME,
-  segmentFileName,
-  type Timeline,
-  type TrackTimelines,
-} from "./hls-timeline";
+import { initName } from "../test/playback-names";
+import { RUN_INIT_NAME, segmentFileName, type Timeline, type TrackTimelines } from "./hls-timeline";
 import type { PlaybackPlan } from "./playback-plan";
 import {
   EXPENSIVE_SESSIONS,
@@ -249,10 +244,10 @@ describe("producing a segment on demand", () => {
     await m.segmentPath(s.id, "video", 4);
     await m.segmentPath(s.id, "audio", 4);
 
-    expect(await Bun.file(join(s.dir, initFileName("video", 4))).text()).toBe(
+    expect(await Bun.file(join(s.dir, initName("video", 4))).text()).toBe(
       `init for ${segmentFileName("video", 4)}`,
     );
-    expect(await Bun.file(join(s.dir, initFileName("audio", 4))).text()).toBe(
+    expect(await Bun.file(join(s.dir, initName("audio", 4))).text()).toBe(
       `init for ${segmentFileName("audio", 4)}`,
     );
   });
@@ -390,7 +385,7 @@ describe("producing a segment on demand", () => {
     await m.segmentPath(s.id, "video", 9);
 
     for (const index of [2, 9]) {
-      expect(await Bun.file(join(s.dir, initFileName("video", index))).text()).toBe(
+      expect(await Bun.file(join(s.dir, initName("video", index))).text()).toBe(
         `init for ${segmentFileName("video", index)}`,
       );
     }
@@ -405,7 +400,7 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.initPath(s.id, "video", 7)).toBe(join(s.dir, initFileName("video", 7)));
+    expect(await m.initPath(s.id, "video", 7)).toBe(join(s.dir, initName("video", 7)));
     expect(await m.segmentPath(s.id, "video", 7)).toBe(join(s.dir, segmentFileName("video", 7)));
     expect(f.spawned).toHaveLength(1);
     expect(f.spawned[0]?.join(" ")).toContain("-start_number 7");
@@ -425,11 +420,11 @@ describe("producing a segment on demand", () => {
     for (const gone of [0, 2]) {
       expect(existsSync(join(s.dir, segmentFileName("video", gone)))).toBe(false);
       // An init outlives its segment for nothing: it is useless beside any other one.
-      expect(existsSync(join(s.dir, initFileName("video", gone)))).toBe(false);
+      expect(existsSync(join(s.dir, initName("video", gone)))).toBe(false);
     }
     for (const kept of [3, SEGMENT_CACHE + 2]) {
       expect(existsSync(join(s.dir, segmentFileName("video", kept)))).toBe(true);
-      expect(existsSync(join(s.dir, initFileName("video", kept)))).toBe(true);
+      expect(existsSync(join(s.dir, initName("video", kept)))).toBe(true);
     }
   });
 

@@ -38,7 +38,7 @@
  */
 
 import { type EncoderChoice, SOFTWARE } from "./encoder";
-import { RUN_INIT_NAME, segmentFilePattern, type Track } from "./hls-timeline";
+import { RUN_INIT_NAME, segmentFileName, segmentFilePattern, type Track } from "./hls-timeline";
 
 /** What the browser told us it can decode. Codec names are ffmpeg's, lowercased. */
 export interface ClientCapabilities {
@@ -80,7 +80,19 @@ export interface ProbedMedia {
 }
 
 export type StreamAction = "copy" | "transcode";
-export type SubtitleAction = "none" | "extract" | "burn";
+
+/**
+ * What happens to subtitles. TWO answers, and `burn` is deliberately not one of them.
+ *
+ * There used to be a third. `burn` forced a full video re-encode -- drawing a bitmap onto the
+ * picture is a pixel operation -- and then nothing burned anything, so asking for the PGS
+ * tracks on a title bought the most expensive outcome in this module and returned a video
+ * with no subtitles on it. Declining what we do not do is honest; charging for it is not.
+ *
+ * The bitmap codecs are still RECOGNISED -- see `BITMAP_SUBTITLES` -- because a file whose
+ * only subtitles are bitmaps deserves to be told so rather than silently given none.
+ */
+export type SubtitleAction = "none" | "extract";
 
 export interface PlaybackPlan {
   video: {
@@ -109,12 +121,15 @@ export interface PlaybackPlan {
 }
 
 /**
- * Subtitle codecs that are BITMAPS, so the only way to show them is to draw them onto the
- * video -- which forces a full video re-encode even when the video would otherwise copy.
+ * Subtitle codecs that are BITMAPS, so the only way to show them would be to draw them onto
+ * the video -- which is a pixel operation and forces a full re-encode of a stream that would
+ * otherwise be copied.
  *
- * This is the single most expensive decision in the file, which is why the list is closed
- * and explicit rather than an "is it not text" test: a codec nobody recognises should fall
- * through to "no subtitles" rather than silently triggering the costly path.
+ * **Nothing burns them in and the plan says so.** This list exists purely so the refusal can
+ * NAME the codec: a viewer told "the only subtitles in this file are hdmv_pgs_subtitle, which
+ * we cannot show" knows what to do about it, where a plan that silently reports none does not.
+ * Closed and explicit rather than an "is it not text" test, so a codec nobody recognises falls
+ * through to plain "no subtitles" rather than into a claim about what it is.
  */
 const BITMAP_SUBTITLES = new Set(["hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub", "xsub"]);
 
@@ -211,35 +226,38 @@ function firstOfType(streams: readonly ProbedStream[], type: string): ProbedStre
 }
 
 /**
- * Pick the subtitle track to use, or none.
+ * What can be done with this file's subtitle streams: extract one, or nothing and why.
  *
- * **Preferring a TEXT track over a bitmap one is a performance decision, not a cosmetic
- * one.** A file carrying both PGS and SRT can be served with the video copied if the SRT is
- * chosen and needs a full re-encode if the PGS is. So text wins whenever both exist, and a
- * default flag only breaks ties within a kind.
+ * ONE track is published, and on this library that is a real narrowing rather than a
+ * theoretical one: **62 of 118 sampled films carry two or more TEXT subtitle tracks**
+ * (ffprobe over `/Volumes/plex/movie`, 2026-09-08). Which one a viewer gets is
+ * `pickSubtitle`'s answer and there is no way to override it -- see the track-selection card,
+ * `let-a-viewer-choose-the-audio-and-subtitle-track-53-of-films`.
+ *
+ * A file whose subtitles are ALL bitmaps yields no track and a named refusal, because
+ * showing one would mean burning it into the picture and nothing does that -- see
+ * `SubtitleAction`.
  */
-function pickSubtitle(
-  streams: readonly ProbedStream[],
-): { stream: ProbedStream; action: SubtitleAction } | null {
+function pickSubtitle(streams: readonly ProbedStream[]): SubtitleChoice {
   const subs = streams.filter((s) => s.codec_type === "subtitle");
   const text = subs.filter((s) => TEXT_SUBTITLES.has((s.codec_name ?? "").toLowerCase()));
-  if (text.length > 0) {
-    return { stream: text.find((s) => s.isDefault) ?? (text[0] as ProbedStream), action: "extract" };
-  }
-  const bitmap = subs.filter((s) => BITMAP_SUBTITLES.has((s.codec_name ?? "").toLowerCase()));
-  if (bitmap.length > 0) {
-    return { stream: bitmap.find((s) => s.isDefault) ?? (bitmap[0] as ProbedStream), action: "burn" };
-  }
-  return null;
+  if (text.length > 0) return { stream: text.find((s) => s.isDefault) ?? (text[0] as ProbedStream) };
+  const bitmap = subs.find((s) => BITMAP_SUBTITLES.has((s.codec_name ?? "").toLowerCase()));
+  return { stream: null, refusedBitmap: bitmap?.codec_name ?? null };
 }
+
+/** A subtitle track to publish, or nothing -- and, when it is nothing, what was in the way. */
+type SubtitleChoice =
+  | { stream: ProbedStream; refusedBitmap?: undefined }
+  | { stream: null; refusedBitmap: string | null };
 
 /**
  * Decide the plan.
  *
- * `wantSubtitles` defaults to FALSE, and that default is the expensive one inverted on
- * purpose: a reader who has not asked for subtitles must never silently buy a full video
- * re-encode because the file happens to carry a PGS track. Asking for them is a choice with
- * a cost, and the cost is named in `reasons`.
+ * `wantSubtitles` defaults to FALSE. It costs almost nothing now -- an extracted WebVTT
+ * rendition never touches the video and hls.js fetches none of it until a viewer switches
+ * subtitles on -- but it does decide whether a third rendition is PUBLISHED at all, and a
+ * caller that has not asked for one should not be handed it.
  */
 export function planPlayback(
   probe: ProbedMedia,
@@ -255,24 +273,25 @@ export function planPlayback(
   const canVideo = client.video.map((c) => c.toLowerCase());
   const canAudio = client.audio.map((c) => c.toLowerCase());
 
-  // --- subtitles first: a burn-in forces the video decision, so it cannot be decided after
+  // --- subtitles. They no longer touch the video decision at all, which is the point: since
+  // nothing is ever burned in, asking for subtitles cannot turn a copy into a re-encode.
   const picked = opts.wantSubtitles ? pickSubtitle(probe.streams) : null;
-  const subtitleAction: SubtitleAction = picked?.action ?? "none";
-  if (picked?.action === "burn") {
+  if (picked?.stream) {
     reasons.push(
-      `subtitles are ${picked.stream.codec_name} (a bitmap), so they must be burned in -- this forces a full video re-encode`,
+      `subtitles are ${picked.stream.codec_name}, published as a selectable WebVTT rendition (no re-encode)`,
     );
-  } else if (picked?.action === "extract") {
-    reasons.push(`subtitles are ${picked.stream.codec_name}, converted to WebVTT at no cost`);
+  } else if (picked?.refusedBitmap) {
+    reasons.push(
+      `the only subtitles here are ${picked.refusedBitmap} (a bitmap), which could be shown only by burning them into the picture -- not supported, so none are published`,
+    );
   }
+  const subtitleAction: SubtitleAction = picked?.stream ? "extract" : "none";
 
   // --- video
   let videoAction: StreamAction;
   if (!video) {
     videoAction = "copy";
     reasons.push("no video stream");
-  } else if (subtitleAction === "burn") {
-    videoAction = "transcode";
   } else if (canVideo.includes(videoCodec)) {
     videoAction = "copy";
     reasons.push(`video is ${videoCodec}, which this browser decodes -- copied`);
@@ -320,7 +339,7 @@ export function planPlayback(
       sourceIndex: audio?.index ?? null,
       codec: audioAction === "copy" ? audioCodec : TARGET_AUDIO,
     },
-    subtitles: { action: subtitleAction, sourceIndex: picked?.stream.index ?? null },
+    subtitles: { action: subtitleAction, sourceIndex: picked?.stream?.index ?? null },
     reasons,
   };
 }
@@ -350,8 +369,8 @@ export interface FfmpegOpts {
    * Which rendition this run produces.
    *
    * One run makes ONE track, because a muxed segment can honour only one cutting rule and
-   * the two tracks need different ones -- see `hls-timeline.ts` for why that is what closes
-   * the audio hole rather than an arrangement preference.
+   * the tracks need different ones -- see `hls-timeline.ts` for why that is what closes the
+   * audio hole rather than an arrangement preference.
    */
   track: Track;
   /** Which segment of that rendition's timeline to produce, and the range it covers. */
@@ -432,6 +451,27 @@ const SEEK_NUDGE_SEC = 0.2;
  * > accurately.
  */
 const AUDIO_NEVER_CUT_SEC = 86_400;
+
+/**
+ * How far BEFORE its own boundary a SUBTITLE run starts reading.
+ *
+ * A cue that begins in segment N and is still on screen in segment N+1 belongs to both. Play
+ * straight through and it does not matter -- the cue was appended with its full duration when
+ * segment N loaded and stays in the text track until it expires. **SEEKING is what needs
+ * this**: land at 01:10:03 and the player fetches only the segment containing it, so a cue
+ * that started at 01:10:00 would be missing until the next line of dialogue.
+ *
+ * Six seconds, because no cue in this library is that long: the longest measured in two whole
+ * films was 4.959 s, with p99 at 4.125 s (1562 and 919 cues, extracted 2026-09-08). Reading
+ * early emits some cues in two adjacent segments and that is HARMLESS by design rather than by
+ * luck -- hls.js keys a cue on a hash of its start, end and text and refuses to add one it
+ * already has, and its own source says so: *"Sometimes there are cue overlaps on segmented
+ * vtts"*.
+ *
+ * It costs nothing to widen: a subtitle run reads text, and the segment it produced for the
+ * measurement above took 0.07 s either way.
+ */
+const SUBTITLE_LEAD_SEC = 6;
 
 /**
  * What the nested fMP4 muxer is told, so that a segment says where it belongs IN ITSELF.
@@ -528,7 +568,7 @@ export function ffmpegArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
     ...hardwareArgs(plan, opts),
     ...readArgs(plan, opts),
     ...streamArgs(plan, opts),
-    ...muxerArgs(opts),
+    ...outputArgs(opts),
   ];
 }
 
@@ -560,7 +600,7 @@ function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
 /**
  * Where the read starts and where it stops.
  *
- * The three regimes and what separates them:
+ * The four regimes and what separates them:
  *
  * - **A video COPY** is nudged past its boundary and reads past the end, because the MUXER
  *   does the cutting for it -- see `SEEK_NUDGE_SEC` and `SEGMENT_TAIL_SLACK_SEC`.
@@ -570,6 +610,8 @@ function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
  *   asked for.
  * - **AUDIO, either way**, asks for the boundary plainly and stops at the next one, because
  *   `-to` is the only thing bounding an audio segment -- see `AUDIO_NEVER_CUT_SEC`.
+ * - **SUBTITLES** start EARLY, so a cue that spans the boundary is in both segments and a
+ *   seek into the middle of one still finds it -- see `SUBTITLE_LEAD_SEC`.
  *
  * > [!CAUTION] SEGMENT ZERO SEEKS TOO, and the seek is what keeps its timestamps expressible
  * > A source's own timeline starts BEFORE zero: an AAC track opens with a priming packet at
@@ -589,11 +631,10 @@ function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
  * > its own sound and snap back at the next boundary. Measured, and rejected for that.
  */
 function readArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  const { startSec, endSec } = opts.segment;
   const copyingVideo = opts.track === "video" && plan.video.action === "copy";
-  const readUntil = endSec + (copyingVideo ? SEGMENT_TAIL_SLACK_SEC : 0);
+  const readUntil = opts.segment.endSec + (copyingVideo ? SEGMENT_TAIL_SLACK_SEC : 0);
   return [
-    ...seekArgs(copyingVideo, startSec),
+    ...seekArgs(copyingVideo, opts),
     "-i",
     opts.input,
     "-copyts",
@@ -604,26 +645,48 @@ function readArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   ];
 }
 
-function seekArgs(copyingVideo: boolean, startSec: number): string[] {
-  if (!copyingVideo) return ["-ss", startSec.toFixed(6)];
-  // See SEEK_NUDGE_SEC. `-noaccurate_seek` is the other half: without it ffmpeg discards
-  // everything between the nudged target and the boundary, which would drop the first 200 ms
-  // of the segment.
-  return ["-noaccurate_seek", "-ss", (startSec + SEEK_NUDGE_SEC).toFixed(6)];
+function seekArgs(copyingVideo: boolean, opts: FfmpegOpts): string[] {
+  const { startSec } = opts.segment;
+  if (copyingVideo) {
+    // See SEEK_NUDGE_SEC. `-noaccurate_seek` is the other half: without it ffmpeg discards
+    // everything between the nudged target and the boundary, which would drop the first 200 ms
+    // of the segment.
+    return ["-noaccurate_seek", "-ss", (startSec + SEEK_NUDGE_SEC).toFixed(6)];
+  }
+  // Never below zero: a negative `-ss` is not a seek to the start, it is an argument ffmpeg
+  // reads as a time before the file begins.
+  if (opts.track === "subtitles") {
+    return ["-ss", Math.max(0, startSec - SUBTITLE_LEAD_SEC).toFixed(6)];
+  }
+  return ["-ss", startSec.toFixed(6)];
 }
 
 /**
  * Which source stream this run carries, and what it does to it.
  *
- * The other track is refused EXPLICITLY with `-vn` or `-an` rather than merely left unmapped:
- * a rendition that quietly picked up a second stream would be a muxed segment again, which is
- * the whole thing this split exists to prevent.
+ * The other tracks are refused EXPLICITLY with `-vn` and `-an` rather than merely left
+ * unmapped: a rendition that quietly picked up a second stream would be a muxed segment
+ * again, which is the whole thing this split exists to prevent.
+ *
+ * `plan[opts.track]` rather than a switch, because a `Track` IS a `PlaybackPlan` field name --
+ * see `Track` in `hls-timeline.ts`. Which stream a rendition is made of is then one lookup for
+ * every rendition there will ever be, and only what to DO with it needs a case.
  */
 function streamArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  const stream = opts.track === "video" ? plan.video : plan.audio;
-  const map = stream.sourceIndex !== null ? ["-map", `0:${stream.sourceIndex}`] : [];
-  const codec = opts.track === "video" ? videoCodecArgs(plan, opts) : audioCodecArgs(plan);
-  return [...map, ...codec];
+  const { sourceIndex } = plan[opts.track];
+  const map = sourceIndex !== null ? ["-map", `0:${sourceIndex}`] : [];
+  return [...map, ...codecArgs(plan, opts)];
+}
+
+function codecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
+  switch (opts.track) {
+    case "video":
+      return videoCodecArgs(plan, opts);
+    case "audio":
+      return audioCodecArgs(plan);
+    case "subtitles":
+      return subtitleCodecArgs();
+  }
 }
 
 /**
@@ -669,8 +732,35 @@ function audioCodecArgs(plan: PlaybackPlan): string[] {
   return ["-vn", "-c:a", "aac", "-ac", "2", "-b:a", "192k"];
 }
 
+/**
+ * A text subtitle stream, converted to WebVTT.
+ *
+ * There is no copy path and there does not need to be: `webvtt` in and `webvtt` out is
+ * already a passthrough as far as cost goes, and every other text format has to be converted
+ * anyway. The conversion reads text, so it is free next to the demux that finds it.
+ */
+function subtitleCodecArgs(): string[] {
+  return ["-vn", "-an", "-c:s", "webvtt"];
+}
+
+/**
+ * Where this run's segment goes, and in what shape.
+ *
+ * Two shapes, because two of the renditions are fMP4 and one is text. The HLS muxer is what
+ * makes an fMP4 segment cut correctly and carry its own position; WebVTT has neither problem,
+ * so a subtitle run writes its one file directly and skips the muxer entirely.
+ */
+function outputArgs(opts: FfmpegOpts): string[] {
+  if (opts.track === "subtitles") {
+    // Straight to the published name. Nothing has to be cut, so there is no segmenting muxer
+    // to name the file for us -- and the run's `-ss`/`-to` already bound it to this segment.
+    return ["-f", "webvtt", `${opts.outDir}/${segmentFileName(opts.track, opts.segment.index)}`];
+  }
+  return hlsMuxerArgs(opts);
+}
+
 /** The HLS muxer block: one segment, its init, and the throwaway playlist ffmpeg insists on. */
-function muxerArgs(opts: FfmpegOpts): string[] {
+function hlsMuxerArgs(opts: FfmpegOpts): string[] {
   return [
     "-f",
     "hls",

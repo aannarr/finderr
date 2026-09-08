@@ -204,7 +204,11 @@ export function PlayHere({
   async function play() {
     setState({ kind: "starting" });
     try {
-      const s = await startPlayback(tconst, { season, episode });
+      // Subtitles are always ASKED FOR and never switched on: the server publishes a
+      // `DEFAULT=NO` WebVTT rendition when the file has a text track, the player's own caption
+      // menu is what selects it, and nothing is fetched or transcoded until somebody does.
+      // Not asking would mean a title whose subtitles exist and are simply not offered.
+      const s = await startPlayback(tconst, { season, episode, wantSubtitles: true });
       setState({ kind: "playing", session: s });
     } catch (err) {
       const message =
@@ -254,8 +258,10 @@ export function PlayHere({
             has its TOP cut off with no way to reach it. One scroller here rather than a second
             one inside the panel. */}
         <div className="max-h-full w-full max-w-5xl space-y-2 overflow-y-auto">
-          {/* biome-ignore lint/a11y/useMediaCaption: subtitles are a server-side plan
-              decision and arrive burned in or not at all; there is no track to declare. */}
+          {/* biome-ignore lint/a11y/useMediaCaption: subtitles arrive as a separate HLS
+              rendition named in the master playlist, which hls.js turns into a native
+              TextTrack (and Safari reads itself), so there is no static <track> to declare --
+              a hard-coded one would name a file this player never fetches. */}
           <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
             <span>
