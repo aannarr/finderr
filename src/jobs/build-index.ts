@@ -12,7 +12,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { loadConfig, paths } from "../lib/config";
 import { CROSSWALK_SOURCES, fetchCrosswalk } from "../lib/crosswalk";
 import { DumpStateStore, fetchDump, SchemaDriftError } from "../lib/dumps";
-import { buildIndex, gateVolume, promote } from "../lib/index-builder";
+import { buildIndex, gateCapabilities, gateVolume, promote } from "../lib/index-builder";
 import { describeStale, staleStagesOf } from "../lib/index-stages";
 import { prepareSqlite } from "../lib/spellfix";
 
@@ -126,6 +126,23 @@ async function main(): Promise<number> {
     log("ABORT: refusing to promote. The live index is untouched.");
     state.close();
     return 2;
+  }
+
+  /*
+    --- gate: capabilities. The rows can survive intact while a whole FEATURE does not.
+
+    This is the gate that was missing when a Mac build promoted an index with no spellfix
+    vocabulary over one that had it: same row count to six figures, every stage stamped, and
+    the canary excluding its five typo cases rather than failing them. `gateCapabilities` owns
+    the argument; here it only matters that it runs BEFORE the canary, because a candidate
+    that lost a tier makes the canary's verdict about that tier meaningless.
+  */
+  const caps = gateCapabilities(p.dbNew, p.db);
+  log(`gate capabilities: ${caps.ok ? "PASS" : "FAIL"} -- ${caps.detail}`);
+  if (!caps.ok) {
+    log("ABORT: refusing to promote a less capable index. The live index is untouched.");
+    state.close();
+    return 5;
   }
 
   /*
