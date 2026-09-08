@@ -36,8 +36,10 @@ import {
 } from "../lib/playback-api";
 import { type BrowserStats, PlaybackTelemetry } from "../lib/playback-telemetry";
 import { isExpensivePlan, planSummary } from "../lib/playback-types";
+import { readTrackChoices, type TrackChoices, type TrackReader } from "../lib/player-tracks";
 import { PRIMARY_BUTTON } from "../lib/ui";
 import { PlayerStats } from "./PlayerStats";
+import { PlayerTracks } from "./PlayerTracks";
 
 /**
  * Whether this reader can play this title in this tab -- the two facts, in one place.
@@ -71,10 +73,17 @@ export function PlayHere({
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [statsOpen, setStatsOpen] = useState(false);
+  /*
+    What the player is offering, and what it is on. STATE rather than a ref, unlike the
+    instance below, because this one is DRAWN: the menus have to re-render when hls.js finishes
+    parsing the manifest, which happens after the effect that created the player has returned.
+    Null until then, and on the native path where there is no hls.js instance to ask.
+  */
+  const [tracks, setTracks] = useState<TrackChoices | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Held in a ref rather than state: tearing hls.js down is a side effect on unmount, and
   // putting it in state would re-render the player every time it changed.
-  const hlsRef = useRef<{ destroy(): void; bandwidthEstimate?: number } | null>(null);
+  const hlsRef = useRef<(TrackReader & { destroy(): void; bandwidthEstimate?: number }) | null>(null);
   // Also a ref, and for a stronger reason: fragment events fire several times a second per
   // rendition, so routing them through state would re-render the video element itself. The
   // stats panel samples this on its own timer, and only while it is open.
@@ -186,6 +195,22 @@ export function PlayHere({
       });
       hlsRef.current = hls;
       /*
+        THE MENUS ARE FED BY EVENTS, because the renditions do not exist yet.
+
+        hls.js fills `audioTracks` and `subtitleTracks` when it parses the manifest, which is
+        several network round trips after this line -- so reading them now would answer "no
+        tracks" forever. Five events rather than one: the lists arrive at MANIFEST_PARSED and
+        can be replaced by a `*_TRACKS_UPDATED`, and the two switch events are what keep the
+        control agreeing with the player after a change the control did not make (Safari's own
+        menu, or hls.js autoselecting by system language).
+      */
+      const syncTracks = () => setTracks(readTrackChoices(hls));
+      hls.on(Hls.Events.MANIFEST_PARSED, syncTracks);
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncTracks);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncTracks);
+      hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, syncTracks);
+      /*
         Feed the stats panel, in the ONE place that holds an hls.js instance.
 
         The four numbers are extracted here rather than handing the instance to the telemetry
@@ -219,8 +244,48 @@ export function PlayHere({
       stopRenewal();
       hlsRef.current?.destroy();
       hlsRef.current = null;
+      // The menus describe a player that no longer exists, so they go with it rather than
+      // hanging around to offer tracks nothing would switch.
+      setTracks(null);
     };
   }, [session]);
+
+  /**
+   * Switch a rendition, and show the switch immediately.
+   *
+   * The optimistic update is not decoration: a `<select>` whose value comes from state is
+   * CONTROLLED, so without it the menu would snap back to the old entry until hls.js finished
+   * the switch and fired its event. The event still arrives and re-reads the player, which is
+   * what corrects an optimistic answer the player declined.
+   */
+  const selectTrack = useCallback((pick: (player: TrackReader) => void, at: Partial<TrackChoices>) => {
+    const player = hlsRef.current;
+    if (!player) return;
+    pick(player);
+    setTracks((was) => (was ? { ...was, ...at } : was));
+  }, []);
+
+  const selectAudio = useCallback(
+    (index: number) =>
+      selectTrack(
+        (player) => {
+          player.audioTrack = index;
+        },
+        { audioAt: index },
+      ),
+    [selectTrack],
+  );
+
+  const selectSubtitles = useCallback(
+    (index: number) =>
+      selectTrack(
+        (player) => {
+          player.subtitleTrack = index;
+        },
+        { subtitlesAt: index },
+      ),
+    [selectTrack],
+  );
 
   /*
     Give the slot back when the TAB goes away.
@@ -313,6 +378,11 @@ export function PlayHere({
               TextTrack (and Safari reads itself), so there is no static <track> to declare --
               a hard-coded one would name a file this player never fetches. */}
           <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
+          {/* Nothing at all on the native path, where `tracks` stays null: iOS Safari draws
+              its own menu for both kinds and a second one would fight it. */}
+          {tracks ? (
+            <PlayerTracks choices={tracks} onAudio={selectAudio} onSubtitles={selectSubtitles} />
+          ) : null}
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
             <span>
               {planSummary(plan)}

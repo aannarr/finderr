@@ -42,8 +42,10 @@ const SESSION: PlaybackSession = {
   segments: 1480,
   plan: {
     video: { action: "copy", sourceIndex: 0, codec: "hevc" },
-    audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-    subtitles: { action: "none", sourceIndex: null },
+    audio: [
+      { action: "transcode", sourceIndex: 1, codec: "aac", label: { name: "English", language: "eng" } },
+    ],
+    subtitles: [],
     reasons: ["video is hevc and this browser plays it, copied"],
   },
   diagnostics: DIAGNOSTICS,

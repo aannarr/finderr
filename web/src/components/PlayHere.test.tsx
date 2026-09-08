@@ -51,8 +51,15 @@ function servingSession() {
         segments: 17,
         plan: {
           video: { action: "copy", sourceIndex: 0, codec: "h264" },
-          audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-          subtitles: { action: "none", sourceIndex: null },
+          audio: [
+            {
+              action: "transcode",
+              sourceIndex: 1,
+              codec: "aac",
+              label: { name: "English", language: "eng" },
+            },
+          ],
+          subtitles: [],
           reasons: [],
         },
       }),
