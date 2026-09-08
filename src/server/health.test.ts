@@ -52,6 +52,17 @@ function deps(onCoverage: () => void): HealthDeps {
       { award: "palme-dor", rows: 83, sha: null, importedAt: "2026-09-01T00:00:00.000Z" },
     ],
     services: { radarr: true, sonarr: true, prowlarr: false },
+    // The deployment NAS as it should read: a media volume, the iGPU chosen, nothing playing.
+    // `hardware: false` here would be the whole diagnosis for a box encoding on its CPU.
+    playback: {
+      volumes: 1,
+      encoder: {
+        name: "h264_vaapi",
+        hardware: true,
+        reason: "hardware (VAAPI, /dev/dri/renderD128)",
+      },
+      sessions: { total: 0, expensive: 0 },
+    },
     auth: { users: 3, admins: 1, sessions: 4, apiKey: true, noAuth: false },
     watchlist: { rows: 37, readers: 3 },
     push: { enabled: true, devices: 2 },
@@ -143,6 +154,7 @@ const LANDS_AT: Record<keyof HealthDeps, string | null> = {
   trending: "trending",
   awards: "awards",
   services: "services",
+  playback: "playback",
   auth: "auth",
   watchlist: "watchlist",
   push: "push",

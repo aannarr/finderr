@@ -27,6 +27,7 @@ import {
   CONSERVATIVE_CLIENT,
   ffmpegArgs,
   isExpensive,
+  MAX_TRANSCODE_WIDTH,
   planPlayback,
 } from "./playback-plan";
 
@@ -88,6 +89,44 @@ const RANGO = JSON.stringify({
   format: { duration: "6710.080000", format_name: "matroska,webm" },
 });
 
+/**
+ * The real file every measurement on this card was taken against: a 2.40:1 scope film at
+ * 1920x800, HEVC Main 10, eac3. Both of the spawn failures fixed here reproduce on it, and
+ * the odd height is the point -- a cap on width has to keep the aspect ratio rather than
+ * assume 16:9.
+ */
+const SCOPE_HEVC_10BIT = JSON.stringify({
+  streams: [
+    {
+      index: 0,
+      codec_type: "video",
+      codec_name: "hevc",
+      width: 1920,
+      height: 800,
+      pix_fmt: "yuv420p10le",
+      disposition: { default: 1 },
+    },
+    { index: 1, codec_type: "audio", codec_name: "eac3", channels: 6, disposition: { default: 1 } },
+  ],
+  format: { duration: "6034.000000", format_name: "matroska,webm" },
+});
+
+/** Already under the cap, so nothing should resize it upward. */
+const SMALL_H264 = JSON.stringify({
+  streams: [
+    {
+      index: 0,
+      codec_type: "video",
+      codec_name: "hevc",
+      width: 720,
+      height: 400,
+      disposition: { default: 1 },
+    },
+    { index: 1, codec_type: "audio", codec_name: "aac", channels: 2, disposition: { default: 1 } },
+  ],
+  format: { duration: "3600.000000", format_name: "matroska,webm" },
+});
+
 /** What Safari reports: HEVC and the Dolby codecs. */
 const SAFARI: ClientCapabilities = { video: ["h264", "hevc"], audio: ["aac", "ac3", "eac3"] };
 /** What Chrome on a machine with an HEVC decoder reports -- note NO Dolby audio. */
@@ -100,11 +139,13 @@ const VAAPI: EncoderChoice = chooseEncoder({
   platform: "linux",
   available: ["h264_vaapi", "libx264"],
   hasDri: true,
+  hasQsvRuntime: false,
 });
 const VIDEOTOOLBOX: EncoderChoice = chooseEncoder({
   platform: "darwin",
   available: ["h264_videotoolbox", "libx264"],
   hasDri: false,
+  hasQsvRuntime: false,
 });
 
 describe("parseProbe reads what ffprobe actually emits", () => {
@@ -204,6 +245,36 @@ describe("the expensive case is named as expensive", () => {
     expect(withSubs.video.action).toBe("transcode");
     expect(isExpensive(withSubs)).toBe(true);
     expect(withSubs.reasons.join(" ")).toContain("bitmap");
+  });
+
+  /**
+   * The re-encode is made CHEAP as well as correct -- aannarr, 2026-09-08: *"run it at low
+   * quality, low cpu"*. The decision lives here because this is the only place that has seen
+   * the source's dimensions.
+   */
+  describe("a re-encode is capped at a width, and only ever downward", () => {
+    test("a wide source is scaled down to the cap", () => {
+      const plan = planPlayback(parseProbe(SCOPE_HEVC_10BIT), FIREFOX);
+      expect(plan.video.action).toBe("transcode");
+      expect(plan.video.scaleWidth).toBe(MAX_TRANSCODE_WIDTH);
+      expect(plan.reasons.join(" ")).toContain("scaled down");
+    });
+
+    /** Upscaling would spend pixels to make the picture worse. */
+    test("a source already under the cap is left alone", () => {
+      const plan = planPlayback(parseProbe(SMALL_H264), FIREFOX);
+      expect(plan.video.action).toBe("transcode");
+      expect(plan.video.scaleWidth).toBeNull();
+    });
+
+    /** A guess about a dimension the container never stated is what stretches a frame. */
+    test("a source with no stated width is left alone", () => {
+      expect(planPlayback(parseProbe(RANGO), FIREFOX).video.scaleWidth).toBeNull();
+    });
+
+    test("a copy is never resized, however wide it is", () => {
+      expect(planPlayback(parseProbe(SCOPE_HEVC_10BIT), SAFARI).video.scaleWidth).toBeNull();
+    });
   });
 
   /** Subtitles are off by default so nobody buys that re-encode without asking. */
@@ -447,6 +518,62 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
       expect(a).toContain("-b:v");
       expect(a).not.toContain("-crf");
     }
+  });
+
+  /**
+   * THE THREE FAILURES MEASURED ON THE SYNOLOGY, 2026-09-08, each of them a title that would
+   * not play at all rather than one that played badly. All three passed every test that
+   * existed before this block, because all three are facts about ffmpeg's spawn and output
+   * rather than about the decision -- the plan correctly said "re-encoded to h264" each time.
+   */
+  describe("what a re-encode must hand ffmpeg on real hardware", () => {
+    const encoding = planPlayback(parseProbe(SCOPE_HEVC_10BIT), FIREFOX);
+
+    /**
+     * `h264_vaapi` on UHD 600 encodes 8-bit only, and a 10-bit source decodes into a p010
+     * surface. Without the conversion: `No usable encoding profile found`.
+     */
+    test("VAAPI converts to nv12, because it cannot be given -pix_fmt", () => {
+      const a = args(encoding, { encoder: VAAPI }).join(" ");
+      expect(a).toContain("format=nv12");
+      expect(a).not.toContain("-pix_fmt");
+    });
+
+    /**
+     * `libx264` follows its input, so a 10-bit source came out as h264 High 10 -- which no
+     * browser decodes. The transcode existed to make the file playable and made it less so.
+     */
+    test("software pins yuv420p, so a 10-bit source cannot become High 10", () => {
+      for (const encoder of [undefined, SOFTWARE]) {
+        expect(args(encoding, { encoder }).join(" ")).toContain("-pix_fmt yuv420p");
+      }
+    });
+
+    /** VideoToolbox and NVENC hand frames back to system memory, so they take the flag too. */
+    test("a non-VAAPI hardware encode pins the pixel format as well", () => {
+      expect(args(encoding, { encoder: VIDEOTOOLBOX }).join(" ")).toContain("-pix_fmt yuv420p");
+    });
+
+    /**
+     * The GPU filter and the CPU one are not interchangeable: after
+     * `-hwaccel_output_format vaapi` the frames never reach system memory, so plain `scale`
+     * cannot see them.
+     */
+    test("the resize uses the filter that can reach the frames", () => {
+      expect(args(encoding, { encoder: VAAPI }).join(" ")).toContain(
+        `scale_vaapi=w=${MAX_TRANSCODE_WIDTH}:h=-2`,
+      );
+      expect(args(encoding, { encoder: SOFTWARE }).join(" ")).toContain(
+        `-vf scale=${MAX_TRANSCODE_WIDTH}:-2`,
+      );
+    });
+  });
+
+  /** A copy has no frame to resize and no format to convert, whatever the machine can do. */
+  test("a copy carries no filter at all", () => {
+    const a = args(plan, { encoder: VAAPI });
+    expect(a).not.toContain("-vf");
+    expect(a).not.toContain("-pix_fmt");
   });
 
   test("VAAPI names its render node, because it is the one that needs it", () => {

@@ -24,7 +24,7 @@ import { type Session, SessionRefused, type TranscodeSessions } from "../lib/tra
 import { playbackRoutes } from "./playback-routes";
 
 const PLAN: PlaybackPlan = {
-  video: { action: "copy", sourceIndex: 0, codec: "h264" },
+  video: { action: "copy", sourceIndex: 0, codec: "h264", scaleWidth: null },
   audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
   subtitles: { action: "none", sourceIndex: null },
   reasons: ["video is h264, copied"],

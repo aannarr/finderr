@@ -111,4 +111,34 @@ describe("what the container ships", () => {
   test("they come from a production install", () => {
     expect(dockerfile).toContain("bun install --frozen-lockfile --production");
   });
+
+  /**
+   * The BINARIES playback shells out to, which `package.json` knows nothing about.
+   *
+   * A missing npm package fails loudly at boot; a missing binary fails quietly at the first
+   * click, per title, with the plan reading exactly as it should. `spawn` returns ENOENT deep
+   * inside a segment production whose only answer to the route is 404, which is what a player
+   * retries -- so the symptom is a video that buffers forever and a log nobody is tailing.
+   *
+   * The runtime stage RUNS `ffmpeg -version` too, so the image cannot even build without them.
+   * This test is the cheap half: it fails on the machine that deleted the line, in a second,
+   * rather than after a five-minute CI build.
+   */
+  test("the runtime stage installs the binaries playback shells out to", () => {
+    /*
+      SCOPED TO THE RUNTIME STAGE, and that is the whole point rather than tidiness. This
+      Dockerfile has four stages and three of them are thrown away; `apk add` anywhere else
+      installs into a layer the final image never sees. An unscoped search would go green on
+      an ffmpeg added to the `spellfix` builder -- which is precisely the shape of mistake
+      that shipped a runtime image with no node_modules and this file's whole reason to exist.
+    */
+    const runtime = dockerfile.slice(dockerfile.indexOf("AS runtime"));
+    expect(runtime).not.toBe("");
+    expect({
+      ffmpeg: runtime.includes("ffmpeg"),
+      // The iHD VAAPI driver. Without it the NAS probes clean and silently encodes in
+      // software at 1.4x realtime instead of 9.3x -- see the Dockerfile for the measurement.
+      intelMediaDriver: runtime.includes("intel-media-driver"),
+    }).toEqual({ ffmpeg: true, intelMediaDriver: true });
+  });
 });

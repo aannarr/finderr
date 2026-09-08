@@ -39,14 +39,14 @@ import {
 } from "./transcode-session";
 
 const CHEAP: PlaybackPlan = {
-  video: { action: "copy", sourceIndex: 0, codec: "h264" },
+  video: { action: "copy", sourceIndex: 0, codec: "h264", scaleWidth: null },
   audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
   subtitles: { action: "none", sourceIndex: null },
   reasons: [],
 };
 
 const EXPENSIVE: PlaybackPlan = {
-  video: { action: "transcode", sourceIndex: 0, codec: "h264" },
+  video: { action: "transcode", sourceIndex: 0, codec: "h264", scaleWidth: 1280 },
   audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
   subtitles: { action: "none", sourceIndex: null },
   reasons: [],

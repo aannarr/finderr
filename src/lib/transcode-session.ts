@@ -68,12 +68,29 @@ import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 /**
  * How many sessions may re-encode VIDEO at once.
  *
- * Two, because the deployment target's iGPU (UHD 600 on a Celeron J4125) does roughly one
- * to two 4K-to-1080p streams and nothing in SQLite's way. This is the number to raise once
- * somebody has MEASURED a real QSV transcode on that box; until then it is a floor chosen
- * from the hardware's known class rather than from a benchmark, and it says so.
+ * **Three, and it is now a benchmark rather than a guess.** It was two, chosen from the
+ * hardware's known class before anything had ever run on that hardware, with a note asking
+ * for exactly the measurement below.
+ *
+ * Measured on the deployment Synology (Celeron J4125, UHD 600, `h264_vaapi` via
+ * intel-media-driver, 2026-09-08) against 60 s of 1080p HEVC Main 10 re-encoded to 720p h264:
+ *
+ * | concurrent sessions | wall clock for 60 s of film | vs realtime | CPU |
+ * |---|---|---|---|
+ * | 1 | 6.43 s | 9.3x | 0.70 of one core |
+ * | 3 | 10.7 / 11.0 / 12.3 s | 4.9x (worst) | 1.25 of four cores |
+ *
+ * Three concurrent viewers each get frames 4.9x faster than they can watch them, which is the
+ * property that matters -- a session slower than realtime is a session that buffers forever.
+ * Per-session CPU barely moved (4.48 s to 5.06 s), so what they contend for is the
+ * fixed-function encode block and not the four cores the render path needs: **2.75 of them
+ * are still idle at three sessions**, which is rule four of this epic honoured with a number.
+ *
+ * FOUR IS NOT SHIPPED because four was not measured. The trend says it would land near 3.7x
+ * and still work; the trend is not a benchmark, and this constant has already spent one
+ * generation being a plausible number nobody had checked.
  */
-export const EXPENSIVE_SESSIONS = 2;
+export const EXPENSIVE_SESSIONS = 3;
 
 /**
  * How many sessions may exist at all.

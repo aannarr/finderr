@@ -358,6 +358,34 @@ export interface HealthDeps {
     requests: Record<string, unknown>;
     slow: unknown[];
   };
+  /**
+   * Playback: whether it is switched on at all, what encoder the boot probe chose, and how
+   * many sessions are live.
+   *
+   * > [!IMPORTANT] `encoder.hardware` IS THE FIELD, and nothing else can tell you
+   * > Every way of getting the hardware path wrong FAILS TOWARD SOFTWARE, on purpose -- a
+   * > missing render node, a missing driver, the wrong group id, a QSV runtime that is not
+   * > there. That is the correct direction (software is slow, a wrong hardware guess is a
+   * > title that will not play) and it is also completely silent: the container comes up
+   * > healthy, plays everything, and burns 3.4 of four Celeron cores on a job the iGPU would
+   * > have done with 0.7. There is no error, no retry and no log line after boot.
+   * >
+   * > So this is the one field to read after a deploy that touched `devices:`, `group_add:` or
+   * > the image. `reason` says which path was taken in words, which is what makes a `false`
+   * > here diagnosable rather than merely disappointing.
+   *
+   * `volumes: 0` means playback is OFF -- `FINDERR_MEDIA_VOLUMES` is the whole feature switch
+   * and unset is the default, so this is the ordinary state of a checkout that has not opted
+   * in, not a fault. The paths themselves do not travel: they are a fact about somebody's
+   * private filesystem and this document is reachable from the internet.
+   *
+   * Counts, like everything else here. `sessions` is the size of an in-memory map.
+   */
+  playback: {
+    volumes: number;
+    encoder: { name: string; hardware: boolean; reason: string };
+    sessions: { total: number; expensive: number };
+  };
   runtime: HealthRuntime;
   /**
    * The expensive one. A THUNK, not a value: it runs every shelf query plus a facet
@@ -433,6 +461,7 @@ export function healthPayload(
       return is what keeps them off the internet.
     */
     load: deps.load(),
+    playback: deps.playback,
     services: deps.services,
     auth: deps.auth,
     watchlist: deps.watchlist,

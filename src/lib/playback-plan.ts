@@ -83,7 +83,20 @@ export type StreamAction = "copy" | "transcode";
 export type SubtitleAction = "none" | "extract" | "burn";
 
 export interface PlaybackPlan {
-  video: { action: StreamAction; sourceIndex: number | null; codec: string };
+  video: {
+    action: StreamAction;
+    sourceIndex: number | null;
+    codec: string;
+    /**
+     * Width to scale the re-encode down to, or `null` to leave the frame alone.
+     *
+     * Decided HERE rather than in the argv because it is the only place that has seen the
+     * source's dimensions -- and because an unconditional filter would UPSCALE a 480p source,
+     * which costs pixels to make the picture worse. Null on every copy, since a copy has no
+     * frame to resize.
+     */
+    scaleWidth: number | null;
+  };
   audio: { action: StreamAction; sourceIndex: number | null; codec: string };
   subtitles: { action: SubtitleAction; sourceIndex: number | null };
   /**
@@ -111,6 +124,85 @@ const TEXT_SUBTITLES = new Set(["subrip", "srt", "ass", "ssa", "mov_text", "webv
 /** What we re-encode TO when we must. Not configurable: these are the universal floor. */
 const TARGET_VIDEO = "h264";
 const TARGET_AUDIO = "aac";
+
+/**
+ * The widest frame a re-encode will produce. Anything wider is scaled down to it.
+ *
+ * > [!IMPORTANT] LOW QUALITY IS THE REQUIREMENT HERE, not a compromise -- aannarr, 2026-09-08
+ * > *"test the ffmpeg ideas and run it at low quality, low cpu :-).. transcoding should be
+ * > low effort"*. The deployment target is a 10 W Celeron J4125 and every earlier number in
+ * > this module was measured on an M1 Max, so nothing was carried over.
+ * >
+ * > A cap on WIDTH rather than on height, because it means the same thing for both shapes
+ * > this library comes in: 1920x1080 becomes exactly 1280x720, and a 2.40:1 scope film at
+ * > 1920x800 becomes 1280x534. Capping the height would leave a scope film at 1728 wide --
+ * > more pixels than the 16:9 case it was meant to match.
+ * >
+ * > Measured on the J4125, 10 s of 1080p HEVC Main 10 to h264, 2026-09-08. The cap is worth
+ * > roughly half the software path on its own:
+ * >
+ * > | path | CPU | wall | vs realtime |
+ * > |---|---|---|---|
+ * > | `libx264` veryfast crf 21 at 1920x800 | 24.67 s | 7.32 s | 1.37x |
+ * > | `libx264` veryfast crf 23 at 1280x534 | 11.27 s | 4.12 s | 2.43x |
+ * > | `h264_vaapi` at 1920x800, 6M | 1.13 s | 1.72 s | 5.8x |
+ * > | `h264_vaapi` at 1280x534, 2500k | 0.98 s | 1.29 s | 7.8x |
+ * >
+ * > `superfast` was measured too and came out SLOWER than `veryfast` on this content (14.5 s
+ * > against 11.0 s of CPU), so the preset ladder is not the lever here and the pixel count is.
+ */
+export const MAX_TRANSCODE_WIDTH = 1280;
+
+/**
+ * The target bitrate for a hardware re-encode, which takes a rate rather than a quality.
+ *
+ * 2500k at 1280 wide measured 2.3 Mbps of actual output on the J4125 -- VAAPI's rate control
+ * tracks the target closely rather than undershooting it. The number it replaced was `6M`,
+ * which produced a 6.99 MB ten-second segment: **8.9x the bytes `libx264` spent on the same
+ * ten seconds at the same resolution**, because a bitrate target fills its budget whatever
+ * the scene contains. That is bandwidth nobody asked for on a household's uplink.
+ */
+const HARDWARE_BITRATE = "2500k";
+
+/**
+ * The software quality target, and the preset that reaches it.
+ *
+ * `crf 23` rather than 21 under the low-quality instruction above. Software is the FALLBACK
+ * and it is 11x the CPU of the hardware path even after the width cap, so the goal here is to
+ * remain watchable rather than to compete with it.
+ */
+const SOFTWARE_PRESET = "veryfast";
+const SOFTWARE_CRF = "23";
+
+/**
+ * The pixel format every non-VAAPI re-encode is pinned to.
+ *
+ * > [!CAUTION] WITHOUT THIS, A 10-BIT SOURCE PRODUCES h264 HIGH 10, WHICH NO BROWSER DECODES
+ * > `libx264` follows its input's format, so a `yuv420p10le` source -- ordinary for the HEVC
+ * > half of this library -- came out as `profile=High 10, pix_fmt=yuv420p10le`. Verified by
+ * > probing the output on the Synology 2026-09-08. The transcode exists to make a file
+ * > playable in a browser and was producing something LESS playable than the source, with
+ * > every unit test green: the plan said "re-encoded to h264", and it was h264.
+ * >
+ * > VAAPI needs the same conversion and cannot take this flag -- its frames are GPU surfaces.
+ * > It gets `format=nv12` inside `scale_vaapi` instead; see `videoFilter`.
+ */
+const SOFTWARE_PIXEL_FORMAT = "yuv420p";
+
+/**
+ * The format a VAAPI encode must be handed, whatever the source was.
+ *
+ * > [!CAUTION] `h264_vaapi` ON UHD 600 ENCODES 8-BIT ONLY, and a p010 surface is a hard failure
+ * > A 10-bit HEVC source decodes into a p010 VAAPI surface, and handing that to `h264_vaapi`
+ * > fails at encoder-open with `No usable encoding profile found` -- not a fallback, not a
+ * > warning, a title that will not play. Measured on the J4125 2026-09-08 against a HEVC Main
+ * > 10 film, which is an ordinary shape for the 54% of this library that is HEVC.
+ * >
+ * > Emitted unconditionally rather than only for 10-bit sources: an 8-bit source already
+ * > decodes to nv12, so the conversion is a no-op there and one code path is worth more than
+ * > a branch on a bit depth the plan would otherwise have to carry.
+ */
+const VAAPI_PIXEL_FORMAT = "nv12";
 
 function firstOfType(streams: readonly ProbedStream[], type: string): ProbedStream | null {
   const of = streams.filter((s) => s.codec_type === type);
@@ -209,11 +301,19 @@ export function planPlayback(
     reasons.push(`container is ${probe.formatName}, repackaged as fragmented MP4 (no re-encode)`);
   }
 
+  const scaleWidth = videoAction === "transcode" ? downscaleWidth(video?.width) : null;
+  if (scaleWidth !== null) {
+    reasons.push(
+      `video is ${video?.width}px wide, scaled down to ${scaleWidth}px to keep the re-encode cheap`,
+    );
+  }
+
   return {
     video: {
       action: videoAction,
       sourceIndex: video?.index ?? null,
       codec: videoAction === "copy" ? videoCodec : TARGET_VIDEO,
+      scaleWidth,
     },
     audio: {
       action: audioAction,
@@ -223,6 +323,18 @@ export function planPlayback(
     subtitles: { action: subtitleAction, sourceIndex: picked?.stream.index ?? null },
     reasons,
   };
+}
+
+/**
+ * The width to scale a re-encode down to, or null to leave it alone.
+ *
+ * A source at or below the cap is left where it is: upscaling would spend pixels to make the
+ * picture worse. A source whose width the container never stated is also left alone, because
+ * a guess here is the one that produces a stretched frame.
+ */
+function downscaleWidth(sourceWidth: number | undefined): number | null {
+  if (!sourceWidth || sourceWidth <= MAX_TRANSCODE_WIDTH) return null;
+  return MAX_TRANSCODE_WIDTH;
 }
 
 /** True when this plan re-encodes video -- the only expensive outcome, and worth metering. */
@@ -525,9 +637,31 @@ function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   // Hardware encoders take a BITRATE rather than a quality target: none of the three
   // implements `-crf`, and passing it is a spawn error rather than an ignored flag.
   const codec = enc.hardware
-    ? ["-c:v", enc.encoder, "-b:v", "6M"]
-    : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"];
-  return ["-an", ...codec];
+    ? ["-c:v", enc.encoder, "-b:v", HARDWARE_BITRATE]
+    : ["-c:v", "libx264", "-preset", SOFTWARE_PRESET, "-crf", SOFTWARE_CRF];
+  // VAAPI does its format conversion inside the filter, on the GPU. Everything else takes
+  // `-pix_fmt`, which VAAPI cannot: its frames are surfaces rather than planes.
+  const pixelFormat = enc.vaapiDevice ? [] : ["-pix_fmt", SOFTWARE_PIXEL_FORMAT];
+  return ["-an", ...videoFilter(plan, enc), ...codec, ...pixelFormat];
+}
+
+/**
+ * The `-vf` chain for a re-encode: the resize, the pixel format, or neither.
+ *
+ * Two spellings of one job, and they are NOT interchangeable. After `-hwaccel vaapi
+ * -hwaccel_output_format vaapi` the frames never leave the GPU, so the ordinary `scale`
+ * filter cannot see them and `scale_vaapi` is the only one that can -- which is also where
+ * VAAPI's mandatory nv12 conversion goes, since `-pix_fmt` has no surface to apply to.
+ * VideoToolbox and NVENC hand frames back to system memory, so they take the plain one.
+ */
+function videoFilter(plan: PlaybackPlan, enc: EncoderChoice): string[] {
+  const { scaleWidth } = plan.video;
+  if (enc.vaapiDevice) {
+    // `h=-2` lets ffmpeg keep the aspect ratio and round to an even height for us.
+    const size = scaleWidth ? `w=${scaleWidth}:h=-2:` : "";
+    return ["-vf", `scale_vaapi=${size}format=${VAAPI_PIXEL_FORMAT}`];
+  }
+  return scaleWidth ? ["-vf", `scale=${scaleWidth}:-2`] : [];
 }
 
 function audioCodecArgs(plan: PlaybackPlan): string[] {

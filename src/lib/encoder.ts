@@ -16,7 +16,7 @@
  * | `h264_nvenc` | NVIDIA | listed for completeness; nothing here has one |
  * | `libx264` | everywhere | the floor, and always correct |
  *
- * > [!IMPORTANT] BEING LISTED IS NOT THE SAME AS BEING USABLE, and only one of these can be checked cheaply
+ * > [!IMPORTANT] BEING LISTED IS NOT THE SAME AS BEING USABLE, and each candidate needs its OWN evidence
  * > `ffmpeg -encoders` reports what the binary was COMPILED with, which is a different
  * > question from whether the hardware and its driver are present. `h264_vaapi` in a build
  * > with no `/dev/dri` fails at spawn; `h264_qsv` with no runtime fails the same way. So a
@@ -27,6 +27,21 @@
  * > Everything unproven falls to `libx264`, which is slow and never wrong. **Failing toward
  * > software is the correct direction**: it costs CPU, where failing the other way is a
  * > spawn error and a title that will not play at all.
+ *
+ * > [!CAUTION] `/dev/dri` IS EVIDENCE FOR VAAPI AND NOT FOR QSV, and conflating them shipped a broken NAS
+ * > This module used to gate QSV on `hasDri` alone, which reads plausibly -- both want an
+ * > Intel iGPU -- and is wrong, because the two reach it through different runtimes. VAAPI
+ * > talks to the render node through libva; QSV talks to it through libmfx/oneVPL, which is a
+ * > separate library that Alpine's ffmpeg is built against but does not ship.
+ * >
+ * > Measured on the deployment Synology (J4125, Alpine ffmpeg 6.1.2 + intel-media-driver
+ * > 25.2.6, 2026-09-08): `ffmpeg -encoders` lists `h264_qsv` AND `hevc_qsv`, `/dev/dri`
+ * > exists, so `chooseEncoder` chose QSV -- and every re-encode died at spawn with
+ * > `Error creating a MFX session: -9`. The same box runs `h264_vaapi` at 9.3x realtime.
+ * >
+ * > So QSV carries `hasQsvRuntime`, and the only honest way to produce it is to ASK ffmpeg to
+ * > open the device -- see `probeQsvRuntime`. A library that is either absent or present with
+ * > no hardware behind it cannot be distinguished by looking at the filesystem.
  */
 
 export type Platform = "darwin" | "linux" | (string & {});
@@ -38,6 +53,14 @@ export interface EncoderEnvironment {
   available: readonly string[];
   /** `/dev/dri/renderD128` exists. Linux only; meaningless elsewhere. */
   hasDri: boolean;
+  /**
+   * ffmpeg could actually OPEN a QSV device -- not merely that it lists the encoder.
+   *
+   * Its own field rather than a second reading of `hasDri`, because QSV reaches the same
+   * iGPU through a different runtime (libmfx/oneVPL) that ships separately from libva. See
+   * the caution at the top of this file for the deployment this distinction cost.
+   */
+  hasQsvRuntime: boolean;
 }
 
 export interface EncoderChoice {
@@ -89,7 +112,11 @@ export function chooseEncoder(env: EncoderEnvironment): EncoderChoice {
     // QSV FIRST on Intel: it is Intel's own path and generally encodes better at the same
     // bitrate than the generic VAAPI one, but it needs a runtime that is frequently absent
     // from a container, so VAAPI stays behind it rather than being replaced by it.
-    if (has("h264_qsv")) {
+    //
+    // `hasQsvRuntime` and not `hasDri` is what makes that fallback actually happen: the
+    // render node is evidence for libva, and QSV needs libmfx. Alpine's ffmpeg lists the
+    // encoder and ships neither.
+    if (has("h264_qsv") && env.hasQsvRuntime) {
       return {
         encoder: "h264_qsv",
         hardware: true,
@@ -125,19 +152,50 @@ export function chooseEncoder(env: EncoderEnvironment): EncoderChoice {
   return SOFTWARE;
 }
 
+/** How a probe reaches ffmpeg. Injected so tests need no binary. */
+export type FfmpegRunner = (argv: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+
+/**
+ * Ask ffmpeg to OPEN a QSV device, which is the only thing that answers the question.
+ *
+ * `-init_hw_device` is a GLOBAL option, so this opens the runtime and exits without an input
+ * file, an output file or a frame -- there is nothing cheaper that still touches libmfx.
+ * Measured on the Synology 2026-09-08: exit 171 with `Error creating a MFX session: -9` where
+ * the same shape against `vaapi` exits 0.
+ *
+ * Exported for the test, and for anybody who needs the fact without the whole choice.
+ */
+export async function probeQsvRuntime(run: FfmpegRunner): Promise<boolean> {
+  try {
+    const res = await run([
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-init_hw_device",
+      "qsv=hw",
+      "-f",
+      "null",
+      "-",
+    ]);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ask ffmpeg what it can do, once, at boot.
  *
  * The encoder list is a property of the binary and the device node is a property of the
  * kernel; neither changes while this process runs, so probing per session would be a
  * syscall answering a question whose answer we already had.
+ *
+ * The QSV runtime probe is SKIPPED unless it could change the answer -- a Linux box with a
+ * render node and `h264_qsv` in the listing. Everywhere else the second spawn would be a
+ * process started to confirm something already decided.
  */
 export async function probeEncoder(
-  opts: {
-    platform?: Platform;
-    hasDri?: boolean;
-    run?: (argv: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
-  } = {},
+  opts: { platform?: Platform; hasDri?: boolean; run?: FfmpegRunner } = {},
 ): Promise<EncoderChoice> {
   const platform = opts.platform ?? process.platform;
   const run =
@@ -160,7 +218,10 @@ export async function probeEncoder(
 
   try {
     const res = await run(["-hide_banner", "-encoders"]);
-    return chooseEncoder({ platform, available: parseEncoders(res.stdout + res.stderr), hasDri });
+    const available = parseEncoders(res.stdout + res.stderr);
+    const qsvCouldWin = platform === "linux" && hasDri && available.includes("h264_qsv");
+    const hasQsvRuntime = qsvCouldWin ? await probeQsvRuntime(run) : false;
+    return chooseEncoder({ platform, available, hasDri, hasQsvRuntime });
   } catch {
     // No ffmpeg. Playback fails later with a message about the file; nothing useful to add.
     return SOFTWARE;

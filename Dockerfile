@@ -98,7 +98,29 @@ FROM oven/bun:1.4.0-alpine AS runtime
 # gzip is required: the index builder pipes the IMDb dumps through `gunzip -c`
 # rather than inflating 226 MB in-process.
 # tini gives us correct signal handling and reaping for PID 1.
-RUN apk add --no-cache gzip tini ca-certificates
+#
+# ffmpeg and ffprobe are PLAYBACK, and they are why this image grew ~170 MB. ffprobe reads a
+# file's streams so `playback-plan.ts` can decide what to do with it; ffmpeg produces one HLS
+# segment per request. Without them every media path resolves and then fails at spawn.
+#
+# `intel-media-driver` is the iHD VAAPI driver, and it is the ONLY reason the deployment NAS
+# encodes in silicon instead of on its four Celeron cores -- measured 2026-09-08 on the J4125,
+# 9.3x realtime against 1.4x, at 0.7 of a core against 3.4. It is the right driver for Gemini
+# Lake and up; `libva-intel-driver` (i965) is the older one and covers older chips than this.
+# The package pulls libva in itself, so naming libva here would be a second owner of that fact.
+#
+# > [!IMPORTANT] The driver is USELESS without the compose file also passing `/dev/dri` in
+# > A container with the driver and no render node probes clean and falls to software -- which
+# > is correct, and silent. `/api/health` reporting `playback.encoder.hardware: false` on a box
+# > with an iGPU is what that looks like; see `docker-compose.override.example.yml`.
+#
+# Alpine's ffmpeg is 6.1.2 here (verified on the built image), comfortably past the one hard
+# version floor this codebase has: `-hls_segment_options` reached hlsenc in November 2021, is
+# NOT probed, and an ffmpeg without it fails at spawn on every single segment. If this line is
+# ever changed to a pinned or hand-built ffmpeg to save space, check that date first.
+RUN apk add --no-cache gzip tini ca-certificates ffmpeg intel-media-driver \
+ && ffmpeg -hide_banner -version \
+ && ffprobe -hide_banner -version
 
 WORKDIR /app
 

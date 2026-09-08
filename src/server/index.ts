@@ -1776,6 +1776,21 @@ const appRoutes = {
               importedAt: meta?.importedAt ?? null,
             };
           }),
+          // `videoEncoder` is the boot probe's answer and never re-read: the encoder list is
+          // a property of the binary and the render node is a property of the kernel, so
+          // neither can change while this process runs. The session counts ARE live.
+          playback: {
+            volumes: mediaVolumes.length,
+            encoder: {
+              name: videoEncoder.encoder,
+              hardware: videoEncoder.hardware,
+              reason: videoEncoder.reason,
+            },
+            sessions: {
+              total: transcodeSessions.list().length,
+              expensive: transcodeSessions.expensiveCount(),
+            },
+          },
           services: { radarr: !!radarr, sonarr: !!sonarr, prowlarr: !!prowlarr },
           auth: {
             users: authStore.userCount(),
