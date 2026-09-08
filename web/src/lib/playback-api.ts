@@ -13,6 +13,7 @@
  */
 
 import type { PlaybackPlan } from "./playback-types";
+import { electEndpoint, EndpointRing, type StreamEndpoint, streamUrl } from "./stream-endpoints";
 
 /**
  * The codecs worth asking about, and the MIME string that asks.
@@ -131,6 +132,18 @@ export interface PlaybackDiagnostics {
 export interface PlaybackSession {
   sessionId: string;
   playlist: string;
+  /**
+   * The bearer secret for this session's playlists and segments.
+   *
+   * Optional because a server older than this field does not send one, and a player that
+   * asserted it would refuse to play against one. Absent means "same origin only", which is
+   * exactly what playback did before multi-homing existed.
+   */
+  streamToken?: string;
+  /** Seconds until `streamToken` stops being accepted. The player renews well inside it. */
+  streamTokenTtlSec?: number;
+  /** Where else this session's media can be fetched from, best first. Absent means nowhere else. */
+  endpoints?: StreamEndpoint[];
   durationSec: number | null;
   /** How many segments the playlist names. The whole film, not what has been produced. */
   segments: number;
@@ -248,6 +261,87 @@ export async function fetchSessions(): Promise<SessionsReport | null> {
     return isSessionsReport(body) ? body : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Pick the address this browser will stream from, and hand back the ring that owns the choice.
+ *
+ * Every candidate is probed with the session's own master playlist, so what is measured is
+ * the request the player is about to make -- DNS, TCP, TLS, CORS and the token, over the
+ * exact path -- rather than a reachability check that could pass while playback fails.
+ *
+ * **Falls back to the page's own origin on every failure**, which is not a degraded mode: it
+ * is what playback did before this existed, and the page origin is by definition reachable
+ * because the page came from it. So a server with no endpoints configured, a race in which
+ * nothing answers, and a browser that refuses every cross-origin fetch all land in the same
+ * working place.
+ */
+export async function electStreamEndpoint(
+  session: PlaybackSession,
+  pageOrigin: string,
+): Promise<EndpointRing> {
+  const token = session.streamToken ?? null;
+  const bases = (session.endpoints ?? []).map((e) => e.base).filter((base) => base !== pageOrigin);
+  const ring = new EndpointRing([...bases, pageOrigin], token);
+  if (bases.length === 0) return ring;
+
+  const winner = await electEndpoint(ring.candidates(), (base, signal) =>
+    probeEndpoint(base, session.playlist, token, signal),
+  );
+  if (winner) ring.pin(winner);
+  return ring;
+}
+
+/**
+ * Keep a ring's token live for as long as playback runs, and hand back the cancel.
+ *
+ * **Renews at HALF the stated life**, so one failed renewal is survivable rather than an
+ * interruption -- and the renewal goes to the app's own origin, which is the only place
+ * allowed to mint one. A failure is deliberately silent: the current token is still valid for
+ * the rest of its window, and there is another attempt before it lapses.
+ *
+ * A session with no token at all (a server older than this feature) schedules nothing, which
+ * is why the caller can wire this unconditionally.
+ */
+export function renewStreamToken(session: PlaybackSession, ring: EndpointRing): () => void {
+  const ttlSec = session.streamTokenTtlSec ?? 0;
+  if (!session.streamToken || ttlSec <= 0) return () => {};
+  const timer = setInterval(async () => {
+    const minted = await remintStreamToken(session.sessionId);
+    if (minted) ring.setToken(minted);
+  }, (ttlSec / 2) * 1000);
+  return () => clearInterval(timer);
+}
+
+/** Ask the app for a fresh stream token. Null on any failure -- the caller keeps the old one. */
+async function remintStreamToken(sessionId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/play/s/${encodeURIComponent(sessionId)}/token`, { method: "POST" });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { streamToken?: unknown };
+    return typeof body.streamToken === "string" ? body.streamToken : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether this address will serve this session's master playlist right now. */
+async function probeEndpoint(
+  base: string,
+  playlist: string,
+  token: string | null,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const res = await fetch(streamUrl(base, playlist, token), { signal, cache: "no-store" });
+    // The body is read and discarded so the connection is not left half-consumed, which on
+    // an HTTP/1.1 keep-alive would make the winner's very first real request open a second
+    // connection it did not need.
+    await res.text().catch(() => "");
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

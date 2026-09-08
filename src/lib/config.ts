@@ -955,6 +955,34 @@ export interface Config {
    */
   media: {
     volumes: string;
+
+    /**
+     * Every address a player may fetch this server's media from, besides the page's own.
+     *
+     * `kind=origin` pairs, comma separated -- the same shape as `volumes`, so an operator
+     * learns one format: `lan=http://172.20.7.12:7979,wan=https://finderr.frst.dev`.
+     * `src/lib/stream-endpoints.ts` owns parsing it and explains why the `kind=` is required
+     * and the address family is not.
+     *
+     * Empty is the default and means the page's origin is the only way in, which is what
+     * every deployment did before this existed. Setting it buys FAILOVER: HLS segments are
+     * independent GETs, so a client that knows a second address retargets the next segment
+     * there when one dies, and a dead path costs a segment rather than the playback.
+     */
+    streamEndpoints: string;
+
+    /**
+     * Ask the gateway for a port mapping over UPnP IGD, and learn the external address.
+     *
+     * > [!CAUTION] OFF by default, because it OPENS A PORT on somebody's router
+     * > Punching a hole in a household firewall is a thing a program should be told to do
+     * > rather than decide to do. It is also unnecessary in the deployment finderr actually
+     * > ships to, where a reverse proxy already terminates the public name.
+     *
+     * On is best-effort in the strongest sense: no gateway, a refused mapping or a network
+     * with IGD disabled all produce a log line and nothing else. See `src/lib/upnp-igd.ts`.
+     */
+    upnp: boolean;
   };
 }
 
@@ -1089,7 +1117,7 @@ export const DEFAULT_CONFIG: Config = {
   pluginModules: [],
   // Empty by default: a checkout that does not opt in cannot open a media file at all, which
   // is exactly how every version before playback existed behaved.
-  media: { volumes: "" },
+  media: { volumes: "", streamEndpoints: "", upnp: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1321,8 @@ function envOverrides(): Record<string, unknown> {
       .filter(Boolean),
     media: {
       volumes: envStr("FINDERR_MEDIA_VOLUMES"),
+      streamEndpoints: envStr("FINDERR_STREAM_ENDPOINTS"),
+      upnp: envBool("FINDERR_UPNP"),
     },
   };
 }

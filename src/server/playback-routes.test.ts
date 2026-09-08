@@ -20,7 +20,13 @@ import {
 } from "../lib/hls-timeline";
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
-import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
+import type { StreamEndpoint } from "../lib/stream-endpoints";
+import {
+  type Session,
+  SessionRefused,
+  STREAM_TOKEN_TTL_MS,
+  type TranscodeSessions,
+} from "../lib/transcode-session";
 import { initName } from "../test/playback-names";
 import { playbackRoutes } from "./playback-routes";
 
@@ -38,6 +44,15 @@ let sessionDir: string;
 const TIMELINE: Timeline = { starts: [0, 6, 12], endSec: 18 };
 const TIMELINES = { video: TIMELINE, audio: TIMELINE, subtitles: TIMELINE };
 
+/** The stream token the fake session carries. Any opaque string; the route compares, never parses. */
+const SESSION_TOKEN = "stream-token-1";
+
+/** A pinned clock, so "how long has this token left" is an assertable number rather than a race. */
+const NOW = 1_700_000_000_000;
+
+const LAN: StreamEndpoint = { base: "http://10.0.0.5:7979", family: "v4", kind: "lan", source: "static" };
+const WAN: StreamEndpoint = { base: "https://finderr.example", family: null, kind: "wan", source: "static" };
+
 /**
  * Enough of the manager for the routes; the real one is proved in its own suite.
  *
@@ -50,6 +65,10 @@ function fakeSessions(dir: string) {
   let refuse: SessionRefused | null = null;
   const session: Session = {
     id: "sess-1",
+    token: SESSION_TOKEN,
+    priorToken: null,
+    priorTokenUntil: 0,
+    tokenExpiresAt: NOW + STREAM_TOKEN_TTL_MS,
     key: "k",
     dir,
     input: "/plex/a.mkv",
@@ -71,6 +90,15 @@ function fakeSessions(dir: string) {
       return session;
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
+    get: (id: string) => (id === "sess-1" ? session : null),
+    // The real manager owns the expiry rule and proves it in its own suite; here the question
+    // is only whether the ROUTE consults it, so this compares and nothing more.
+    admitsToken: (id: string, offered: string) => id === "sess-1" && offered === session.token,
+    remintToken: (id: string) => {
+      if (id !== "sess-1") return null;
+      session.token = `${session.token}+`;
+      return session;
+    },
     segmentPath: (id: string, track: Track, index: number) => found(id, segmentFileName(track, index)),
     initPath: (id: string, track: Track, index: number) => {
       // Mirrors the real manager: a rendition with no init has no name to look for.
@@ -107,12 +135,17 @@ function build(opts: {
   volumes?: MediaVolume[];
   path?: string;
   sessions?: ReturnType<typeof fakeSessions>;
+  endpoints?: StreamEndpoint[];
+  pageOrigins?: string[];
 }) {
   const sessions = opts.sessions ?? fakeSessions(sessionDir);
   const routes = playbackRoutes({
     store: fakeStore(opts.path ?? "/plex/a.mkv"),
     sessions: sessions.api,
     volumes: opts.volumes ?? VOLUMES,
+    endpoints: () => opts.endpoints ?? [],
+    pageOrigins: opts.pageOrigins ?? [],
+    now: () => NOW,
     requireAdmin: () => (opts.admin === false ? new Response("nope", { status: 404 }) : null),
     actorId: () => "admin-1",
     log: () => {},
@@ -162,8 +195,19 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const segReq = (id: string, file: string) =>
-  ({ params: { id, file }, url: `http://x/api/play/s/${id}/${file}` }) as never;
+/**
+ * A media request, optionally carrying a stream token and a cross-origin `Origin`.
+ *
+ * `headers` is a real `Headers` rather than an object literal because the route asks it the
+ * way a Bun request would -- a plain object would make the CORS tests pass against a shape the
+ * server never sees.
+ */
+const segReq = (id: string, file: string, opts: { token?: string; origin?: string } = {}) =>
+  ({
+    params: { id, file },
+    url: `http://x/api/play/s/${id}/${file}${opts.token ? `?t=${encodeURIComponent(opts.token)}` : ""}`,
+    headers: new Headers(opts.origin ? { origin: opts.origin } : {}),
+  }) as never;
 
 describe("every route is admin-only", () => {
   test("a non-admin gets the refusal the auth module chose, on all four", async () => {
@@ -375,6 +419,165 @@ describe("starting a session", () => {
     } as never)) as Response;
     // Still reaches the path resolution and refuses there, rather than refusing the body.
     expect(res.status).toBe(409);
+  });
+});
+
+/**
+ * MULTI-HOMED PLAYBACK. A segment may be fetched from an origin the page was not loaded at,
+ * and two things have to be true for that to work at all: the request must carry a credential
+ * the browser WILL send cross-origin, and the response must carry the CORS header that lets
+ * the page read it. Both are refusals-shaped, which is why they are tested here rather than
+ * left to the modules underneath.
+ */
+describe("a stream token admits a cross-origin media request", () => {
+  const routesFor = (opts: Parameters<typeof build>[0]) =>
+    build(opts).routes["/api/play/s/:id/:file"] as Record<
+      string,
+      (req: never) => Promise<Response> | Response
+    >;
+
+  test("the right token serves the segment with no admin session at all", async () => {
+    const routes = routesFor({ admin: false });
+    const res = (await routes.GET?.(
+      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN }),
+    )) as Response;
+    expect(res.status).toBe(200);
+  });
+
+  test("a wrong token falls through to the admin gate and is refused", async () => {
+    const routes = routesFor({ admin: false });
+    const res = (await routes.GET?.(
+      segReq("sess-1", segmentFileName("video", 1), { token: "not-it" }),
+    )) as Response;
+    expect(res.status).toBe(404);
+  });
+
+  /** The token is scoped to ONE session, so it must not open the door to another's directory. */
+  test("a valid token for one session does not admit a request naming another", async () => {
+    const routes = routesFor({ admin: false });
+    const res = (await routes.GET?.(
+      segReq("sess-2", MASTER_PLAYLIST_NAME, { token: SESSION_TOKEN }),
+    )) as Response;
+    expect(res.status).toBe(404);
+  });
+
+  /** An admin browsing to the URL by hand still works -- the token is an addition, not a swap. */
+  test("an admin with no token is still served", async () => {
+    const routes = routesFor({});
+    const res = (await routes.GET?.(segReq("sess-1", MASTER_PLAYLIST_NAME))) as Response;
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("CORS on the stream origin", () => {
+  const routesFor = (endpoints: StreamEndpoint[], pageOrigins: string[] = []) =>
+    build({ endpoints, pageOrigins }).routes["/api/play/s/:id/:file"] as Record<
+      string,
+      (req: never) => Promise<Response> | Response
+    >;
+
+  test("an advertised endpoint may read the segment", async () => {
+    const routes = routesFor([LAN]);
+    const res = (await routes.GET?.(
+      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN, origin: LAN.base }),
+    )) as Response;
+    expect(res.headers.get("access-control-allow-origin")).toBe(LAN.base);
+    expect(res.headers.get("vary")).toContain("Origin");
+  });
+
+  test("an origin nobody advertised gets no header, so the browser refuses the read", async () => {
+    const routes = routesFor([LAN]);
+    const res = (await routes.GET?.(
+      segReq("sess-1", segmentFileName("video", 1), {
+        token: SESSION_TOKEN,
+        origin: "https://evil.example",
+      }),
+    )) as Response;
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  /**
+   * THE HEADER GOES ON REFUSALS TOO, and this is the case that makes it matter.
+   *
+   * Our segment route answers 404 for a segment that is not ready yet, which is ordinary
+   * back-pressure. Without CORS on that response the browser reports an opaque network error
+   * instead, the loader reads it as a dead path, and the player rotates away from a candidate
+   * that was working perfectly.
+   */
+  test("a 404 for an unproduced segment still carries the header", async () => {
+    const routes = routesFor([LAN]);
+    const res = (await routes.GET?.(
+      segReq("sess-1", segmentFileName("video", 42), { token: SESSION_TOKEN, origin: LAN.base }),
+    )) as Response;
+    expect(res.status).toBe(404);
+    expect(res.headers.get("access-control-allow-origin")).toBe(LAN.base);
+  });
+
+  test("the origin the app itself is served from is allowed without being an endpoint", async () => {
+    const routes = routesFor([], ["https://finderr.example"]);
+    const res = (await routes.GET?.(
+      segReq("sess-1", MASTER_PLAYLIST_NAME, { origin: "https://finderr.example" }),
+    )) as Response;
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://finderr.example");
+  });
+
+  test("the preflight answers 204 and names the method a ranged fetch needs", async () => {
+    const routes = routesFor([LAN]);
+    const res = (await routes.OPTIONS?.(
+      segReq("sess-1", segmentFileName("video", 1), { origin: LAN.base }),
+    )) as Response;
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(res.headers.get("access-control-allow-headers")).toContain("range");
+  });
+});
+
+describe("advertising where a client may stream from", () => {
+  test("the endpoints route lists what the directory holds", async () => {
+    const { routes } = build({ endpoints: [LAN, WAN] });
+    const res = (await routes["/api/play/endpoints"]?.GET?.({ url: "http://x" } as never)) as Response;
+    const body = (await res.json()) as { endpoints: StreamEndpoint[] };
+    expect(body.endpoints).toEqual([LAN, WAN]);
+  });
+
+  test("it is admin-only like the rest of the surface", async () => {
+    const { routes } = build({ admin: false, endpoints: [LAN] });
+    const res = (await routes["/api/play/endpoints"]?.GET?.({ url: "http://x" } as never)) as Response;
+    expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * THE RE-MINT IS THE REASON THE TOKEN'S SHORT LIFE IS REAL.
+ *
+ * A token travels over plain http to whichever candidate answered, so it is observable in a
+ * way the session cookie is not. It expires -- and renewal deliberately needs the credential
+ * the token cannot carry, so a captured one cannot refresh itself forever.
+ */
+describe("renewing a stream token", () => {
+  const post = (id: string) => ({ params: { id }, url: `http://x/api/play/s/${id}/token` }) as never;
+
+  test("an admin gets a new token and the life left on it", async () => {
+    const { routes } = build({});
+    const res = (await routes["/api/play/s/:id/token"]?.POST?.(post("sess-1"))) as Response;
+    const body = (await res.json()) as { streamToken: string; streamTokenTtlSec: number };
+    expect(body.streamToken).not.toBe(SESSION_TOKEN);
+    expect(body.streamTokenTtlSec).toBe(STREAM_TOKEN_TTL_MS / 1000);
+  });
+
+  test("a stream token cannot renew itself -- only the admin session can", async () => {
+    const { routes } = build({ admin: false });
+    const res = (await routes["/api/play/s/:id/token"]?.POST?.({
+      params: { id: "sess-1" },
+      url: `http://x/api/play/s/sess-1/token?t=${SESSION_TOKEN}`,
+    } as never)) as Response;
+    expect(res.status).toBe(404);
+  });
+
+  test("a session that is gone is a 404 rather than a token for nothing", async () => {
+    const { routes } = build({});
+    const res = (await routes["/api/play/s/:id/token"]?.POST?.(post("gone"))) as Response;
+    expect(res.status).toBe(404);
   });
 });
 

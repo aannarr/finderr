@@ -52,6 +52,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { secretEquals } from "./auth";
 import type { EncoderChoice } from "./encoder";
 import {
   initFileName,
@@ -143,6 +144,33 @@ export const IDLE_REAP_MS = 60_000;
  */
 export const HARD_TTL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * How long a stream token is accepted before the player has to ask the app for another.
+ *
+ * > [!IMPORTANT] THIS IS THE ONE CREDENTIAL THAT TRAVELS OVER PLAIN HTTP, so it is the one
+ * > with a short clock
+ * > A token is MINTED in a reply from the app's own origin -- HTTPS wherever there is a
+ * > public name -- and then SPENT against whichever candidate answered the race, which on a
+ * > home network is very often a plain-http LAN address. So it is observable on the wire in a
+ * > way the session cookie never is, and the answer is to make the observation worth little:
+ * > thirty minutes, one film, no account access, and a re-mint that only the app's own origin
+ * > can perform.
+ *
+ * Thirty minutes rather than the length of a film: the player renews well inside the window
+ * (`web/src/components/PlayHere.tsx`), so the length of the film is not the constraint -- how
+ * long a captured token stays useful is.
+ */
+export const STREAM_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * How long the PREVIOUS token keeps working after a re-mint.
+ *
+ * Long enough to cover the requests already in flight when the swap happened, and no longer.
+ * `SEGMENT_TIMEOUT_MS` is the honest bound on how old an outstanding request can be, so the
+ * window is derived from it rather than being a second number to keep in step.
+ */
+export const TOKEN_GRACE_MS = SEGMENT_TIMEOUT_MS;
+
 /** Grace between asking ffmpeg to stop and insisting. */
 const SIGKILL_AFTER_MS = 2_000;
 
@@ -190,6 +218,43 @@ export interface StartOpts {
 
 export interface Session {
   id: string;
+  /**
+   * The bearer secret for THIS session's playlists and segments, and nothing else.
+   *
+   * > [!IMPORTANT] SEPARATE FROM `id` ON PURPOSE -- one is identity, the other is authority
+   * > The id is a path component: it appears in logs, in `/api/play/sessions` and in an admin's
+   * > URL bar, and it must stay safe to show. The token never leaves the reply to the caller
+   * > that started the session. Conflating them would make every place that prints a session
+   * > id a place that leaks the right to stream it.
+   *
+   * It exists because a segment may be fetched from an origin the page was not loaded from --
+   * that is the whole of multi-homed playback -- and the session cookie is `SameSite=Lax`, so
+   * a browser will not send it cross-origin. Relaxing the cookie instead would weaken the
+   * credential that guards the entire application in order to serve one video.
+   *
+   * > [!IMPORTANT] MINTED ON THE APP'S OWN ORIGIN, CARRIED TO ANY OF THEM
+   * > It is only ever produced in the reply to an authenticated request the app itself made
+   * > -- which in a deployment with a public name is HTTPS -- and it is then spent against
+   * > whichever candidate answers, which may be a plain-http LAN address. That asymmetry is
+   * > the point, and it is why the token expires on its own clock rather than the session's:
+   * > the thing that travels over plain http is short-lived and scoped to one film. See
+   * `STREAM_TOKEN_TTL_MS`.
+   */
+  token: string;
+  /**
+   * The token this session used to have, honoured until `priorTokenUntil`.
+   *
+   * Rotation without a stall. Several segment requests are always in flight, and they carry
+   * the token that was current when they were issued -- so cutting the old one dead at the
+   * instant of a re-mint would fail every one of them, which the player would read as a dead
+   * path and answer by rotating endpoints. A grace window costs nothing and removes the
+   * entire failure mode.
+   */
+  priorToken: string | null;
+  /** When `token` stops being accepted. Epoch ms. */
+  tokenExpiresAt: number;
+  /** When `priorToken` stops being accepted. Epoch ms; meaningless when `priorToken` is null. */
+  priorTokenUntil: number;
   key: string;
   dir: string;
   input: string;
@@ -278,6 +343,12 @@ export class TranscodeSessions {
     const at = this.now();
     const session: Session = {
       id: crypto.randomUUID(),
+      // 122 bits from the platform CSPRNG, same strength as the id. Rotated rather than held
+      // for the life of the session -- see `STREAM_TOKEN_TTL_MS`.
+      token: crypto.randomUUID(),
+      priorToken: null,
+      priorTokenUntil: 0,
+      tokenExpiresAt: at + STREAM_TOKEN_TTL_MS,
       key,
       dir,
       input: o.input,
@@ -309,6 +380,53 @@ export class TranscodeSessions {
 
   get(id: string): Session | null {
     return this.states.get(id)?.session ?? null;
+  }
+
+  /**
+   * Whether this secret may read this session's media right now.
+   *
+   * Lives HERE rather than in the route because the rule needs the clock, and the clock is
+   * already injected into this class -- a route deciding expiry would need its own `now`, and
+   * two clocks is how a test proves something the server does not do.
+   *
+   * `secretEquals` on both candidates unconditionally: returning early on a length mismatch
+   * would leak which of the two matched, and checking the prior token only when the current
+   * one failed would make the comparison count depend on the secret.
+   */
+  admitsToken(id: string, offered: string): boolean {
+    const session = this.get(id);
+    if (!session) return false;
+    const at = this.now();
+    const current = at < session.tokenExpiresAt && secretEquals(offered, session.token);
+    const prior =
+      session.priorToken !== null &&
+      at < session.priorTokenUntil &&
+      secretEquals(offered, session.priorToken);
+    return current || prior;
+  }
+
+  /**
+   * Issue a fresh token for a session and hand it back, keeping the old one alive briefly.
+   *
+   * The renewal half of `STREAM_TOKEN_TTL_MS`. Only ever reached through an
+   * app-origin-authenticated route, which is what makes the new token's delivery as protected
+   * as the first one's -- a re-mint reachable with the token itself would make the expiry
+   * decorative, since a captured token could renew itself forever.
+   *
+   * Answers the SESSION rather than the token, so a caller that has to report the new token's
+   * remaining life -- which is all of them -- does not go looking the session up again.
+   * Null for a session that is gone, which the caller answers as a 404.
+   */
+  remintToken(id: string): Session | null {
+    const state = this.states.get(id);
+    if (!state) return null;
+    const at = this.now();
+    const session = state.session;
+    session.priorToken = session.token;
+    session.priorTokenUntil = at + TOKEN_GRACE_MS;
+    session.token = crypto.randomUUID();
+    session.tokenExpiresAt = at + STREAM_TOKEN_TTL_MS;
+    return session;
   }
 
   list(): Session[] {

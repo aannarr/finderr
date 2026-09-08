@@ -14,6 +14,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { awardSourceMeta, importAwards } from "../jobs/import-awards";
 import { AddonConfigStore, redactingLog } from "../lib/addon-config";
 import { RadarrClient, SonarrClient } from "../lib/arr";
@@ -79,6 +80,7 @@ import { SiteSettingsStore, siteSettingsSeed } from "../lib/site-settings";
 import { SlowLog } from "../lib/slow-log";
 import { prepareSqlite } from "../lib/spellfix";
 import { createsNewRequest, type MediaRemoval, Store, syncLibrary } from "../lib/store";
+import { primaryLanAddress, StreamEndpointDirectory } from "../lib/stream-endpoints";
 import {
   isTermDimension,
   TERM_DIMENSIONS,
@@ -93,6 +95,7 @@ import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { TmdbSettingsStore } from "../lib/tmdb-settings";
 import { bindShutdown, TranscodeSessions } from "../lib/transcode-session";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
+import { keepPortMapped } from "../lib/upnp-igd";
 import { WatchlistStore } from "../lib/watchlist";
 import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
@@ -260,6 +263,50 @@ const sweptSessions = transcodeSessions.sweepStale();
 if (sweptSessions > 0) log(`playback: swept ${sweptSessions} stale session director(ies)`);
 if (mediaVolumes.length > 0) {
   log(`playback: ${mediaVolumes.length} media volume(s), video encoder ${videoEncoder.reason}`);
+}
+
+/*
+  WHERE A PLAYER MAY FETCH SEGMENTS FROM, which is more than one place on a multi-homed box.
+
+  The directory is built even when playback is off -- it costs a parse of an empty string --
+  so `/api/play/endpoints` answers honestly (with nothing) rather than 404ing on a deployment
+  that has simply not opted in.
+
+  The interface scan is a FUNCTION rather than a snapshot: a container's addresses can change
+  under it (a network reattached, a v6 prefix re-delegated), and a list captured at boot would
+  keep advertising an address nothing answers on.
+*/
+const streamEndpoints = new StreamEndpointDirectory({
+  staticSpec: cfg.media.streamEndpoints,
+  port: cfg.port,
+  addresses: () => Object.values(networkInterfaces()).flatMap((list) => list ?? []),
+});
+if (cfg.media.streamEndpoints) {
+  log(`playback: advertising ${streamEndpoints.list().length} stream endpoint(s)`);
+}
+if (cfg.media.upnp) advertiseThroughGateway();
+
+/**
+ * Ask the gateway for a mapping, in the background, and advertise what it grants.
+ *
+ * NOTHING WAITS ON THIS. SSDP takes two seconds by design -- a search is answered by however
+ * many devices choose to, so the wait is the protocol rather than a slow router -- and boot
+ * must not spend that. The directory simply grows a candidate when and if one is granted.
+ */
+function advertiseThroughGateway(): void {
+  const internalIp = primaryLanAddress(Object.values(networkInterfaces()).flatMap((l) => l ?? []));
+  if (!internalIp) {
+    log("upnp: no private IPv4 address to forward to, skipping");
+    return;
+  }
+  keepPortMapped({
+    port: cfg.port,
+    internalIp,
+    description: "finderr",
+    log,
+    onMapped: (ip, port) => streamEndpoints.learnExternal(ip, port),
+    onLost: () => streamEndpoints.forgetExternal(),
+  });
 }
 
 /*
@@ -3771,6 +3818,8 @@ const allRoutes = {
     sessions: transcodeSessions,
     volumes: mediaVolumes,
     keyframes: keyframeCache,
+    endpoints: () => streamEndpoints.list(),
+    pageOrigins: cfg.auth.origins,
     requireAdmin: (req) => auth.requireAdmin(req),
     actorId: (req) => auth.principal(req)?.user?.id ?? null,
     encoder: videoEncoder,

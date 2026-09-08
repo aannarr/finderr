@@ -22,10 +22,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { candidateLoader } from "../lib/hls-candidate-loader";
 import {
+  electStreamEndpoint,
   hasNativeHls,
   PlaybackRefused,
   type PlaybackSession,
+  renewStreamToken,
   startPlayback,
   stopPlayback,
 } from "../lib/playback-api";
@@ -83,6 +86,7 @@ export function PlayHere({
     const video = videoRef.current;
     if (!session || !video) return;
     let cancelled = false;
+    let stopRenewal: () => void = () => {};
 
     /*
       MSE FIRST, NATIVE ONLY AS THE FALLBACK. This order is the fix for a real bug and it is
@@ -106,13 +110,42 @@ export function PlayHere({
       const { default: Hls } = await import("hls.js");
       if (cancelled) return;
       if (!Hls.isSupported()) {
+        /*
+          THE NATIVE PATH IS SAME-ORIGIN, AND IT CANNOT BE ANYTHING ELSE.
+
+          There is no loader to install: the element follows the playlist itself and resolves
+          each segment name against the playlist's own URL, so nothing gets to retarget a
+          request or attach a token. Multi-homing is therefore an MSE-path feature, and on
+          iOS Safari playback runs exactly as it did before -- from the origin the page was
+          loaded at, on the session cookie. Working, rather than degraded.
+        */
         if (hasNativeHls()) {
           video.src = session.playlist;
           void video.play().catch(() => {});
         }
         return;
       }
+
+      /*
+        WHICH ADDRESS TO STREAM FROM, decided before the first playlist request.
+
+        The race costs one master playlist -- a few hundred bytes -- and it is what makes the
+        server safe to advertise a LAN address to a client that turns out to be remote: an
+        unroutable address does not fail, it hangs, and a strictly ordered walk would stall
+        here for a SYN timeout. With no advertised endpoints this resolves immediately to a
+        ring holding only the page's origin, and the loader below is then a no-op rewrite.
+      */
+      const ring = await electStreamEndpoint(session, location.origin);
+      if (cancelled) return;
+      // The token outlives no film, so it is renewed while the film plays -- from THIS origin,
+      // which is the only one allowed to mint one. Cancelled with the player below.
+      stopRenewal = renewStreamToken(session, ring);
+
       const hls = new Hls({
+        // Every request -- master, both rendition playlists, init segments, media segments,
+        // subtitle segments -- goes through the ring, which retargets it at the current
+        // candidate and demotes that candidate when the PATH (rather than the segment) fails.
+        loader: candidateLoader(Hls.DefaultConfig.loader, ring, location.origin),
         // The playlist names the whole film before any of it has been produced, so a
         // fragment request is what CAUSES its segment to be made. Two settings follow from
         // that and neither is a default worth keeping.
@@ -167,6 +200,7 @@ export function PlayHere({
 
     return () => {
       cancelled = true;
+      stopRenewal();
       hlsRef.current?.destroy();
       hlsRef.current = null;
     };

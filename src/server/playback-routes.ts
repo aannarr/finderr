@@ -56,6 +56,7 @@ import {
   planPlayback,
 } from "../lib/playback-plan";
 import type { Store } from "../lib/store";
+import type { StreamEndpoint } from "../lib/stream-endpoints";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
 
 /**
@@ -86,12 +87,89 @@ export interface PlaybackDeps {
    * start re-derives the cut points, which is correct and merely slower.
    */
   keyframes?: CutPointCache;
+  /**
+   * Every address a client may fetch this session's media from, best first.
+   *
+   * A FUNCTION rather than a list, because the set grows after boot: a UPnP probe answers
+   * seconds later if it answers at all, and an interface scan should reflect the machine as
+   * it is now. Absent means the only address is the one the page was loaded from, which is
+   * every deployment that has not opted in.
+   */
+  endpoints?: () => readonly StreamEndpoint[];
+  /**
+   * Origins the APP itself is served from -- `auth.origins`. Read only to decide CORS.
+   *
+   * Separate from `endpoints` because they answer different questions: an endpoint is a place
+   * media may be FETCHED FROM, and this is a place the page may have been LOADED AT. A
+   * deployment behind one proxy has one of the second and several of the first.
+   */
+  pageOrigins?: readonly string[];
+  /** Reads the clock only to REPORT how long a token has left. Injected so a test can pin it. */
+  now?: () => number;
   log?: (m: string) => void;
 }
+
+/**
+ * The query parameter carrying a session's stream token.
+ *
+ * A QUERY PARAMETER rather than a header, and that is forced rather than chosen: a `<video>`
+ * element following a native HLS playlist, and hls.js fetching a segment, both issue plain
+ * GETs whose headers we do not get to set per URL. Plex and Jellyfin land in the same place
+ * for the same reason.
+ */
+const TOKEN_PARAM = "t";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const bad = (error: string, status = 400) => json({ error }, status);
+
+/**
+ * The stream token a request carries, or null.
+ *
+ * `URL` rather than a hand-rolled scan of the query string: this runs on the segment route,
+ * which is the hot one, and it is still far cheaper than the cookie parse and session lookup
+ * `requireAdmin` would otherwise do -- so asking here FIRST makes the hot path faster, not
+ * slower. Bounded, because it is compared against a secret and an unbounded one would be a
+ * request body pretending to be a parameter.
+ */
+function streamTokenOf(url: string): string | null {
+  try {
+    const t = new URL(url).searchParams.get(TOKEN_PARAM);
+    return t && t.length <= LIMITS.id ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `Origin` a cross-origin fetch declared, or null for a same-origin one.
+ *
+ * A same-origin request sends no `Origin` on a GET, and it needs no CORS header either -- so
+ * null here is the ordinary case rather than a refusal.
+ */
+function requestOrigin(req: Request): string | null {
+  const origin = req.headers?.get?.("origin");
+  return origin && origin !== "null" ? origin : null;
+}
+
+/**
+ * A session's stream token, and how much longer it will actually be accepted.
+ *
+ * The remaining life rides along rather than being a constant the client also holds. Two
+ * reasons, and the second is the one that bites: the player must renew INSIDE the window so
+ * it needs the number at all, and **a request that JOINED a running session gets a token that
+ * is already partly spent** -- reporting the full TTL there would have the second viewer
+ * renew after their token had already expired.
+ *
+ * A DURATION rather than an expiry instant, deliberately: a browser's clock can be minutes
+ * off, and a deadline in absolute time would be read against that clock.
+ */
+function mintedToken(session: Session, now: number): { streamToken: string; streamTokenTtlSec: number } {
+  return {
+    streamToken: session.token,
+    streamTokenTtlSec: Math.max(0, Math.floor((session.tokenExpiresAt - now) / 1000)),
+  };
+}
 
 /**
  * Read the client's declared codec support off a request body.
@@ -227,6 +305,49 @@ function publishedSegments(timelines: TrackTimelines): number {
 
 export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
   const log = deps.log ?? (() => {});
+  const endpoints = deps.endpoints ?? (() => []);
+  const now = deps.now ?? Date.now;
+
+  /**
+   * Let a media request through when it carries a live token for the session it names.
+   *
+   * The token admits ONE session, looked up by the id already in the path, so a token for one
+   * playback cannot read another's segments. Whether it is still live -- and whether a token
+   * being replaced right now still counts -- is `TranscodeSessions.admitsToken`'s to answer,
+   * because that rule needs a clock and the manager already has one.
+   */
+  const tokenAdmits = (req: Request, id: string): boolean => {
+    const offered = streamTokenOf(req.url);
+    return offered !== null && deps.sessions.admitsToken(id, offered);
+  };
+
+  /**
+   * Say who may read this response, when the asker is not the page's own origin.
+   *
+   * > [!IMPORTANT] THE HEADERS GO ON REFUSALS TOO, and leaving them off breaks failover
+   * > A 404 without CORS headers reaches the browser as an opaque network error, which is
+   * > indistinguishable from a dead path -- so a segment that is merely not ready yet would
+   * > demote a perfectly good candidate and the player would rotate through every address it
+   * > has for a reason that was never about the network.
+   *
+   * The allow-list is the ADVERTISED SET plus the origins the app is served from, so it
+   * cannot drift: an address a client was told to use is an address it may fetch from. No
+   * `Allow-Credentials`, deliberately -- the token is the credential here, the cookie is not
+   * sent cross-origin anyway, and echoing an origin with credentials enabled is the shape of
+   * mistake that turns an allow-list typo into a session-theft bug.
+   */
+  const withCors = (res: Response, req: Request): Response => {
+    const origin = requestOrigin(req);
+    if (!origin) return res;
+    const allowed =
+      endpoints().some((e) => e.base === origin) || (deps.pageOrigins ?? []).includes(origin);
+    if (!allowed) return res;
+    res.headers.set("access-control-allow-origin", origin);
+    // The header depends on the request's own Origin, so a shared cache must key on it --
+    // without this, one client's answer is served to another with the wrong permission.
+    res.headers.append("vary", "Origin");
+    return res;
+  };
 
   /**
    * The playlist this name asks for, or null when it is not a playlist name.
@@ -387,6 +508,12 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             // -- the property multi-homed playback needs and the reason the playlist itself
             // carries relative segment names too.
             playlist: `/api/play/s/${session.id}/${MASTER_PLAYLIST_NAME}`,
+            // What lets a segment be fetched from an origin the page was not loaded at, and
+            // how long before the player must ask for another -- see the field on `Session`.
+            ...mintedToken(session, now()),
+            // Handed over with the session rather than fetched separately: the client needs
+            // both at the same instant, and `/api/play/endpoints` reads the same function.
+            endpoints: endpoints(),
             durationSec: probe.durationSec,
             segments,
             plan,
@@ -411,11 +538,59 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
       },
     },
 
-    "/api/play/s/:id/:file": {
-      GET: async (req: Bun.BunRequest<"/api/play/s/:id/:file">) => {
+    /**
+     * Where this session's media may be fetched from, best first.
+     *
+     * The list is ADVICE rather than routing: nothing here has proved that a given address
+     * reaches this process from where the client is standing, and nothing can -- the browser
+     * is behind a NAT or a VPN we cannot see. The client settles it by trying, which is why
+     * an over-optimistic list is safe and a missing one is not.
+     *
+     * `POST /api/play/:tconst/session` returns the same list, so the ordinary player makes
+     * ONE request rather than two. This route exists for the case the start response cannot
+     * serve: looking at what a deployment is advertising without starting a transcode.
+     */
+    "/api/play/endpoints": {
+      GET: (req: Request) => {
         const refused = deps.requireAdmin(req);
         if (refused) return refused;
-        return serveFromSession(req.params.id, req.params.file);
+        return json({ endpoints: endpoints() });
+      },
+    },
+
+    "/api/play/s/:id/:file": {
+      /**
+       * Admitted by the session's own token, or by an admin session.
+       *
+       * The token comes FIRST because it is the path a cross-origin fetch actually takes: the
+       * cookie is `SameSite=Lax` and a browser will not send it to a candidate the page was
+       * not loaded from, so a failover with only the cookie to offer is a 401 storm. The
+       * admin fallback keeps a URL pasted into a browser working, which is how every
+       * diagnostic session begins.
+       */
+      GET: async (req: Bun.BunRequest<"/api/play/s/:id/:file">) => {
+        if (!tokenAdmits(req, req.params.id)) {
+          const refused = deps.requireAdmin(req);
+          if (refused) return withCors(refused, req);
+        }
+        return withCors(await serveFromSession(req.params.id, req.params.file), req);
+      },
+      /**
+       * The preflight, for the requests that get one.
+       *
+       * A plain segment GET is a simple request and is never preflighted, so this is not on
+       * the hot path -- but hls.js issues a ranged request for some playlist shapes, and a
+       * `Range` header is exactly what turns a simple request into a preflighted one. A
+       * preflight that 404s fails the whole fetch with no useful error.
+       */
+      OPTIONS: (req: Request) => {
+        const res = withCors(new Response(null, { status: 204 }), req);
+        if (res.headers.has("access-control-allow-origin")) {
+          res.headers.set("access-control-allow-methods", "GET, OPTIONS");
+          res.headers.set("access-control-allow-headers", "range");
+          res.headers.set("access-control-max-age", "600");
+        }
+        return res;
       },
     },
 
@@ -426,6 +601,27 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
      * an expensive slot NOW instead of in a minute, and with a budget of two that minute is
      * the difference between the next person playing and being refused.
      */
+    /**
+     * Issue a fresh stream token for a running session.
+     *
+     * > [!IMPORTANT] ADMIN SESSION ONLY -- the token may NOT renew itself
+     * > This is what makes `STREAM_TOKEN_TTL_MS` a real bound rather than a formality. A
+     * > re-mint reachable with the stream token would let a captured one refresh forever, so
+     * > renewal deliberately requires the credential the token cannot carry: the session
+     * > cookie, which the browser only sends to the app's own origin -- HTTPS wherever there
+     * > is a public name.
+     *
+     * POST, because it changes server state: the previous token starts its grace window here.
+     */
+    "/api/play/s/:id/token": {
+      POST: (req: Bun.BunRequest<"/api/play/s/:id/token">) => {
+        const refused = deps.requireAdmin(req);
+        if (refused) return refused;
+        const session = deps.sessions.remintToken(req.params.id);
+        return session === null ? bad("no such session", 404) : json(mintedToken(session, now()));
+      },
+    },
+
     "/api/play/s/:id": {
       DELETE: (req: Bun.BunRequest<"/api/play/s/:id">) => {
         const refused = deps.requireAdmin(req);
