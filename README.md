@@ -903,8 +903,10 @@ bun run search:replay                # where every clicked title ranks NOW, agai
 ```
 
 The report answers the questions the constants were guesses about: how many queries carry
-a year, which tier actually answers them, whether anyone searches in a non-English title,
-which queries found nothing — and it lists the real queries whose reader had to look past
+a year, which tier actually answers them, whether anyone types a character outside ASCII
+(which is a narrower question than "does anyone search in another language" — Swedish
+written without its å/ä/ö is invisible to it, and the log's worst ranking failure is exactly
+that), which queries found nothing — and it lists the real queries whose reader had to look past
 the top row. Those are the cases that have earned a place in the canary. Adding one is a
 person's decision; inventing more cases is the problem this replaces.
 

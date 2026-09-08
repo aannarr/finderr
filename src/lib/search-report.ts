@@ -3,9 +3,10 @@
  *
  * The tuning card asks five things and every one of them was, until this file, a guess:
  * do people type years at all, or is the year branch dead code; how often does the fuzzy
- * tier fire rather than FTS; does anyone search in a non-English release title (that one
- * decides whether the 512 MB `title.akas` dump is worth buying); do people refine by chip
- * or by retyping; and which queries put the thing somebody wanted below the top row.
+ * tier fire rather than FTS; does anyone type a character the ASCII range cannot hold (that
+ * one informs whether the 512 MB `title.akas` dump is worth buying, and it answers LESS than
+ * it looks like it does -- see `nonAscii`); do people refine by chip or by retyping; and
+ * which queries put the thing somebody wanted below the top row.
  *
  * PURE, and every collaborator is injected. Parsing is the real `parseQuery`, but the TIER
  * arrives through a `replay` function rather than by opening an index here -- so the whole
@@ -79,7 +80,24 @@ export interface SearchReport {
   withYear: number;
   /** Queries carrying a movie/series hint. */
   withKind: number;
-  /** Q5: queries containing a character outside ASCII. */
+  /**
+   * Q5: queries containing a character outside ASCII.
+   *
+   * THE NAME IS THE WHOLE CLAIM. This counts CHARACTERS, and every heading over it says so,
+   * because a language whose orthography fits inside ASCII is invisible to it -- Swedish
+   * without its å/ä/ö, Dutch, Malay, Indonesian, unaccented Italian. A zero here is therefore
+   * NOT evidence that nobody searches in another language.
+   *
+   * The worked example, off the live NAS log on 2026-09-07: the worst ranking failure in the
+   * whole log was `Svenska kriminaldrama nya` at rank 20 with 3 clicks -- Swedish, pure ASCII,
+   * uncounted here -- while the same reader's English `Swedish criminal` sat at rank 6. Q5
+   * printed 0 for that log. It was right about characters and the heading over it, which used
+   * to read `non-English queries`, was wrong about languages.
+   *
+   * That gap is expensive because this is the evidence gate for `title.akas`, a 512 MB dump on
+   * the nightly build. It can say somebody types a script the index cannot match; it can never
+   * say the opposite, and nothing should read it as saying so.
+   */
   nonAscii: QueryCount[];
   /** Queries that came back with nothing at all, worst first. The clearest failures. */
   zeroResult: QueryCount[];
@@ -293,7 +311,7 @@ export function formatSearchReport(r: SearchReport, replayed: boolean): string {
     `    searches with chips: ${r.chips.searches} (${pct(r.chips.searches, r.searches)}), by chip: ${FILTER_KEYS.map(
       (k) => `${k} ${r.chips.byKey[k]}`,
     ).join("  ")}`,
-    `Q5  non-English queries: ${r.nonAscii.reduce((n, q) => n + q.n, 0)} (${r.nonAscii.length} distinct)`,
+    `Q5  non-ASCII queries:   ${r.nonAscii.reduce((n, q) => n + q.n, 0)} (${r.nonAscii.length} distinct)`,
     "",
     `clicks: ${r.clicks.total}, of which ${r.clicks.belowTop} below the top row (${pct(
       r.clicks.belowTop,
@@ -305,7 +323,13 @@ export function formatSearchReport(r: SearchReport, replayed: boolean): string {
     "",
     list("Found NOTHING", r.zeroResult),
     "",
-    list("Searched in a non-English title", r.nonAscii),
+    // The limitation is printed beside the number, not only in the source, because the empty
+    // case is exactly the one that misleads: a reader who sees `none` here concludes nobody
+    // searches in another language, and `Svenska kriminaldrama nya` is the log's proof otherwise.
+    list(
+      "Typed a non-ASCII character (a language that fits in ASCII, like Swedish, is invisible here)",
+      r.nonAscii,
+    ),
     "",
     r.rankFailures.length === 0
       ? "Ranking failures: none -- every click was on the top row"
