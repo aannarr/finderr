@@ -76,6 +76,7 @@ function fakeSessions(dir: string) {
       stopped.push(id);
     },
     list: () => [session],
+    budgets: () => ({ sessions: { used: 1, max: 8 }, expensive: { used: 0, max: 3 } }),
   };
   return {
     api: api as unknown as TranscodeSessions,
@@ -369,5 +370,19 @@ describe("stopping and listing", () => {
     const body = (await res.json()) as { sessions: { id: string; expensive: boolean }[] };
     expect(body.sessions).toHaveLength(1);
     expect(body.sessions[0]).toMatchObject({ id: "sess-1", expensive: false });
+  });
+
+  /**
+   * The budgets ride along because "two of three expensive slots are spent" is the answer to
+   * "why was I refused", and the browser has no honest way to know the limits otherwise.
+   */
+  test("the session list states both limits and what is spent against them", async () => {
+    const { routes } = build({});
+    const res = (await routes["/api/play/sessions"]?.GET?.({ url: "http://x" } as never)) as Response;
+    const body = (await res.json()) as { budgets: unknown };
+    expect(body.budgets).toEqual({
+      sessions: { used: 1, max: 8 },
+      expensive: { used: 0, max: 3 },
+    });
   });
 });

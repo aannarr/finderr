@@ -487,6 +487,27 @@ describe("the two budgets", () => {
     }
   });
 
+  /**
+   * The manager reports both limits itself so nothing else has to count them. A surface that
+   * derived "2 of 3 expensive" from a session list plus its own copy of the constants would be
+   * a second reading of the rule that decides whether a viewer is refused.
+   */
+  test("it reports what is spent against each limit", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    expect(m.budgets()).toEqual({
+      sessions: { used: 0, max: MAX_SESSIONS },
+      expensive: { used: 0, max: EXPENSIVE_SESSIONS },
+    });
+
+    m.start(opts({ input: "/plex/cheap.mkv" }));
+    m.start(opts({ input: "/plex/hot.mkv", plan: EXPENSIVE }));
+
+    expect(m.budgets()).toEqual({
+      sessions: { used: 2, max: MAX_SESSIONS },
+      expensive: { used: 1, max: EXPENSIVE_SESSIONS },
+    });
+  });
+
   /** An abandoned session must never keep a live viewer out. */
   test("start reaps before it refuses", () => {
     const m = mgr(fakeFfmpeg().spawn);

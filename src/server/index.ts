@@ -26,7 +26,7 @@ import { personAwards, titleAwards } from "../lib/awards";
 import { collectionPage, collectionsMatchingName } from "../lib/collections";
 import { loadConfig, paths } from "../lib/config";
 import { CostMeter } from "../lib/cost-meter";
-import { probeEncoder, SOFTWARE } from "../lib/encoder";
+import { encoderFacts, probeEncoder, SOFTWARE } from "../lib/encoder";
 import {
   type EpisodeState,
   episodeStateOf,
@@ -1781,11 +1781,7 @@ const appRoutes = {
           // neither can change while this process runs. The session counts ARE live.
           playback: {
             volumes: mediaVolumes.length,
-            encoder: {
-              name: videoEncoder.encoder,
-              hardware: videoEncoder.hardware,
-              reason: videoEncoder.reason,
-            },
+            encoder: encoderFacts(videoEncoder),
             sessions: {
               total: transcodeSessions.list().length,
               expensive: transcodeSessions.expensiveCount(),

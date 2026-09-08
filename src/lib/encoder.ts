@@ -152,6 +152,24 @@ export function chooseEncoder(env: EncoderEnvironment): EncoderChoice {
   return SOFTWARE;
 }
 
+/**
+ * What a choice looks like when it is REPORTED rather than acted on.
+ *
+ * The three fields a reader wants and none of the argv plumbing: `hwaccel` and `vaapiDevice`
+ * are instructions to ffmpeg, and printing a render node path in a UI says nothing to
+ * anybody. `/api/health` and the player's stats panel both answer the same question with it,
+ * so they answer it through one function rather than each picking their own three fields.
+ */
+export interface EncoderFacts {
+  name: string;
+  hardware: boolean;
+  reason: string;
+}
+
+export function encoderFacts(choice: EncoderChoice): EncoderFacts {
+  return { name: choice.encoder, hardware: choice.hardware, reason: choice.reason };
+}
+
 /** How a probe reaches ffmpeg. Injected so tests need no binary. */
 export type FfmpegRunner = (argv: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 

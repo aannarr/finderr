@@ -46,6 +46,7 @@ import { type CutSource, cutTimeline } from "../lib/keyframes";
 import { NOT_AN_EPISODE } from "../lib/media-file";
 import { type MediaVolume, resolveMediaFile } from "../lib/media-path";
 import { probeMedia } from "../lib/media-probe";
+import { playbackDiagnostics } from "../lib/playback-diagnostics";
 import {
   type ClientCapabilities,
   CONSERVATIVE_CLIENT,
@@ -337,6 +338,15 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             durationSec: probe.durationSec,
             segments,
             plan,
+            // Everything already measured on the way here, kept rather than dropped, for the
+            // stats panel. Nothing below is a fresh read -- see `playback-diagnostics.ts`.
+            diagnostics: playbackDiagnostics({
+              row,
+              probe,
+              plan,
+              segmenting: { source: videoSource, targetSec: SEGMENT_TARGET_SEC, count: segments },
+              encoder: deps.encoder,
+            }),
           });
         } catch (err) {
           if (err instanceof SessionRefused) {
@@ -373,12 +383,19 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
       },
     },
 
-    /** What is running, for the admin UI and for `/api/health`. */
+    /**
+     * What is running, for the admin UI and for `/api/health`.
+     *
+     * The one thing the stats panel polls, and the reason it carries the BUDGETS as well as
+     * the sessions: "two of three expensive slots are spent" is the answer to "why was I
+     * refused", and deriving it in the browser would need the two limits copied there.
+     */
     "/api/play/sessions": {
       GET: (req: Request) => {
         const refused = deps.requireAdmin(req);
         if (refused) return refused;
         return json({
+          budgets: deps.sessions.budgets(),
           sessions: deps.sessions.list().map((s) => ({
             id: s.id,
             expensive: s.expensive,

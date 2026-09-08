@@ -152,6 +152,24 @@ export class SessionRefused extends Error {
   }
 }
 
+/** How much of one limit is spent. */
+export interface Budget {
+  used: number;
+  max: number;
+}
+
+/**
+ * What is running against each of the two limits.
+ *
+ * Reported rather than re-derived by a caller: the numerators live in this class and the
+ * denominators are the constants above it, so anything that counted them itself would be a
+ * second reading of the rule that decides whether a viewer is refused.
+ */
+export interface SessionBudgets {
+  sessions: Budget;
+  expensive: Budget;
+}
+
 export interface StartOpts {
   /** ALREADY resolved through `media-path.ts`. This module never validates a path. */
   input: string;
@@ -298,6 +316,14 @@ export class TranscodeSessions {
 
   expensiveCount(): number {
     return this.list().filter((s) => s.expensive).length;
+  }
+
+  /** Both limits and what is spent against them, for the admin surfaces that report them. */
+  budgets(): SessionBudgets {
+    return {
+      sessions: { used: this.states.size, max: MAX_SESSIONS },
+      expensive: { used: this.expensiveCount(), max: EXPENSIVE_SESSIONS },
+    };
   }
 
   /**
