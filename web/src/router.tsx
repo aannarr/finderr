@@ -27,6 +27,7 @@ import { AdminAddonsRoute } from "./routes/AdminAddonsRoute";
 import { AdminInvitesRoute } from "./routes/AdminInvitesRoute";
 import { AdminLayout } from "./routes/AdminLayout";
 import { AdminOverviewRoute } from "./routes/AdminOverviewRoute";
+import { AdminPlaybackRoute } from "./routes/AdminPlaybackRoute";
 import { AdminUserRoute } from "./routes/AdminUserRoute";
 import { AdminUsersRoute } from "./routes/AdminUsersRoute";
 import { AwardPeopleRoute } from "./routes/AwardPeopleRoute";
@@ -285,6 +286,13 @@ const adminAddonsRoute = createRoute({
   component: AdminAddonsRoute,
 });
 
+/** `/admin/playback` -- what streaming and transcoding are costing the box, over time. */
+const adminPlaybackRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "playback",
+  component: AdminPlaybackRoute,
+});
+
 /**
  * `/awards/oscars`, `/awards/palme-dor` -- every edition of one award, newest first.
  *
@@ -366,6 +374,7 @@ const routeTree = rootRoute.addChildren([
     adminUserRoute,
     adminInvitesRoute,
     adminAddonsRoute,
+    adminPlaybackRoute,
   ]),
   sourcesRoute,
 ]);
