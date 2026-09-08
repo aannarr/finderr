@@ -86,18 +86,14 @@ function Chart({ values, max, label }: { values: number[]; max: number; label: s
       aria-label={label}
     >
       <title>{label}</title>
+      {/*
+        THE PLOT AREA IS SHADED, and a hairline floor was not enough -- read off a real page
+        2026-09-08, a 1px rule under two hours of mostly-idle window was invisible and both
+        charts looked like empty boxes with a spike at the right edge. A filled ground says
+        "this is the chart, and it is quiet" where a missing line says nothing at all.
+      */}
+      <rect x={0} y={0} width={CHART.width} height={CHART.height} className="fill-surface-2/60" />
       <path d={barsPath(drawn, CHART.height)} className="fill-accent/70" />
-      {/* The floor, so an empty stretch is visibly the bottom of a chart rather than blank card.
-          `non-scaling-stroke` keeps it a hairline however far the viewBox is stretched. */}
-      <line
-        x1={0}
-        x2={CHART.width}
-        y1={CHART.height}
-        y2={CHART.height}
-        className="stroke-line"
-        strokeWidth={1}
-        vectorEffect="non-scaling-stroke"
-      />
     </svg>
   );
 }
