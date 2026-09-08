@@ -44,8 +44,9 @@ export interface SourceFacts {
 /** How the film was cut up, which is the difference between a stutter and a bad guess. */
 export interface SegmentingFacts {
   /**
-   * `keyframes` when the boundaries follow the source's own keyframes, `uniform` when the
-   * probe found none usable and the timeline fell back to a plain grid.
+   * `container` when the boundaries came from the file's own index, `probe` when an ffprobe
+   * keyframe probe found them, `uniform` when neither did and the timeline fell back to a
+   * plain grid.
    *
    * The distinction is the whole reason this field exists: a title on the fallback grid
    * decodes badly at every boundary, and until now the only way to know which one you had was

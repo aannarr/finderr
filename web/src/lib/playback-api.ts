@@ -117,8 +117,11 @@ export interface PlaybackDiagnostics {
     sizeBytes: number | null;
   };
   segmenting: {
-    /** `uniform` means the keyframe probe found nothing usable and the cut is a plain grid. */
-    source: "keyframes" | "uniform" | null;
+    /**
+     * Where the cut points came from: the file's own index, an ffprobe keyframe probe, or
+     * neither -- `uniform` means nothing usable was found and the cut is a plain grid.
+     */
+    source: "container" | "probe" | "uniform" | null;
     targetSec: number;
     count: number;
   };

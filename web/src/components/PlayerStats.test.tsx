@@ -9,12 +9,31 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { PlaybackSession, SessionsReport } from "../lib/playback-api";
+import type { PlaybackDiagnostics, PlaybackSession, SessionsReport } from "../lib/playback-api";
 import type { BrowserStats } from "../lib/playback-telemetry";
 import { render, waitFor } from "../test/interact";
 import { PlayerStats } from "./PlayerStats";
 
 const realFetch = globalThis.fetch;
+
+// Named apart from SESSION because `diagnostics` is OPTIONAL on a session -- a server too old
+// to send it is a case this panel handles -- so spreading `SESSION.diagnostics` widens every
+// member to `| undefined` and a test that varies one field stops typechecking.
+const DIAGNOSTICS: PlaybackDiagnostics = {
+  source: {
+    container: "matroska,webm",
+    resolution: "3840x2160",
+    videoCodec: "hevc",
+    audioCodec: "dts",
+    audioChannels: 6,
+    bitDepth: 10,
+    dynamicRange: "HDR",
+    durationSec: 8880,
+    sizeBytes: 3_400_000_000,
+  },
+  segmenting: { source: "container", targetSec: 6, count: 1480 },
+  encoder: { name: "h264_vaapi", hardware: true, reason: "hardware (VAAPI)" },
+};
 
 const SESSION: PlaybackSession = {
   sessionId: "sess-1",
@@ -27,21 +46,7 @@ const SESSION: PlaybackSession = {
     subtitles: { action: "none", sourceIndex: null },
     reasons: ["video is hevc and this browser plays it, copied"],
   },
-  diagnostics: {
-    source: {
-      container: "matroska,webm",
-      resolution: "3840x2160",
-      videoCodec: "hevc",
-      audioCodec: "dts",
-      audioChannels: 6,
-      bitDepth: 10,
-      dynamicRange: "HDR",
-      durationSec: 8880,
-      sizeBytes: 3_400_000_000,
-    },
-    segmenting: { source: "keyframes", targetSec: 6, count: 1480 },
-    encoder: { name: "h264_vaapi", hardware: true, reason: "hardware (VAAPI)" },
-  },
+  diagnostics: DIAGNOSTICS,
 };
 
 const REPORT: SessionsReport = {
@@ -129,10 +134,28 @@ describe("what a playing title reports", () => {
     expect(text).toContain("dts");
     expect(text).toContain("3.4 GB");
     // The cut source is the difference between "this stutters" and "this fell back to a grid".
-    expect(text).toContain("on source keyframes");
+    expect(text).toContain("on the container's own index");
     expect(text).toContain("1480 segments");
     // The plan's own sentences, which the server writes in plain English for exactly this.
     expect(text).toContain("video is hevc and this browser plays it, copied");
+  });
+
+  // All three cut sources are named apart on screen. The container index and the ffprobe probe
+  // both produce a correct timeline, so a panel that called them one thing could not tell a
+  // working container reader from an expensive fallback to the probe -- and `uniform` is the
+  // one that actually stutters. Pinned per source because the branch is where they diverge.
+  test.each([
+    ["container", "on the container's own index"],
+    ["probe", "on probed keyframes"],
+    ["uniform", "on a uniform grid"],
+  ] as const)("a %s timeline says so in its own words", (source, said) => {
+    const session: PlaybackSession = {
+      ...SESSION,
+      diagnostics: { ...DIAGNOSTICS, segmenting: { source, targetSec: 6, count: 1480 } },
+    };
+    const { container } = show({ session });
+
+    expect(container.textContent ?? "").toContain(said);
   });
 
   test("the browser half is drawn from what the player measured", () => {

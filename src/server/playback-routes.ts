@@ -373,7 +373,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
               row,
               probe,
               plan,
-              segmenting: { source: videoSource, targetSec: SEGMENT_TARGET_SEC, count: segments },
+              segmenting: { source: video?.source ?? null, targetSec: SEGMENT_TARGET_SEC, count: segments },
               encoder: deps.encoder,
             }),
           });

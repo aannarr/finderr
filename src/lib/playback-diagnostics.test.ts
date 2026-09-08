@@ -49,7 +49,7 @@ const PLAN: PlaybackPlan = {
   reasons: [],
 };
 
-const SEGMENTING: SegmentingFacts = { source: "keyframes", targetSec: 6, count: 1480 };
+const SEGMENTING: SegmentingFacts = { source: "probe", targetSec: 6, count: 1480 };
 
 const HARDWARE: EncoderChoice = {
   encoder: "h264_vaapi",

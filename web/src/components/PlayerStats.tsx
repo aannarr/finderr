@@ -92,17 +92,22 @@ const audioLine = (source: PlaybackDiagnostics["source"]): string =>
 /**
  * How the film was cut up, with the fallback said out loud.
  *
- * `uniform` means the keyframe probe found nothing usable, so every boundary is a guess. That
- * is the difference between "this title stutters" and "this title fell back to a grid", and
- * until this line existed it was only answerable by reading a log on the box.
+ * `uniform` means neither the container's own index nor the keyframe probe found anything
+ * usable, so every boundary is a guess. That is the difference between "this title stutters"
+ * and "this title fell back to a grid", and until this line existed it was only answerable by
+ * reading a log on the box. The two real sources are named apart for the same reason the
+ * server's own `videoGridNote` names them apart: a container index that works and a probe that
+ * works are indistinguishable on screen otherwise, and only one of them is cheap.
  */
 function segmentLine(segmenting: PlaybackDiagnostics["segmenting"]): string {
   const cut =
-    segmenting.source === "keyframes"
-      ? "on source keyframes"
-      : segmenting.source === "uniform"
-        ? "on a uniform grid"
-        : "no video timeline";
+    segmenting.source === "container"
+      ? "on the container's own index"
+      : segmenting.source === "probe"
+        ? "on probed keyframes"
+        : segmenting.source === "uniform"
+          ? "on a uniform grid"
+          : "no video timeline";
   return `${count(segmenting.count, "segment")}, ~${segmenting.targetSec}s, ${cut}`;
 }
 
