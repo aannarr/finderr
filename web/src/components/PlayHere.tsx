@@ -6,10 +6,12 @@
  * could use. A component that hid itself and no more would be a rule with two owners and
  * only one of them enforced.
  *
- * It sits beside `PlayOnPlex` rather than replacing it, and the two answer different
+ * It sits ABOVE `PlayOnPlex` rather than replacing it, and the two answer different
  * questions: Plex plays on the reader's TV with their history and their subtitles; this
  * plays here, now, in the tab that is already open, on a machine that may have no Plex
- * client at all.
+ * client at all. Whoever is reading a title page in a browser is, by construction, at a
+ * machine that can play it -- so this is the offer that goes first, wearing the accent, and
+ * Plex is the one underneath.
  *
  * > [!IMPORTANT] hls.js is loaded with a DYNAMIC import, and that is a performance decision
  * > It is ~200 KB and it is needed by one control on one page for one role. A static import
@@ -34,7 +36,21 @@ import {
 } from "../lib/playback-api";
 import { type BrowserStats, PlaybackTelemetry } from "../lib/playback-telemetry";
 import { isExpensivePlan, planSummary } from "../lib/playback-types";
+import { PRIMARY_BUTTON } from "../lib/ui";
 import { PlayerStats } from "./PlayerStats";
+
+/**
+ * Whether this reader can play this title in this tab -- the two facts, in one place.
+ *
+ * A PLACEMENT question rather than a second gate. The component below already refuses to
+ * draw for a non-admin, but a page that wants to put this control in its primary slot has to
+ * know the answer BEFORE it renders anything, or the slot silently collapses to nothing for
+ * everybody who is not an admin. Exported so `TitleRoute` asks rather than re-derives: the
+ * admin half of the rule then has one owner, in the file that enforces it.
+ */
+export function canPlayHere(title: { hasFile: boolean }, isAdmin: boolean): boolean {
+  return title.hasFile && isAdmin;
+}
 
 type State =
   | { kind: "idle" }
@@ -259,7 +275,7 @@ export function PlayHere({
     The PLAYER IS AN OVERLAY and the BUTTON stays in the header, which is a layout decision
     rather than a stylistic one.
 
-    This control sits in the poster rail, beside "Play on Plex" -- a column about 200px
+    This control sits in the header's action column, above "Play on Plex" -- about 200px
     wide. Expanding a 16:9 video into it would be unwatchable, and expanding it anywhere
     else in the header would push the header around, which is the one thing that region's
     rule forbids. An overlay leaves the page underneath exactly as it was, which is also
@@ -330,8 +346,10 @@ export function PlayHere({
         type="button"
         onClick={play}
         disabled={state.kind === "starting"}
-        className={`block w-full rounded-lg border border-line px-3 py-2 text-center text-sm font-medium
-                    transition-opacity hover:opacity-90 active:opacity-75 disabled:opacity-60`}
+        // The accent, because this is the one thing a title we already hold is FOR. Only
+        // `disabled` is local: the rest is the shared primary look, so this button and the
+        // Request button it replaces cannot drift into two different-looking answers.
+        className={`${PRIMARY_BUTTON} disabled:opacity-60`}
       >
         {state.kind === "starting" ? "Starting…" : "Play here"}
       </button>

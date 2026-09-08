@@ -15,37 +15,11 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Title } from "../lib/api";
+import { makeTitle } from "../test/title-fixture";
 import { Poster } from "./Poster";
 
-const TITLE: Title = {
-  tconst: "tt1375666",
-  title: "The Inception",
-  orig: null,
-  year: 2010,
-  kind: "movie",
-  votes: 2_400_000,
-  rating: 8.4,
-  genres: "Action,Sci-Fi",
-  runtime: 148,
-  lang: null,
-  inLibrary: false,
-  hasFile: false,
-  progress: null,
-  requestStatus: null,
-  requestError: null,
-  requestVerdict: null,
-  requestProgress: null,
-  requestEtaAt: null,
-  requestEvidence: null,
-  service: "radarr",
-  // `null` means we hold no artwork for this title -- `posterUrl` returns null for it, which
-  // is the "no image" branch every fallback below is about.
-  posterUrl: null,
-  studio: null,
-  studioLogo: null,
-  plex: null,
-  award: null,
-};
+/** `posterUrl` is null in the fixture, which is the "no image" branch every fallback below is about. */
+const TITLE = makeTitle();
 
 /** The same title, with artwork. The server hands the client a same-origin path, never an upstream URL. */
 const WITH_ART: Title = { ...TITLE, posterUrl: "/img/t/tt1375666" };

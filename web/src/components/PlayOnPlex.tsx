@@ -11,27 +11,40 @@
  * stronger statement -- the arr's `hasFile` can be true for a file Plex has not seen yet, and
  * it can be false for something imported outside the arr entirely.
  *
- * SHARED because two screens answer "is it ready yet": the title page, where this takes the
- * primary slot the Request button occupies for everything else, and a `/requests` row, where
- * it is one line of an entry in a list. They disagree about SIZE and about nothing else,
- * which is why that is a prop rather than a second component -- see `VARIANT`.
+ * SHARED because three surfaces answer "is it ready yet": the title page, where this takes
+ * the primary slot when nothing better can -- and sits UNDER "Play here" when the file is
+ * ours to stream -- and a `/requests` row, where it is one line of an entry in a list. They
+ * disagree about SIZE and WEIGHT and about nothing else, which is why that is a prop rather
+ * than a second component -- see `VARIANT`.
  */
 
 import type { PlexLinks } from "../lib/api";
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "../lib/ui";
 
 /**
- * How big, and nothing else.
+ * How big and how loud, and nothing else.
  *
- * A table rather than a ternary in the markup, so adding a third surface is a row here and
- * no edit to the component. Both entries render the SAME two links in the same order with
+ * A table rather than a ternary in the markup, so adding a fourth surface is a row here and
+ * no edit to the component. Every entry renders the SAME two links in the same order with
  * the same labels: a variant may change the weight of the offer, never what it says.
  */
 const VARIANT = {
   /** The title page's primary action: full width, and the app link beneath it. */
   block: {
     wrapper: "space-y-1.5",
-    web: `block w-full rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium text-black
-          transition-opacity hover:opacity-90 active:opacity-75`,
+    web: PRIMARY_BUTTON,
+    app: "block text-center text-xs text-muted hover:text-ink",
+  },
+  /**
+   * The same offer, demoted: `block`'s size with no fill.
+   *
+   * For the title page once "Play here" owns the primary slot -- both are true at that
+   * point (Plex plays on the reader's TV, we play in this tab) and two accent buttons in a
+   * column would leave neither of them looking like the answer.
+   */
+  quiet: {
+    wrapper: "mt-2 space-y-1.5",
+    web: SECONDARY_BUTTON,
     app: "block text-center text-xs text-muted hover:text-ink",
   },
   /** A row in a list: both links on one baseline, at the size of the controls beside them. */

@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PersonLinks, Title } from "../lib/api";
 import type { FacetName, ResolvedFacets } from "../lib/facets";
+import { makeTitle } from "../test/title-fixture";
 import {
   PERSON_LINK_CLASS,
   RATING_CAPTION_SLOT,
@@ -19,33 +20,7 @@ import {
   TitleMainPanes,
 } from "./TitlePanes";
 
-const TITLE: Title = {
-  tconst: "tt1375666",
-  title: "Inception",
-  orig: null,
-  year: 2010,
-  kind: "movie",
-  votes: 2_400_000,
-  rating: 8.4,
-  genres: "Action,Sci-Fi",
-  runtime: 148,
-  lang: null,
-  inLibrary: false,
-  hasFile: false,
-  progress: null,
-  requestStatus: null,
-  requestError: null,
-  requestVerdict: null,
-  requestProgress: null,
-  requestEtaAt: null,
-  requestEvidence: null,
-  service: "radarr",
-  posterUrl: null,
-  studio: null,
-  studioLogo: null,
-  plex: null,
-  award: null,
-};
+const TITLE = makeTitle();
 
 /**
  * The three regions the route mounts, in the route's order: the facts card (the desktop

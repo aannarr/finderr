@@ -17,8 +17,8 @@ import { useState } from "react";
 import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
-import { useKeyAction } from "../components/Kbd";
-import { PlayHere } from "../components/PlayHere";
+import { type KeyAction, useKeyAction } from "../components/Kbd";
+import { canPlayHere, PlayHere } from "../components/PlayHere";
 import { PlayOnPlex } from "../components/PlayOnPlex";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
@@ -40,6 +40,7 @@ import { decadeOf } from "../lib/search-params";
 import { seriesGap } from "../lib/season-gap";
 import { seasonsFromNumbers, summariseSeasons } from "../lib/season-select";
 import { useToasts } from "../lib/toasts";
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "../lib/ui";
 import { useTermLinks } from "../lib/use-term-links";
 import { type TitleDetailView, useTitleDetail } from "../lib/use-title-detail";
 
@@ -356,88 +357,25 @@ export function TitleRoute() {
           )}
 
           <div className="mt-6 max-w-xs">
-            {title.plex ? (
-              /*
-                Play OUTRANKS "Available in your library" -- that span was the end of the road
-                for an owned title, telling the reader they had it and then leaving them to go
-                and find it themselves. This is the whole reason the Plex mirror exists.
-
-                Legitimately in the header, and it is worth saying why, because the route's
-                own rule is that a facet-driven element may never go here: this is not
-                facet-driven. `title.plex` is built from the local Plex mirror and arrives
-                with the row at t=0, exactly like `inLibrary`, so it cannot pop in late and
-                push the header around.
-              */
-              <PlayOnPlex plex={title.plex} />
-            ) : title.hasFile ? (
-              <span className="block rounded-lg border border-line px-3 py-2 text-center text-sm text-muted">
-                Available in your library
-              </span>
-            ) : title.requestVerdict ? (
-              /*
-                The one screen with room for the whole answer: what state the request is in,
-                how far along the download is, and one honest sentence about why it is
-                taking as long as it is. The grid gets the short form of the same fact from
-                `RequestAction`, off the same `VERDICT_COPY` table.
-
-                It sits ABOVE the monitored span rather than below it, and `RequestAction`
-                carries the argument: a bare library row means only that the arr is watching,
-                so it must not shadow a verdict about an ask somebody actually made.
-              */
-              <RequestVerdictPanel state={title} error={title.requestError} />
-            ) : title.inLibrary ? (
-              /*
-                Monitored, nobody asked here. Same amber as a working verdict, same reason as
-                the card's chip -- and the percentage stays, because `progress` is the arr's
-                own download figure off the library mirror rather than anything a request
-                diagnostic supplies, so it is the only thing this branch can report.
-              */
-              <span className="block rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-center text-sm text-ink">
-                Monitored, not downloaded
-                {title.progress !== null && title.progress > 0 && title.progress < 1 && (
-                  <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
-                )}
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={startRequest}
-                {...requestKey.props}
-                className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-black
-                         transition-opacity hover:opacity-90 active:opacity-75"
-              >
-                {/*
-                  The label changes when the chooser becomes available, so the button
-                  never promises to queue and then opens a dialog instead. It is a text
-                  swap inside a fixed-width button: no reflow, which is what the header
-                  rule is protecting.
-                */}
-                {choosable
-                  ? "Choose seasons"
-                  : `Request from ${title.service === "sonarr" ? "Sonarr" : "Radarr"}`}
-                {requestKey.hint}
-              </button>
-            )}
+            <PrimaryAction
+              title={title}
+              isAdmin={isAdmin}
+              choosable={choosable}
+              onRequest={startRequest}
+              requestKey={requestKey}
+            />
 
             {/*
-              Play it HERE, in this tab. Additive to whichever branch above drew: an owned
-              title may have a Plex link, or only the arr's word that the file landed, and
-              this works in both cases because it reads the file the ARR imported rather
-              than anything Plex scanned.
+              Plex, DEMOTED -- and drawn here rather than inside `PrimaryAction` because at
+              this point both offers are true at once: Plex plays it on the reader's TV with
+              their history and their subtitles, "Play here" plays it in the tab that is
+              already open. Only one of them can have the accent, and the reader who is
+              already looking at a browser is the one this control is for.
 
-              `hasFile` is the right signal and it is the opposite of `PlayOnPlex`'s rule,
-              deliberately. That control ignores `hasFile` because Plex holding a scanned
-              item is the stronger statement ABOUT PLEX; this one plays the arr's file, so
-              the arr's own answer is the only one that matters -- and it is true for the
-              window where the file exists and Plex has not scanned it yet.
-
-              Admin-only for now, and the SERVER is what enforces that; `isAdmin` decides
-              only whether to draw a control nobody else could use. Legitimately in the
-              header for the same reason `PlayOnPlex` is: `hasFile` rides the local row at
-              t=0 and cannot pop in late, and the player itself is an overlay, so nothing
-              here reflows.
+              Nothing is lost when `PrimaryAction` took the Plex branch instead: this draws
+              only when Play won the slot.
             */}
-            {title.hasFile && <PlayHere tconst={title.tconst} isAdmin={isAdmin} />}
+            {canPlayHere(title, isAdmin) && title.plex && <PlayOnPlex plex={title.plex} variant="quiet" />}
 
             {/*
               A series we hold with holes in it: the SAME chooser, under whichever control
@@ -449,12 +387,7 @@ export function TitleRoute() {
               in behind a provider; see the note beside `holed` above.
             */}
             {filling && (
-              <button
-                type="button"
-                onClick={startRequest}
-                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm text-muted
-                           transition hover:border-ink hover:text-ink"
-              >
+              <button type="button" onClick={startRequest} className={`mt-2 ${SECONDARY_BUTTON}`}>
                 Request missing seasons
               </button>
             )}
@@ -546,6 +479,110 @@ export function TitleRoute() {
         onRequestSeason={requestSeason}
       />
     </>
+  );
+}
+
+/**
+ * The ONE thing to press for this title, in the header's one primary slot.
+ *
+ * A LADDER, read top to bottom, and the order is the whole of what this component knows.
+ * Written as early returns rather than a chain of ternaries because a reader needs to be
+ * able to answer "what does an owned film show?" by scanning six lines, and because the next
+ * state to appear is a line here rather than another nesting level.
+ *
+ * Every input rides the local `/api/title/:tconst` row or the session, so this block is
+ * settled at t=0 and nothing arriving later can change which branch won -- that is the
+ * header rule this route states about itself, and it is why no facet may be consulted here.
+ *
+ * Exported for its test: it is the only part of this route that renders from props alone.
+ */
+export function PrimaryAction({
+  title,
+  isAdmin,
+  choosable,
+  onRequest,
+  requestKey,
+}: {
+  title: Title;
+  isAdmin: boolean;
+  /** The seasons facet has landed, so Request opens a chooser instead of queueing. */
+  choosable: boolean;
+  onRequest: () => void;
+  requestKey: KeyAction;
+}) {
+  /*
+    PLAY IS THE DEFAULT for a title we hold and this reader may stream.
+
+    A muted "Available in your library" span used to own this slot for an owned title: a
+    fact, with no action, while the control that acted on it sat underneath in a border and
+    grey text. The fact is implied by the button, so the span is gone rather than moved.
+
+    `canPlayHere` rather than `title.hasFile` alone, because `PlayHere` draws nothing for a
+    non-admin -- asking it here is what keeps the slot from silently collapsing to an empty
+    box for everybody else. They fall through to the branches below.
+  */
+  if (canPlayHere(title, isAdmin)) return <PlayHere tconst={title.tconst} isAdmin={isAdmin} />;
+
+  /*
+    Plex, for the reader who cannot play it here: no file the arr will admit to, or no
+    permission to stream one. It is the same offer that sits UNDER Play when both are
+    available -- see the route -- and it is legitimately in the header for the reason the
+    rule cares about: `title.plex` is built from the local Plex mirror and arrives with the
+    row at t=0, exactly like `inLibrary`, so it cannot pop in late and push anything around.
+  */
+  if (title.plex) return <PlayOnPlex plex={title.plex} />;
+
+  /*
+    We hold it, and this reader cannot start it from here -- the honest end of the road. Not
+    reachable for an admin, who got the Play button four lines up.
+  */
+  if (title.hasFile) {
+    return (
+      <span className="block rounded-lg border border-line px-3 py-2 text-center text-sm text-muted">
+        Available in your library
+      </span>
+    );
+  }
+
+  /*
+    The one screen with room for the whole answer: what state the request is in, how far
+    along the download is, and one honest sentence about why it is taking as long as it is.
+    The grid gets the short form of the same fact from `RequestAction`, off the same
+    `VERDICT_COPY` table.
+
+    It sits ABOVE the monitored span rather than below it, and `RequestAction` carries the
+    argument: a bare library row means only that the arr is watching, so it must not shadow
+    a verdict about an ask somebody actually made.
+  */
+  if (title.requestVerdict) return <RequestVerdictPanel state={title} error={title.requestError} />;
+
+  /*
+    Monitored, nobody asked here. Same amber as a working verdict, same reason as the card's
+    chip -- and the percentage stays, because `progress` is the arr's own download figure off
+    the library mirror rather than anything a request diagnostic supplies, so it is the only
+    thing this branch can report.
+  */
+  if (title.inLibrary) {
+    return (
+      <span className="block rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-center text-sm text-ink">
+        Monitored, not downloaded
+        {title.progress !== null && title.progress > 0 && title.progress < 1 && (
+          <span className="ml-1 tabular-nums">({Math.round(title.progress * 100)}%)</span>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <button type="button" onClick={onRequest} {...requestKey.props} className={PRIMARY_BUTTON}>
+      {/*
+        The label changes when the chooser becomes available, so the button never promises to
+        queue and then opens a dialog instead. It is a text swap inside a fixed-width button:
+        no reflow, which is what the header rule is protecting.
+      */}
+      {choosable ? "Choose seasons" : `Request from ${title.service === "sonarr" ? "Sonarr" : "Radarr"}`}
+      {requestKey.hint}
+    </button>
   );
 }
 
