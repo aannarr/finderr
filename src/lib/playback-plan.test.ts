@@ -489,6 +489,34 @@ describe("naming a rendition when the container is unhelpful", () => {
   });
 
   /**
+   * The case that ACTUALLY happens, and the one the positional fallback above cannot cover:
+   * both tracks are tagged `eng` and untitled, so both DERIVE the name "English" and the
+   * ordinal never enters into it. `300 Rise of an Empire` is the specimen -- a dts English
+   * track and an eac3 English track, no titles -- and two menu entries reading "English" is
+   * the exact defect this card exists to remove.
+   */
+  test("two tracks whose names collide are numbered, whatever produced the name", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { language: "eng" } },
+      { index: 1, codec_type: "audio", codec_name: "aac", tags: { language: "eng" } },
+      { index: 2, codec_type: "audio", codec_name: "aac", tags: { language: "eng" } },
+    ]);
+    expect(plan.audio.map((a) => a.label.name)).toEqual(["English", "English (2)", "English (3)"]);
+    expect(plan.audio.map((a) => a.label.language)).toEqual(["eng", "eng", "eng"]);
+  });
+
+  /** A muxer that wrote one title twice is no more choosable than one that wrote none. */
+  test("subtitle tracks sharing a title are numbered too, and each kind counts alone", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { title: "Main" } },
+      { index: 1, codec_type: "subtitle", codec_name: "subrip", tags: { title: "Main" } },
+      { index: 2, codec_type: "subtitle", codec_name: "subrip", tags: { title: "Main" } },
+    ]);
+    expect(plan.audio.map((s) => s.label.name)).toEqual(["Main"]);
+    expect(plan.subtitles.map((s) => s.label.name)).toEqual(["Main", "Main (2)"]);
+  });
+
+  /**
    * `und` is the container saying it does not know, and `Unknown language` is what
    * `Intl.DisplayNames` would render it as -- a menu entry that reads like a claim, and a
    * `LANGUAGE` attribute claiming ignorance. A tag we cannot parse at all lands in the same

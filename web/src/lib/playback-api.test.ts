@@ -35,8 +35,8 @@ const FULL_TTL_SEC = 30 * 60;
 /** Nothing here reads the plan; it is present because a session carries one. */
 const COPY_PLAN: PlaybackPlan = {
   video: { action: "copy", sourceIndex: 0, codec: "h264" },
-  audio: { action: "copy", sourceIndex: 1, codec: "aac" },
-  subtitles: { action: "none", sourceIndex: null },
+  audio: [{ action: "copy", sourceIndex: 1, codec: "aac", label: { name: "English", language: "eng" } }],
+  subtitles: [],
   reasons: [],
 };
 
