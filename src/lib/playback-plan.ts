@@ -240,16 +240,30 @@ function firstOfType(streams: readonly ProbedStream[], type: string): ProbedStre
  */
 function pickSubtitle(streams: readonly ProbedStream[]): SubtitleChoice {
   const subs = streams.filter((s) => s.codec_type === "subtitle");
-  const text = subs.filter((s) => TEXT_SUBTITLES.has((s.codec_name ?? "").toLowerCase()));
-  if (text.length > 0) return { stream: text.find((s) => s.isDefault) ?? (text[0] as ProbedStream) };
-  const bitmap = subs.find((s) => BITMAP_SUBTITLES.has((s.codec_name ?? "").toLowerCase()));
-  return { stream: null, refusedBitmap: bitmap?.codec_name ?? null };
+  const codecOf = (s: ProbedStream) => (s.codec_name ?? "").toLowerCase();
+  const text = subs.filter((s) => TEXT_SUBTITLES.has(codecOf(s)));
+  // The container's own default flag breaks the tie, which is the only preference expressed
+  // anywhere in the file about which of its tracks a viewer wants.
+  const stream = text.find((s) => s.isDefault) ?? text[0] ?? null;
+  if (stream) return { stream, refusedBitmap: null };
+  return {
+    stream: null,
+    refusedBitmap: subs.find((s) => BITMAP_SUBTITLES.has(codecOf(s)))?.codec_name ?? null,
+  };
 }
 
 /** A subtitle track to publish, or nothing -- and, when it is nothing, what was in the way. */
-type SubtitleChoice =
-  | { stream: ProbedStream; refusedBitmap?: undefined }
-  | { stream: null; refusedBitmap: string | null };
+interface SubtitleChoice {
+  /** The text track to publish, or null when there is none this pipeline can show. */
+  stream: ProbedStream | null;
+  /**
+   * The bitmap codec that was in the way, when THAT is why there is no track.
+   *
+   * Null both when a track was found and when the file simply has no subtitles: the plan has
+   * nothing to say about a file that never had any.
+   */
+  refusedBitmap: string | null;
+}
 
 /**
  * Decide the plan.
