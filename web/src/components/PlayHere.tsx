@@ -115,16 +115,34 @@ export function PlayHere({
         // and the default 20 s would abandon it just as it finished.
         fragLoadingTimeOut: 60_000,
         /*
-          NO `maxBufferHole` OVERRIDE, and its absence is deliberate.
+          `maxBufferHole` IS AN ESCAPE HATCH, NOT A SETTING. It is aannarr's, it is TEMPORARY,
+          and the card that removes it is already open.
 
-          There used to be a `maxBufferHole: 0.25` here, widening hls.js's default 0.1 s
-          tolerance so it would JUMP the ~0.16 s hole a muxed segment left at every boundary
-          instead of stalling on it first. The server no longer leaves one: video and audio are
-          separate renditions on separate grids, and an audio segment covers its whole declared
-          range and a little of the one before it, so there is nothing to jump. Leaving the
-          override in would hide a regression in exactly this behaviour -- the default is what
-          makes a returning hole audible as a stall rather than silently papered over.
+          This override was removed when audio got its own rendition, on the reasoning that the
+          server no longer leaves a hole at a boundary -- video and audio are separate renditions
+          on separate grids, and an audio segment covers its whole declared range and a little of
+          the one before it, so there is nothing to jump. **That reasoning is correct about the
+          AUDIO hole and it was not the whole story.** A second, independent defect was hiding
+          underneath it: every COPY-mode video fragment is placed 0.083 s later than the one
+          before it, cumulatively, because each per-segment init carries a `duration=0,
+          media_time=1328` edit-list entry (the two-frame B-frame reorder delay) that accumulates
+          per APPEND. Measured against hls.js's own `frag.startPTS` and ffprobe on the media.
+
+          The intersection gap that leaves is ~0.134 s, over the default 0.1 s tolerance, so
+          Chrome stalls and jumps once per segment -- roughly every six seconds, on copy mode,
+          which is ~97% of this library. Removing the override made that VISIBLE rather than
+          causing it.
+
+          aannarr took the hatch on 2026-09-08, knowing exactly what it covers, because he is
+          using playback day to day and a stutter every six seconds is not liveable while the
+          real fix is built.
+
+          DELETE THIS THE MOMENT THE DRIFT IS FIXED, and prove the fix with it gone. A correct
+          muxing route needs no hole tolerance at all, and leaving this in afterwards puts the
+          cover back over the thing it was bought to survive. Card:
+          `copy-mode-fmp4-segments-drift-83ms-later-per-fragment-in-the`.
         */
+        maxBufferHole: 0.25,
       });
       hlsRef.current = hls;
       hls.loadSource(session.playlist);
