@@ -21,7 +21,7 @@
  * > fetched at all.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   hasNativeHls,
   PlaybackRefused,
@@ -29,7 +29,9 @@ import {
   startPlayback,
   stopPlayback,
 } from "../lib/playback-api";
+import { type BrowserStats, PlaybackTelemetry } from "../lib/playback-telemetry";
 import { isExpensivePlan, planSummary } from "../lib/playback-types";
+import { PlayerStats } from "./PlayerStats";
 
 type State =
   | { kind: "idle" }
@@ -49,13 +51,25 @@ export function PlayHere({
   isAdmin: boolean;
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
+  const [statsOpen, setStatsOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Held in a ref rather than state: tearing hls.js down is a side effect on unmount, and
   // putting it in state would re-render the player every time it changed.
-  const hlsRef = useRef<{ destroy(): void } | null>(null);
+  const hlsRef = useRef<{ destroy(): void; bandwidthEstimate?: number } | null>(null);
+  // Also a ref, and for a stronger reason: fragment events fire several times a second per
+  // rendition, so routing them through state would re-render the video element itself. The
+  // stats panel samples this on its own timer, and only while it is open.
+  const telemetryRef = useRef(new PlaybackTelemetry());
 
   const session = state.kind === "playing" ? state.session : null;
   const sessionId = session?.sessionId ?? null;
+
+  /** What the browser knows right now, or null before there is an element to ask. */
+  const readBrowserStats = useCallback((): BrowserStats | null => {
+    const video = videoRef.current;
+    if (!video) return null;
+    return telemetryRef.current.read(video, hlsRef.current?.bandwidthEstimate ?? null);
+  }, []);
 
   /*
     Attach the playlist once BOTH the session and the <video> element exist.
@@ -122,6 +136,30 @@ export function PlayHere({
         // no hole left to tolerate. Re-adding a tolerance here would put the cover back.
       });
       hlsRef.current = hls;
+      /*
+        Feed the stats panel, in the ONE place that holds an hls.js instance.
+
+        The four numbers are extracted here rather than handing the instance to the telemetry
+        module, which is what keeps that module free of hls.js entirely -- pure, testable with
+        an object literal, and unaffected the day this library renames a field.
+      */
+      hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
+        telemetryRef.current.fragmentLoaded({
+          // `sn` is `"initSegment"` for the initialisation segment, which has no place on the
+          // timeline; everything else is the segment index the playlist named.
+          index: typeof data.frag.sn === "number" ? data.frag.sn : null,
+          track: data.frag.type ?? null,
+          // The timings hang off the FRAGMENT rather than off the event -- `FragLoadedData`
+          // itself carries only the payload.
+          loadMs: Math.round(data.frag.stats.loading.end - data.frag.stats.loading.start),
+          // `loaded` rather than `total`: bytes that actually arrived, rather than what the
+          // response declared it would send.
+          bytes: data.frag.stats.loaded,
+        });
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        telemetryRef.current.failed(`${data.details}${data.fatal ? " (fatal)" : ""}`);
+      });
       hls.loadSource(session.playlist);
       hls.attachMedia(video);
       void video.play().catch(() => {});
@@ -211,19 +249,36 @@ export function PlayHere({
           if (e.key === "Escape") close();
         }}
       >
-        <div className="w-full max-w-5xl space-y-2">
+        {/* `max-h-full overflow-y-auto` is what makes the stats panel safe to open on a short
+            window: the column grows past the viewport, and a centred flex child that overflows
+            has its TOP cut off with no way to reach it. One scroller here rather than a second
+            one inside the panel. */}
+        <div className="max-h-full w-full max-w-5xl space-y-2 overflow-y-auto">
           {/* biome-ignore lint/a11y/useMediaCaption: subtitles are a server-side plan
               decision and arrive burned in or not at all; there is no track to declare. */}
           <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
-          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs text-muted">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
             <span>
               {planSummary(plan)}
               {isExpensivePlan(plan) ? " · re-encoding video" : ""}
             </span>
-            <button type="button" onClick={close} className="text-muted hover:text-ink">
-              Stop
-            </button>
+            <span className="flex items-baseline gap-4">
+              {/* The panel is MOUNTED only while it is open, which is what stops its two
+                  timers rather than a flag inside it -- see `PlayerStats`. */}
+              <button
+                type="button"
+                onClick={() => setStatsOpen((was) => !was)}
+                aria-expanded={statsOpen}
+                className="text-muted hover:text-ink"
+              >
+                {statsOpen ? "Hide stats" : "Stats for nerds"}
+              </button>
+              <button type="button" onClick={close} className="text-muted hover:text-ink">
+                Stop
+              </button>
+            </span>
           </div>
+          {statsOpen ? <PlayerStats session={state.session} readBrowserStats={readBrowserStats} /> : null}
         </div>
       </div>
     );

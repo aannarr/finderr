@@ -96,6 +96,35 @@ export function hasNativeHls(): boolean {
   }
 }
 
+/**
+ * What the server knows about this playback that will not change while it runs.
+ *
+ * A structural copy of `src/lib/playback-diagnostics.ts`, for the same reason
+ * `playback-types.ts` copies the plan: importing the real one would pull a server module into
+ * this bundle. Nothing here is computed on this side -- it is displayed -- so a field this
+ * copy has not heard of is simply not drawn.
+ */
+export interface PlaybackDiagnostics {
+  source: {
+    container: string | null;
+    resolution: string | null;
+    videoCodec: string | null;
+    audioCodec: string | null;
+    audioChannels: number | null;
+    bitDepth: number | null;
+    dynamicRange: string | null;
+    durationSec: number | null;
+    sizeBytes: number | null;
+  };
+  segmenting: {
+    /** `uniform` means the keyframe probe found nothing usable and the cut is a plain grid. */
+    source: "keyframes" | "uniform" | null;
+    targetSec: number;
+    count: number;
+  };
+  encoder: { name: string; hardware: boolean; reason: string } | null;
+}
+
 export interface PlaybackSession {
   sessionId: string;
   playlist: string;
@@ -103,6 +132,34 @@ export interface PlaybackSession {
   /** How many segments the playlist names. The whole film, not what has been produced. */
   segments: number;
   plan: PlaybackPlan;
+  /**
+   * Absent from a server older than this field, which is why every reader treats it as
+   * optional rather than asserting it: a stats panel that crashed the player on a version
+   * skew would be a diagnostic that caused an outage.
+   */
+  diagnostics?: PlaybackDiagnostics;
+}
+
+/** How much of one session limit is spent. */
+export interface Budget {
+  used: number;
+  max: number;
+}
+
+/** One session as the server lists it. */
+export interface RunningSession {
+  id: string;
+  expensive: boolean;
+  segments: number;
+  startedAt: string;
+  lastAccessAt: string;
+  owner: string | null;
+  plan: PlaybackPlan;
+}
+
+export interface SessionsReport {
+  sessions: RunningSession[];
+  budgets: { sessions: Budget; expensive: Budget };
 }
 
 export class PlaybackRefused extends Error {
@@ -145,6 +202,48 @@ export async function startPlayback(
  * fetch is cancelled when the page goes -- which would leave an expensive slot held until
  * the idle reaper notices, and with a budget of two that minute is somebody else's playback.
  */
+/**
+ * Whether a parsed body really is a session report.
+ *
+ * > [!CAUTION] A CAST IS NOT A CHECK, and here that difference crashed the player
+ * > This used to be `as SessionsReport` on whatever came back with a 200. A body of some other
+ * > shape -- a proxy's courtesy page, a rolled-back server, a redirect that landed on JSON --
+ * > then reached the panel as a report with no `sessions` array, and the first `.find` on it
+ * > threw INSIDE the player's tree, taking the video down with the diagnostic. A panel that can
+ * > break playback is worse than no panel.
+ *
+ * Structural and shallow on purpose: it asks only what the panel will actually dereference.
+ */
+function isSessionsReport(body: unknown): body is SessionsReport {
+  const report = body as SessionsReport | null;
+  const budget = (b: Budget | undefined) => typeof b?.used === "number" && typeof b?.max === "number";
+  return (
+    !!report &&
+    Array.isArray(report.sessions) &&
+    budget(report.budgets?.sessions) &&
+    budget(report.budgets?.expensive)
+  );
+}
+
+/**
+ * What is running on the server, and how much of each limit that spends.
+ *
+ * **The ONLY thing the stats panel polls**, which is the budget the card set: everything else
+ * it draws is either fixed for the session or already in the browser. Null on any failure --
+ * a refusal, an unreachable server, a body that is not a report -- and the panel draws the
+ * server half as unknown rather than disappearing or throwing.
+ */
+export async function fetchSessions(): Promise<SessionsReport | null> {
+  try {
+    const res = await fetch("/api/play/sessions");
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return isSessionsReport(body) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
 export function stopPlayback(sessionId: string): void {
   void fetch(`/api/play/s/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",

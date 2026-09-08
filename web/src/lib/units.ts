@@ -33,3 +33,27 @@ export function formatBytes(bytes: number): string {
 export function count(n: number, singular: string, plural = `${singular}s`): string {
   return `${n} ${n === 1 ? singular : plural}`;
 }
+
+/**
+ * How long something has been running, to ONE unit -- "2 hours", "41 seconds".
+ *
+ * Its own function rather than `formatAge` on a derived instant: that reads "Up 2 hours ago",
+ * which is a different and slightly wrong sentence. One unit because the question is "has it
+ * restarted recently", and "2 days, 4 hours and 11 minutes" answers it no better.
+ *
+ * Two callers with the same question about different lifetimes: the server process on
+ * `/admin`, and one playback session in the player's stats panel.
+ */
+export function uptime(seconds: number): string {
+  const units: [number, string][] = [
+    [86_400, "day"],
+    [3_600, "hour"],
+    [60, "minute"],
+  ];
+  for (const [size, name] of units) {
+    if (seconds >= size) return count(Math.floor(seconds / size), name);
+  }
+  // Floored at zero: the session caller subtracts a SERVER stamp from the BROWSER's clock, so
+  // a few seconds of skew would otherwise print "-3 seconds" on a session that just started.
+  return count(Math.max(0, Math.round(seconds)), "second");
+}

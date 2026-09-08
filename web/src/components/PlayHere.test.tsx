@@ -115,6 +115,25 @@ describe("starting a session", () => {
     expect(screen.getByRole("button", { name: /play here/i })).toBeTruthy();
   });
 
+  /**
+   * The stats panel is MOUNTED by this toggle rather than hidden by it, which is what stops
+   * its two timers -- so what this pins is that the toggle really adds and removes it.
+   */
+  test("the stats panel is only in the tree while its toggle says so", async () => {
+    servingSession();
+    render(<PlayHere tconst="tt1" isAdmin={true} />);
+    fireEvent.click(screen.getByRole("button", { name: /play here/i }));
+
+    const toggle = await screen.findByRole("button", { name: /stats for nerds/i });
+    expect(screen.queryByText(/ready state/i)).toBeNull();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByText(/ready state/i)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /hide stats/i }));
+    expect(screen.queryByText(/ready state/i)).toBeNull();
+  });
+
   test("a refusal that is not overload shows the server's own message", async () => {
     globalThis.fetch = mock(
       async () =>
