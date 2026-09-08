@@ -458,14 +458,30 @@ function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
  *   asked for.
  * - **AUDIO, either way**, asks for the boundary plainly and stops at the next one, because
  *   `-to` is the only thing bounding an audio segment -- see `AUDIO_NEVER_CUT_SEC`.
+ *
+ * > [!CAUTION] SEGMENT ZERO SEEKS TOO, and the seek is what keeps its timestamps expressible
+ * > A source's own timeline starts BEFORE zero: an AAC track opens with a priming packet at
+ * > -0.021 s, which is decoder warm-up rather than film. Since the placement moved into
+ * > `tfdt` -- see `SEGMENT_MUXER_OPTIONS` -- that matters, because `baseMediaDecodeTime` is
+ * > UNSIGNED. Measured 2026-09-08 with no `-ss` at all: the first audio segment came out with
+ * > a `tfdt` of 2^64 - 1008, a segment claiming to begin 584 billion seconds into the film.
+ * > hls.js re-bases its way out of that and Safari's native player would not.
+ * >
+ * > An input seek discards everything before its target, so seeking to the boundary -- even
+ * > when the boundary is 0 -- leaves nothing negative to express. Measured: `tfdt` 0, one
+ * > priming packet dropped, every later segment unchanged to the byte.
+ * >
+ * > `-avoid_negative_ts make_non_negative` also removes the wrap and is the WRONG fix: it
+ * > shifts a whole run to keep its timestamps positive, and on the first VIDEO segment that
+ * > shift is the 0.083 s reorder delay -- so segment zero's picture would run 0.083 s behind
+ * > its own sound and snap back at the next boundary. Measured, and rejected for that.
  */
 function readArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   const { startSec, endSec } = opts.segment;
   const copyingVideo = opts.track === "video" && plan.video.action === "copy";
-  const seek = startSec > 0 ? seekArgs(copyingVideo, startSec) : [];
   const readUntil = endSec + (copyingVideo ? SEGMENT_TAIL_SLACK_SEC : 0);
   return [
-    ...seek,
+    ...seekArgs(copyingVideo, startSec),
     "-i",
     opts.input,
     "-copyts",

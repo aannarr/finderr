@@ -366,10 +366,27 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
     expect(args(plan).join(" ")).toContain("-start_number 7");
   });
 
-  test("segment zero starts at the beginning and emits no -ss at all", () => {
+  /**
+   * SEGMENT ZERO SEEKS TOO, and this test used to assert the opposite.
+   *
+   * Omitting `-ss` at the start of the file looks like the honest spelling and stopped being
+   * one when the segment's position moved into `tfdt`, which is UNSIGNED: a source's own
+   * timeline opens before zero (AAC priming at -0.021 s), and with nothing seeked away the
+   * first audio segment claimed to start 584 billion seconds in. An input seek discards what
+   * is behind it, so seeking to zero is what keeps zero expressible.
+   */
+  test("segment zero seeks to its own boundary rather than skipping the seek", () => {
     const a = args(plan, { segment: { index: 0, startSec: 0, endSec: 6 } });
-    expect(a).not.toContain("-ss");
+    expect(a.indexOf("-ss")).toBeGreaterThan(-1);
+    expect(a.indexOf("-ss")).toBeLessThan(a.indexOf("-i"));
     expect(a.join(" ")).toContain("-start_number 0");
+
+    // Audio and a re-encode ask for the boundary itself; a video copy still takes the nudge,
+    // which lands on the same first keyframe and keeps ONE seek rule rather than two.
+    expect(args(plan, { track: "audio", segment: { index: 0, startSec: 0, endSec: 6 } })).toContain(
+      "0.000000",
+    );
+    expect(a.join(" ")).toContain("-ss 0.200000");
   });
 
   /**
