@@ -31,6 +31,11 @@ import type { PersonCredit } from "./facets";
 // the point: the live fallback and the build must compute the same answer or the precompute
 // silently changes what the front page draws.
 import { BROWSE_VOTE_FLOOR, computeShelfGenres, SHELF_GENRES_META_KEY } from "./index-builder";
+// Every `has*` field below is one of these. The probes live there rather than here because
+// the PROMOTE GATE has to ask the same questions of a file it is about to replace, and two
+// copies of "does this index carry people search" would drift the day a stage moved -- see
+// the module docstring on `./index-capabilities.ts` for the build that lost its vocabulary.
+import { capabilitiesOf, type IndexCapability } from "./index-capabilities";
 import { detectMemoryBudget, resolveTuning, type StorageTuning } from "./memory-budget";
 import { despace, normalize, normalizeStripped, similarity, trigrams } from "./normalize";
 import {
@@ -41,7 +46,6 @@ import {
   frequentCollaborators,
   nconstsByNameForTitle,
   nconstsForCredits,
-  PERSON_FTS_TABLE,
   type PersonCreditsOptions,
   type PersonHit,
   type PersonLinks,
@@ -520,11 +524,20 @@ export class SearchEngine {
   private vocabWords = 0;
 
   /**
+   * Everything the open file can do, read once in the constructor.
+   *
+   * The single source for every `has*` field below, and the same set the promote gate
+   * compares a candidate index against -- `./index-capabilities.ts` owns the probes and the
+   * argument for keeping them in one place.
+   */
+  private readonly capabilities!: ReadonlySet<IndexCapability>;
+
+  /**
    * Whether this index carries the trigram shortlist beside the phonetic one.
    *
-   * Decided in `prepareFuzzy` with the rest of the fuzzy tier, not in the constructor: the
-   * tables are only worth anything once the extension is loaded, because the distance they
-   * are ranked on is the extension's own function. An index built before them keeps the
+   * Reported in `prepareFuzzy` with the rest of the fuzzy tier rather than at construction:
+   * the tables are only worth anything once the extension is loaded, because the distance
+   * they are ranked on is the extension's own function. An index built before them keeps the
    * legacy two-pass shape (see `FUZZY_WIDE_SCOPE`) until its next rebuild.
    */
   private hasTrigrams = false;
@@ -888,27 +901,26 @@ export class SearchEngine {
     this.db.run(`pragma cache_size = -${this.tuning.cacheKib}`);
     this.db.run(`pragma mmap_size = ${this.tuning.mmapBytes}`);
     this.db.run("pragma query_only = 1");
-    this.hasPeople = this.tableExists("title_principal") && this.tableExists("person");
-    this.hasPeopleSearch =
-      this.hasPeople && this.tableExists(PERSON_FTS_TABLE) && this.columnExists("person", "top_votes");
-    this.hasRank = this.columnExists("title", "rank") && this.columnExists("title_genre", "rank");
-    this.hasIds = this.tableExists("title_ids");
-    this.hasPersonIds = this.tableExists("person_external");
-    this.hasOrigin = this.tableExists("title_lang");
-    this.hasBreakout = this.tableExists("title_breakout");
-    this.hasLangRank =
-      this.columnExists("title_lang", "kind") &&
-      this.columnExists("title_lang", "rank") &&
-      this.columnExists("title_lang", "non_english") &&
-      this.indexExists("ix_lang_rank");
-    this.hasTitleLang = this.columnExists("title", "lang");
-    this.hasLangYear = this.columnExists("title_lang", "year") && this.indexCovers("ix_lang_rank", "year");
-    this.hasLangVotes = this.columnExists("title_lang", "votes") && this.indexExists("ix_lang_votes");
-    this.hasGenreVotes = this.columnExists("title_genre", "votes");
-    this.hasGenreYear = this.columnExists("title_genre", "year");
-    this.hasBrowseCounts = this.tableExists("browse_count");
-    this.hasRankIndexes = this.indexExists("ix_rank") && this.indexExists("ix_rank_all");
-    this.hasEpisodes = this.tableExists("episode");
+    // ONE pass over the schema, answering every "what does this file carry" question at once.
+    // The answers are the promote gate's answers too -- see the import comment above.
+    this.capabilities = capabilitiesOf(this.db);
+    const has = (c: IndexCapability) => this.capabilities.has(c);
+    this.hasPeople = has("people");
+    this.hasPeopleSearch = has("peopleSearch");
+    this.hasRank = has("rank");
+    this.hasIds = has("ids");
+    this.hasPersonIds = has("personIds");
+    this.hasOrigin = has("origin");
+    this.hasBreakout = has("breakout");
+    this.hasLangRank = has("langRank");
+    this.hasTitleLang = has("titleLang");
+    this.hasLangYear = has("langYear");
+    this.hasLangVotes = has("langVotes");
+    this.hasGenreVotes = has("genreVotes");
+    this.hasGenreYear = has("genreYear");
+    this.hasBrowseCounts = has("browseCounts");
+    this.hasRankIndexes = has("rankIndexes");
+    this.hasEpisodes = has("episodes");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
     );
@@ -952,10 +964,7 @@ export class SearchEngine {
 
     // An index built before the vocabulary existed is still perfectly serviceable; it
     // just has no fuzzy tier until the next rebuild. Say so rather than throwing.
-    const present = this.db
-      .query("select count(*) c from sqlite_master where type in ('table','view') and name = ?")
-      .get(SPELLFIX_TABLE) as { c: number };
-    if (present.c === 0) {
+    if (!this.capabilities.has("fuzzy")) {
       log(`fuzzy: DISABLED -- no '${SPELLFIX_TABLE}' table in this index. Rebuild it to enable typo search.`);
       this.fuzzyAbsence = {
         cause: "vocabulary",
@@ -969,9 +978,7 @@ export class SearchEngine {
     ).c;
     this.fuzzyAbsence = null;
 
-    // Both tables or neither: they are one stage's output, and a shortlist ranked against a
-    // frequency table that is not there would choose its trigrams blind.
-    this.hasTrigrams = this.tableExists(TRIGRAM_TABLE) && this.tableExists(TRIGRAM_DF_TABLE);
+    this.hasTrigrams = this.capabilities.has("trigrams");
     if (this.hasTrigrams) {
       this.trigramDf = this.db.prepare(`select n from ${TRIGRAM_DF_TABLE} where tri = ?`);
     } else {
@@ -1162,6 +1169,64 @@ export class SearchEngine {
    *
    * Text similarity is computed here (not taken from bm25) precisely so the scales
    * match; bm25 is used only to pick which 400 rows are worth scoring.
+   *
+   * > [!CAUTION] WEIGHTING `cov` BY TOKEN RARITY WAS BUILT, SWEPT AND DECLINED, 2026-09-08.
+   * > TOKEN COVERAGE STAYS UNWEIGHTED. THE RECORD IS HERE SO NOBODY RE-DERIVES IT.
+   * >
+   * > The case was `Leila dilemma` from the live log: no title holds both words, so every
+   * > candidate covers exactly one, `cov` ties at 0.5 across the page and popularity decides
+   * > -- handing the top two rows to "The Dilemma" (59,512 votes) and "The Social Dilemma"
+   * > (95,057) over the "Leila" (9,580) the reader clicked at rank 2. The proposal was to
+   * > weight each query word by how rare it is, so the word that IDENTIFIES the title buys
+   * > more of the query's coverage than the word that does not.
+   * >
+   * > Built as `weight(t) = (titles / docFrequency(t)) ^ s`, normalised to sum to 1 so `cov`
+   * > stayed a 0..1 ratio and `FULL_COVERAGE` kept meaning "every word present". Frequencies
+   * > came from `fts5vocab` over `tfts` -- the same auxiliary table `./vocab-trigrams.ts`
+   * > reads trigram frequencies from, so nothing new was stored. `s = 0` is today's
+   * > behaviour exactly, which made the status quo a row of the sweep rather than a
+   * > remembered number. Measured on an M1 Max against the real 1,276,833-row index
+   * > (`data/titles.prev.db`, the newest build carrying a vocabulary) with a frozen snapshot
+   * > of the live click log, so every row saw the same 14 clicked titles:
+   * >
+   * > | s | canary | mean clicked rank | `Leila dilemma` | `Swedish criminal` clicks |
+   * > |---|---|---|---|---|
+   * > | **0 -- unweighted, shipped** | **46/46** | **1.57** | rank 2 | 6, 3, 2 |
+   * > | 0.25 | 46/46 | 1.71 | rank 2 | 6, 3, 2 |
+   * > | 0.5 | 46/46 | 1.93 | rank 2 | 7, 3, 2 |
+   * > | 1 | 46/46 | 2.64 | rank 2 | 9, 5, 3 |
+   * > | 2.5 | **45/46** | 3.57 | **rank 0** | 13, 7, 5 |
+   * >
+   * > **Monotonically worse, and the one setting that fixes the case fails the build gate.**
+   * > Four points in one direction is not a wash to be re-read as noise -- but the per-click
+   * > table is where the argument is, and it names the loser: `Swedish criminal`, three
+   * > clicked titles, where `swedish` (df 59) swamps `criminal` (df 297) and the page fills
+   * > with Swedish titles that are not crime. At `s = 2.5` the canary loses `Nile City`.
+   * >
+   * > **THE CARD'S PREMISE WAS FALSE, AND THAT IS THE REAL FINDING.** It assumed `dilemma`
+   * > was a common word and `leila` a rare one. Out of `fts5vocab`: `leila` is in 59 titles,
+   * > `dilemma` in 128. Both are rare and the whole rarity signal between them is a factor of
+   * > 2.2. What loses that page is not a common word out-weighing a rare one, it is 59,512
+   * > votes against 9,580 -- a popularity gap, reachable only by a popularity lever.
+   * >
+   * > The arithmetic bounds the idea rather than just this parameterisation, so a different
+   * > weighting function is not worth trying either: the partial branch pays `10 * cov`, so
+   * > the largest swing ANY weighting can produce between two candidates each covering one
+   * > word of a two-word query is 10 points, and spending it means reading a two-word query
+   * > as a one-word query. The gap here is 6.96 points; `s = 1` moves 3.68 of them.
+   * >
+   * > Two things a re-implementer needs and would otherwise learn the hard way. **`cov` is
+   * > not only a scoring term, it is the ESCALATION GATE** (`hits[0].coverage < 0.6` in
+   * > `search`), so reweighting it changes WHICH TIER answers -- that, not the score, is how
+   * > `Nile City` broke: it fell from `fuzzy` to `or`, whose 400-row window does not hold
+   * > "NileCity 105.6". And **the `fts5vocab` table must be created before
+   * > `pragma query_only = 1`**, which refuses a write to `temp` as readily as to `main`; a
+   * > lazy one throws *"attempt to write a readonly database"* on the first query that needs
+   * > it, in production, long after every test has passed.
+   * >
+   * > **What would re-open it:** a click log big enough that 14 titles stop being the
+   * > denominator. Nothing else. Run `bun run search:replay` on your own base first -- it
+   * > prints the click count beside the mean, and the count has already moved once.
    */
   private rank(
     rows: (TitleRow & { rowid: number; ntitle?: string; norig?: string })[],
@@ -1970,46 +2035,6 @@ export class SearchEngine {
       )
       .all(kind, ENGLISH_LANG) as { lang: string; films: number }[];
     return new Map(rows.filter((r) => r.lang !== UNKNOWN_LANG).map((r) => [r.lang, r.films]));
-  }
-
-  private tableExists(name: string): boolean {
-    return this.db.query("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== null;
-  }
-
-  /**
-   * Is this index in the file? Asked before any `INDEXED BY` names one.
-   *
-   * A missing index is a PREPARE error rather than a slow plan, so this is the difference
-   * between an older file serving slowly and an older file throwing on every browse.
-   */
-  private indexExists(name: string): boolean {
-    return this.db.query("select 1 from sqlite_master where type = 'index' and name = ?").get(name) !== null;
-  }
-
-  /**
-   * Does `index` carry `column` -- as a key column or as a covered trailing one?
-   *
-   * `indexExists` above answers "is it there", which is enough when a widening only reordered
-   * the columns an index already had. It is NOT enough when the widening ADDS one: the index
-   * name does not change, so a file built before it looks complete and the query that assumed
-   * the extra column falls out of the index onto a table lookup per candidate row.
-   *
-   * `index_xinfo` rather than `index_info` because it lists the trailing columns too, and the
-   * columns this asks about are exactly the trailing ones. Answers false for an index that is
-   * not in the file, so a caller can ask this alone.
-   */
-  private indexCovers(index: string, column: string): boolean {
-    return (this.db.query(`pragma index_xinfo(${index})`).all() as { name: string | null }[]).some(
-      (c) => c.name === column,
-    );
-  }
-
-  /** Does `table` have `column`? Answers false for a table that does not exist at all. */
-  private columnExists(table: string, column: string): boolean {
-    if (!this.tableExists(table)) return false;
-    return (this.db.query(`pragma table_info(${table})`).all() as { name: string }[]).some(
-      (c) => c.name === column,
-    );
   }
 
   /** A person and their filmography. `null` for an unknown id, or an index without people. */
