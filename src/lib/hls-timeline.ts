@@ -136,6 +136,10 @@ export interface Timeline {
  * of a kind and their ORDER is the offer -- audio 0 is the one that plays. A rendition the
  * source does not have is simply not in the list: no playlist, no segments, and no
  * `EXT-X-MEDIA` line naming a rendition that would 404.
+ *
+ * `label` is required even on the VIDEO rendition, which never reads it -- the variant line
+ * carries no `NAME`. An optional field would make `mediaLine` carry a fallback that can never
+ * fire, and this list is homogeneous everywhere else it is walked.
  */
 export interface PublishedTrack {
   track: Track;
