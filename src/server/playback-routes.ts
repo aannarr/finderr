@@ -42,7 +42,7 @@ import {
   uniformTimeline,
 } from "../lib/hls-timeline";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
-import { type CutSource, cutTimeline } from "../lib/keyframes";
+import { type CutPointCache, type CutSource, cutTimeline } from "../lib/keyframes";
 import { NOT_AN_EPISODE } from "../lib/media-file";
 import { type MediaVolume, resolveMediaFile } from "../lib/media-path";
 import { probeMedia } from "../lib/media-probe";
@@ -77,6 +77,13 @@ export interface PlaybackDeps {
   actorId: (req: Request) => string | null;
   /** Which encoder a re-encode should use. Probed once at boot. */
   encoder?: EncoderChoice;
+  /**
+   * Where "this file can be cut here" is remembered between plays.
+   *
+   * Optional so a test can start a session without a database behind it. Absent means every
+   * start re-derives the cut points, which is correct and merely slower.
+   */
+  keyframes?: CutPointCache;
   log?: (m: string) => void;
 }
 
@@ -155,18 +162,41 @@ async function timelinesFor(
   path: string,
   durationSec: number,
   plan: PlaybackPlan,
-): Promise<{ timelines: TrackTimelines; videoSource: CutSource | null }> {
+  keyframes?: CutPointCache,
+): Promise<{ timelines: TrackTimelines; video: VideoGrid | null }> {
   const timelines: { -readonly [K in Track]?: Timeline } = {};
-  let videoSource: CutSource | null = null;
+  let video: VideoGrid | null = null;
   if (plan.video.sourceIndex !== null) {
     const cut = await cutTimeline(path, durationSec, SEGMENT_TARGET_SEC, {
       copiesVideo: plan.video.action === "copy",
+      cache: keyframes,
     });
     timelines.video = cut.timeline;
-    videoSource = cut.source;
+    video = { source: cut.source, cached: cut.cached };
   }
   if (plan.audio.sourceIndex !== null) timelines.audio = uniformTimeline(durationSec, SEGMENT_TARGET_SEC);
-  return { timelines, videoSource };
+  return { timelines, video };
+}
+
+/** How the video grid was arrived at, which is the half of the answer worth reporting. */
+interface VideoGrid {
+  source: CutSource;
+  cached: boolean;
+}
+
+/**
+ * The video grid in one line a reader can act on.
+ *
+ * It names the cache SEPARATELY from where the cut points came from, deliberately: a cache
+ * that answers instantly would otherwise be indistinguishable from a container reader that
+ * works, and the two need to be measurable apart to know which one is broken.
+ */
+function videoGridNote(video: VideoGrid, segments: number): string {
+  if (video.source === "uniform")
+    return `video segments are a ${SEGMENT_TARGET_SEC}s grid, ${segments} of them`;
+  const how = video.source === "container" ? "the container's own index" : "an ffprobe keyframe probe";
+  const when = video.cached ? "remembered from an earlier play" : "read just now";
+  return `video segments follow ${how} (${when}), ${segments} of them`;
 }
 
 /** How many segments the playhead moves through: the video grid, or the audio one alone. */
@@ -304,15 +334,14 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           return bad("this file does not say how long it is", 409);
         }
 
-        const { timelines, videoSource } = await timelinesFor(resolved.path, probe.durationSec, plan);
+        const { timelines, video } = await timelinesFor(
+          resolved.path,
+          probe.durationSec,
+          plan,
+          deps.keyframes,
+        );
         const segments = publishedSegments(timelines);
-        if (videoSource !== null) {
-          plan.reasons.push(
-            videoSource === "keyframes"
-              ? `video segments follow the source keyframes, ${segments} of them`
-              : `video segments are a ${SEGMENT_TARGET_SEC}s grid, ${segments} of them`,
-          );
-        }
+        if (video !== null) plan.reasons.push(videoGridNote(video, segments));
         // The audio grid is worth stating too: it is the thing a reader would otherwise assume
         // matches the video grid, and it deliberately does not.
         if (timelines.audio && timelines.video) {

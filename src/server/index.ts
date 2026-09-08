@@ -40,6 +40,7 @@ import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/f
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
 import { rollback } from "../lib/index-builder";
 import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
+import { KeyframeCacheStore } from "../lib/keyframe-cache";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
 import { parseVolumes } from "../lib/media-path";
@@ -306,6 +307,16 @@ const watchlistStore = new WatchlistStore(store.db);
   `src/lib/shelf-preferences.ts`.
 */
 const shelfPrefs = new ShelfPreferenceStore(store.db);
+
+/*
+  Where a file can be cut, remembered per file, on the same connection and for the same reason.
+
+  It is keyed by PATH AND SIZE rather than by anything this app owns, because the fact it holds
+  is a fact about bytes on a disk: a replaced release at the same path is a different size and
+  therefore a miss. See `src/lib/keyframe-cache.ts` for why a stale entry would be worse than
+  an empty one.
+*/
+const keyframeCache = new KeyframeCacheStore(store.db);
 
 /*
   Web push, and it is constructed BEFORE the request worker on purpose.
@@ -3759,6 +3770,7 @@ const allRoutes = {
     store,
     sessions: transcodeSessions,
     volumes: mediaVolumes,
+    keyframes: keyframeCache,
     requireAdmin: (req) => auth.requireAdmin(req),
     actorId: (req) => auth.principal(req)?.user?.id ?? null,
     encoder: videoEncoder,
