@@ -93,6 +93,7 @@ import {
 import { Timings } from "../lib/timings";
 import { TMDB_HOST, TmdbApi } from "../lib/tmdb-api";
 import { TmdbSettingsStore } from "../lib/tmdb-settings";
+import { TranscodeMeter } from "../lib/transcode-meter";
 import { bindShutdown, TranscodeSessions } from "../lib/transcode-session";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { keepPortMapped } from "../lib/upnp-igd";
@@ -255,7 +256,13 @@ const prowlarr = cfg.prowlarr ? new ProwlarrClient(cfg.prowlarr) : undefined;
 const mediaVolumes = parseVolumes(cfg.media.volumes);
 const videoEncoder = mediaVolumes.length > 0 ? await probeEncoder() : SOFTWARE;
 mkdirSync(p.transcode, { recursive: true });
-const transcodeSessions = new TranscodeSessions({ root: p.transcode });
+// The books playback keeps about itself. Constructed BEFORE the manager, because the manager
+// reports every finished ffmpeg's CPU into it -- see `ManagerOpts.onRun`.
+const transcodeMeter = new TranscodeMeter();
+const transcodeSessions = new TranscodeSessions({
+  root: p.transcode,
+  onRun: (run) => transcodeMeter.burned(run.sessionId, run.cpuMs),
+});
 // Both halves of "a previous life of this process left something behind": the signal
 // handlers stop transcodes on the way out, and the sweep clears what a kill -9 could not.
 bindShutdown(transcodeSessions);
@@ -3816,6 +3823,7 @@ const allRoutes = {
   ...playbackRoutes({
     store,
     sessions: transcodeSessions,
+    meter: transcodeMeter,
     volumes: mediaVolumes,
     keyframes: keyframeCache,
     endpoints: () => streamEndpoints.list(),

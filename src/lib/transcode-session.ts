@@ -267,13 +267,65 @@ export interface Session {
   owner: string | null;
 }
 
-/** Injected so tests need no ffmpeg. */
-export type Spawner = (argv: string[]) => { kill(signal?: number): void; exited: Promise<number> };
+/** One running transcode, as this module needs to see it. */
+export interface SpawnedProcess {
+  kill(signal?: number): void;
+  exited: Promise<number>;
+  /**
+   * CPU this ONE child actually burned, in milliseconds, read after it has exited.
+   *
+   * > [!IMPORTANT] THIS IS THE ONLY HONEST ANSWER TO "WHAT DOES TRANSCODING COST", and
+   * > `process.cpuUsage()` is not it
+   * > This process serves the render path, the API, the image proxy and every scan job, so its
+   * > own CPU number is mostly not transcoding. A per-CHILD number is, and `TranscodeMeter` is
+   * > built on nothing else.
+   *
+   * NARROWER THAN THE RUNTIME'S `rusage` ON PURPOSE: the manager needs one number, so widening
+   * this to the whole `ResourceUsage` would make every fake spawner stub out context switches
+   * and swap counts it has no opinion about.
+   *
+   * OPTIONAL, and absent is a real answer rather than a missing feature: a spawner that cannot
+   * account for its children (a test fake standing in for ffmpeg, a runtime that does not
+   * expose `rusage`) says so by not having it, and the meter then records nothing rather than
+   * recording a zero that would read as "transcoding is free".
+   */
+  cpuMillis?(): number | null;
+}
 
+/** Injected so tests need no ffmpeg. */
+export type Spawner = (argv: string[]) => SpawnedProcess;
+
+/**
+ * `Bun.spawn`, plus the child's own CPU once it is reaped.
+ *
+ * `resourceUsage()` is `wait4`'s rusage, so it is exact rather than sampled and it works the
+ * same on the Synology and on the dev Mac -- which is what makes per-pid `/proc` parsing
+ * unnecessary. It would also have been WRONG here: this subsystem runs one short-lived ffmpeg
+ * per segment (0.07-0.08 s for a copy-mode one, measured on the NAS), so a sampler walking
+ * `/proc` once a second would miss almost every run and report a busy box as idle.
+ *
+ * `cpuTime.total` is BigInt MICROseconds, and it is only populated after the process has been
+ * reaped -- hence "read after it has exited" on the interface. Anything falsy or unreadable
+ * yields null, which the meter treats as "not known" rather than as zero.
+ */
 const defaultSpawner: Spawner = (argv) => {
   const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "pipe" });
-  return { kill: (s) => proc.kill(s), exited: proc.exited };
+  return {
+    kill: (s) => proc.kill(s),
+    exited: proc.exited,
+    cpuMillis: () => {
+      const micros = proc.resourceUsage()?.cpuTime?.total;
+      return micros === undefined ? null : Number(micros) / 1000;
+    },
+  };
 };
+
+/** One finished transcode, and what it cost. Reported rather than kept -- see `ManagerOpts.onRun`. */
+export interface SegmentRun {
+  sessionId: string;
+  /** CPU the ffmpeg child burned, in milliseconds. */
+  cpuMs: number;
+}
 
 export interface ManagerOpts {
   /** Where session directories are made. Under the data dir in production. */
@@ -281,6 +333,15 @@ export interface ManagerOpts {
   spawn?: Spawner;
   now?: () => number;
   ffmpegPath?: string;
+  /**
+   * Told what each finished ffmpeg cost, so somebody else can keep the books.
+   *
+   * A NOTIFICATION rather than a meter this class holds: session bookkeeping and cost history
+   * are two reasons to change, and a manager that owned both would have to be constructed with
+   * a meter in every test that has no interest in one. `src/server/index.ts` wires it to
+   * `TranscodeMeter.burned`.
+   */
+  onRun?: (run: SegmentRun) => void;
 }
 
 /** One rendition's bookkeeping: what it is making, and what it has already made. */
@@ -568,11 +629,34 @@ export class TranscodeSessions {
     } finally {
       clearTimeout(timer);
       state.running.delete(proc);
+      // AFTER the exit and whatever the exit code: a run that was killed on the timeout, or
+      // that failed on a bad input, still burned the CPU it burned. Charging only successes
+      // would hide exactly the runs an operator most wants to see.
+      this.charge(session.id, proc);
     }
 
     const published = code === 0 && this.publish(state, track, work, index);
     rmSync(work, { recursive: true, force: true });
     return published;
+  }
+
+  /**
+   * Tell whoever is keeping the books what this run cost, if anybody is and if it can be known.
+   *
+   * Every failure here is silent by design: a spawner that cannot account for its children, a
+   * runtime that returns nothing, or a listener that throws must not be able to fail a segment
+   * a viewer is waiting on. Instrumentation that can break the thing it measures is worse than
+   * no instrumentation.
+   */
+  private charge(sessionId: string, proc: SpawnedProcess): void {
+    const onRun = this.opts.onRun;
+    if (!onRun) return;
+    try {
+      const cpuMs = proc.cpuMillis?.() ?? null;
+      if (cpuMs !== null && cpuMs > 0) onRun({ sessionId, cpuMs });
+    } catch {
+      // Accounting is never worth an exception on the segment path.
+    }
   }
 
   /**

@@ -27,6 +27,7 @@ import {
   MAX_SESSIONS,
   SEGMENT_CACHE,
   SEGMENT_CONCURRENCY,
+  type SegmentRun,
   SessionRefused,
   type Spawner,
   STREAM_TOKEN_TTL_MS,
@@ -90,7 +91,7 @@ function outputOf(argv: string[]): { work: string; media: string; index: number 
  * `manual` withholds the exit so a test can hold a production open, and `exitCode` makes it
  * fail without writing -- the two states the publish path has to tell apart.
  */
-function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number } = {}) {
+function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number; cpuMs?: number | null } = {}) {
   const spawned: string[][] = [];
   const killed: { signal: number | undefined }[] = [];
   const finish: (() => void)[] = [];
@@ -117,6 +118,10 @@ function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number } = {}) {
         killed.push({ signal });
       },
       exited,
+      // Present only when a test says what this run cost. A spawner WITHOUT it is the real
+      // case for a runtime that cannot account for its children, and the manager has to
+      // report nothing rather than zero -- see `charge`.
+      ...(opts.cpuMs === undefined ? {} : { cpuMillis: () => opts.cpuMs ?? null }),
     };
   };
   return { spawn, spawned, killed, finish };
@@ -135,7 +140,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const mgr = (spawn: Spawner) => new TranscodeSessions({ root, spawn, now, ffmpegPath: "ffmpeg" });
+const mgr = (spawn: Spawner, onRun?: (run: SegmentRun) => void) =>
+  new TranscodeSessions({ root, spawn, now, ffmpegPath: "ffmpeg", onRun });
 const opts = (over: Partial<Parameters<TranscodeSessions["start"]>[0]> = {}) => ({
   input: "/plex/a.mkv",
   plan: CHEAP,
@@ -729,5 +735,69 @@ describe("ending a session", () => {
     m.stop(a.id);
     const b = m.start(opts());
     expect(b.id).not.toBe(a.id);
+  });
+});
+
+/**
+ * What each finished ffmpeg cost, handed to whoever is keeping the books.
+ *
+ * The manager does not keep this itself -- see `ManagerOpts.onRun`. What is pinned here is that
+ * it reports the CHILD's number, reports it for runs that failed as well as runs that worked,
+ * and says NOTHING at all rather than zero when the spawner cannot account for its children.
+ */
+describe("reporting what a run cost", () => {
+  test("a finished run reports its child's CPU against its session", async () => {
+    const runs: SegmentRun[] = [];
+    const m = mgr(fakeFfmpeg({ cpuMs: 137 }).spawn, (r) => runs.push(r));
+    const s = m.start(opts());
+    await m.segmentPath(s.id, "video", 0);
+
+    expect(runs).toEqual([{ sessionId: s.id, cpuMs: 137 }]);
+  });
+
+  /**
+   * A run that was killed on the timeout, or that died on a bad input, still burned the CPU it
+   * burned -- and those are exactly the runs an operator most wants to see in the graph.
+   */
+  test("a FAILED run still reports what it cost", async () => {
+    const runs: SegmentRun[] = [];
+    const m = mgr(fakeFfmpeg({ exitCode: 1, cpuMs: 91 }).spawn, (r) => runs.push(r));
+    const s = m.start(opts());
+    expect(await m.segmentPath(s.id, "video", 0)).toBeNull();
+
+    expect(runs).toEqual([{ sessionId: s.id, cpuMs: 91 }]);
+  });
+
+  /**
+   * NOTHING, not zero. A spawner that cannot account for its children is a spawner whose CPU
+   * is UNKNOWN, and recording a zero would draw a flat line that reads as "transcoding is
+   * free" on a box that is pinned.
+   */
+  test("a spawner that cannot account for its children reports nothing", async () => {
+    const runs: SegmentRun[] = [];
+    const m = mgr(fakeFfmpeg().spawn, (r) => runs.push(r));
+    const s = m.start(opts());
+    await m.segmentPath(s.id, "video", 0);
+
+    expect(runs).toEqual([]);
+  });
+
+  test("a spawner that answers null reports nothing either", async () => {
+    const runs: SegmentRun[] = [];
+    const m = mgr(fakeFfmpeg({ cpuMs: null }).spawn, (r) => runs.push(r));
+    const s = m.start(opts());
+    await m.segmentPath(s.id, "video", 0);
+
+    expect(runs).toEqual([]);
+  });
+
+  /** Instrumentation that can break the thing it measures is worse than no instrumentation. */
+  test("a listener that throws does not fail the segment", async () => {
+    const m = mgr(fakeFfmpeg({ cpuMs: 5 }).spawn, () => {
+      throw new Error("the books are on fire");
+    });
+    const s = m.start(opts());
+
+    expect(await m.segmentPath(s.id, "video", 0)).not.toBeNull();
   });
 });

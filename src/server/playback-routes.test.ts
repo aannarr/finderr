@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,9 +18,11 @@ import {
   type Timeline,
   type Track,
 } from "../lib/hls-timeline";
+import { NOT_AN_EPISODE } from "../lib/media-file";
 import type { MediaVolume } from "../lib/media-path";
 import type { PlaybackPlan } from "../lib/playback-plan";
 import type { StreamEndpoint } from "../lib/stream-endpoints";
+import { TranscodeMeter } from "../lib/transcode-meter";
 import {
   type Session,
   SessionRefused,
@@ -63,6 +65,7 @@ const WAN: StreamEndpoint = { base: "https://finderr.example", family: null, kin
 function fakeSessions(dir: string) {
   const stopped: string[] = [];
   let refuse: SessionRefused | null = null;
+  let listed = true;
   const session: Session = {
     id: "sess-1",
     token: SESSION_TOKEN,
@@ -108,7 +111,7 @@ function fakeSessions(dir: string) {
     stop: (id: string) => {
       stopped.push(id);
     },
-    list: () => [session],
+    list: () => (listed ? [session] : []),
     budgets: () => ({ sessions: { used: 1, max: 8 }, expensive: { used: 0, max: 3 } }),
   };
   return {
@@ -116,6 +119,10 @@ function fakeSessions(dir: string) {
     stopped,
     refuseWith: (r: SessionRefused | null) => {
       refuse = r;
+    },
+    /** The manager has reaped it. Everything else about the session stays reachable by id. */
+    emptyList: () => {
+      listed = false;
     },
   };
 }
@@ -139,9 +146,13 @@ function build(opts: {
   pageOrigins?: string[];
 }) {
   const sessions = opts.sessions ?? fakeSessions(sessionDir);
+  // The REAL meter, not a fake: it is the thing under test in the counting cases, and its own
+  // suite proves the window arithmetic separately.
+  const meter = new TranscodeMeter({ now: () => NOW });
   const routes = playbackRoutes({
     store: fakeStore(opts.path ?? "/plex/a.mkv"),
     sessions: sessions.api,
+    meter,
     volumes: opts.volumes ?? VOLUMES,
     endpoints: () => opts.endpoints ?? [],
     pageOrigins: opts.pageOrigins ?? [],
@@ -150,7 +161,7 @@ function build(opts: {
     actorId: () => "admin-1",
     log: () => {},
   }) as Record<string, Record<string, (req: never) => Promise<Response> | Response>>;
-  return { routes, sessions };
+  return { routes, sessions, meter };
 }
 
 beforeEach(() => {
@@ -210,9 +221,10 @@ const segReq = (id: string, file: string, opts: { token?: string; origin?: strin
   }) as never;
 
 describe("every route is admin-only", () => {
-  test("a non-admin gets the refusal the auth module chose, on all four", async () => {
+  test("a non-admin gets the refusal the auth module chose, on all five", async () => {
     const { routes } = build({ admin: false });
     const calls: Promise<Response>[] = [
+      Promise.resolve(routes["/api/admin/playback/cost"]?.GET?.({ url: "http://x" } as never) as Response),
       Promise.resolve(
         routes["/api/play/:tconst/session"]?.POST?.({
           params: { tconst: "tt1" },
@@ -612,5 +624,137 @@ describe("stopping and listing", () => {
       sessions: { used: 1, max: 8 },
       expensive: { used: 0, max: 3 },
     });
+  });
+});
+
+describe("counting what a playback costs", () => {
+  const seg = (name: string) => segReq("sess-1", name, { token: SESSION_TOKEN });
+
+  test("a served segment is counted against its session at its file size", async () => {
+    const { routes, meter } = build({});
+    const name = segmentFileName("video", 1);
+    const size = statSync(join(sessionDir, name)).size;
+
+    await routes["/api/play/s/:id/:file"]?.GET?.(seg(name));
+
+    expect(meter.report(() => true).window.bytes).toBe(size);
+  });
+
+  /**
+   * THE ZERO-COPY PROOF, and it is a proof rather than an assertion.
+   *
+   * The segment route runs thousands of times per playback and costs a stat plus an fd handoff
+   * ON PURPOSE -- that is what lets a transcoder live beside a render path. Counting bytes by
+   * READING the body would undo exactly that, and the difference is visible right here: a
+   * handler that had read this eight-megabyte body to measure it would hand back a response
+   * whose body was already consumed. It counted the declared size and never touched the bytes,
+   * so the body is still there for the client, unread.
+   */
+  test("the bytes are counted WITHOUT the response body being read", async () => {
+    const { routes, meter } = build({});
+    const name = segmentFileName("video", 2);
+    const bytes = new Uint8Array(8 * 1024 * 1024).fill(7);
+    writeFileSync(join(sessionDir, name), bytes);
+
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(seg(name))) as Response;
+
+    expect(meter.report(() => true).window.bytes).toBe(bytes.byteLength);
+    expect(res.bodyUsed).toBe(false);
+    // And the client still gets every byte -- the count did not consume a stream somebody else
+    // was going to need.
+    expect((await res.arrayBuffer()).byteLength).toBe(bytes.byteLength);
+  });
+
+  test("a refused segment counts nothing", async () => {
+    const { routes, meter } = build({});
+    await routes["/api/play/s/:id/:file"]?.GET?.(seg("../secret.txt"));
+    expect(meter.report(() => true).measured).toBe(false);
+  });
+
+  test("a playlist is not a segment and is not counted", async () => {
+    const { routes, meter } = build({});
+    await routes["/api/play/s/:id/:file"]?.GET?.(seg(MASTER_PLAYLIST_NAME));
+    expect(meter.report(() => true).measured).toBe(false);
+  });
+});
+
+/**
+ * The report route.
+ *
+ * > [!NOTE] The METER IS SEEDED DIRECTLY here rather than by starting a session through the
+ * > POST route, and that is a limit of this suite rather than a shortcut
+ * > Starting a session for real runs `probeMedia`, which runs `ffprobe` against a real media
+ * > file -- no suite in this repo depends on an ffmpeg being installed, and making this the
+ * > first one would trade a covered line for a gate that goes red on a machine without it. What
+ * > IS covered here is everything the route owns: the admin refusal, the report's shape, and
+ * > the liveness join. The one line this leaves to the browser check is the `meter.open` call
+ * > on the start path.
+ */
+describe("the cost report", () => {
+  const cost = () => ({ url: "http://x/api/admin/playback/cost" }) as never;
+  const FILM = { tconst: "tt1375666", season: NOT_AN_EPISODE, episode: NOT_AN_EPISODE };
+
+  /** The report as an admin reads it. */
+  const read = async (routes: ReturnType<typeof build>["routes"]) => {
+    const res = (await routes["/api/admin/playback/cost"]?.GET?.(cost())) as Response;
+    return (await res.json()) as {
+      measured: boolean;
+      slices: unknown[];
+      window: unknown;
+      sessions: { id: string; media: unknown; bytes: number; running: boolean }[];
+    };
+  };
+
+  /**
+   * The METER holds the title, not the session manager: a session decides which file to cut and
+   * how, and a tconst changes none of that. This is what makes "which title is doing this"
+   * answerable rather than inferred -- and it keeps working after the session is reaped.
+   */
+  test("a session is attributed to the title it is playing, with what it has served", async () => {
+    const { routes, meter } = build({});
+    meter.open("sess-1", FILM);
+    await routes["/api/play/s/:id/:file"]?.GET?.(
+      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN }),
+    );
+
+    const body = await read(routes);
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0]).toMatchObject({ id: "sess-1", media: FILM, running: true });
+    expect(body.sessions[0]?.bytes).toBeGreaterThan(0);
+  });
+
+  test("an episode keeps its season and number", async () => {
+    const { routes, meter } = build({});
+    meter.open("sess-1", { tconst: "tt0903747", season: 6, episode: 3 });
+
+    expect((await read(routes)).sessions[0]?.media).toEqual({
+      tconst: "tt0903747",
+      season: 6,
+      episode: 3,
+    });
+  });
+
+  /**
+   * Liveness is the SESSION MANAGER's fact. The meter keeps no copy, so a session it still has
+   * a row for reads as stopped the moment the manager stops listing it -- which is exactly what
+   * a second copy of that state would have been free to disagree about.
+   */
+  test("a session the manager no longer lists reads as stopped", async () => {
+    const sessions = fakeSessions(sessionDir);
+    const { routes, meter } = build({ sessions });
+    meter.open("sess-1", FILM);
+    expect((await read(routes)).sessions[0]?.running).toBe(true);
+
+    sessions.emptyList();
+
+    expect((await read(routes)).sessions[0]?.running).toBe(false);
+  });
+
+  test("a server that has served nothing says so rather than drawing a flat line", async () => {
+    const { routes } = build({});
+    const body = await read(routes);
+    expect(body.measured).toBe(false);
+    expect(body.window).toEqual({ bytes: 0, cpuMs: 0 });
+    expect(body.slices.length).toBeGreaterThan(0);
   });
 });

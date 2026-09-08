@@ -1,5 +1,6 @@
 /**
- * The playback surface: start a session, read its playlist, read its segments, stop it.
+ * The playback surface: start a session, read its playlist, read its segments, stop it -- and
+ * report what all of that has cost the box.
  *
  * ADMIN ONLY, every route, for as long as this is a prototype. `auth.requireAdmin` is the
  * single owner of that decision and it is asked on every handler rather than once at the
@@ -57,6 +58,7 @@ import {
 } from "../lib/playback-plan";
 import type { Store } from "../lib/store";
 import type { StreamEndpoint } from "../lib/stream-endpoints";
+import type { TranscodeMeter } from "../lib/transcode-meter";
 import { type Session, SessionRefused, type TranscodeSessions } from "../lib/transcode-session";
 
 /**
@@ -73,6 +75,12 @@ const FIRST_SEGMENT_WAIT_MS = 5_000;
 export interface PlaybackDeps {
   store: Store;
   sessions: TranscodeSessions;
+  /**
+   * Where what playback COSTS is kept. Required, not optional: this is instrumentation the
+   * product has rather than a mode it can be in, and an optional meter is one that silently
+   * counts nothing on the deployment nobody remembered to wire.
+   */
+  meter: TranscodeMeter;
   volumes: readonly MediaVolume[];
   /** Returns a refusal Response, or null when the caller is an admin. */
   requireAdmin: (req: Request) => Response | null;
@@ -389,7 +397,17 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
     }
     // Zero-copy: the bytes never enter the JS heap. This is the one route that runs
     // hundreds of times per playback and it must stay a stat plus an fd handoff.
-    return new Response(Bun.file(produced.path), {
+    const file = Bun.file(produced.path);
+    /*
+      COUNTED FROM THE DECLARED SIZE, off the handle we are already holding -- never by
+      reading the body. Reading it to measure it would undo the exact property the line above
+      exists to protect, and it is the one thing that would turn a stat-and-an-fd into
+      megabytes through the event loop. `playback-routes.test.ts` asserts the response body is
+      still unconsumed after the handler has counted, which is what a body-reading count
+      could not be.
+    */
+    deps.meter.served(id, file.size);
+    return new Response(file, {
       headers: {
         // From the rendition rather than from the name: fMP4 segments and WebVTT segments are
         // served through this one route and a browser will not read a caption file handed to
@@ -498,6 +516,20 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             timelines,
             encoder: deps.encoder,
             owner: deps.actorId(req) ?? undefined,
+          });
+          /*
+            THE METER IS TOLD WHAT IS PLAYING, NOT THE SESSION MANAGER.
+
+            `Session` has no reason to carry a title: it decides which file to cut and how,
+            and a tconst changes none of that. The meter is the only thing that needs a name
+            for the cost it is attributing, so it holds its own label -- which also lets a
+            finished session keep its name after the manager has reaped it. Idempotent,
+            because two viewers of one film JOIN one session and both arrive here.
+          */
+          deps.meter.open(session.id, {
+            tconst: tconst.value,
+            season: at?.season ?? NOT_AN_EPISODE,
+            episode: at?.episode ?? NOT_AN_EPISODE,
           });
           await warmFirstSegments(deps.sessions, session);
 
@@ -653,6 +685,33 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
             plan: s.plan,
           })),
         });
+      },
+    },
+
+    /**
+     * What playback has COST this box: bytes handed out and ffmpeg CPU, over a rolling window
+     * and per session.
+     *
+     * > [!IMPORTANT] UNDER `/api/admin/` rather than `/api/play/`, and the prefix is the point
+     * > It is the prefix `agent-api.ts` refuses outright, so this history is out of reach of
+     * > every agent key whatever its owner's role -- and `requireAdmin` answers a signed-in
+     * > non-admin with a 404, so the endpoint does not announce itself either. The other
+     * > playback routes are admin-only too; this one is ADMINISTRATION, which is a stronger
+     * > claim and a different denial list.
+     *
+     * Declared here rather than in `index.ts` for the reason `/api/admin/requests/:tconst/media`
+     * states: the module that owns the subsystem owns the route that reports on it.
+     *
+     * Liveness comes from the SESSION MANAGER on the way past. The meter deliberately does not
+     * track it -- whether a session still exists is the manager's fact, and a second copy would
+     * be free to disagree with the thing that actually reaps them.
+     */
+    "/api/admin/playback/cost": {
+      GET: (req: Request) => {
+        const refused = deps.requireAdmin(req);
+        if (refused) return refused;
+        const live = new Set(deps.sessions.list().map((s) => s.id));
+        return json(deps.meter.report((id) => live.has(id)));
       },
     },
   };
