@@ -131,20 +131,31 @@ function splitKind(entry: string): { kind: EndpointKind | null | "bad"; address:
 /**
  * Fill in the scheme and port an entry left out, so `192.168.1.20` is a usable origin.
  *
- * The bracket rule is the fiddly part and it is why this is a function rather than string
- * concatenation at the call site: a bare IPv6 literal has colons of its own, so `host:port`
- * is ambiguous until the host is bracketed, and `2001:db8::20` with a port appended parses as
- * a completely different thing.
+ * > [!CAUTION] A BARE ENTRY IS A HOST, NOT A FRAGMENT OF URL, and completing it blindly is
+ * > worse than refusing it
+ * > `http://` + `ftp://10.0.0.5` parses -- as the host `ftp` with a path -- so a scheme this
+ * > does not recognise must be REFUSED rather than prefixed. `http://` + `10.0.0.5/foo` has
+ * > the same shape of problem: the port lands inside the path and the candidate silently
+ * > becomes port 80. Both were live bugs before this function enumerated what a bare entry
+ * > may contain instead of assuming.
+ *
+ * The bracket rule is the other fiddly part: a bare IPv6 literal has colons of its own, so
+ * `host:port` is ambiguous until the host is bracketed, and `2001:db8::20` with a port
+ * appended names something else entirely.
  */
 function completeOrigin(raw: string, defaultPort: number): string {
   const s = raw.trim();
   if (s === "") return "";
-  if (/^https?:\/\//i.test(s)) return s;
-  // A bare IPv6 literal: three or more colons and no bracket. Two colons could be `host:port`.
+  // Anything already carrying a scheme is handed on untouched; `tidyOrigin` decides whether
+  // it is one a browser will fetch media over.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s;
+  // A bare entry is a host with an optional port and nothing else. A path, a query, a
+  // fragment or credentials mean this is not the shape it claims to be.
+  if (/[/?#@\\]/.test(s)) return "";
+  // Three or more colons and no bracket is a bare IPv6 literal. Two could be `host:port`.
   const bare6 = !s.includes("[") && (s.match(/:/g)?.length ?? 0) >= 2;
   const host = bare6 ? `[${s}]` : s;
-  const hasPort = /:\d+$/.test(host);
-  return `http://${host}${hasPort ? "" : `:${defaultPort}`}`;
+  return /:\d+$/.test(host) ? `http://${host}` : `http://${host}:${defaultPort}`;
 }
 
 /**

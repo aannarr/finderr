@@ -13,7 +13,7 @@
  */
 
 import type { PlaybackPlan } from "./playback-types";
-import { electEndpoint, EndpointRing, type StreamEndpoint, streamUrl } from "./stream-endpoints";
+import { EndpointRing, electEndpoint, type StreamEndpoint, streamUrl } from "./stream-endpoints";
 
 /**
  * The codecs worth asking about, and the MIME string that asks.
@@ -307,10 +307,13 @@ export async function electStreamEndpoint(
 export function renewStreamToken(session: PlaybackSession, ring: EndpointRing): () => void {
   const ttlSec = session.streamTokenTtlSec ?? 0;
   if (!session.streamToken || ttlSec <= 0) return () => {};
-  const timer = setInterval(async () => {
-    const minted = await remintStreamToken(session.sessionId);
-    if (minted) ring.setToken(minted);
-  }, (ttlSec / 2) * 1000);
+  const timer = setInterval(
+    async () => {
+      const minted = await remintStreamToken(session.sessionId);
+      if (minted) ring.setToken(minted);
+    },
+    (ttlSec / 2) * 1000,
+  );
   return () => clearInterval(timer);
 }
 

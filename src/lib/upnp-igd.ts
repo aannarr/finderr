@@ -140,7 +140,11 @@ export async function mapPort(
  * the router has already forgotten the mapping there is nothing to delete. Either way the
  * lease expires on its own, which is why the lease exists.
  */
-export async function unmapPort(mapping: Mapping, transport: IgdTransport, log: Log = () => {}): Promise<void> {
+export async function unmapPort(
+  mapping: Mapping,
+  transport: IgdTransport,
+  log: Log = () => {},
+): Promise<void> {
   const ok = await soap(
     { controlUrl: mapping.controlUrl, serviceType: mapping.serviceType },
     "DeletePortMapping",
@@ -221,7 +225,13 @@ async function claim(
     return null;
   }
   log(`upnp: mapped port ${req.port} at ${externalIp}, lease ${leaseSec}s`);
-  return { externalIp, externalPort: req.port, controlUrl: control.controlUrl, serviceType: control.serviceType, leaseSec };
+  return {
+    externalIp,
+    externalPort: req.port,
+    controlUrl: control.controlUrl,
+    serviceType: control.serviceType,
+    leaseSec,
+  };
 }
 
 /**

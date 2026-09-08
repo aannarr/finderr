@@ -339,8 +339,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
   const withCors = (res: Response, req: Request): Response => {
     const origin = requestOrigin(req);
     if (!origin) return res;
-    const allowed =
-      endpoints().some((e) => e.base === origin) || (deps.pageOrigins ?? []).includes(origin);
+    const allowed = endpoints().some((e) => e.base === origin) || (deps.pageOrigins ?? []).includes(origin);
     if (!allowed) return res;
     res.headers.set("access-control-allow-origin", origin);
     // The header depends on the request's own Origin, so a shared cache must key on it --

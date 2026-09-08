@@ -29,7 +29,9 @@ import {
   SEGMENT_CONCURRENCY,
   SessionRefused,
   type Spawner,
+  STREAM_TOKEN_TTL_MS,
   sessionKey,
+  TOKEN_GRACE_MS,
   TranscodeSessions,
 } from "./transcode-session";
 
@@ -199,6 +201,91 @@ describe("starting a session", () => {
     expect(sessionKey(base)).toBe(sessionKey({ ...base }));
     expect(sessionKey(base)).not.toBe(sessionKey({ ...base, input: "/plex/b.mkv" }));
     expect(sessionKey(base)).not.toBe(sessionKey({ ...base, plan: EXPENSIVE }));
+  });
+});
+
+/**
+ * THE STREAM TOKEN. It is the one playback credential that travels over plain http -- minted
+ * in a reply from the app's own origin, spent against whichever candidate answered -- so its
+ * whole design is "worth little if observed": one session, half an hour, and a renewal only
+ * the app's origin can perform.
+ */
+describe("the stream token", () => {
+  test("is not the session id, so printing an id never leaks the right to stream it", () => {
+    const s = mgr(fakeFfmpeg().spawn).start(opts());
+    expect(s.token).not.toBe(s.id);
+    expect(s.token.length).toBeGreaterThan(20);
+  });
+
+  test("two sessions get different tokens", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    expect(m.start(opts()).token).not.toBe(m.start(opts({ plan: EXPENSIVE })).token);
+  });
+
+  test("admits its own session and nothing else", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts());
+    const b = m.start(opts({ plan: EXPENSIVE }));
+
+    expect(m.admitsToken(a.id, a.token)).toBe(true);
+    expect(m.admitsToken(b.id, a.token)).toBe(false);
+    expect(m.admitsToken(a.id, "guessed")).toBe(false);
+    expect(m.admitsToken("no-such-session", a.token)).toBe(false);
+  });
+
+  test("stops being accepted once its window has passed", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const s = m.start(opts());
+
+    clock += STREAM_TOKEN_TTL_MS - 1;
+    expect(m.admitsToken(s.id, s.token)).toBe(true);
+    clock += 2;
+    expect(m.admitsToken(s.id, s.token)).toBe(false);
+  });
+
+  /**
+   * A RE-MINT MUST NOT STALL THE PLAYER. Several segment requests are always in flight
+   * carrying the value that was current when they were issued, so cutting the old token dead
+   * at the swap would fail all of them -- which the loader reads as a dead path and answers by
+   * rotating endpoints, for a fault that was never about the network.
+   */
+  test("the previous token keeps working for the grace window, then does not", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const s = m.start(opts());
+    const before = s.token;
+
+    const after = m.remintToken(s.id)?.token;
+    expect(after).not.toBe(before);
+    expect(m.admitsToken(s.id, after ?? "")).toBe(true);
+    expect(m.admitsToken(s.id, before)).toBe(true);
+
+    clock += TOKEN_GRACE_MS + 1;
+    expect(m.admitsToken(s.id, before)).toBe(false);
+    expect(m.admitsToken(s.id, after ?? "")).toBe(true);
+  });
+
+  /** Renewal is what makes the short window survivable across a feature film. */
+  test("a re-mint gives a full fresh window", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const s = m.start(opts());
+
+    clock += STREAM_TOKEN_TTL_MS - 1;
+    const renewed = m.remintToken(s.id);
+    expect(renewed?.tokenExpiresAt).toBe(clock + STREAM_TOKEN_TTL_MS);
+  });
+
+  test("re-minting a session that is gone answers null rather than inventing one", () => {
+    expect(mgr(fakeFfmpeg().spawn).remintToken("no-such-session")).toBeNull();
+  });
+
+  /** The token dies with the session, so an abandoned playback's credential dies with it. */
+  test("a reaped session admits its token no longer", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const s = m.start(opts());
+
+    clock += IDLE_REAP_MS + 1;
+    m.reap();
+    expect(m.admitsToken(s.id, s.token)).toBe(false);
   });
 });
 
