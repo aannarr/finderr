@@ -311,26 +311,21 @@ export function masterPlaylist(timelines: TrackTimelines): string {
  * total duration, and enables the full scrub bar. Version 7 is the floor for fMP4
  * (`EXT-X-MAP` with a media initialisation section).
  *
- * > [!CAUTION] EVERY SEGMENT NAMES ITS OWN `EXT-X-MAP`, and sharing one is a MEASURED BUG
- * > The tidy version emits a single `EXT-X-MAP` for the film, on the reasoning that the codec
- * > configuration cannot change halfway through -- and two inits produced at different seek
- * > offsets really do differ in only six bytes. **Those six bytes are the EDIT LIST**, and it
- * > encodes where its own run started. Measured 2026-09-08: playing segment 401 against the
- * > init produced for segment 400 shifted its whole presentation by 6.882 s, which is exactly
- * > the distance between the two boundaries. It would have shifted further the further apart
- * > they were, so the failure grows with the seek that caused it.
+ * > [!NOTE] EVERY SEGMENT STILL NAMES ITS OWN `EXT-X-MAP`, and it no longer HAS to
+ * > It had to until 2026-09-08. Two inits produced at different seek offsets differed in six
+ * > bytes, those six bytes were the EDIT LIST, and it encoded where that run had started --
+ * > so playing segment 401 against segment 400's init shifted its whole presentation by
+ * > 6.882 s, the distance between the two boundaries.
  * >
- * > `-use_editlist 0` does make the inits byte-identical, and it buys that by REBASING each
- * > segment's decode times to zero -- which throws away the one thing that places an
- * > independently produced segment on a timeline. So the offset lives either in the init or
- * > in the media, never in neither, and the honest answer is to keep the init that belongs to
- * > the segment. That is correct under a player which applies edit lists and under one which
- * > ignores them, which is the reason to prefer it over betting on which this browser is.
+ * > `SEGMENT_MUXER_OPTIONS` in `playback-plan.ts` moved that placement out of the init and
+ * > into each fragment's own `tfdt`, where every consumer reads it -- hls.js implements no
+ * > edit lists at all -- and the inits a rendition produces are now BYTE-IDENTICAL whatever
+ * > the seek offset. Serving one per segment is therefore redundant rather than required: the
+ * > same 765 bytes, produced by the run that made the segment anyway.
  * >
- * > **The audio rendition needs exactly the same treatment, and that is measured too**: two
- * > audio-only runs six seconds apart on the same file produced inits differing at byte 275,
- * > in both copy and re-encode mode. The cost is one four-kilobyte request per segment, for a
- * > file every run already wrote.
+ * > It is kept because collapsing it to a single `EXT-X-MAP` is a change to the playlist that
+ * > buys one saved request per segment and needs its own browser verification. Card:
+ * > `one-ext-x-map-per-rendition-now-that-every-init-is-byte-iden`.
  */
 export function mediaPlaylist(track: Track, t: Timeline): string {
   const lines = [

@@ -496,4 +496,160 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
     expect(a).not.toContain("-hwaccel");
     expect(a).not.toContain("-vaapi_device");
   });
+
+  /**
+   * WITHOUT THIS THE SEGMENT DOES NOT SAY WHERE IT BELONGS, and the browser drifts 0.083 s
+   * further per fragment. The bytes those options produce are asserted below, against a
+   * recorded segment; this only checks that the run still asks for them.
+   */
+  test("the nested fMP4 muxer is told to place the segment in the media", () => {
+    for (const track of ["video", "audio"] as const) {
+      for (const p of [plan, planPlayback(parseProbe(RANGO), FIREFOX)]) {
+        const a = args(p, { track });
+        const options = a[a.indexOf("-hls_segment_options") + 1] ?? "";
+        expect(options).toContain("frag_discont");
+        expect(options).toContain("negative_cts_offsets");
+        expect(options).toContain("use_editlist=0");
+      }
+    }
+  });
+});
+
+/**
+ * WHAT THOSE MUXER OPTIONS ACTUALLY PRODUCE, from a segment recorded off disk.
+ *
+ * The argv tests above assert the request; these assert the answer, which is the half that
+ * decides whether a browser can assemble the film. Recorded 2026-09-08 from a real ffmpeg
+ * 9.0.1 run through `ffmpegArgs` itself, so the fixture cannot drift from the flags that made
+ * it -- regenerate with a short h264 source carrying B-frames:
+ *
+ * ```
+ * ffmpeg -f lavfi -i testsrc2=size=160x120:rate=24000/1001 -t 5 \
+ *        -c:v libx264 -bf 2 -g 24 -preset ultrafast -pix_fmt yuv420p tiny.mkv
+ * ```
+ *
+ * then produce segment 2 of a 1.001 s grid (`startSec: 2.002, endSec: 3.003`). Kept small on
+ * purpose: the whole init, and the fragment's header through its `moof`, is all the timing
+ * lives in, and 24 samples make a `trun` worth reading.
+ *
+ * **Before the options went in, the same run produced an `elst` with two entries and a `tfdt`
+ * of 0** -- the segment's position lived in the init's edit list, which hls.js does not
+ * implement. Two consecutive inits are now byte-identical (measured on segments 0 and 2 of a
+ * 60 s source), which is what retires the reason `mediaPlaylist` gives one per segment.
+ */
+const RECORDED_INIT =
+  "AAAAGGZ0eXBpc282AAACAGlzbzZtcDQxAAAC5m1vb3YAAABsbXZoZAAAAAAAAAAAAAAAAAAAA+gAAAAAAAEAAAEAAAAA" +
+  "AAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+  "AAIAAAHpdHJhawAAAFx0a2hkAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAA" +
+  "AAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAACgAAAAeAAAAAABhW1kaWEAAAAgbWRoZAAAAAAAAAAAAAAAAAAAPoAAAAAA" +
+  "VcQAAAAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAATBtaW5mAAAAFHZtaGQAAAAB" +
+  "AAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAADwc3RibAAAAKRzdHNkAAAAAAAAAAEA" +
+  "AACUYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAACgAHgASAAAAEgAAAAAAAAAARRMYXZjNjMuMS4xMDEgbGlieDI2" +
+  "NAAAAAAAAAAAAAAAABj//wAAAC5hdmNDAU1AC//hABdnTUAL7KFCPy4CIAAAfSAAF3AB4oUywAEABGjOD8gAAAAQcGFz" +
+  "cAAAAAEAAAABAAAAEHN0dHMAAAAAAAAAAAAAABBzdHNjAAAAAAAAAAAAAAAUc3RzegAAAAAAAAAAAAAAAAAAABBzdGNv" +
+  "AAAAAAAAAAAAAAAobXZleAAAACB0cmV4AAAAAAAAAAEAAAABAAAAAAAAAAAAAAAAAAAAYXVkdGEAAABZbWV0YQAAAAAA" +
+  "AAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2" +
+  "My4xLjEwMQ==";
+
+const RECORDED_FRAGMENT_HEADER =
+  "AAAAGHN0eXBtc2RoAAAAAG1zZGhtc2l4AAAANHNpZHgBAAAAAAAAAQAAPoAAAAAAAAB9IAAAAAAAAAAAAAAAAQAAko8A" +
+  "AD6AgAAAAAAAAYhtb29mAAAAEG1maGQAAAAAAAAAAQAAAXB0cmFmAAAAHHRmaGQAAgA4AAAAAQAAApAAABQXAQEAAAAA" +
+  "ABR0ZmR0AQAAAAAAAAAAAH0gAAABOHRydW4BAAsFAAAAGAAAAZACAAAAAAACkAAAFBcAAAAAAAACoAAAB9gAAAVAAAAC" +
+  "oAAAA23///1wAAACkAAAA4n///1gAAACoAAAByEAAAVAAAACoAAABAH///1wAAACoAAAA2D///1wAAACkAAACCQAAAUw" +
+  "AAACoAAABBP///1wAAACoAAAA+X///1wAAACkAAABz4AAAVAAAACoAAABFH///1wAAACoAAAA3r///1wAAACoAAACEcA" +
+  "AAVAAAACkAAAA8z///1gAAACoAAABBP///1wAAACoAAACIUAAAVAAAACkAAABE////1gAAACoAAABJH///1wAAACoAAA" +
+  "CL0AAAVAAAACkAAABSD///1gAAACoAAABK////1wAAACoAAAB9oAAAKgAAACkAAABIL///1w";
+
+/** The boundary the recorded segment declares, in seconds. Segment 2 of a 1.001 s grid. */
+const RECORDED_SEGMENT_START_SEC = 2.002;
+
+/** ISO-BMFF boxes that hold other boxes rather than fields. Enough to reach the timing. */
+const BOX_CONTAINERS = new Set(["moov", "trak", "edts", "mdia", "minf", "stbl", "moof", "traf"]);
+
+/** The body of the first box of this type, at any depth, or null when there is none. */
+function findBox(bytes: Uint8Array, type: string): Uint8Array | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 0; at + 8 <= bytes.byteLength; ) {
+    const size = view.getUint32(at);
+    if (size < 8 || at + size > bytes.byteLength) return null;
+    const name = String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+    const body = bytes.subarray(at + 8, at + size);
+    if (name === type) return body;
+    if (BOX_CONTAINERS.has(name)) {
+      const nested = findBox(body, type);
+      if (nested) return nested;
+    }
+    at += size;
+  }
+  return null;
+}
+
+function bodyOf(bytes: Uint8Array, type: string): DataView {
+  const body = findBox(bytes, type);
+  if (!body) throw new Error(`no ${type} box`);
+  return new DataView(body.buffer, body.byteOffset, body.byteLength);
+}
+
+/** Where a fragment says its media starts, in media timescale units, at either box width. */
+function baseMediaDecodeTime(tfdt: DataView): number {
+  return tfdt.getUint8(0) === 0 ? tfdt.getUint32(4) : Number(tfdt.getBigUint64(4));
+}
+
+/**
+ * The composition offset of a `trun`'s first sample: how far its PRESENTATION time sits from
+ * its decode time, in media timescale units. Zero means the fragment's first picture is shown
+ * exactly where the fragment says it starts.
+ *
+ * Read through the flags rather than at a fixed index, because which per-sample fields are
+ * present is exactly what `negative_cts_offsets` changes.
+ */
+function firstSampleCompositionOffset(trun: DataView): number {
+  const flags = trun.getUint32(0) & 0xff_ff_ff;
+  const HAS_DATA_OFFSET = 0x1;
+  const HAS_FIRST_SAMPLE_FLAGS = 0x4;
+  const HAS_DURATION = 0x100;
+  const HAS_SIZE = 0x200;
+  const HAS_FLAGS = 0x400;
+  const HAS_COMPOSITION_OFFSET = 0x800;
+  if (!(flags & HAS_COMPOSITION_OFFSET)) return 0;
+  let at = 8;
+  if (flags & HAS_DATA_OFFSET) at += 4;
+  if (flags & HAS_FIRST_SAMPLE_FLAGS) at += 4;
+  for (const present of [HAS_DURATION, HAS_SIZE, HAS_FLAGS]) if (flags & present) at += 4;
+  // Signed from version 1 on, which is what lets the reorder delay live here at all.
+  return trun.getUint8(0) === 0 ? trun.getUint32(at) : trun.getInt32(at);
+}
+
+describe("a produced segment carries its own position, so nothing has to infer it", () => {
+  const init = Uint8Array.from(atob(RECORDED_INIT), (c) => c.charCodeAt(0));
+  const fragment = Uint8Array.from(atob(RECORDED_FRAGMENT_HEADER), (c) => c.charCodeAt(0));
+
+  /**
+   * THE EDIT LIST IS THE DEFECT, not a detail of it. ffmpeg's default fMP4 output hides the
+   * segment's position in an `elst` -- an empty edit whose duration is the start, plus an
+   * entry trimming the B-frame reorder delay -- and hls.js implements no edit lists at all
+   * (its source contains neither `elst` nor `edts`). A consumer that cannot read the placement
+   * has to infer it, and inferring it is what drifted 0.083 s per fragment.
+   */
+  test("the initialisation segment carries no edit list to be ignored", () => {
+    expect(findBox(init, "edts")).toBeNull();
+    expect(findBox(init, "elst")).toBeNull();
+  });
+
+  test("the fragment's decode time IS its boundary, rather than zero", () => {
+    const timescale = bodyOf(init, "mdhd").getUint32(12);
+    const startsAt = baseMediaDecodeTime(bodyOf(fragment, "tfdt")) / timescale;
+    expect(timescale).toBe(16_000);
+    expect(startsAt).toBeCloseTo(RECORDED_SEGMENT_START_SEC, 6);
+  });
+
+  /**
+   * The reorder delay has to go somewhere. It used to be a positive bias on every sample,
+   * cancelled by an edit list entry nobody downstream read; `negative_cts_offsets` puts it in
+   * the samples that actually need it, so the FIRST one presents exactly where it decodes and
+   * a fragment's start needs no correction.
+   */
+  test("the first picture is presented exactly where the fragment starts", () => {
+    expect(firstSampleCompositionOffset(bodyOf(fragment, "trun"))).toBe(0);
+  });
 });

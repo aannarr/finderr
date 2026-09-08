@@ -322,6 +322,50 @@ const SEEK_NUDGE_SEC = 0.2;
 const AUDIO_NEVER_CUT_SEC = 86_400;
 
 /**
+ * What the nested fMP4 muxer is told, so that a segment says where it belongs IN ITSELF.
+ *
+ * > [!CAUTION] WITHOUT THESE, EVERY SEGMENT CLAIMS TO START AT ZERO and hides its real
+ * > position in an edit list -- which drifts 0.083 s further per fragment in the browser
+ * > ffmpeg's default fMP4 output writes `tfdt.baseMediaDecodeTime = 0` in every fragment and
+ * > puts the segment's absolute position in the initialisation segment's `elst` instead: an
+ * > empty edit whose duration is the start, plus a second entry trimming the B-frame reorder
+ * > delay (`duration=0, media_time=1328` at a 16000 media timescale -- 0.083 s, two frames at
+ * > 24000/1001). Measured here 2026-09-08 on a synthetic h264 source and on the library.
+ * >
+ * > **hls.js does not implement edit lists at all** -- its source contains no `elst` or `edts`
+ * > -- so it reads a fragment that says it starts at zero, re-derives its own time base from
+ * > the playlist on EVERY fragment, and lands each one at `playlist start + 0.083 s`. Its
+ * > drift correction then carries that forward, so fragment N is placed 0.083*N late: measured
+ * > +0.166, +0.248, +0.331 on three consecutive fragments. The buffered ranges end up ~0.134 s
+ * > apart, over hls.js's 0.1 s `maxBufferHole`, and the player stalls and jumps once per
+ * > segment -- every six seconds, on the ~97% of this library that is copied.
+ * >
+ * > So the placement is moved out of the edit list and into the media, where every consumer
+ * > reads it. Each option earns its place and all three were measured separately:
+ * >
+ * > | option | without it |
+ * > |---|---|
+ * > | `movflags=+frag_discont` | `tfdt` stays 0 -- the fragment does not say where it is |
+ * > | `movflags=+negative_cts_offsets` | `tfdt` stays 0 and the reorder delay biases every PTS |
+ * > | `use_editlist=0` | a residual `elst` survives to be applied a second time |
+ * >
+ * > With them, the same segment carries `tfdt = 192192` at a 16000 timescale -- 12.012 s, its
+ * > own boundary to the millisecond -- and a first sample with `cts = 0`. The init drops from
+ * > 817 bytes to 765 and no longer carries an `edts` at all.
+ *
+ * > [!IMPORTANT] `-hls_segment_options` IS the pass-through, and it was believed not to exist
+ * > `-movflags -use_editlist` and `-muxdelay 0` were both measured as silently ignored, which
+ * > is true: `-f hls` builds the nested mp4 muxer itself and no OUTPUT-level flag reaches it.
+ * > `-hls_segment_options` is the dictionary hlsenc hands to that muxer verbatim, and it is
+ * > what makes this a flag change rather than the fMP4-by-hand rewrite it looked like.
+ * >
+ * > It was added to hlsenc in November 2021, so an ffmpeg older than that rejects it outright
+ * > rather than ignoring it -- a hard failure at spawn, not a silent regression. Verified here
+ * > against ffmpeg 9.0.1.
+ */
+const SEGMENT_MUXER_OPTIONS = "movflags=+frag_discont+negative_cts_offsets:use_editlist=0";
+
+/**
  * The argv that produces ONE segment, derived from the plan.
  *
  * Separate from `planPlayback` so the DECISION can be asserted without reading flags, and
@@ -491,6 +535,10 @@ function muxerArgs(opts: FfmpegOpts): string[] {
     "vod",
     "-hls_segment_type",
     "fmp4",
+    // Handed straight to the nested fMP4 muxer, which no output-level flag can reach. This is
+    // what makes a segment carry its own absolute position -- see SEGMENT_MUXER_OPTIONS.
+    "-hls_segment_options",
+    SEGMENT_MUXER_OPTIONS,
     "-hls_flags",
     "independent_segments",
     // `-start_number` names the file after its place in the WHOLE film rather than after

@@ -298,10 +298,11 @@ export class TranscodeSessions {
    * The path of that segment's fMP4 initialisation segment, producing it if need be.
    *
    * Every run writes its own init and the session keeps it BESIDE its segment rather than
-   * sharing one, for the measured reason in `mediaPlaylist`'s note: the init carries an edit
-   * list naming where its run started, so the wrong one shifts the whole segment. A player
-   * asks for this immediately before the media, so on a cold session this call is usually
-   * what pays for the segment too, and the request that follows it is already satisfied.
+   * sharing one -- which is now redundant rather than required, for the reason in
+   * `mediaPlaylist`'s note: since the placement moved into each fragment's `tfdt`, a
+   * rendition's inits are byte-identical whatever the seek offset. A player asks for this
+   * immediately before the media, so on a cold session this call is usually what pays for the
+   * segment too, and the request that follows it is already satisfied.
    */
   initPath(id: string, track: Track, index: number): Promise<string | null> {
     return this.published(id, track, index, initFileName(track, index));
