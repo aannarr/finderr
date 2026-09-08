@@ -33,15 +33,15 @@ import {
   masterPlaylist,
   mediaPlaylist,
   mediaPlaylistName,
+  type PublishedTrack,
+  type PublishedTracks,
   parseProducedName,
   SEGMENT_TARGET_SEC,
   segmentContentType,
   segmentCount,
-  type Timeline,
-  TRACKS,
-  TRACKS_BLOCKING_FIRST_FRAME,
   type Track,
-  type TrackTimelines,
+  tracksBlockingFirstFrame,
+  tracksOfKind,
   uniformTimeline,
 } from "../lib/hls-timeline";
 import { boundedText, clampInt, LIMITS } from "../lib/input-guards";
@@ -229,7 +229,7 @@ async function producedFile(
 ): Promise<ProducedFile | null> {
   const asked = parseProducedName(name);
   if (!asked) return null;
-  const of = asked.kind === "segment" ? sessions.segmentPath : sessions.initPath;
+  const of = asked.file === "segment" ? sessions.segmentPath : sessions.initPath;
   const path = await of.call(sessions, id, asked.track, asked.index);
   return path === null ? null : { path, track: asked.track };
 }
@@ -246,42 +246,59 @@ async function producedFile(
  * the production carries on and the client's own request joins it.
  */
 async function warmFirstSegments(sessions: TranscodeSessions, session: Session): Promise<void> {
-  const first = TRACKS_BLOCKING_FIRST_FRAME.filter((track) => session.timelines[track]).map((track) =>
+  const first = tracksBlockingFirstFrame(session.tracks).map((track) =>
     sessions.segmentPath(session.id, track, 0),
   );
   await Promise.race([Promise.all(first), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
 }
 
 /**
- * The timelines a title publishes: the video grid it is stuck with, and a plain grid for
- * everything else.
+ * Every rendition this title publishes, in offer order: the video grid it is stuck with, and a
+ * plain grid for everything else.
  *
  * Audio has no keyframe constraint to honour -- every audio packet is a key packet -- and
  * neither has a subtitle cue, so both are uniform whatever the video is doing. That is
  * exactly what lets an audio segment cover its whole declared range and leave no hole at the
  * boundary. The grids do not have to agree, and making them agree would bring the constraint
- * back.
+ * back. Every audio rendition shares ONE uniform timeline object: they are cut identically,
+ * so a copy per rendition would be the same numbers stored several times.
+ *
+ * > [!IMPORTANT] AN AUDIO-ONLY TITLE PUBLISHES ONE AUDIO RENDITION, whatever it carries
+ * > With no video the variant must ITSELF be an audio playlist, and a variant that also joined
+ * > an audio group would name the same media twice -- so there is nowhere for an alternate to
+ * > hang. Publishing them anyway would put playlists in the session that the master never
+ * > names, which is a rendition a player can only reach by guessing. The default is kept and
+ * > the rest are dropped; see `masterPlaylist`.
  */
-async function timelinesFor(
+async function publishedTracksFor(
   path: string,
   durationSec: number,
   plan: PlaybackPlan,
   keyframes?: CutPointCache,
-): Promise<{ timelines: TrackTimelines; video: VideoGrid | null }> {
-  const timelines: { -readonly [K in Track]?: Timeline } = {};
+): Promise<{ tracks: PublishedTracks; video: VideoGrid | null }> {
+  const tracks: PublishedTrack[] = [];
   let video: VideoGrid | null = null;
-  if (plan.video.sourceIndex !== null) {
+  if (plan.video) {
     const cut = await cutTimeline(path, durationSec, SEGMENT_TARGET_SEC, {
       copiesVideo: plan.video.action === "copy",
       cache: keyframes,
     });
-    timelines.video = cut.timeline;
+    tracks.push({
+      track: { kind: "video", ordinal: 0 },
+      timeline: cut.timeline,
+      label: { name: "Video", language: null },
+    });
     video = { source: cut.source, cached: cut.cached };
   }
   const uniform = uniformTimeline(durationSec, SEGMENT_TARGET_SEC);
-  if (plan.audio.sourceIndex !== null) timelines.audio = uniform;
-  if (plan.subtitles.sourceIndex !== null) timelines.subtitles = uniform;
-  return { timelines, video };
+  const audio = plan.video ? plan.audio : plan.audio.slice(0, 1);
+  audio.forEach((rendition, ordinal) => {
+    tracks.push({ track: { kind: "audio", ordinal }, timeline: uniform, label: rendition.label });
+  });
+  plan.subtitles.forEach((rendition, ordinal) => {
+    tracks.push({ track: { kind: "subtitles", ordinal }, timeline: uniform, label: rendition.label });
+  });
+  return { tracks, video };
 }
 
 /** How the video grid was arrived at, which is the half of the answer worth reporting. */
@@ -306,8 +323,8 @@ function videoGridNote(video: VideoGrid, segments: number): string {
 }
 
 /** How many segments the playhead moves through: the video grid, or the audio one alone. */
-function publishedSegments(timelines: TrackTimelines): number {
-  const timeline = timelines.video ?? timelines.audio;
+function publishedSegments(tracks: PublishedTracks): number {
+  const timeline = (tracksOfKind(tracks, "video")[0] ?? tracksOfKind(tracks, "audio")[0])?.timeline;
   return timeline ? segmentCount(timeline) : 0;
 }
 
@@ -365,12 +382,9 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
    * segment is what causes it to be made.
    */
   const playlistFor = (session: Session, name: string): string | null => {
-    if (name === MASTER_PLAYLIST_NAME) return masterPlaylist(session.timelines);
-    for (const track of TRACKS) {
-      const timeline = session.timelines[track];
-      if (timeline && name === mediaPlaylistName(track)) return mediaPlaylist(track, timeline);
-    }
-    return null;
+    if (name === MASTER_PLAYLIST_NAME) return masterPlaylist(session.tracks);
+    const published = session.tracks.find((t) => mediaPlaylistName(t.track) === name);
+    return published ? mediaPlaylist(published.track, published.timeline) : null;
   };
 
   /** Serve one file of a session: a playlist, an init segment, or one media segment. */
@@ -495,17 +509,17 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           return bad("this file does not say how long it is", 409);
         }
 
-        const { timelines, video } = await timelinesFor(
+        const { tracks, video } = await publishedTracksFor(
           resolved.path,
           probe.durationSec,
           plan,
           deps.keyframes,
         );
-        const segments = publishedSegments(timelines);
+        const segments = publishedSegments(tracks);
         if (video !== null) plan.reasons.push(videoGridNote(video, segments));
         // The audio grid is worth stating too: it is the thing a reader would otherwise assume
         // matches the video grid, and it deliberately does not.
-        if (timelines.audio && timelines.video) {
+        if (video !== null && tracksOfKind(tracks, "audio").length > 0) {
           plan.reasons.push(`audio is a separate rendition on its own ${SEGMENT_TARGET_SEC}s grid`);
         }
 
@@ -513,7 +527,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           const session = deps.sessions.start({
             input: resolved.path,
             plan,
-            timelines,
+            tracks,
             encoder: deps.encoder,
             owner: deps.actorId(req) ?? undefined,
           });
@@ -678,7 +692,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
           sessions: deps.sessions.list().map((s) => ({
             id: s.id,
             expensive: s.expensive,
-            segments: publishedSegments(s.timelines),
+            segments: publishedSegments(s.tracks),
             startedAt: new Date(s.startedAt).toISOString(),
             lastAccessAt: new Date(s.lastAccessAt).toISOString(),
             owner: s.owner,

@@ -14,6 +14,7 @@ import {
   initFileName,
   MASTER_PLAYLIST_NAME,
   mediaPlaylistName,
+  type PublishedTracks,
   segmentFileName,
   type Timeline,
   type Track,
@@ -34,8 +35,8 @@ import { playbackRoutes } from "./playback-routes";
 
 const PLAN: PlaybackPlan = {
   video: { action: "copy", sourceIndex: 0, codec: "h264", scaleWidth: null },
-  audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-  subtitles: { action: "none", sourceIndex: null },
+  audio: [{ action: "transcode", sourceIndex: 1, codec: "aac", label: { name: "English", language: "eng" } }],
+  subtitles: [{ sourceIndex: 2, codec: "subrip", label: { name: "English", language: "eng" } }],
   reasons: ["video is h264, copied"],
 };
 
@@ -44,7 +45,19 @@ let sessionDir: string;
 
 /** Three six-second segments -- enough for the routes to have a timeline to state. */
 const TIMELINE: Timeline = { starts: [0, 6, 12], endSec: 18 };
-const TIMELINES = { video: TIMELINE, audio: TIMELINE, subtitles: TIMELINE };
+
+const VIDEO: Track = { kind: "video", ordinal: 0 };
+const AUDIO: Track = { kind: "audio", ordinal: 0 };
+const SUBTITLES: Track = { kind: "subtitles", ordinal: 0 };
+/** The alternate audio rendition, so the route's own naming is exercised past ordinal 0. */
+const AUDIO_2: Track = { kind: "audio", ordinal: 1 };
+
+/** What the fake session publishes: one of each kind, plus a second audio track. */
+const TRACKS: PublishedTracks = [VIDEO, AUDIO, AUDIO_2, SUBTITLES].map((track) => ({
+  track,
+  timeline: TIMELINE,
+  label: { name: `Track ${track.kind}${track.ordinal}`, language: null },
+}));
 
 /** The stream token the fake session carries. Any opaque string; the route compares, never parses. */
 const SESSION_TOKEN = "stream-token-1";
@@ -76,7 +89,7 @@ function fakeSessions(dir: string) {
     dir,
     input: "/plex/a.mkv",
     plan: PLAN,
-    timelines: TIMELINES,
+    tracks: TRACKS,
     expensive: false,
     startedAt: 1,
     lastAccessAt: 1,
@@ -170,11 +183,11 @@ beforeEach(() => {
   mkdtempSync(`${root}/x-`);
   require("node:fs").mkdirSync(sessionDir, { recursive: true });
   writeFileSync(join(sessionDir, MASTER_PLAYLIST_NAME), "#EXTM3U\n");
-  writeFileSync(join(sessionDir, initName("video", 1)), "init");
-  writeFileSync(join(sessionDir, segmentFileName("video", 1)), "segment-bytes");
-  writeFileSync(join(sessionDir, initName("audio", 1)), "init");
-  writeFileSync(join(sessionDir, segmentFileName("audio", 1)), "segment-bytes");
-  writeFileSync(join(sessionDir, segmentFileName("subtitles", 1)), "WEBVTT\n");
+  writeFileSync(join(sessionDir, initName(VIDEO, 1)), "init");
+  writeFileSync(join(sessionDir, segmentFileName(VIDEO, 1)), "segment-bytes");
+  writeFileSync(join(sessionDir, initName(AUDIO, 1)), "init");
+  writeFileSync(join(sessionDir, segmentFileName(AUDIO, 1)), "segment-bytes");
+  writeFileSync(join(sessionDir, segmentFileName(SUBTITLES, 1)), "WEBVTT\n");
   // A file OUTSIDE the session directory, next door -- the thing traversal would reach.
   writeFileSync(join(root, "secret.txt"), "the admin api key");
 
@@ -276,14 +289,14 @@ describe("a segment name cannot walk out of its session directory", () => {
     const { routes } = build({});
     const published = [
       MASTER_PLAYLIST_NAME,
-      mediaPlaylistName("video"),
-      mediaPlaylistName("audio"),
-      mediaPlaylistName("subtitles"),
-      initName("video", 1),
-      segmentFileName("video", 1),
-      initName("audio", 1),
-      segmentFileName("audio", 1),
-      segmentFileName("subtitles", 1),
+      mediaPlaylistName(VIDEO),
+      mediaPlaylistName(AUDIO),
+      mediaPlaylistName(SUBTITLES),
+      initName(VIDEO, 1),
+      segmentFileName(VIDEO, 1),
+      initName(AUDIO, 1),
+      segmentFileName(AUDIO, 1),
+      segmentFileName(SUBTITLES, 1),
     ];
     for (const name of published) {
       const res = (await routes["/api/play/s/:id/:file"]?.GET?.(segReq("sess-1", name))) as Response;
@@ -300,7 +313,7 @@ describe("a segment name cannot walk out of its session directory", () => {
     expect(playlist.headers.get("content-type")).toContain("mpegurl");
 
     const seg = (await routes["/api/play/s/:id/:file"]?.GET?.(
-      segReq("sess-1", segmentFileName("video", 1)),
+      segReq("sess-1", segmentFileName(VIDEO, 1)),
     )) as Response;
     expect(seg.headers.get("cache-control")).toContain("immutable");
   });
@@ -317,9 +330,9 @@ describe("a segment name cannot walk out of its session directory", () => {
       return res.headers.get("content-type");
     };
 
-    expect(await typeOf(segmentFileName("subtitles", 1))).toBe("text/vtt");
-    expect(await typeOf(segmentFileName("video", 1))).toBe("video/iso.segment");
-    expect(await typeOf(initName("audio", 1))).toBe("video/iso.segment");
+    expect(await typeOf(segmentFileName(SUBTITLES, 1))).toBe("text/vtt");
+    expect(await typeOf(segmentFileName(VIDEO, 1))).toBe("video/iso.segment");
+    expect(await typeOf(initName(AUDIO, 1))).toBe("video/iso.segment");
   });
 
   test("an unknown session is a 404 rather than a read of some other directory", async () => {
@@ -337,7 +350,7 @@ describe("a segment name cannot walk out of its session directory", () => {
   test("a segment that could not be produced is a 404, not a 500", async () => {
     const { routes } = build({});
     const res = (await routes["/api/play/s/:id/:file"]?.GET?.(
-      segReq("sess-1", segmentFileName("video", 42)),
+      segReq("sess-1", segmentFileName(VIDEO, 42)),
     )) as Response;
     expect(res.status).toBe(404);
   });
@@ -355,9 +368,9 @@ describe("the playlist states the whole timeline up front", () => {
     return res.text();
   };
 
-  test.each(["video", "audio"] as const)(
-    "the %s rendition names every segment and ends the list",
-    async (track) => {
+  test.each([VIDEO, AUDIO, AUDIO_2])(
+    "the $kind $ordinal rendition names every segment and ends the list",
+    async (track: Track) => {
       const text = await read(mediaPlaylistName(track));
 
       expect(text).toContain(segmentFileName(track, 0));
@@ -367,14 +380,24 @@ describe("the playlist states the whole timeline up front", () => {
   );
 
   /** Two renditions on two grids is what closes the ~60 ms audio hole at every boundary. */
-  test("the master names both renditions rather than any segment", async () => {
+  test("the master names every rendition rather than any segment", async () => {
     const text = await read(MASTER_PLAYLIST_NAME);
 
-    expect(text).toContain(mediaPlaylistName("video"));
-    expect(text).toContain(mediaPlaylistName("audio"));
-    expect(text).not.toContain(segmentFileName("video", 0));
+    for (const track of [VIDEO, AUDIO, AUDIO_2, SUBTITLES]) {
+      expect(text).toContain(mediaPlaylistName(track));
+    }
+    expect(text).not.toContain(segmentFileName(VIDEO, 0));
     // Not the file sitting in the session directory, which says only this.
     expect(text).not.toBe("#EXTM3U\n");
+  });
+
+  /** A playlist name the session does not publish must not be answered from disk either. */
+  test("a rendition this session does not have is a 404", async () => {
+    const { routes } = build({});
+    const res = (await routes["/api/play/s/:id/:file"]?.GET?.(
+      segReq("sess-1", mediaPlaylistName({ kind: "subtitles", ordinal: 4 })),
+    )) as Response;
+    expect(res.status).toBe(404);
   });
 });
 
@@ -451,7 +474,7 @@ describe("a stream token admits a cross-origin media request", () => {
   test("the right token serves the segment with no admin session at all", async () => {
     const routes = routesFor({ admin: false });
     const res = (await routes.GET?.(
-      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN }),
+      segReq("sess-1", segmentFileName(VIDEO, 1), { token: SESSION_TOKEN }),
     )) as Response;
     expect(res.status).toBe(200);
   });
@@ -459,7 +482,7 @@ describe("a stream token admits a cross-origin media request", () => {
   test("a wrong token falls through to the admin gate and is refused", async () => {
     const routes = routesFor({ admin: false });
     const res = (await routes.GET?.(
-      segReq("sess-1", segmentFileName("video", 1), { token: "not-it" }),
+      segReq("sess-1", segmentFileName(VIDEO, 1), { token: "not-it" }),
     )) as Response;
     expect(res.status).toBe(404);
   });
@@ -491,7 +514,7 @@ describe("CORS on the stream origin", () => {
   test("an advertised endpoint may read the segment", async () => {
     const routes = routesFor([LAN]);
     const res = (await routes.GET?.(
-      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN, origin: LAN.base }),
+      segReq("sess-1", segmentFileName(VIDEO, 1), { token: SESSION_TOKEN, origin: LAN.base }),
     )) as Response;
     expect(res.headers.get("access-control-allow-origin")).toBe(LAN.base);
     expect(res.headers.get("vary")).toContain("Origin");
@@ -500,7 +523,7 @@ describe("CORS on the stream origin", () => {
   test("an origin nobody advertised gets no header, so the browser refuses the read", async () => {
     const routes = routesFor([LAN]);
     const res = (await routes.GET?.(
-      segReq("sess-1", segmentFileName("video", 1), {
+      segReq("sess-1", segmentFileName(VIDEO, 1), {
         token: SESSION_TOKEN,
         origin: "https://evil.example",
       }),
@@ -519,7 +542,7 @@ describe("CORS on the stream origin", () => {
   test("a 404 for an unproduced segment still carries the header", async () => {
     const routes = routesFor([LAN]);
     const res = (await routes.GET?.(
-      segReq("sess-1", segmentFileName("video", 42), { token: SESSION_TOKEN, origin: LAN.base }),
+      segReq("sess-1", segmentFileName(VIDEO, 42), { token: SESSION_TOKEN, origin: LAN.base }),
     )) as Response;
     expect(res.status).toBe(404);
     expect(res.headers.get("access-control-allow-origin")).toBe(LAN.base);
@@ -536,7 +559,7 @@ describe("CORS on the stream origin", () => {
   test("the preflight answers 204 and names the method a ranged fetch needs", async () => {
     const routes = routesFor([LAN]);
     const res = (await routes.OPTIONS?.(
-      segReq("sess-1", segmentFileName("video", 1), { origin: LAN.base }),
+      segReq("sess-1", segmentFileName(VIDEO, 1), { origin: LAN.base }),
     )) as Response;
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-methods")).toContain("GET");
@@ -632,7 +655,7 @@ describe("counting what a playback costs", () => {
 
   test("a served segment is counted against its session at its file size", async () => {
     const { routes, meter } = build({});
-    const name = segmentFileName("video", 1);
+    const name = segmentFileName(VIDEO, 1);
     const size = statSync(join(sessionDir, name)).size;
 
     await routes["/api/play/s/:id/:file"]?.GET?.(seg(name));
@@ -652,7 +675,7 @@ describe("counting what a playback costs", () => {
    */
   test("the bytes are counted WITHOUT the response body being read", async () => {
     const { routes, meter } = build({});
-    const name = segmentFileName("video", 2);
+    const name = segmentFileName(VIDEO, 2);
     const bytes = new Uint8Array(8 * 1024 * 1024).fill(7);
     writeFileSync(join(sessionDir, name), bytes);
 
@@ -714,7 +737,7 @@ describe("the cost report", () => {
     const { routes, meter } = build({});
     meter.open("sess-1", FILM);
     await routes["/api/play/s/:id/:file"]?.GET?.(
-      segReq("sess-1", segmentFileName("video", 1), { token: SESSION_TOKEN }),
+      segReq("sess-1", segmentFileName(VIDEO, 1), { token: SESSION_TOKEN }),
     );
 
     const body = await read(routes);

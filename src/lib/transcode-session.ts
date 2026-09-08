@@ -7,10 +7,12 @@
  * for the length of one segment and exits. `hls-timeline.ts` owns the segmentation,
  * `playback-plan.ts` owns the argv, and this module owns the bookkeeping between them.
  *
- * **A segment belongs to a TRACK as well as to an index.** Video, audio and subtitles are
- * published as separate renditions cut on separate grids -- see `hls-timeline.ts` for why
- * that is what closes the audio hole -- so every question this module answers is asked per
- * track, and the concurrency ceiling and the disk cache are per track too.
+ * **A segment belongs to a TRACK as well as to an index**, and a track is a KIND plus an
+ * ORDINAL: a film with three audio tracks publishes three audio renditions, each cut on its
+ * own grid -- see `hls-timeline.ts` for why the video and audio grids differ and what that
+ * closes. Every question this module answers is asked per track, and the concurrency ceiling
+ * and the disk cache are per track too. A rendition nobody has selected costs nothing at all:
+ * no player fetches it, so no ffmpeg ever runs for it.
  *
  * Segments are handed out by the route with `Bun.file`, which is zero-copy, so **segment
  * bytes never enter the JS heap and the event loop pays a stat and an fd handoff per
@@ -56,13 +58,13 @@ import { secretEquals } from "./auth";
 import type { EncoderChoice } from "./encoder";
 import {
   initFileName,
+  type PublishedTracks,
   RUN_INIT_NAME,
   segmentFileName,
   segmentRange,
   type Timeline,
-  TRACKS,
   type Track,
-  type TrackTimelines,
+  trackKey,
 } from "./hls-timeline";
 import { ffmpegArgs, isExpensive, type PlaybackPlan } from "./playback-plan";
 
@@ -203,13 +205,13 @@ export interface StartOpts {
   input: string;
   plan: PlaybackPlan;
   /**
-   * Every segment of every rendition this title publishes, from `hls-timeline.ts`.
+   * Every rendition this title publishes, in offer order, from `hls-timeline.ts`.
    *
    * Two grids, not one: video is cut on the source's keyframes while audio and subtitles get
    * a plain uniform grid, which is what stops the muxer dropping ~60 ms of sound at every
    * boundary.
    */
-  timelines: TrackTimelines;
+  tracks: PublishedTracks;
   /** Which encoder to use for a re-encode. From `chooseEncoder`, probed once at boot. */
   encoder?: EncoderChoice;
   /** Who asked, for the health report. Never used for a decision. */
@@ -259,7 +261,8 @@ export interface Session {
   dir: string;
   input: string;
   plan: PlaybackPlan;
-  timelines: TrackTimelines;
+  /** Every rendition this session publishes, in offer order. */
+  tracks: PublishedTracks;
   expensive: boolean;
   encoder?: EncoderChoice;
   startedAt: number;
@@ -356,7 +359,8 @@ interface TrackState {
 /** Everything a session keeps that a caller has no business seeing. */
 interface SessionState {
   session: Session;
-  tracks: Map<Track, TrackState>;
+  /** One entry per published rendition, keyed by `trackKey` -- a `Track` is not a map key. */
+  byTrack: Map<string, TrackState>;
   /** Live children, so shutdown can kill what is running rather than orphaning it. */
   running: Set<ReturnType<Spawner>>;
 }
@@ -414,19 +418,22 @@ export class TranscodeSessions {
       dir,
       input: o.input,
       plan: o.plan,
-      timelines: o.timelines,
+      tracks: o.tracks,
       expensive,
       encoder: o.encoder,
       startedAt: at,
       lastAccessAt: at,
       owner: o.owner ?? null,
     };
-    const tracks = new Map<Track, TrackState>();
-    for (const track of TRACKS) {
-      const timeline = o.timelines[track];
-      if (timeline) tracks.set(track, { timeline, producing: new Map(), produced: [] });
+    const byTrack = new Map<string, TrackState>();
+    for (const published of o.tracks) {
+      byTrack.set(trackKey(published.track), {
+        timeline: published.timeline,
+        producing: new Map(),
+        produced: [],
+      });
     }
-    this.states.set(session.id, { session, tracks, running: new Set() });
+    this.states.set(session.id, { session, byTrack, running: new Set() });
     this.byKey.set(key, session.id);
     return session;
   }
@@ -561,7 +568,7 @@ export class TranscodeSessions {
    * player half of each.
    */
   private produce(state: SessionState, track: Track, index: number): Promise<boolean> {
-    const trackState = state.tracks.get(track);
+    const trackState = state.byTrack.get(trackKey(track));
     if (!trackState) return Promise.resolve(false);
     const already = trackState.producing.get(index);
     if (already) return already;
@@ -596,7 +603,7 @@ export class TranscodeSessions {
     try {
       // The track is in the name only so a directory left behind by a crash says which
       // rendition was making it; `mkdtempSync` is what makes it unique.
-      work = mkdtempSync(join(session.dir, `w-${track}-${index}-`));
+      work = mkdtempSync(join(session.dir, `w-${trackKey(track)}-${index}-`));
     } catch {
       // The session directory is gone: it was stopped while this request was in flight.
       return false;
@@ -671,7 +678,7 @@ export class TranscodeSessions {
    * A WebVTT rendition has no init, so there is nothing to move first and nothing to wait for.
    */
   private publish(state: SessionState, track: Track, work: string, index: number): boolean {
-    const trackState = state.tracks.get(track);
+    const trackState = state.byTrack.get(trackKey(track));
     if (!trackState) return false;
     const { dir } = state.session;
     const media = segmentFileName(track, index);
@@ -831,17 +838,19 @@ export function bindShutdown(sessions: TranscodeSessions): void {
  * CONTAIN. The position is deliberately absent: a session is a whole film now, so two
  * viewers at different points in it share one session and every segment either of them
  * causes to be produced.
+ *
+ * EVERY rendition is named, not just the ones a viewer is watching. Two clients with
+ * different codec support get different per-track answers -- Safari copies the eac3 track
+ * that Chrome must re-encode -- so a key naming only the first would JOIN them onto one
+ * output directory, and the second viewer would be served the first's audio.
  */
 export function sessionKey(o: StartOpts): string {
   const p = o.plan;
   return [
     o.input,
-    p.video.action,
-    p.video.sourceIndex,
-    p.audio.action,
-    p.audio.sourceIndex,
-    p.subtitles.action,
-    p.subtitles.sourceIndex,
+    p.video ? `v:${p.video.action}:${p.video.sourceIndex}:${p.video.scaleWidth}` : "v:none",
+    ...p.audio.map((a) => `a:${a.action}:${a.sourceIndex}`),
+    ...p.subtitles.map((s) => `s:${s.sourceIndex}`),
     o.encoder?.encoder ?? "",
   ].join("|");
 }

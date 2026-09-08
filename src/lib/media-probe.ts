@@ -75,8 +75,8 @@ interface RawProbe {
     channels?: number;
     width?: number;
     height?: number;
-    tags?: { language?: string };
-    disposition?: { default?: number };
+    tags?: { language?: string; title?: string };
+    disposition?: { default?: number; forced?: number; hearing_impaired?: number };
   }[];
   format?: { duration?: string; format_name?: string };
 }
@@ -88,6 +88,10 @@ interface RawProbe {
  * subprocess -- which is where the surprises actually are. A stream with no `index` or no
  * `codec_type` is DROPPED rather than defaulted: `-map 0:undefined` is an ffmpeg error at
  * spawn time, and a stream we cannot address is one we cannot use.
+ *
+ * The `tags.title` and `disposition` fields are read purely to LABEL a rendition in the
+ * player's menu -- see `trackName` in `playback-plan.ts`. They decide nothing about what
+ * ffmpeg does, which is why an absent one costs a viewer a worse name and never a failure.
  */
 export function parseProbe(json: string): ProbedMedia {
   let raw: RawProbe;
@@ -108,7 +112,10 @@ export function parseProbe(json: string): ProbedMedia {
       width: s.width,
       height: s.height,
       language: s.tags?.language,
+      title: s.tags?.title,
       isDefault: s.disposition?.default === 1,
+      forced: s.disposition?.forced === 1,
+      hearingImpaired: s.disposition?.hearing_impaired === 1,
     });
   }
 

@@ -38,7 +38,14 @@
  */
 
 import { type EncoderChoice, SOFTWARE } from "./encoder";
-import { RUN_INIT_NAME, segmentFileName, segmentFilePattern, type Track } from "./hls-timeline";
+import {
+  RUN_INIT_NAME,
+  segmentFileName,
+  segmentFilePattern,
+  type Track,
+  type TrackKind,
+  type TrackLabel,
+} from "./hls-timeline";
 
 /** What the browser told us it can decode. Codec names are ffmpeg's, lowercased. */
 export interface ClientCapabilities {
@@ -65,10 +72,28 @@ export interface ProbedStream {
   channels?: number;
   /** BCP-47-ish, as the container tagged it. */
   language?: string;
+  /**
+   * The muxer's own human label for this stream -- `Commentary by the director`, `English SDH`.
+   *
+   * The BEST name there is when it exists, because it is the only one that knows why a track
+   * is there. Absent on most scene releases, which is why `trackName` has two fallbacks.
+   */
+  title?: string;
   width?: number;
   height?: number;
   /** 1 when the container marks the stream default. */
   isDefault?: boolean;
+  /**
+   * The container's `forced` flag: a track carrying only the lines a viewer MUST read -- alien
+   * dialogue, a sign -- rather than the whole script.
+   *
+   * Read only to LABEL the rendition. It is deliberately not turned into HLS's `FORCED=YES`,
+   * which asks a player to display the track without being told to: that would produce ffmpeg
+   * runs for a rendition nobody selected, which is the one property this design must keep.
+   */
+  forced?: boolean;
+  /** The container's `hearing_impaired` flag: subtitles that transcribe sound as well as speech. */
+  hearingImpaired?: boolean;
 }
 
 export interface ProbedMedia {
@@ -81,36 +106,67 @@ export interface ProbedMedia {
 
 export type StreamAction = "copy" | "transcode";
 
+/** What every published rendition has: one source stream, and the codec it carries. */
+interface Rendition {
+  /** The stream this rendition is made of. Never null -- a rendition with none is not published. */
+  sourceIndex: number;
+  /** ffmpeg's name for what the rendition ends up carrying. */
+  codec: string;
+}
+
+/** The one video rendition. Null on `PlaybackPlan` when the file has no video stream at all. */
+export interface VideoRendition extends Rendition {
+  action: StreamAction;
+  /**
+   * Width to scale the re-encode down to, or `null` to leave the frame alone.
+   *
+   * Decided HERE rather than in the argv because it is the only place that has seen the
+   * source's dimensions -- and because an unconditional filter would UPSCALE a 480p source,
+   * which costs pixels to make the picture worse. Null on every copy, since a copy has no
+   * frame to resize.
+   */
+  scaleWidth: number | null;
+}
+
+/** One audio rendition. Each carries its own copy/transcode answer, from its own codec. */
+export interface AudioRendition extends Rendition {
+  action: StreamAction;
+  label: TrackLabel;
+}
+
 /**
- * What happens to subtitles. TWO answers, and `burn` is deliberately not one of them.
+ * One subtitle rendition, always extracted to WebVTT.
  *
- * There used to be a third. `burn` forced a full video re-encode -- drawing a bitmap onto the
- * picture is a pixel operation -- and then nothing burned anything, so asking for the PGS
- * tracks on a title bought the most expensive outcome in this module and returned a video
- * with no subtitles on it. Declining what we do not do is honest; charging for it is not.
+ * There is no `action` and there used to be, spelled `"none" | "extract"`. With a LIST of
+ * renditions "none" is the empty list, so the state cannot be represented twice -- and there
+ * has never been another answer: a text track converts to WebVTT for effectively nothing, and
+ * a BITMAP one is refused before it becomes a rendition at all.
  *
- * The bitmap codecs are still RECOGNISED -- see `BITMAP_SUBTITLES` -- because a file whose
- * only subtitles are bitmaps deserves to be told so rather than silently given none.
+ * There was a third answer once. `burn` forced a full video re-encode -- drawing a bitmap onto
+ * the picture is a pixel operation -- and then nothing burned anything, so asking for the PGS
+ * tracks on a title bought the most expensive outcome in this module and returned a video with
+ * no subtitles on it. The bitmap codecs are still RECOGNISED -- see `BITMAP_SUBTITLES` --
+ * because a file whose only subtitles are bitmaps deserves to be told so in `reasons` rather
+ * than silently given none.
  */
-export type SubtitleAction = "none" | "extract";
+export interface SubtitleRendition extends Rendition {
+  label: TrackLabel;
+}
 
 export interface PlaybackPlan {
-  video: {
-    action: StreamAction;
-    sourceIndex: number | null;
-    codec: string;
-    /**
-     * Width to scale the re-encode down to, or `null` to leave the frame alone.
-     *
-     * Decided HERE rather than in the argv because it is the only place that has seen the
-     * source's dimensions -- and because an unconditional filter would UPSCALE a 480p source,
-     * which costs pixels to make the picture worse. Null on every copy, since a copy has no
-     * frame to resize.
-     */
-    scaleWidth: number | null;
-  };
-  audio: { action: StreamAction; sourceIndex: number | null; codec: string };
-  subtitles: { action: SubtitleAction; sourceIndex: number | null };
+  /** Null when the file has no video stream: an audio-only title has one thing to play. */
+  video: VideoRendition | null;
+  /**
+   * Every audio track the file has, in OFFER order -- the container's own default first.
+   *
+   * All of them, rather than a chosen subset, and that is a decision rather than an oversight:
+   * a rendition costs one manifest line and produces nothing until a viewer selects it, while
+   * a rule for choosing between languages is a rule about who this server is for. 19% of the
+   * sampled library carries more than one.
+   */
+  audio: readonly AudioRendition[];
+  /** Every TEXT subtitle track, in source order. Empty when there is none we can show. */
+  subtitles: readonly SubtitleRendition[];
   /**
    * Every decision in words, in order.
    *
@@ -219,50 +275,46 @@ const SOFTWARE_PIXEL_FORMAT = "yuv420p";
  */
 const VAAPI_PIXEL_FORMAT = "nv12";
 
-function firstOfType(streams: readonly ProbedStream[], type: string): ProbedStream | null {
-  const of = streams.filter((s) => s.codec_type === type);
-  if (of.length === 0) return null;
-  return of.find((s) => s.isDefault) ?? of[0] ?? null;
+const codecOf = (s: ProbedStream) => (s.codec_name ?? "").toLowerCase();
+
+/**
+ * The audio tracks this file offers, in the order a viewer should meet them.
+ *
+ * The container's own default goes FIRST, and everything else keeps its source order. That
+ * flag is the only preference expressed anywhere in the file about which track a viewer
+ * wants, and putting it at position 0 means "which rendition plays by default" is a POSITION
+ * rather than a second flag free to disagree with the order -- see `masterPlaylist`.
+ */
+function audioInOfferOrder(streams: readonly ProbedStream[]): ProbedStream[] {
+  const audio = streams.filter((s) => s.codec_type === "audio");
+  const defaultAt = audio.findIndex((s) => s.isDefault);
+  if (defaultAt <= 0) return audio;
+  return [audio[defaultAt] as ProbedStream, ...audio.filter((_, at) => at !== defaultAt)];
 }
 
 /**
- * What can be done with this file's subtitle streams: extract one, or nothing and why.
+ * The subtitle tracks this pipeline can actually publish, and -- when it can publish none --
+ * the bitmap codec that was in the way.
  *
- * ONE track is published, and on this library that is a real narrowing rather than a
- * theoretical one: **62 of 118 sampled films carry two or more TEXT subtitle tracks**
- * (ffprobe over `/Volumes/plex/movie`, 2026-09-08). Which one a viewer gets is
- * `pickSubtitle`'s answer and there is no way to override it -- see the track-selection card,
- * `let-a-viewer-choose-the-audio-and-subtitle-track-53-of-films`.
+ * EVERY text track, in source order. On this library that is the whole point: **62 of 118
+ * sampled films carry two or more TEXT subtitle tracks** (ffprobe over `/Volumes/plex/movie`,
+ * 2026-09-08), and a single published track hands a viewer whichever one the muxer flagged --
+ * frequently a forced-narrative track carrying four lines for the entire film.
  *
- * A file whose subtitles are ALL bitmaps yields no track and a named refusal, because
- * showing one would mean burning it into the picture and nothing does that -- see
- * `SubtitleAction`.
+ * A file whose subtitles are ALL bitmaps yields nothing and a NAMED refusal, because showing
+ * one would mean burning it into the picture and nothing does that -- see `SubtitleRendition`.
  */
-function pickSubtitle(streams: readonly ProbedStream[]): SubtitleChoice {
+function subtitlesToPublish(streams: readonly ProbedStream[]): {
+  streams: ProbedStream[];
+  refusedBitmap: string | null;
+} {
   const subs = streams.filter((s) => s.codec_type === "subtitle");
-  const codecOf = (s: ProbedStream) => (s.codec_name ?? "").toLowerCase();
   const text = subs.filter((s) => TEXT_SUBTITLES.has(codecOf(s)));
-  // The container's own default flag breaks the tie, which is the only preference expressed
-  // anywhere in the file about which of its tracks a viewer wants.
-  const stream = text.find((s) => s.isDefault) ?? text[0] ?? null;
-  if (stream) return { stream, refusedBitmap: null };
+  if (text.length > 0) return { streams: text, refusedBitmap: null };
   return {
-    stream: null,
+    streams: [],
     refusedBitmap: subs.find((s) => BITMAP_SUBTITLES.has(codecOf(s)))?.codec_name ?? null,
   };
-}
-
-/** A subtitle track to publish, or nothing -- and, when it is nothing, what was in the way. */
-interface SubtitleChoice {
-  /** The text track to publish, or null when there is none this pipeline can show. */
-  stream: ProbedStream | null;
-  /**
-   * The bitmap codec that was in the way, when THAT is why there is no track.
-   *
-   * Null both when a track was found and when the file simply has no subtitles: the plan has
-   * nothing to say about a file that never had any.
-   */
-  refusedBitmap: string | null;
 }
 
 /**
@@ -270,8 +322,8 @@ interface SubtitleChoice {
  *
  * `wantSubtitles` defaults to FALSE. It costs almost nothing now -- an extracted WebVTT
  * rendition never touches the video and hls.js fetches none of it until a viewer switches
- * subtitles on -- but it does decide whether a third rendition is PUBLISHED at all, and a
- * caller that has not asked for one should not be handed it.
+ * subtitles on -- but it does decide whether the subtitle renditions are PUBLISHED at all,
+ * and a caller that has not asked for them should not be handed them.
  */
 export function planPlayback(
   probe: ProbedMedia,
@@ -279,53 +331,9 @@ export function planPlayback(
   opts: { wantSubtitles?: boolean } = {},
 ): PlaybackPlan {
   const reasons: string[] = [];
-  const video = firstOfType(probe.streams, "video");
-  const audio = firstOfType(probe.streams, "audio");
-
-  const videoCodec = (video?.codec_name ?? "").toLowerCase();
-  const audioCodec = (audio?.codec_name ?? "").toLowerCase();
-  const canVideo = client.video.map((c) => c.toLowerCase());
-  const canAudio = client.audio.map((c) => c.toLowerCase());
-
-  // --- subtitles. They no longer touch the video decision at all, which is the point: since
-  // nothing is ever burned in, asking for subtitles cannot turn a copy into a re-encode.
-  const picked = opts.wantSubtitles ? pickSubtitle(probe.streams) : null;
-  if (picked?.stream) {
-    reasons.push(
-      `subtitles are ${picked.stream.codec_name}, published as a selectable WebVTT rendition (no re-encode)`,
-    );
-  } else if (picked?.refusedBitmap) {
-    reasons.push(
-      `the only subtitles here are ${picked.refusedBitmap} (a bitmap), which could be shown only by burning them into the picture -- not supported, so none are published`,
-    );
-  }
-  const subtitleAction: SubtitleAction = picked?.stream ? "extract" : "none";
-
-  // --- video
-  let videoAction: StreamAction;
-  if (!video) {
-    videoAction = "copy";
-    reasons.push("no video stream");
-  } else if (canVideo.includes(videoCodec)) {
-    videoAction = "copy";
-    reasons.push(`video is ${videoCodec}, which this browser decodes -- copied`);
-  } else {
-    videoAction = "transcode";
-    reasons.push(`video is ${videoCodec}, which this browser cannot decode -- re-encoded to ${TARGET_VIDEO}`);
-  }
-
-  // --- audio
-  let audioAction: StreamAction;
-  if (!audio) {
-    audioAction = "copy";
-    reasons.push("no audio stream");
-  } else if (canAudio.includes(audioCodec)) {
-    audioAction = "copy";
-    reasons.push(`audio is ${audioCodec}, which this browser decodes -- copied`);
-  } else {
-    audioAction = "transcode";
-    reasons.push(`audio is ${audioCodec}, which this browser cannot decode -- re-encoded to ${TARGET_AUDIO}`);
-  }
+  const video = planVideo(probe, client, reasons);
+  const audio = planAudio(probe, client, reasons);
+  const subtitles = opts.wantSubtitles ? planSubtitles(probe, reasons) : [];
 
   // The container is ALWAYS rewritten and it is worth saying so: 97% of this library is
   // Matroska, which no browser plays, and a reader looking at a plan whose every stream
@@ -333,29 +341,233 @@ export function planPlayback(
   if (probe.formatName && !probe.formatName.includes("mp4")) {
     reasons.push(`container is ${probe.formatName}, repackaged as fragmented MP4 (no re-encode)`);
   }
+  return { video, audio, subtitles, reasons };
+}
 
-  const scaleWidth = videoAction === "transcode" ? downscaleWidth(video?.width) : null;
+/** The one video rendition, or null when the file has no video stream to publish. */
+function planVideo(probe: ProbedMedia, client: ClientCapabilities, reasons: string[]): VideoRendition | null {
+  const streams = probe.streams.filter((s) => s.codec_type === "video");
+  const stream = streams.find((s) => s.isDefault) ?? streams[0];
+  if (!stream) {
+    reasons.push("no video stream");
+    return null;
+  }
+  const codec = codecOf(stream);
+  const action: StreamAction = client.video.map((c) => c.toLowerCase()).includes(codec)
+    ? "copy"
+    : "transcode";
+  reasons.push(
+    action === "copy"
+      ? `video is ${codec}, which this browser decodes -- copied`
+      : `video is ${codec}, which this browser cannot decode -- re-encoded to ${TARGET_VIDEO}`,
+  );
+  const scaleWidth = action === "transcode" ? downscaleWidth(stream.width) : null;
   if (scaleWidth !== null) {
     reasons.push(
-      `video is ${video?.width}px wide, scaled down to ${scaleWidth}px to keep the re-encode cheap`,
+      `video is ${stream.width}px wide, scaled down to ${scaleWidth}px to keep the re-encode cheap`,
     );
   }
-
   return {
-    video: {
-      action: videoAction,
-      sourceIndex: video?.index ?? null,
-      codec: videoAction === "copy" ? videoCodec : TARGET_VIDEO,
-      scaleWidth,
-    },
-    audio: {
-      action: audioAction,
-      sourceIndex: audio?.index ?? null,
-      codec: audioAction === "copy" ? audioCodec : TARGET_AUDIO,
-    },
-    subtitles: { action: subtitleAction, sourceIndex: picked?.stream?.index ?? null },
-    reasons,
+    action,
+    sourceIndex: stream.index,
+    codec: action === "copy" ? codec : TARGET_VIDEO,
+    scaleWidth,
   };
+}
+
+/**
+ * Every audio rendition, each with its OWN copy/transcode answer.
+ *
+ * Per track rather than per file, because the tracks genuinely differ: a release commonly
+ * carries a lossless English track and an aac dub, and one of those copies where the other
+ * cannot. Deciding once from the first track would re-encode a stream the browser could have
+ * played, or copy one it cannot.
+ */
+function planAudio(probe: ProbedMedia, client: ClientCapabilities, reasons: string[]): AudioRendition[] {
+  const streams = audioInOfferOrder(probe.streams);
+  if (streams.length === 0) {
+    reasons.push("no audio stream");
+    return [];
+  }
+  const canPlay = client.audio.map((c) => c.toLowerCase());
+  const renditions = withDistinctNames(
+    streams.map((stream, ordinal): AudioRendition => {
+      const codec = codecOf(stream);
+      const action: StreamAction = canPlay.includes(codec) ? "copy" : "transcode";
+      return {
+        action,
+        sourceIndex: stream.index,
+        codec: action === "copy" ? codec : TARGET_AUDIO,
+        label: labelFor(stream, "audio", ordinal),
+      };
+    }),
+  );
+  // The DEFAULT track's decision in full, because it is the one that will actually run, and
+  // then ONE line naming what else is on offer -- a reason each would push twelve lines of
+  // near-identical text at a reader on the files that carry twelve tracks.
+  const sourceCodec = codecOf(streams[0] as ProbedStream);
+  reasons.push(
+    renditions[0]?.action === "copy"
+      ? `audio is ${sourceCodec}, which this browser decodes -- copied`
+      : `audio is ${sourceCodec}, which this browser cannot decode -- re-encoded to ${TARGET_AUDIO}`,
+  );
+  reasons.push(...offerReason("audio", renditions));
+  return renditions;
+}
+
+/** Every publishable subtitle rendition, or none and the reason there are none. */
+function planSubtitles(probe: ProbedMedia, reasons: string[]): SubtitleRendition[] {
+  const { streams, refusedBitmap } = subtitlesToPublish(probe.streams);
+  if (streams.length === 0) {
+    if (refusedBitmap) {
+      reasons.push(
+        `the only subtitles here are ${refusedBitmap} (a bitmap), which could be shown only by burning them into the picture -- not supported, so none are published`,
+      );
+    }
+    return [];
+  }
+  const renditions = withDistinctNames(
+    streams.map(
+      (stream, ordinal): SubtitleRendition => ({
+        sourceIndex: stream.index,
+        codec: codecOf(stream),
+        label: labelFor(stream, "subtitles", ordinal),
+      }),
+    ),
+  );
+  reasons.push(
+    `subtitles are ${renditions[0]?.codec}, published as selectable WebVTT renditions (no re-encode)`,
+  );
+  reasons.push(...offerReason("subtitles", renditions));
+  return renditions;
+}
+
+/** What else is on the menu, in one line, or nothing when there is only one rendition. */
+function offerReason(kind: TrackKind, renditions: readonly { label: TrackLabel }[]): string[] {
+  if (renditions.length < 2) return [];
+  return [`${renditions.length} ${kind} tracks offered: ${renditions.map((r) => r.label.name).join(", ")}`];
+}
+
+/**
+ * Rename any rendition whose menu label collides with an earlier one.
+ *
+ * A file with six English subtitle tracks and no titles would otherwise put six entries called
+ * "English" in the menu, which cannot be chosen from -- and that is the ordinary shape of a
+ * scene release rather than a corner case. The suffix is positional (`English (2)`) because
+ * there is nothing else left to tell them apart: the container said the same thing twice.
+ */
+function withDistinctNames<T extends { label: TrackLabel }>(renditions: T[]): T[] {
+  const used = new Map<string, number>();
+  return renditions.map((rendition) => {
+    const { name } = rendition.label;
+    const seen = used.get(name) ?? 0;
+    used.set(name, seen + 1);
+    if (seen === 0) return rendition;
+    return { ...rendition, label: { ...rendition.label, name: `${name} (${seen + 1})` } };
+  });
+}
+
+/** How one rendition is described to a viewer: the menu entry, and the language tag beside it. */
+function labelFor(stream: ProbedStream, kind: TrackKind, ordinal: number): TrackLabel {
+  return { name: trackName(stream, kind, ordinal), language: languageTag(stream.language) };
+}
+
+/**
+ * What a player's menu shows for one rendition, best answer first.
+ *
+ * Three sources, in descending order of how much they know:
+ *
+ * 1. **The container's own title tag.** `Commentary by the director` is a fact nothing else in
+ *    the file can reconstruct, so when it is there nothing else is added to it.
+ * 2. **The language, spelled out in English.** `Intl.DisplayNames` maps ISO-639-2/B -- which is
+ *    what Matroska actually writes (`ger`, `fre`, `chi`) -- as readily as BCP-47, so there is
+ *    no language table here to go stale.
+ * 3. **The kind and its position**, for a track the container said nothing about at all.
+ *
+ * The forced/SDH marker rides on 2 and 3 but never on 1, because a title already says what the
+ * track is and appending to somebody's own words is how a menu ends up reading
+ * `English SDH (SDH)`.
+ */
+function trackName(stream: ProbedStream, kind: TrackKind, ordinal: number): string {
+  const title = cleanLabel(stream.title);
+  if (title) return title;
+  const base = languageName(stream.language) ?? defaultName(kind, ordinal);
+  return cleanLabel(`${base}${trackMarker(stream)}`) || defaultName(kind, ordinal);
+}
+
+/** What a rendition is called when the container said nothing about it. */
+function defaultName(kind: TrackKind, ordinal: number): string {
+  const noun = kind === "audio" ? "Audio" : kind === "subtitles" ? "Subtitles" : "Video";
+  return ordinal === 0 ? noun : `${noun} ${ordinal + 1}`;
+}
+
+/** The disposition worth showing in a menu, or nothing. `forced` wins: it is the narrower claim. */
+function trackMarker(stream: ProbedStream): string {
+  if (stream.forced) return " (forced)";
+  return stream.hearingImpaired ? " (SDH)" : "";
+}
+
+/**
+ * The language name in English, or null when the container said nothing we can read.
+ *
+ * `fallback: "none"` so an unrecognised subtag answers `undefined` rather than echoing itself
+ * back as if it were a language -- a menu entry called `qaa` is worse than one called
+ * `Subtitles 3`.
+ */
+function languageName(raw: string | undefined): string | null {
+  const tag = languageTag(raw);
+  if (!tag) return null;
+  try {
+    return LANGUAGE_NAMES.of(tag) ?? null;
+  } catch {
+    // `Intl.DisplayNames.of` THROWS a RangeError on a structurally invalid tag rather than
+    // answering undefined, and container metadata is exactly where malformed tags live.
+    return null;
+  }
+}
+
+const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language", fallback: "none" });
+
+/** ISO 639-2's code for "the container does not know", which is not a language to display. */
+const UNDETERMINED_LANGUAGE = "und";
+
+/**
+ * The container's language tag, or null when it is not one.
+ *
+ * ONE sanitiser for both readers: the display lookup above, and the `LANGUAGE` attribute the
+ * master playlist writes -- which goes into a manifest, so it must not be able to carry a
+ * quote or a newline. RFC 5646's shape, loosely: subtags of letters and digits, joined by
+ * hyphens. `eng`, `pt-BR` and `es-419` all pass; `en_US` and a title in Cyrillic do not.
+ *
+ * `und` is refused along with them, and it is the interesting case: it is perfectly
+ * well-formed and it MEANS "the container does not know", so passing it through would put a
+ * claim of ignorance in the manifest and render a menu entry as `Unknown language`.
+ */
+const LANGUAGE_TAG = /^[a-z]{2,8}(-[a-z0-9]{1,8})*$/;
+
+function languageTag(raw: string | undefined): string | null {
+  const tag = raw?.trim().toLowerCase();
+  if (!tag || tag === UNDETERMINED_LANGUAGE) return null;
+  return LANGUAGE_TAG.test(tag) ? tag : null;
+}
+
+/** The longest menu label worth carrying. A title tag is free text out of somebody's muxer. */
+const MAX_LABEL_LENGTH = 60;
+
+/**
+ * A label safe to put in a manifest and short enough to read.
+ *
+ * The quote is the one that matters: `NAME="..."` is a quoted string with no escape sequence
+ * in the HLS grammar, so a title containing `"` would end the attribute early and produce a
+ * manifest a player rejects. Control characters go for the same reason -- a newline inside an
+ * attribute ends the tag.
+ */
+function cleanLabel(raw: string | undefined): string {
+  return (raw ?? "")
+    .replace(/[\p{C}"]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_LABEL_LENGTH);
 }
 
 /**
@@ -372,7 +584,7 @@ function downscaleWidth(sourceWidth: number | undefined): number | null {
 
 /** True when this plan re-encodes video -- the only expensive outcome, and worth metering. */
 export function isExpensive(plan: PlaybackPlan): boolean {
-  return plan.video.action === "transcode";
+  return plan.video?.action === "transcode";
 }
 
 export interface FfmpegOpts {
@@ -380,11 +592,12 @@ export interface FfmpegOpts {
   /** Directory this run writes its playlist, init segment and media segment into. */
   outDir: string;
   /**
-   * Which rendition this run produces.
+   * Which rendition this run produces: a kind and which of that kind.
    *
    * One run makes ONE track, because a muxed segment can honour only one cutting rule and
    * the tracks need different ones -- see `hls-timeline.ts` for why that is what closes the
-   * audio hole rather than an arrangement preference.
+   * audio hole rather than an arrangement preference. The ordinal indexes the plan's list for
+   * that kind, which is what makes `renditionFor` a lookup rather than a search.
    */
   track: Track;
   /** Which segment of that rendition's timeline to produce, and the range it covers. */
@@ -607,7 +820,7 @@ function hardwareArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
 
 /** Which encoder this run will actually use, or `SOFTWARE` when it encodes no video at all. */
 function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
-  const encodes = opts.track === "video" && plan.video.action === "transcode";
+  const encodes = opts.track.kind === "video" && plan.video?.action === "transcode";
   return encodes ? (opts.encoder ?? SOFTWARE) : SOFTWARE;
 }
 
@@ -645,7 +858,7 @@ function videoEncoder(plan: PlaybackPlan, opts: FfmpegOpts): EncoderChoice {
  * > its own sound and snap back at the next boundary. Measured, and rejected for that.
  */
 function readArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  const copyingVideo = opts.track === "video" && plan.video.action === "copy";
+  const copyingVideo = opts.track.kind === "video" && plan.video?.action === "copy";
   const readUntil = opts.segment.endSec + (copyingVideo ? SEGMENT_TAIL_SLACK_SEC : 0);
   return [
     ...seekArgs(copyingVideo, opts),
@@ -669,7 +882,7 @@ function seekArgs(copyingVideo: boolean, opts: FfmpegOpts): string[] {
   }
   // Never below zero: a negative `-ss` is not a seek to the start, it is an argument ffmpeg
   // reads as a time before the file begins.
-  if (opts.track === "subtitles") {
+  if (opts.track.kind === "subtitles") {
     return ["-ss", Math.max(0, startSec - SUBTITLE_LEAD_SEC).toFixed(6)];
   }
   return ["-ss", startSec.toFixed(6)];
@@ -681,23 +894,37 @@ function seekArgs(copyingVideo: boolean, opts: FfmpegOpts): string[] {
  * The other tracks are refused EXPLICITLY with `-vn` and `-an` rather than merely left
  * unmapped: a rendition that quietly picked up a second stream would be a muxed segment
  * again, which is the whole thing this split exists to prevent.
- *
- * `plan[opts.track]` rather than a switch, because a `Track` IS a `PlaybackPlan` field name --
- * see `Track` in `hls-timeline.ts`. Which stream a rendition is made of is then one lookup for
- * every rendition there will ever be, and only what to DO with it needs a case.
  */
 function streamArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  const { sourceIndex } = plan[opts.track];
-  const map = sourceIndex !== null ? ["-map", `0:${sourceIndex}`] : [];
+  const rendition = renditionFor(plan, opts.track);
+  const map = rendition ? ["-map", `0:${rendition.sourceIndex}`] : [];
   return [...map, ...codecArgs(plan, opts)];
 }
 
+/**
+ * The rendition this run is making, or null when the plan does not have one.
+ *
+ * Null is unreachable through the session, which only ever asks for a rendition it published;
+ * it is here because `Track.ordinal` is a number off the wire by the time it reaches this
+ * module, and a lookup that cannot answer "no such rendition" would index past the end.
+ */
+function renditionFor(plan: PlaybackPlan, track: Track): Rendition | null {
+  switch (track.kind) {
+    case "video":
+      return track.ordinal === 0 ? plan.video : null;
+    case "audio":
+      return plan.audio[track.ordinal] ?? null;
+    case "subtitles":
+      return plan.subtitles[track.ordinal] ?? null;
+  }
+}
+
 function codecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  switch (opts.track) {
+  switch (opts.track.kind) {
     case "video":
       return videoCodecArgs(plan, opts);
     case "audio":
-      return audioCodecArgs(plan);
+      return audioCodecArgs(plan.audio[opts.track.ordinal]);
     case "subtitles":
       return subtitleCodecArgs();
   }
@@ -709,7 +936,7 @@ function codecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
  * construction, which is the property `EXT-X-INDEPENDENT-SEGMENTS` promises.
  */
 function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  if (plan.video.action === "copy") return ["-an", "-c:v", "copy"];
+  if (plan.video?.action !== "transcode") return ["-an", "-c:v", "copy"];
   const enc = videoEncoder(plan, opts);
   // Hardware encoders take a BITRATE rather than a quality target: none of the three
   // implements `-crf`, and passing it is a spawn error rather than an ignored flag.
@@ -732,7 +959,7 @@ function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
  * VideoToolbox and NVENC hand frames back to system memory, so they take the plain one.
  */
 function videoFilter(plan: PlaybackPlan, enc: EncoderChoice): string[] {
-  const { scaleWidth } = plan.video;
+  const scaleWidth = plan.video?.scaleWidth ?? null;
   if (enc.vaapiDevice) {
     // `h=-2` lets ffmpeg keep the aspect ratio and round to an even height for us.
     const size = scaleWidth ? `w=${scaleWidth}:h=-2:` : "";
@@ -741,8 +968,15 @@ function videoFilter(plan: PlaybackPlan, enc: EncoderChoice): string[] {
   return scaleWidth ? ["-vf", `scale=${scaleWidth}:-2`] : [];
 }
 
-function audioCodecArgs(plan: PlaybackPlan): string[] {
-  if (plan.audio.action === "copy") return ["-vn", "-c:a", "copy"];
+/**
+ * One audio rendition, copied or re-encoded on its OWN codec's answer.
+ *
+ * A rendition the plan does not have re-encodes, which is unreachable -- `streamArgs` maps no
+ * stream for it, so the run produces nothing whatever this returns -- and is the right way for
+ * an unreachable branch to fall: re-encoding is the answer that works everywhere.
+ */
+function audioCodecArgs(rendition: AudioRendition | undefined): string[] {
+  if (rendition?.action === "copy") return ["-vn", "-c:a", "copy"];
   return ["-vn", "-c:a", "aac", "-ac", "2", "-b:a", "192k"];
 }
 
@@ -765,7 +999,7 @@ function subtitleCodecArgs(): string[] {
  * so a subtitle run writes its one file directly and skips the muxer entirely.
  */
 function outputArgs(opts: FfmpegOpts): string[] {
-  if (opts.track === "subtitles") {
+  if (opts.track.kind === "subtitles") {
     // Straight to the published name. Nothing has to be cut, so there is no segmenting muxer
     // to name the file for us -- and the run's `-ss`/`-to` already bound it to this segment.
     return ["-f", "webvtt", `${opts.outDir}/${segmentFileName(opts.track, opts.segment.index)}`];
@@ -782,7 +1016,7 @@ function hlsMuxerArgs(opts: FfmpegOpts): string[] {
     // past this -- lands on the NEXT boundary, which is a keyframe by construction.
     // AUDIO: unreachable on purpose, so `-to` alone ends the segment. See AUDIO_NEVER_CUT_SEC.
     "-hls_time",
-    opts.track === "video"
+    opts.track.kind === "video"
       ? (opts.segment.endSec - opts.segment.startSec).toFixed(6)
       : AUDIO_NEVER_CUT_SEC.toFixed(6),
     "-hls_playlist_type",

@@ -44,8 +44,8 @@ const PROBE: ProbedMedia = {
 
 const PLAN: PlaybackPlan = {
   video: { action: "copy", sourceIndex: 0, codec: "hevc", scaleWidth: null },
-  audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-  subtitles: { action: "none", sourceIndex: null },
+  audio: [{ action: "transcode", sourceIndex: 1, codec: "aac", label: { name: "English", language: "eng" } }],
+  subtitles: [],
   reasons: [],
 };
 
@@ -121,13 +121,28 @@ describe("what the server knows about a playback", () => {
   });
 
   test("a plan that uses no video stream reports no video codec rather than the first stream's", () => {
-    const audioOnly: PlaybackPlan = {
-      ...PLAN,
-      video: { action: "copy", sourceIndex: null, codec: "", scaleWidth: null },
-    };
+    const audioOnly: PlaybackPlan = { ...PLAN, video: null };
     const d = playbackDiagnostics({ row: ROW, probe: PROBE, plan: audioOnly, segmenting: SEGMENTING });
     expect(d.source.videoCodec).toBeNull();
     expect(d.source.audioCodec).toBe("dts");
+  });
+
+  /**
+   * The block describes the SOURCE, and a viewer switching to the Japanese track has not
+   * changed which file this is -- so it reports the DEFAULT rendition rather than trying to
+   * track a choice made in the browser after this was sent.
+   */
+  test("a file with several audio tracks is described by the one that plays", () => {
+    const dubbed: PlaybackPlan = {
+      ...PLAN,
+      audio: [
+        ...PLAN.audio,
+        { action: "copy", sourceIndex: 9, codec: "aac", label: { name: "Japanese", language: "jpn" } },
+      ],
+    };
+    const d = playbackDiagnostics({ row: ROW, probe: PROBE, plan: dubbed, segmenting: SEGMENTING });
+    expect(d.source.audioCodec).toBe("dts");
+    expect(d.source.audioChannels).toBe(6);
   });
 
   test("the encoder is reported even on a plan that copies video, because it is a fact about the box", () => {

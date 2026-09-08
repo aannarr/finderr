@@ -16,6 +16,7 @@ import {
   masterPlaylist,
   mediaPlaylist,
   mediaPlaylistName,
+  type PublishedTrack,
   parseProducedName,
   SEGMENT_TARGET_SEC,
   segmentCount,
@@ -23,9 +24,12 @@ import {
   segmentFilePattern,
   segmentRange,
   type Timeline,
-  TRACKS,
+  TRACK_KINDS,
   type Track,
+  type TrackKind,
   timelineFrom,
+  trackKey,
+  tracksBlockingFirstFrame,
   uniformTimeline,
 } from "./hls-timeline";
 
@@ -35,13 +39,33 @@ const LONG_GOP = [1.001, 11.011, 21.021, 31.031, 35.994, 46.004, 56.014];
 /** `80 for Brady (2023)`: keyframes every 2.002 s, from ffprobe. */
 const SHORT_GOP = Array.from({ length: 30 }, (_, i) => (i + 1) * 2.002);
 
+const track = (kind: TrackKind, ordinal = 0): Track => ({ kind, ordinal });
+const VIDEO = track("video");
+const AUDIO = track("audio");
+const SUBTITLES = track("subtitles");
+
+/** The first rendition of each kind: what a single-track film publishes. */
+const FIRST_OF_EACH: readonly Track[] = TRACK_KINDS.map((kind) => track(kind));
+
 /**
  * The renditions that publish an fMP4 initialisation segment beside every media segment.
  *
  * DERIVED from the naming table rather than listed a second time: the day a fourth rendition
  * arrives, this answer moves with it instead of quietly excluding it from every init test.
  */
-const FMP4_TRACKS = TRACKS.filter((track) => initFileName(track, 0) !== null);
+const FMP4_TRACKS = FIRST_OF_EACH.filter((t) => initFileName(t, 0) !== null);
+
+/** One published rendition, with a label good enough for the manifest to name it. */
+const publish = (
+  t: Track,
+  timeline: Timeline,
+  name = "Track",
+  language: string | null = null,
+): PublishedTrack => ({
+  track: t,
+  timeline,
+  label: { name, language },
+});
 
 describe("a timeline is built only from places the file can be cut", () => {
   test("it starts at zero without being told to", () => {
@@ -129,7 +153,7 @@ describe("a re-encode gets an exact grid", () => {
 
 describe("a rendition's VOD playlist", () => {
   const t: Timeline = timelineFrom(60, 6, LONG_GOP);
-  const text = mediaPlaylist("video", t);
+  const text = mediaPlaylist(VIDEO, t);
 
   /**
    * `EXT-X-ENDLIST` is what makes this VOD rather than live: the player stops polling, trusts
@@ -142,7 +166,7 @@ describe("a rendition's VOD playlist", () => {
   });
 
   test("it names every segment before any of them exists", () => {
-    for (let i = 0; i < segmentCount(t); i++) expect(text).toContain(segmentFileName("video", i));
+    for (let i = 0; i < segmentCount(t); i++) expect(text).toContain(segmentFileName(VIDEO, i));
   });
 
   test("the durations are the real ones, not the target", () => {
@@ -168,19 +192,19 @@ describe("a rendition's VOD playlist", () => {
    * two audio-only runs six seconds apart on the same file produced inits differing at byte
    * 275, in both copy and re-encode mode.
    */
-  test.each([...FMP4_TRACKS])("every %s segment names the init produced with it", (track: Track) => {
-    const rendition = mediaPlaylist(track, t);
+  test.each([...FMP4_TRACKS])("every $kind segment names the init produced with it", (t2: Track) => {
+    const rendition = mediaPlaylist(t2, t);
     expect(rendition.match(/#EXT-X-MAP/g)).toHaveLength(segmentCount(t));
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(rendition).toContain(`#EXT-X-MAP:URI="${initName(track, i)}"`);
+      expect(rendition).toContain(`#EXT-X-MAP:URI="${initName(t2, i)}"`);
     }
   });
 
   test("each init is declared before the segment it belongs to", () => {
     const lines = text.split("\n");
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(lines.indexOf(`#EXT-X-MAP:URI="${initName("video", i)}"`)).toBeLessThan(
-        lines.indexOf(segmentFileName("video", i)),
+      expect(lines.indexOf(`#EXT-X-MAP:URI="${initName(VIDEO, i)}"`)).toBeLessThan(
+        lines.indexOf(segmentFileName(VIDEO, i)),
       );
     }
   });
@@ -190,11 +214,11 @@ describe("a rendition's VOD playlist", () => {
    * segment for the whole film. The line is absent rather than empty.
    */
   test("the subtitle rendition names no init at all", () => {
-    const rendition = mediaPlaylist("subtitles", t);
+    const rendition = mediaPlaylist(SUBTITLES, t);
     expect(rendition).not.toContain("#EXT-X-MAP");
-    expect(initFileName("subtitles", 0)).toBeNull();
+    expect(initFileName(SUBTITLES, 0)).toBeNull();
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(rendition).toContain(segmentFileName("subtitles", i));
+      expect(rendition).toContain(segmentFileName(SUBTITLES, i));
     }
   });
 
@@ -206,8 +230,20 @@ describe("a rendition's VOD playlist", () => {
 
   /** One rendition must never name the other's files, or a player decodes video as audio. */
   test("a rendition names its own segments and nobody else's", () => {
-    expect(mediaPlaylist("audio", t)).toContain(segmentFileName("audio", 0));
-    expect(mediaPlaylist("audio", t)).not.toContain(segmentFileName("video", 0));
+    expect(mediaPlaylist(AUDIO, t)).toContain(segmentFileName(AUDIO, 0));
+    expect(mediaPlaylist(AUDIO, t)).not.toContain(segmentFileName(VIDEO, 0));
+  });
+
+  /**
+   * TWO RENDITIONS OF ONE KIND SHARE A DIRECTORY, so their segment names have to differ or the
+   * second audio track is served the first's bytes -- which is a decode error in a language
+   * nobody chose rather than an error a player reports.
+   */
+  test("two renditions of the same kind name different files", () => {
+    const second = track("audio", 1);
+    expect(mediaPlaylist(second, t)).toContain(segmentFileName(second, 0));
+    expect(mediaPlaylist(second, t)).not.toContain(segmentFileName(AUDIO, 0));
+    expect(mediaPlaylistName(second)).not.toBe(mediaPlaylistName(AUDIO));
   });
 });
 
@@ -215,16 +251,22 @@ describe("a rendition's VOD playlist", () => {
  * THE MASTER PLAYLIST IS WHAT MAKES AUDIO A SEPARATE RENDITION, and the split is the fix: a
  * muxed segment can honour one cutting rule, video's rule is the strict one, and obeying it
  * drops ~60 ms of sound into a segment nobody publishes.
+ *
+ * It is also where a viewer's CHOICE lives now: one `EXT-X-MEDIA` per audio and subtitle
+ * track, each with the name and language the container gave it.
  */
 describe("the master playlist", () => {
   const t = uniformTimeline(60, 6);
+  const video = publish(VIDEO, t, "Video");
+  const audio = publish(AUDIO, t, "English", "eng");
+  const subtitles = publish(SUBTITLES, t, "English", "eng");
 
   test("it declares the audio rendition and points the variant at the video playlist", () => {
-    const text = masterPlaylist({ video: t, audio: t });
+    const text = masterPlaylist([video, audio]);
     expect(text).toContain(`#EXT-X-MEDIA:TYPE=AUDIO`);
-    expect(text).toContain(`URI="${mediaPlaylistName("audio")}"`);
+    expect(text).toContain(`URI="${mediaPlaylistName(AUDIO)}"`);
     expect(text).toContain(`AUDIO="audio"`);
-    expect(text).toContain(mediaPlaylistName("video"));
+    expect(text).toContain(mediaPlaylistName(VIDEO));
   });
 
   /**
@@ -233,22 +275,22 @@ describe("the master playlist", () => {
    * rendition's init segment.
    */
   test("it declares a bandwidth and no codecs", () => {
-    expect(masterPlaylist({ video: t, audio: t })).toMatch(/#EXT-X-STREAM-INF:BANDWIDTH=\d+/);
-    expect(masterPlaylist({ video: t, audio: t })).not.toContain("CODECS");
+    expect(masterPlaylist([video, audio])).toMatch(/#EXT-X-STREAM-INF:BANDWIDTH=\d+/);
+    expect(masterPlaylist([video, audio])).not.toContain("CODECS");
   });
 
   /** A rendition that does not exist must not be named, or the player 404s chasing it. */
   test("a title with no audio names no audio rendition", () => {
-    const text = masterPlaylist({ video: t });
+    const text = masterPlaylist([video]);
     expect(text).not.toContain("#EXT-X-MEDIA");
-    expect(text).not.toContain(mediaPlaylistName("audio"));
-    expect(text).toContain(mediaPlaylistName("video"));
+    expect(text).not.toContain(mediaPlaylistName(AUDIO));
+    expect(text).toContain(mediaPlaylistName(VIDEO));
   });
 
   test("a title with no video makes audio the variant itself", () => {
-    const text = masterPlaylist({ audio: t });
+    const text = masterPlaylist([audio]);
     expect(text).not.toContain("#EXT-X-MEDIA");
-    expect(text.trimEnd().endsWith(mediaPlaylistName("audio"))).toBe(true);
+    expect(text.trimEnd().endsWith(mediaPlaylistName(AUDIO))).toBe(true);
   });
 
   /**
@@ -258,9 +300,9 @@ describe("the master playlist", () => {
    * rendition costs no ffmpeg run at all.
    */
   test("it declares the subtitle rendition, off by default", () => {
-    const text = masterPlaylist({ video: t, audio: t, subtitles: t });
+    const text = masterPlaylist([video, audio, subtitles]);
     expect(text).toContain("#EXT-X-MEDIA:TYPE=SUBTITLES");
-    expect(text).toContain(`URI="${mediaPlaylistName("subtitles")}"`);
+    expect(text).toContain(`URI="${mediaPlaylistName(SUBTITLES)}"`);
     expect(text).toContain("DEFAULT=NO,AUTOSELECT=NO");
     expect(text).toContain('SUBTITLES="subs"');
   });
@@ -270,20 +312,92 @@ describe("the master playlist", () => {
     const variantLine = (text: string) =>
       text.split("\n").find((line) => line.startsWith("#EXT-X-STREAM-INF")) ?? "";
 
-    expect(variantLine(masterPlaylist({ video: t }))).not.toContain("SUBTITLES=");
-    expect(variantLine(masterPlaylist({ video: t }))).not.toContain("AUDIO=");
-    expect(variantLine(masterPlaylist({ video: t, subtitles: t }))).toContain('SUBTITLES="subs"');
-    expect(variantLine(masterPlaylist({ video: t, subtitles: t }))).not.toContain("AUDIO=");
+    expect(variantLine(masterPlaylist([video]))).not.toContain("SUBTITLES=");
+    expect(variantLine(masterPlaylist([video]))).not.toContain("AUDIO=");
+    expect(variantLine(masterPlaylist([video, subtitles]))).toContain('SUBTITLES="subs"');
+    expect(variantLine(masterPlaylist([video, subtitles]))).not.toContain("AUDIO=");
   });
 
   test("a title with no subtitle track names no subtitle rendition", () => {
-    const text = masterPlaylist({ video: t, audio: t });
+    const text = masterPlaylist([video, audio]);
     expect(text).not.toContain("TYPE=SUBTITLES");
-    expect(text).not.toContain(mediaPlaylistName("subtitles"));
+    expect(text).not.toContain(mediaPlaylistName(SUBTITLES));
   });
 
   test("nothing in it is an absolute URL either", () => {
-    expect(masterPlaylist({ video: t, audio: t, subtitles: t })).not.toContain("http");
+    expect(masterPlaylist([video, audio, subtitles])).not.toContain("http");
+  });
+
+  /**
+   * THE WHOLE POINT: several tracks of one kind, each named, each reachable.
+   *
+   * 19% of the sampled library carries more than one audio track and 53% more than one text
+   * subtitle track. One entry called "Audio" hands a viewer whichever one the muxer flagged.
+   */
+  describe("several renditions of one kind", () => {
+    const japanese = publish(track("audio", 1), t, "Japanese", "jpn");
+    const commentary = publish(track("audio", 2), t, "Commentary");
+    const text = masterPlaylist([video, audio, japanese, commentary]);
+
+    test("every audio track gets its own line, named and tagged", () => {
+      expect(text.match(/#EXT-X-MEDIA:TYPE=AUDIO/g)).toHaveLength(3);
+      expect(text).toContain('NAME="English",LANGUAGE="eng"');
+      expect(text).toContain('NAME="Japanese",LANGUAGE="jpn"');
+      for (const t2 of [AUDIO, track("audio", 1), track("audio", 2)]) {
+        expect(text).toContain(`URI="${mediaPlaylistName(t2)}"`);
+      }
+    });
+
+    /** Exactly one default, or a player has to guess -- and it is the container's own. */
+    test("the first one is the default and the rest are alternates", () => {
+      expect(text.match(/TYPE=AUDIO[^\n]*DEFAULT=YES/g)).toHaveLength(1);
+      expect(text).toContain(`NAME="English",LANGUAGE="eng",DEFAULT=YES,AUTOSELECT=YES`);
+      expect(text).toContain(`NAME="Japanese",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=YES`);
+    });
+
+    /**
+     * `AUTOSELECT=YES` on the alternates is what lets a player whose system language is
+     * Japanese pick that track with nobody touching a menu. Subtitles deliberately do NOT get
+     * it: an autoselected subtitle rendition would start producing segments nobody asked for.
+     */
+    test("an alternate audio track may be autoselected and a subtitle track may not", () => {
+      const withSubs = masterPlaylist([video, audio, japanese, subtitles]);
+      expect(withSubs.match(/AUTOSELECT=YES/g)).toHaveLength(2);
+      expect(withSubs.match(/TYPE=SUBTITLES[^\n]*AUTOSELECT=NO/g)).toHaveLength(1);
+    });
+
+    /** An attribute claiming a language we do not know is worse than no attribute. */
+    test("a track with no language tag carries no LANGUAGE attribute", () => {
+      const line = text.split("\n").find((l) => l.includes('NAME="Commentary"')) ?? "";
+      expect(line).not.toContain("LANGUAGE=");
+      expect(line).toContain("DEFAULT=NO");
+    });
+  });
+});
+
+/**
+ * The renditions the start request warms, which must be the ones a first frame WAITS on and
+ * no others: a warmed rendition is an ffmpeg run, and nobody has selected an alternate yet.
+ */
+describe("what blocks the first frame", () => {
+  const t = uniformTimeline(60, 6);
+
+  test("the video and the default audio, never the alternates and never subtitles", () => {
+    const blocking = tracksBlockingFirstFrame([
+      publish(VIDEO, t),
+      publish(AUDIO, t),
+      publish(track("audio", 1), t),
+      publish(SUBTITLES, t),
+    ]);
+    expect(blocking).toEqual([VIDEO, AUDIO]);
+  });
+
+  test("a title with no audio waits on the video alone", () => {
+    expect(tracksBlockingFirstFrame([publish(VIDEO, t)])).toEqual([VIDEO]);
+  });
+
+  test("an audio-only title waits on its audio", () => {
+    expect(tracksBlockingFirstFrame([publish(AUDIO, t)])).toEqual([AUDIO]);
   });
 });
 
@@ -292,22 +406,28 @@ describe("the master playlist", () => {
  * `padStart(5, "0")` have to keep agreeing or a produced file is published under a name the
  * playlist never mentions.
  */
-test.each([...TRACKS])(
-  "the ffmpeg %s template and the generated name are the same spelling",
-  (track: Track) => {
-    expect(segmentFilePattern(track).replace("%05d", "00042")).toBe(segmentFileName(track, 42));
+test.each([...FIRST_OF_EACH, track("audio", 3)])(
+  "the ffmpeg $kind $ordinal template and the generated name are the same spelling",
+  (t: Track) => {
+    expect(segmentFilePattern(t).replace("%05d", "00042")).toBe(segmentFileName(t, 42));
   },
 );
 
 /**
- * Five names now share one directory, and every pair of them has to be distinguishable or a
- * route serves one rendition's bytes for another's.
+ * Every published name shares one directory, and every pair of them has to be distinguishable
+ * or a route serves one rendition's bytes for another's -- including two renditions of the
+ * same kind, which is the case this card added.
  */
 test("no two published names collide", () => {
-  const names = TRACKS.flatMap((track) => [segmentFileName(track, 42), initFileName(track, 42)]).filter(
-    (name) => name !== null,
-  );
-  expect(new Set(names).size).toBe(names.length);
+  const tracks = [...FIRST_OF_EACH, track("audio", 1), track("audio", 2), track("subtitles", 1)];
+  const names = tracks.flatMap((t) => [segmentFileName(t, 42), initFileName(t, 42), mediaPlaylistName(t)]);
+  const real = names.filter((name) => name !== null);
+  expect(new Set(real).size).toBe(real.length);
+});
+
+test("a track key is one string per rendition and never shared", () => {
+  const keys = [VIDEO, AUDIO, track("audio", 1), SUBTITLES, track("subtitles", 1)].map(trackKey);
+  expect(new Set(keys).size).toBe(keys.length);
 });
 
 /**
@@ -316,31 +436,36 @@ test("no two published names collide", () => {
  */
 describe("reading a published name back", () => {
   test("every name this module generates round-trips to what generated it", () => {
-    for (const track of TRACKS) {
-      expect(parseProducedName(segmentFileName(track, 42))).toEqual({ track, kind: "segment", index: 42 });
+    for (const t of [...FIRST_OF_EACH, track("audio", 7), track("subtitles", 2)]) {
+      expect(parseProducedName(segmentFileName(t, 42))).toEqual({ track: t, file: "segment", index: 42 });
     }
-    for (const track of FMP4_TRACKS) {
-      expect(parseProducedName(initName(track, 7))).toEqual({ track, kind: "init", index: 7 });
+    for (const t of [...FMP4_TRACKS, track("audio", 11)]) {
+      expect(parseProducedName(initName(t, 7))).toEqual({ track: t, file: "init", index: 7 });
     }
   });
 
   test.each([
     "",
     "vseg1.m4s",
-    "vseg00001.m4s.txt",
-    "vseg0001x.m4s",
-    "VSEG00001.M4S",
-    "../vseg00001.m4s",
-    "seg00001.m4s",
-    "vinit00001.m4s",
+    "vseg0-00001.m4s.txt",
+    "vseg0-0001x.m4s",
+    "VSEG0-00001.M4S",
+    "../vseg0-00001.m4s",
+    "seg0-00001.m4s",
+    "vinit0-00001.m4s",
     "init.mp4",
+    // The ordinal is UNPADDED, so a padded one is a name this server never writes -- and the
+    // round-trip guard is what catches it rather than a second pattern.
+    "vseg00-00001.m4s",
+    // Two numbers are required now; the pre-ordinal spelling is not one of ours any more.
+    "vseg00001.m4s",
     // A subtitle rendition publishes NO init, so this name pattern is one nothing writes --
     // and the guard admits only what is written.
-    "sinit00001.mp4",
-    "sseg00001.m4s",
+    "sinit0-00001.mp4",
+    "sseg0-00001.m4s",
     MASTER_PLAYLIST_NAME,
-    mediaPlaylistName("audio"),
-    mediaPlaylistName("subtitles"),
+    mediaPlaylistName(AUDIO),
+    mediaPlaylistName(SUBTITLES),
   ])("refuses %p", (name) => {
     expect(parseProducedName(name)).toBeNull();
   });

@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { chooseEncoder, type EncoderChoice, SOFTWARE, VAAPI_DEVICE } from "./encoder";
-import { RUN_INIT_NAME, segmentFileName, segmentFilePattern } from "./hls-timeline";
+import { RUN_INIT_NAME, segmentFileName, segmentFilePattern, type Track } from "./hls-timeline";
 import { parseProbe } from "./media-probe";
 import {
   type ClientCapabilities,
@@ -127,6 +127,11 @@ const SMALL_H264 = JSON.stringify({
   format: { duration: "3600.000000", format_name: "matroska,webm" },
 });
 
+/** The first rendition of each kind, which is what every single-track fixture above publishes. */
+const VIDEO: Track = { kind: "video", ordinal: 0 };
+const AUDIO: Track = { kind: "audio", ordinal: 0 };
+const SUBTITLES: Track = { kind: "subtitles", ordinal: 0 };
+
 /** What Safari reports: HEVC and the Dolby codecs. */
 const SAFARI: ClientCapabilities = { video: ["h264", "hevc"], audio: ["aac", "ac3", "eac3"] };
 /** What Chrome on a machine with an HEVC decoder reports -- note NO Dolby audio. */
@@ -196,16 +201,16 @@ describe("parseProbe reads what ffprobe actually emits", () => {
 describe("the common case is cheap", () => {
   test("h264 + eac3 in Chrome: copy the video, re-encode only the audio", () => {
     const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), CHROME_HEVC);
-    expect(plan.video.action).toBe("copy");
-    expect(plan.audio.action).toBe("transcode");
-    expect(plan.audio.codec).toBe("aac");
+    expect(plan.video?.action).toBe("copy");
+    expect(plan.audio[0]?.action).toBe("transcode");
+    expect(plan.audio[0]?.codec).toBe("aac");
     expect(isExpensive(plan)).toBe(false);
   });
 
   test("the same file in Safari copies BOTH streams -- a pure remux", () => {
     const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI);
-    expect(plan.video.action).toBe("copy");
-    expect(plan.audio.action).toBe("copy");
+    expect(plan.video?.action).toBe("copy");
+    expect(plan.audio[0]?.action).toBe("copy");
     expect(isExpensive(plan)).toBe(false);
   });
 
@@ -218,15 +223,15 @@ describe("the common case is cheap", () => {
 describe("the expensive case is named as expensive", () => {
   test("hevc in Firefox re-encodes the video", () => {
     const plan = planPlayback(parseProbe(RANGO), FIREFOX);
-    expect(plan.video.action).toBe("transcode");
-    expect(plan.video.codec).toBe("h264");
+    expect(plan.video?.action).toBe("transcode");
+    expect(plan.video?.codec).toBe("h264");
     expect(isExpensive(plan)).toBe(true);
   });
 
   test("hevc in a browser that decodes it copies the video", () => {
     const plan = planPlayback(parseProbe(RANGO), CHROME_HEVC);
-    expect(plan.video.action).toBe("copy");
-    expect(plan.audio.action).toBe("transcode");
+    expect(plan.video?.action).toBe("copy");
+    expect(plan.audio[0]?.action).toBe("transcode");
     expect(isExpensive(plan)).toBe(false);
   });
 
@@ -238,13 +243,12 @@ describe("the expensive case is named as expensive", () => {
    */
   test("asking for bitmap subtitles is refused by name and buys no re-encode", () => {
     const without = planPlayback(parseProbe(RANGO), SAFARI);
-    expect(without.video.action).toBe("copy");
-    expect(without.subtitles.action).toBe("none");
+    expect(without.video?.action).toBe("copy");
+    expect(without.subtitles).toEqual([]);
 
     const withSubs = planPlayback(parseProbe(RANGO), SAFARI, { wantSubtitles: true });
-    expect(withSubs.subtitles.action).toBe("none");
-    expect(withSubs.subtitles.sourceIndex).toBeNull();
-    expect(withSubs.video.action).toBe("copy");
+    expect(withSubs.subtitles).toEqual([]);
+    expect(withSubs.video?.action).toBe("copy");
     expect(isExpensive(withSubs)).toBe(false);
     // It NAMES the codec: "no subtitles" alone leaves a viewer with nowhere to go.
     expect(withSubs.reasons.join(" ")).toContain("hdmv_pgs_subtitle");
@@ -259,15 +263,15 @@ describe("the expensive case is named as expensive", () => {
   test("a bitmap-subtitle request produces the same argv as asking for none", () => {
     const asked = planPlayback(parseProbe(RANGO), SAFARI, { wantSubtitles: true });
     const not = planPlayback(parseProbe(RANGO), SAFARI);
-    const argv = (p: typeof asked, track: "video" | "audio") =>
+    const argv = (p: typeof asked, track: Track) =>
       ffmpegArgs(p, {
         input: "/plex/a.mkv",
         outDir: "/tmp/s1",
         track,
         segment: { index: 3, startSec: 18, endSec: 24 },
       });
-    expect(argv(asked, "video")).toEqual(argv(not, "video"));
-    expect(argv(asked, "audio")).toEqual(argv(not, "audio"));
+    expect(argv(asked, VIDEO)).toEqual(argv(not, VIDEO));
+    expect(argv(asked, AUDIO)).toEqual(argv(not, AUDIO));
   });
 
   /**
@@ -278,39 +282,39 @@ describe("the expensive case is named as expensive", () => {
   describe("a re-encode is capped at a width, and only ever downward", () => {
     test("a wide source is scaled down to the cap", () => {
       const plan = planPlayback(parseProbe(SCOPE_HEVC_10BIT), FIREFOX);
-      expect(plan.video.action).toBe("transcode");
-      expect(plan.video.scaleWidth).toBe(MAX_TRANSCODE_WIDTH);
+      expect(plan.video?.action).toBe("transcode");
+      expect(plan.video?.scaleWidth).toBe(MAX_TRANSCODE_WIDTH);
       expect(plan.reasons.join(" ")).toContain("scaled down");
     });
 
     /** Upscaling would spend pixels to make the picture worse. */
     test("a source already under the cap is left alone", () => {
       const plan = planPlayback(parseProbe(SMALL_H264), FIREFOX);
-      expect(plan.video.action).toBe("transcode");
-      expect(plan.video.scaleWidth).toBeNull();
+      expect(plan.video?.action).toBe("transcode");
+      expect(plan.video?.scaleWidth).toBeNull();
     });
 
     /** A guess about a dimension the container never stated is what stretches a frame. */
     test("a source with no stated width is left alone", () => {
-      expect(planPlayback(parseProbe(RANGO), FIREFOX).video.scaleWidth).toBeNull();
+      expect(planPlayback(parseProbe(RANGO), FIREFOX).video?.scaleWidth).toBeNull();
     });
 
     test("a copy is never resized, however wide it is", () => {
-      expect(planPlayback(parseProbe(SCOPE_HEVC_10BIT), SAFARI).video.scaleWidth).toBeNull();
+      expect(planPlayback(parseProbe(SCOPE_HEVC_10BIT), SAFARI).video?.scaleWidth).toBeNull();
     });
   });
 
   /** A caller that has not asked for a subtitle rendition is not handed one. */
   test("subtitles are not requested by default", () => {
-    expect(planPlayback(parseProbe(RANGO), SAFARI).subtitles.action).toBe("none");
-    expect(planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI).subtitles.action).toBe("none");
+    expect(planPlayback(parseProbe(RANGO), SAFARI).subtitles).toEqual([]);
+    expect(planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI).subtitles).toEqual([]);
   });
 
   test("a text subtitle track costs nothing and keeps the video copied", () => {
     const plan = planPlayback(parseProbe(ANNA_AND_THE_KING), SAFARI, { wantSubtitles: true });
-    expect(plan.subtitles.action).toBe("extract");
-    expect(plan.subtitles.sourceIndex).toBe(2);
-    expect(plan.video.action).toBe("copy");
+    expect(plan.subtitles).toHaveLength(1);
+    expect(plan.subtitles[0]?.sourceIndex).toBe(2);
+    expect(plan.video?.action).toBe("copy");
     expect(isExpensive(plan)).toBe(false);
     expect(plan.reasons.join(" ")).toContain("WebVTT");
   });
@@ -330,9 +334,8 @@ describe("the expensive case is named as expensive", () => {
       format: { format_name: "matroska,webm" },
     });
     const plan = planPlayback(parseProbe(both), SAFARI, { wantSubtitles: true });
-    expect(plan.subtitles.action).toBe("extract");
-    expect(plan.subtitles.sourceIndex).toBe(3);
-    expect(plan.video.action).toBe("copy");
+    expect(plan.subtitles.map((s) => s.sourceIndex)).toEqual([3]);
+    expect(plan.video?.action).toBe("copy");
   });
 
   test("an unrecognised subtitle codec yields no subtitles rather than an expensive guess", () => {
@@ -344,16 +347,231 @@ describe("the expensive case is named as expensive", () => {
       format: { format_name: "matroska,webm" },
     });
     const plan = planPlayback(parseProbe(weird), SAFARI, { wantSubtitles: true });
-    expect(plan.subtitles.action).toBe("none");
-    expect(plan.video.action).toBe("copy");
+    expect(plan.subtitles).toEqual([]);
+    expect(plan.video?.action).toBe("copy");
+  });
+});
+
+/**
+ * EVERY TRACK IS PUBLISHED, and named well enough to choose between.
+ *
+ * Measured over a 1-in-9 sample of `/Volumes/plex/movie` on 2026-09-08: 22 of 118 films carry
+ * two or more audio tracks and 62 carry two or more TEXT subtitle tracks. Publishing one of
+ * each hands a viewer whichever the muxer flagged -- on a scene release frequently a foreign
+ * dub, or a forced-narrative subtitle with four lines in the whole film.
+ *
+ * The fixture is the shape those files actually have: an English default, a Japanese original,
+ * a titled commentary, and subtitles that differ only by disposition.
+ */
+describe("a file with several tracks of a kind publishes all of them", () => {
+  const MULTI = JSON.stringify({
+    streams: [
+      { index: 0, codec_type: "video", codec_name: "h264", disposition: { default: 1 } },
+      {
+        index: 1,
+        codec_type: "audio",
+        codec_name: "eac3",
+        tags: { language: "jpn" },
+        disposition: { default: 0 },
+      },
+      {
+        index: 2,
+        codec_type: "audio",
+        codec_name: "aac",
+        tags: { language: "eng" },
+        disposition: { default: 1 },
+      },
+      {
+        index: 3,
+        codec_type: "audio",
+        codec_name: "aac",
+        tags: { language: "eng", title: "Commentary by the director" },
+        disposition: { default: 0 },
+      },
+      {
+        index: 4,
+        codec_type: "subtitle",
+        codec_name: "subrip",
+        tags: { language: "eng" },
+        disposition: { forced: 1 },
+      },
+      {
+        index: 5,
+        codec_type: "subtitle",
+        codec_name: "subrip",
+        tags: { language: "eng" },
+        disposition: { hearing_impaired: 1 },
+      },
+      { index: 6, codec_type: "subtitle", codec_name: "subrip", tags: { language: "ger" } },
+      { index: 7, codec_type: "subtitle", codec_name: "hdmv_pgs_subtitle", tags: { language: "eng" } },
+    ],
+    format: { format_name: "matroska,webm" },
+  });
+  const plan = planPlayback(parseProbe(MULTI), CHROME_HEVC, { wantSubtitles: true });
+
+  test("every audio track becomes a rendition", () => {
+    expect(plan.audio.map((a) => a.sourceIndex)).toEqual([2, 1, 3]);
+  });
+
+  /**
+   * The container's default goes to ordinal 0, which is what `masterPlaylist` turns into
+   * `DEFAULT=YES` -- so "which track plays" is a position rather than a second flag free to
+   * disagree with the order.
+   */
+  test("the container's own default is offered first", () => {
+    expect(plan.audio[0]?.sourceIndex).toBe(2);
+    expect(plan.audio[0]?.label.language).toBe("eng");
+  });
+
+  /**
+   * PER TRACK, because the tracks genuinely differ: this file's Japanese track is eac3, which
+   * Chrome cannot decode, and its English one is aac, which it can. Deciding once from the
+   * first would re-encode a stream the browser could have played.
+   */
+  test("each audio rendition gets its own copy-or-transcode answer", () => {
+    expect(plan.audio.map((a) => a.action)).toEqual(["copy", "transcode", "copy"]);
+    expect(plan.audio.map((a) => a.codec)).toEqual(["aac", "aac", "aac"]);
+  });
+
+  test("every TEXT subtitle track becomes a rendition and the bitmap one does not", () => {
+    expect(plan.subtitles.map((s) => s.sourceIndex)).toEqual([4, 5, 6]);
+  });
+
+  /** The muxer's own words beat anything derived: it is the only thing that knows WHY. */
+  test("a titled track is named by its title", () => {
+    expect(plan.audio[2]?.label.name).toBe("Commentary by the director");
+  });
+
+  test("a track with only a language is named in English, from its ISO-639-2 code", () => {
+    expect(plan.audio[1]?.label.name).toBe("Japanese");
+    expect(plan.subtitles[2]?.label.name).toBe("German");
+  });
+
+  /**
+   * Three English subtitle tracks with no titles is the ordinary shape of a scene release, and
+   * three menu entries called "English" cannot be chosen from. The disposition is what tells
+   * two of them apart; the third has nothing left but its position.
+   */
+  test("subtitle tracks that differ only by disposition still get distinct names", () => {
+    expect(plan.subtitles.map((s) => s.label.name)).toEqual(["English (forced)", "English (SDH)", "German"]);
+  });
+
+  test("the reasons name what else is on offer, so the admin panel can show it", () => {
+    const said = plan.reasons.join(" ");
+    expect(said).toContain("3 audio tracks offered");
+    expect(said).toContain("Commentary by the director");
+    expect(said).toContain("3 subtitles tracks offered");
+  });
+});
+
+describe("naming a rendition when the container is unhelpful", () => {
+  const withStreams = (streams: unknown[]) =>
+    planPlayback(parseProbe(JSON.stringify({ streams, format: { format_name: "matroska,webm" } })), SAFARI, {
+      wantSubtitles: true,
+    });
+
+  /** Today's names, and the case that keeps a single-track film reading exactly as it did. */
+  test("a lone unlabelled track keeps the plain noun", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac" },
+      { index: 1, codec_type: "subtitle", codec_name: "subrip" },
+    ]);
+    expect(plan.audio[0]?.label).toEqual({ name: "Audio", language: null });
+    expect(plan.subtitles[0]?.label).toEqual({ name: "Subtitles", language: null });
+  });
+
+  test("unlabelled alternates are numbered rather than left identical", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac" },
+      { index: 1, codec_type: "audio", codec_name: "aac" },
+    ]);
+    expect(plan.audio.map((a) => a.label.name)).toEqual(["Audio", "Audio 2"]);
+  });
+
+  /**
+   * `und` is the container saying it does not know, and `Unknown language` is what
+   * `Intl.DisplayNames` would render it as -- a menu entry that reads like a claim, and a
+   * `LANGUAGE` attribute claiming ignorance. A tag we cannot parse at all lands in the same
+   * place, and neither reaches the manifest.
+   */
+  test.each(["und", "en_US", "русский", "", "  "])("a language of %p names nothing", (language) => {
+    const plan = withStreams([{ index: 0, codec_type: "audio", codec_name: "aac", tags: { language } }]);
+    expect(plan.audio[0]?.label).toEqual({ name: "Audio", language: null });
+  });
+
+  /**
+   * A tag that is WELL-FORMED but that CLDR has no name for is a different answer from one that
+   * is malformed: `qaa` is RFC 5646's private-use range, so it belongs in the manifest even
+   * though no menu can spell it out.
+   */
+  test("a well-formed tag nobody can name still reaches the manifest", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { language: "qaa" } },
+    ]);
+    expect(plan.audio[0]?.label).toEqual({ name: "Audio", language: "qaa" });
+  });
+
+  /**
+   * A title is free text out of somebody's muxer and `NAME="..."` has no escape sequence in
+   * the HLS grammar, so an unescaped quote would end the attribute early and produce a
+   * manifest a player rejects outright.
+   */
+  test("a title carrying a quote or a newline cannot break the manifest", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { title: 'He said "hi"\nsecond line' } },
+    ]);
+    expect(plan.audio[0]?.label.name).toBe("He said hi second line");
+  });
+
+  test("an absurdly long title is cut to something a menu can draw", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { title: "x".repeat(500) } },
+    ]);
+    expect((plan.audio[0]?.label.name.length ?? 0) <= 60).toBe(true);
+  });
+
+  /** A regional tag is a real answer and CLDR knows it -- there is no table here to go stale. */
+  test("a regional tag survives into the manifest and reads as a language", () => {
+    const plan = withStreams([
+      { index: 0, codec_type: "audio", codec_name: "aac", tags: { language: "pt-BR" } },
+    ]);
+    expect(plan.audio[0]?.label).toEqual({ name: "Brazilian Portuguese", language: "pt-br" });
+  });
+});
+
+describe("a file with no video at all", () => {
+  const AUDIO_ONLY = JSON.stringify({
+    streams: [{ index: 0, codec_type: "audio", codec_name: "aac", disposition: { default: 1 } }],
+    format: { duration: "120.0", format_name: "matroska,webm" },
+  });
+
+  /**
+   * Null rather than a video rendition with no stream. The old shape carried an `action` and a
+   * null `sourceIndex`, which every reader then had to check anyway -- two ways to say the same
+   * thing, and the one that reads as "there is a video decision here" was the lie.
+   */
+  test("has no video rendition, and that is not an expensive plan", () => {
+    const plan = planPlayback(parseProbe(AUDIO_ONLY), FIREFOX);
+    expect(plan.video).toBeNull();
+    expect(isExpensive(plan)).toBe(false);
+    expect(plan.reasons.join(" ")).toContain("no video stream");
+  });
+
+  test("a file with no audio at all says so and publishes none", () => {
+    const plan = planPlayback(
+      parseProbe(JSON.stringify({ streams: [{ index: 0, codec_type: "video", codec_name: "h264" }] })),
+      SAFARI,
+    );
+    expect(plan.audio).toEqual([]);
+    expect(plan.reasons.join(" ")).toContain("no audio stream");
   });
 });
 
 describe("a client that declares nothing gets the conservative floor", () => {
   test("hevc + eac3 is fully re-encoded for an unknown client", () => {
     const plan = planPlayback(parseProbe(RANGO));
-    expect(plan.video.action).toBe("transcode");
-    expect(plan.audio.action).toBe("transcode");
+    expect(plan.video?.action).toBe("transcode");
+    expect(plan.audio[0]?.action).toBe("transcode");
   });
 
   test("the floor excludes hevc and every Dolby codec, which is the point of it", () => {
@@ -367,7 +585,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
   /** Segment 7 of a six-second grid: past the start, so the seek flags are exercised. */
   const SEG7 = { index: 7, startSec: 42, endSec: 48 };
   const args = (p: typeof plan, opts: Partial<Parameters<typeof ffmpegArgs>[1]> = {}) =>
-    ffmpegArgs(p, { input: "/plex/a.mkv", outDir: "/tmp/s1", track: "video", segment: SEG7, ...opts });
+    ffmpegArgs(p, { input: "/plex/a.mkv", outDir: "/tmp/s1", track: VIDEO, segment: SEG7, ...opts });
 
   test("copies the video and packages fragmented MP4", () => {
     const a = args(plan);
@@ -384,7 +602,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
     expect(args(plan)).toContain("-an");
     expect(args(plan)).not.toContain("-vn");
 
-    const audio = args(plan, { track: "audio" });
+    const audio = args(plan, { track: AUDIO });
     expect(audio).toContain("-vn");
     expect(audio).not.toContain("-an");
     expect(audio.join(" ")).toContain("-c:a aac");
@@ -479,9 +697,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
 
     // Audio and a re-encode ask for the boundary itself; a video copy still takes the nudge,
     // which lands on the same first keyframe and keeps ONE seek rule rather than two.
-    expect(args(plan, { track: "audio", segment: { index: 0, startSec: 0, endSec: 6 } })).toContain(
-      "0.000000",
-    );
+    expect(args(plan, { track: AUDIO, segment: { index: 0, startSec: 0, endSec: 6 } })).toContain("0.000000");
     expect(a.join(" ")).toContain("-ss 0.200000");
   });
 
@@ -609,7 +825,55 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
   test("maps the exact source stream this rendition is made of", () => {
     expect(args(plan).join(" ")).toContain("-map 0:0");
     expect(args(plan).join(" ")).not.toContain("-map 0:1");
-    expect(args(plan, { track: "audio" }).join(" ")).toContain("-map 0:1");
+    expect(args(plan, { track: AUDIO }).join(" ")).toContain("-map 0:1");
+  });
+
+  /**
+   * THE ORDINAL IS WHAT SELECTS THE RENDITION, and getting it wrong is silent: a run for the
+   * Japanese track that mapped the English stream would publish the right file name full of
+   * the wrong language, which no error anywhere reports.
+   */
+  describe("a run for an alternate rendition", () => {
+    const dual = planPlayback(
+      parseProbe(
+        JSON.stringify({
+          streams: [
+            { index: 0, codec_type: "video", codec_name: "h264", disposition: { default: 1 } },
+            { index: 1, codec_type: "audio", codec_name: "aac", disposition: { default: 1 } },
+            { index: 2, codec_type: "audio", codec_name: "eac3" },
+            { index: 3, codec_type: "subtitle", codec_name: "subrip" },
+            { index: 4, codec_type: "subtitle", codec_name: "subrip" },
+          ],
+          format: { format_name: "matroska,webm" },
+        }),
+      ),
+      CHROME_HEVC,
+      { wantSubtitles: true },
+    );
+    const second = (kind: "audio" | "subtitles") => args(dual, { track: { kind, ordinal: 1 } }).join(" ");
+
+    test("maps its own source stream rather than the default's", () => {
+      expect(second("audio")).toContain("-map 0:2");
+      expect(second("audio")).not.toContain("-map 0:1");
+      expect(second("subtitles")).toContain("-map 0:4");
+    });
+
+    /** Its own codec's answer: Chrome copies this file's aac track and cannot take its eac3. */
+    test("takes its own copy-or-transcode answer", () => {
+      expect(args(dual, { track: AUDIO }).join(" ")).toContain("-c:a copy");
+      expect(second("audio")).toContain("-c:a aac");
+    });
+
+    test("writes the file names its own rendition's playlist points at", () => {
+      const track: Track = { kind: "audio", ordinal: 1 };
+      expect(second("audio")).toContain(`/${segmentFilePattern(track)}`);
+      expect(second("audio")).not.toContain(segmentFilePattern(AUDIO));
+    });
+
+    /** A rendition the plan does not have produces nothing rather than mapping stream 0. */
+    test("a rendition past the end of the plan maps nothing at all", () => {
+      expect(args(dual, { track: { kind: "audio", ordinal: 9 } }).join(" ")).not.toContain("-map");
+    });
   });
 
   /**
@@ -619,15 +883,15 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
    * nothing at all.
    */
   test("everything a run writes lands in the working directory it was given", () => {
-    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", track: "video", segment: SEG7 });
+    const a = ffmpegArgs(plan, { input: "/a.mkv", outDir: "/tmp/w42", track: VIDEO, segment: SEG7 });
     expect(a).toContain("/tmp/w42/produced.m3u8");
-    expect(a.join(" ")).toContain(`/tmp/w42/${segmentFilePattern("video")}`);
+    expect(a.join(" ")).toContain(`/tmp/w42/${segmentFilePattern(VIDEO)}`);
     expect(a.join(" ")).toContain(`-hls_fmp4_init_filename ${RUN_INIT_NAME}`);
   });
 
   test("a run writes the file names its own rendition's playlist points at", () => {
-    expect(args(plan, { track: "audio" }).join(" ")).toContain(`/${segmentFilePattern("audio")}`);
-    expect(args(plan, { track: "audio" }).join(" ")).not.toContain(segmentFilePattern("video"));
+    expect(args(plan, { track: AUDIO }).join(" ")).toContain(`/${segmentFilePattern(AUDIO)}`);
+    expect(args(plan, { track: AUDIO }).join(" ")).not.toContain(segmentFilePattern(VIDEO));
   });
 
   /**
@@ -642,7 +906,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
    * [2398.400, 2406.016) then [2404.416, 2412.000), zero gap and 1.6 s of harmless overlap.
    */
   test("an audio run is given a cut point no film can reach", () => {
-    const a = args(plan, { track: "audio" });
+    const a = args(plan, { track: AUDIO });
     expect(Number(a[a.indexOf("-hls_time") + 1])).toBeGreaterThan(24 * 60 * 60 - 1);
   });
 
@@ -652,7 +916,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
    * two seconds past the boundary would only widen the overlap.
    */
   test("an audio run asks for its boundary plainly and stops at the next one", () => {
-    const a = args(plan, { track: "audio" });
+    const a = args(plan, { track: AUDIO });
     expect(a.join(" ")).toContain("-ss 42.000000");
     expect(a.join(" ")).toContain("-to 48.000000");
     expect(a).not.toContain("-noaccurate_seek");
@@ -661,7 +925,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
   /** An audio run never touches a pixel, so there is nothing for a GPU to accelerate. */
   test("an audio run wires up no hardware even when the video is being re-encoded", () => {
     const encoding = planPlayback(parseProbe(RANGO), FIREFOX);
-    const a = args(encoding, { track: "audio", encoder: VAAPI });
+    const a = args(encoding, { track: AUDIO, encoder: VAAPI });
     expect(a).not.toContain("-hwaccel");
     expect(a).not.toContain("-vaapi_device");
   });
@@ -672,7 +936,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
    * recorded segment; this only checks that the run still asks for them.
    */
   test("the nested fMP4 muxer is told to place the segment in the media", () => {
-    for (const track of ["video", "audio"] as const) {
+    for (const track of [VIDEO, AUDIO]) {
       for (const p of [plan, planPlayback(parseProbe(RANGO), FIREFOX)]) {
         const a = args(p, { track });
         const options = a[a.indexOf("-hls_segment_options") + 1] ?? "";
@@ -698,7 +962,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
       ffmpegArgs(withSubs, {
         input: "/plex/a.mkv",
         outDir: "/tmp/s1",
-        track: "subtitles",
+        track: SUBTITLES,
         segment: SEG7,
         ...over,
       });
@@ -745,7 +1009,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
      */
     test("writes its published name directly, with no HLS muxer at all", () => {
       const a = subs();
-      expect(a.join(" ")).toContain(`-f webvtt /tmp/s1/${segmentFileName("subtitles", 7)}`);
+      expect(a.join(" ")).toContain(`-f webvtt /tmp/s1/${segmentFileName(SUBTITLES, 7)}`);
       expect(a).not.toContain("-f hls");
       expect(a).not.toContain("-hls_segment_options");
       expect(a).not.toContain("-hls_fmp4_init_filename");
@@ -757,7 +1021,7 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
       const a = ffmpegArgs(encoding, {
         input: "/plex/a.mkv",
         outDir: "/tmp/s1",
-        track: "subtitles",
+        track: SUBTITLES,
         segment: SEG7,
         encoder: VAAPI,
       });

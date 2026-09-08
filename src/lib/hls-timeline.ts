@@ -29,7 +29,7 @@
  * > cannot the caller passes a uniform grid, which is exactly right for a re-encode because
  * > a re-encode makes its own keyframes.
  *
- * ## THE TWO TRACKS ARE SEGMENTED SEPARATELY, and that is what closes the audio hole
+ * ## THE TRACKS ARE SEGMENTED SEPARATELY, and that is what closes the audio hole
  *
  * A muxed segment can honour exactly ONE cutting rule, and video's rule -- cut on a keyframe
  * -- is the strictest. ffmpeg obeys it and writes the audio packets that arrive after that
@@ -39,7 +39,7 @@
  * `bufferStalledError` and a freeze every six seconds.
  *
  * So video and audio are published as SEPARATE RENDITIONS, which is what production packagers
- * do. The video rendition keeps the keyframe grid it has to keep. The audio rendition has no
+ * do. The video rendition keeps the keyframe grid it has to keep. An audio rendition has no
  * keyframe constraint at all -- every audio packet is a key packet -- so it gets a plain
  * uniform grid and `playback-plan.ts` makes each audio segment cover its whole declared range
  * and a little of the one before it. A gap becomes impossible rather than jumped over.
@@ -47,7 +47,7 @@
  * The grids do NOT have to match, and forcing them to would bring the constraint straight
  * back: hls.js aligns renditions by timestamp, not by segment index.
  *
- * ## SUBTITLES ARE THE THIRD RENDITION, and they are segmented for the same reason
+ * ## SUBTITLES ARE RENDITIONS TOO, and they are segmented for the same reason
  *
  * A text subtitle track becomes a WebVTT rendition cut on the same plain grid as audio. It is
  * segmented rather than extracted whole, and that is measured rather than assumed: a
@@ -59,29 +59,63 @@
  * A WebVTT rendition has NO initialisation segment, which is the one way it differs in shape
  * from the other two: there is no fMP4 header to carry, so `TRACK_FILES` leaves `init` off it
  * and every reader of that table asks whether there is one rather than assuming.
+ *
+ * ## THERE ARE N RENDITIONS OF A KIND, NOT ONE, and that is why a track has an ORDINAL
+ *
+ * Measured over a 1-in-9 sample of the real movie library on 2026-09-08: **53% of films carry
+ * two or more TEXT subtitle tracks and 19% carry two or more audio tracks**. Publishing one of
+ * each and calling it "Audio" hands a viewer whichever track the muxer happened to flag --
+ * frequently a foreign dub, or a forced-narrative subtitle carrying four lines for the whole
+ * film. So a `Track` is a KIND plus an ORDINAL, HLS's own `EXT-X-MEDIA` group carries one
+ * entry per rendition with a real `NAME` and `LANGUAGE`, and the choice is the player's.
  */
+
+/** What a rendition carries. The three things HLS models separately. */
+export type TrackKind = "video" | "audio" | "subtitles";
+
+/** Every kind, in the order a reader expects them. The one owner of that list. */
+export const TRACK_KINDS: readonly TrackKind[] = ["video", "audio", "subtitles"];
 
 /**
- * A rendition. Video, audio and subtitles are published separately and cut on different
- * grids, so almost everything named in this module is named per track.
+ * One published rendition: what it carries, and which of that kind it is.
  *
- * The names are the `PlaybackPlan` field names on purpose: `playback-plan.ts` looks a track's
- * source stream up as `plan[track]`, which is one structural correspondence rather than a
- * switch that has to be reopened for every new rendition.
+ * The ordinal is a PUBLISHED identity rather than a source stream number -- renditions of a
+ * kind are numbered 0, 1, 2 in the order they are offered, and which source stream each one
+ * is made from is `PlaybackPlan`'s business. That keeps the names on the wire short and
+ * stable, and it means the ordinal always indexes the plan's list for that kind.
+ *
+ * **The first AUDIO rendition is the one that plays.** `planPlayback` puts the container's
+ * own default first, so "which rendition is default" is a position rather than a flag that
+ * could disagree with the order -- see `masterPlaylist`.
  */
-export type Track = "video" | "audio" | "subtitles";
-
-/** Every track, in the order a reader expects them. The one owner of that list. */
-export const TRACKS: readonly Track[] = ["video", "audio", "subtitles"];
+export interface Track {
+  readonly kind: TrackKind;
+  readonly ordinal: number;
+}
 
 /**
- * The renditions a player must have before it can show a frame.
+ * A track's identity as ONE string, so it can key a map and name a playlist.
  *
- * Subtitles are deliberately absent: a viewer sees the film without them, hls.js does not
- * even fetch a subtitle fragment until the track is switched on, and warming one would spend
- * an ffmpeg run on the start request for something nobody has asked to see.
+ * `video0`, `audio1`, `subtitles3`. Nothing parses it back -- `parseProducedName` reads the
+ * FILE names, which carry the same two numbers in their own spelling -- so this exists purely
+ * to be a key that two `Track` values with the same fields agree on.
  */
-export const TRACKS_BLOCKING_FIRST_FRAME: readonly Track[] = ["video", "audio"];
+export function trackKey(track: Track): string {
+  return `${track.kind}${track.ordinal}`;
+}
+
+/**
+ * How one rendition is described to a viewer, in the player's own menu.
+ *
+ * Derived once by `playback-plan.ts` from what the container said, and carried here rather
+ * than re-derived: this module writes the manifest and has never seen a probe.
+ */
+export interface TrackLabel {
+  /** What a player's menu shows. Never empty, and distinct within its kind. */
+  name: string;
+  /** BCP-47-ish as the container tagged it, or null when it said nothing usable. */
+  language: string | null;
+}
 
 /**
  * Where every segment of one rendition starts, and where the last one ends.
@@ -96,13 +130,38 @@ export interface Timeline {
 }
 
 /**
- * The timelines a session publishes, one per rendition it actually has.
+ * One rendition a session publishes: what it is, how it is cut, and how it is offered.
  *
- * A track is absent when the source has no such stream -- a film with no audio track, or the
- * audio-only case. Absent means "not published at all": no playlist, no segments, and no
+ * A LIST of these rather than a map keyed by kind, because there are now several renditions
+ * of a kind and their ORDER is the offer -- audio 0 is the one that plays. A rendition the
+ * source does not have is simply not in the list: no playlist, no segments, and no
  * `EXT-X-MEDIA` line naming a rendition that would 404.
  */
-export type TrackTimelines = { readonly [K in Track]?: Timeline };
+export interface PublishedTrack {
+  track: Track;
+  timeline: Timeline;
+  label: TrackLabel;
+}
+
+/** Everything a session publishes, in offer order. */
+export type PublishedTracks = readonly PublishedTrack[];
+
+/** The published renditions of one kind, still in offer order. */
+export function tracksOfKind(published: PublishedTracks, kind: TrackKind): PublishedTracks {
+  return published.filter((t) => t.track.kind === kind);
+}
+
+/**
+ * The renditions a player must have before it can show a frame.
+ *
+ * The video, and the ONE audio rendition the player will select -- never the alternates and
+ * never subtitles. hls.js fetches nothing for a rendition it has not selected, so warming one
+ * would spend an ffmpeg run on the start request for something nobody has asked to hear.
+ */
+export function tracksBlockingFirstFrame(published: PublishedTracks): Track[] {
+  const first = (kind: TrackKind) => tracksOfKind(published, kind)[0]?.track;
+  return [first("video"), first("audio")].filter((track): track is Track => track !== undefined);
+}
 
 /**
  * The shortest segment worth emitting, in seconds.
@@ -166,7 +225,7 @@ export function timelineFrom(
 }
 
 /**
- * An exact grid: what a re-encode gets, and what the AUDIO rendition always gets.
+ * An exact grid: what a re-encode gets, and what every AUDIO and SUBTITLE rendition gets.
  *
  * Expressed through `timelineFrom` rather than beside it so there is ONE definition of how a
  * timeline is formed. The multiples handed in are the cut points, and both callers genuinely
@@ -182,7 +241,7 @@ export function uniformTimeline(durationSec: number, segmentSec: number): Timeli
 }
 
 /**
- * What each rendition's published files are called, and what they are served as.
+ * What each KIND of rendition's published files are called, and what they are served as.
  *
  * ONE table, because these names are written in four languages -- generated here, matched by
  * the route, handed to ffmpeg as a `%05d` template, and read back off disk by the session --
@@ -192,33 +251,29 @@ export function uniformTimeline(durationSec: number, segmentSec: number): Timeli
  * `init` is ABSENT on subtitles rather than empty: a WebVTT rendition has no fMP4
  * initialisation segment to publish, so there is nothing to name and no `EXT-X-MAP` to write.
  */
-const TRACK_FILES: Record<Track, TrackFiles> = {
+const TRACK_FILES: Record<TrackKind, TrackFiles> = {
   video: {
-    playlist: "video.m3u8",
     segment: { prefix: "vseg", extension: ".m4s" },
     init: { prefix: "vinit", extension: ".mp4" },
     contentType: "video/iso.segment",
   },
   audio: {
-    playlist: "audio.m3u8",
     segment: { prefix: "aseg", extension: ".m4s" },
     init: { prefix: "ainit", extension: ".mp4" },
     contentType: "video/iso.segment",
   },
   subtitles: {
-    playlist: "subtitles.m3u8",
     segment: { prefix: "sseg", extension: ".vtt" },
     contentType: "text/vtt",
   },
 };
 
-/** Everything about one rendition's published files that has to be spelled the same way twice. */
+/** Everything about one kind's published files that has to be spelled the same way twice. */
 interface TrackFiles {
-  playlist: string;
   segment: FileNaming;
   /** Absent when the rendition has no initialisation segment. WebVTT has none. */
   init?: FileNaming;
-  /** What a produced media segment of this rendition is served as. */
+  /** What a produced media segment of this kind is served as. */
   contentType: string;
 }
 
@@ -228,16 +283,29 @@ interface FileNaming {
   extension: string;
 }
 
-/** How many digits a published name carries. `%05d` in ffmpeg's template language. */
+/** Which published file of a segment: the media itself, or the header it needs. */
+type ProducedFileKind = "segment" | "init";
+
+/** How many digits a segment index carries in a published name. `%05d` in ffmpeg's template. */
 const INDEX_DIGITS = 5;
 
-function publishedName(naming: FileNaming, index: number): string {
-  return `${naming.prefix}${String(index).padStart(INDEX_DIGITS, "0")}${naming.extension}`;
+/**
+ * What separates a rendition's ordinal from its segment index in a published name.
+ *
+ * `vseg0-00042.m4s`. The ordinal is UNPADDED, so the two numbers cannot be told apart by
+ * width alone and something has to sit between them -- and a separator that is neither a
+ * digit nor part of any prefix or extension makes `producedIn` a split rather than a regex.
+ */
+const ORDINAL_SEPARATOR = "-";
+
+function publishedName(naming: FileNaming, track: Track, index: number): string {
+  const at = String(index).padStart(INDEX_DIGITS, "0");
+  return `${naming.prefix}${track.ordinal}${ORDINAL_SEPARATOR}${at}${naming.extension}`;
 }
 
 /** How a media segment file is named. The one owner of that spelling. */
 export function segmentFileName(track: Track, index: number): string {
-  return publishedName(TRACK_FILES[track].segment, index);
+  return publishedName(TRACK_FILES[track.kind].segment, track, index);
 }
 
 /**
@@ -248,13 +316,13 @@ export function segmentFileName(track: Track, index: number): string {
  * means for it -- no `EXT-X-MAP` in the playlist, nothing to rename, nothing to evict.
  */
 export function initFileName(track: Track, index: number): string | null {
-  const naming = TRACK_FILES[track].init;
-  return naming ? publishedName(naming, index) : null;
+  const naming = TRACK_FILES[track.kind].init;
+  return naming ? publishedName(naming, track, index) : null;
 }
 
 /** What a produced media segment of this rendition is served as. The one owner of that. */
 export function segmentContentType(track: Track): string {
-  return TRACK_FILES[track].contentType;
+  return TRACK_FILES[track.kind].contentType;
 }
 
 /**
@@ -263,13 +331,17 @@ export function segmentContentType(track: Track): string {
  * Derived from the same table rather than typed a second time, so the two cannot drift.
  */
 export function segmentFilePattern(track: Track): string {
-  const { prefix, extension } = TRACK_FILES[track].segment;
-  return `${prefix}%0${INDEX_DIGITS}d${extension}`;
+  const naming = TRACK_FILES[track.kind].segment;
+  return `${naming.prefix}${track.ordinal}${ORDINAL_SEPARATOR}%0${INDEX_DIGITS}d${naming.extension}`;
 }
 
-/** The name of one rendition's media playlist, as the master playlist points at it. */
+/**
+ * The name of one rendition's media playlist, as the master playlist points at it.
+ *
+ * The track key plus an extension, so the playlist name and the map key cannot drift apart.
+ */
 export function mediaPlaylistName(track: Track): string {
-  return TRACK_FILES[track].playlist;
+  return `${trackKey(track)}.m3u8`;
 }
 
 /**
@@ -283,7 +355,7 @@ export const RUN_INIT_NAME = "init.mp4";
 /** One file a session publishes, as named on the wire. */
 export interface ProducedName {
   track: Track;
-  kind: "segment" | "init";
+  file: ProducedFileKind;
   index: number;
 }
 
@@ -292,39 +364,45 @@ export interface ProducedName {
  *
  * **This is the traversal guard, and it works by ENUMERATING what is allowed rather than by
  * stripping what is forbidden.** The name arrives off the wire and a session directory is a
- * real directory, so the only safe shape is a closed pattern whose capture becomes a NUMBER
+ * real directory, so the only safe shape is a closed pattern whose captures become NUMBERS
  * before anything touches the filesystem -- no `..`, no slash, no dot-file, no extension we
  * did not write. Parsing lives here, beside the spelling it has to agree with, so the route
  * never re-types a pattern that could drift from the names actually produced.
  */
 export function parseProducedName(name: string): ProducedName | null {
-  for (const track of TRACKS) {
-    for (const kind of ["segment", "init"] as const) {
-      const naming = TRACK_FILES[track][kind];
-      // A rendition with no initialisation segment has no name to match, and matching one
-      // would admit a file this server never writes.
-      if (!naming) continue;
-      const index = indexIn(naming, name);
-      if (index !== null) return { track, kind, index };
+  for (const kind of TRACK_KINDS) {
+    for (const file of ["segment", "init"] as const) {
+      const found = producedIn(kind, file, name);
+      if (found) return found;
     }
   }
   return null;
 }
 
 /**
- * The index this name carries, or null when it is not this naming at all.
+ * The rendition and segment this name carries, or null when it is not this naming at all.
  *
- * The slice is a guess and the round trip is the guard: a name is accepted only when
- * re-generating it from the parsed index reproduces the name EXACTLY, which settles the
- * prefix, the digit count, the padding and the extension in one comparison. So there is no
- * separate pattern to keep in step with `publishedName`, and no way for a name that merely
- * resembles ours to slip through.
+ * The split is a guess and the round trip is the guard: a name is accepted only when
+ * re-generating it from the parsed numbers reproduces the name EXACTLY, which settles the
+ * prefix, the digit count, the padding, the separator and the extension in one comparison. So
+ * there is no separate pattern to keep in step with `publishedName`, and no way for a name
+ * that merely resembles ours to slip through.
  */
-function indexIn(naming: FileNaming, name: string): number | null {
-  const digits = name.slice(naming.prefix.length, name.length - naming.extension.length);
-  if (!/^\d+$/.test(digits)) return null;
-  const index = Number(digits);
-  return publishedName(naming, index) === name ? index : null;
+function producedIn(kind: TrackKind, file: ProducedFileKind, name: string): ProducedName | null {
+  const naming = TRACK_FILES[kind][file];
+  // A rendition with no initialisation segment has no name to match, and matching one would
+  // admit a file this server never writes.
+  if (!naming) return null;
+  const body = name.slice(naming.prefix.length, name.length - naming.extension.length);
+  const [ordinalText, indexText] = body.split(ORDINAL_SEPARATOR);
+  if (!isDigits(ordinalText) || !isDigits(indexText)) return null;
+  const track: Track = { kind, ordinal: Number(ordinalText) };
+  const index = Number(indexText);
+  return publishedName(naming, track, index) === name ? { track, file, index } : null;
+}
+
+function isDigits(text: string | undefined): text is string {
+  return text !== undefined && /^\d+$/.test(text);
 }
 
 /** The playlist a player is pointed at: the one that names the renditions. */
@@ -343,7 +421,7 @@ const NOMINAL_BANDWIDTH = 8_000_000;
 /**
  * The rendition group names, written once each.
  *
- * A `GROUP-ID` is spelled twice by construction -- on the `EXT-X-MEDIA` line that defines the
+ * A `GROUP-ID` is spelled twice by construction -- on the `EXT-X-MEDIA` lines that define the
  * group and on the `EXT-X-STREAM-INF` that joins it -- and a variant naming a group that does
  * not exist is a manifest a player rejects outright.
  */
@@ -351,43 +429,80 @@ const AUDIO_GROUP = "audio";
 const SUBTITLE_GROUP = "subs";
 
 /**
- * The master playlist: which renditions exist, and where each one's own playlist is.
+ * The master playlist: which renditions exist, what each is called, and where its playlist is.
  *
  * > [!IMPORTANT] NO `CODECS` ATTRIBUTE, DELIBERATELY
  * > It is optional, and getting it wrong is fatal rather than cosmetic -- a declared codec
  * > string that does not match the media makes the browser refuse the SourceBuffer outright.
  * > hls.js reads the real codec out of each rendition's fMP4 initialisation segment, which is
  * > the only place that cannot be wrong about it.
+ *
+ * > [!IMPORTANT] AN AUDIO-ONLY TITLE OFFERS ONE AUDIO RENDITION, and that is a shape rather
+ * > than a policy
+ * > With no video there is nothing for an audio GROUP to hang off: the variant must itself be
+ * > an audio playlist, and a variant that also joined an audio group would name the same media
+ * > twice. So the caller publishes only the default audio rendition for such a title -- see
+ * > `publishedTracksFor` in `playback-routes.ts` -- and this function simply writes what it is
+ * > given.
  */
-export function masterPlaylist(timelines: TrackTimelines): string {
+export function masterPlaylist(published: PublishedTracks): string {
   const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"];
-  // Audio is a separate rendition ONLY when there is video to attach it to. A file with no
-  // video stream has one thing to play, and it is the variant itself.
-  const separateAudio = timelines.video !== undefined && timelines.audio !== undefined;
+  const video = tracksOfKind(published, "video");
+  const audio = tracksOfKind(published, "audio");
+  const subtitles = tracksOfKind(published, "subtitles");
+
+  // Audio is a separate rendition ONLY when there is video to attach it to.
+  const separateAudio = video.length > 0 && audio.length > 0;
   if (separateAudio) {
-    lines.push(
-      `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="${AUDIO_GROUP}",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${mediaPlaylistName("audio")}"`,
-    );
+    // `DEFAULT=YES` on the FIRST one, which is the container's own default -- `planPlayback`
+    // put it there. `AUTOSELECT=YES` on all of them is what lets a player whose system
+    // language is Japanese pick the Japanese track without anybody touching a menu.
+    for (const t of audio) {
+      lines.push(mediaLine("AUDIO", AUDIO_GROUP, t, { isDefault: t.track.ordinal === 0, autoselect: true }));
+    }
   }
-  // `DEFAULT=NO,AUTOSELECT=NO` is the whole subtitle policy and it is deliberate: the
-  // rendition is OFFERED and never switched on for you. hls.js leaves it unselected, so it
-  // fetches no subtitle fragment -- and produces no ffmpeg run -- until a viewer picks it out
-  // of the player's own caption menu.
-  const hasSubtitles = timelines.subtitles !== undefined;
-  if (hasSubtitles) {
-    lines.push(
-      `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="${SUBTITLE_GROUP}",NAME="Subtitles",DEFAULT=NO,AUTOSELECT=NO,URI="${mediaPlaylistName("subtitles")}"`,
-    );
+  // `DEFAULT=NO,AUTOSELECT=NO` is the whole subtitle policy and it is deliberate: a rendition
+  // is OFFERED and never switched on for you. hls.js leaves them unselected, so it fetches no
+  // subtitle fragment -- and produces no ffmpeg run -- until a viewer picks one out of a menu.
+  // AUTOSELECT would break exactly that: a player matching its system language would start
+  // producing segments for a track nobody asked to see.
+  for (const t of subtitles) {
+    lines.push(mediaLine("SUBTITLES", SUBTITLE_GROUP, t, { isDefault: false, autoselect: false }));
   }
-  const variant: Track = timelines.video !== undefined ? "video" : "audio";
+
+  const variant = video[0] ?? audio[0];
   const groups = [
     separateAudio ? `,AUDIO="${AUDIO_GROUP}"` : "",
-    hasSubtitles ? `,SUBTITLES="${SUBTITLE_GROUP}"` : "",
+    subtitles.length > 0 ? `,SUBTITLES="${SUBTITLE_GROUP}"` : "",
   ].join("");
   lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${NOMINAL_BANDWIDTH}${groups}`);
   // RELATIVE, like every other name this module writes -- see `mediaPlaylist`.
-  lines.push(mediaPlaylistName(variant));
+  if (variant) lines.push(mediaPlaylistName(variant.track));
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * One `EXT-X-MEDIA` line: a rendition, as the player's menu will show it.
+ *
+ * `LANGUAGE` is omitted rather than emptied when the container said nothing usable -- an empty
+ * attribute is a claim about the language, and "we do not know" is not one.
+ */
+function mediaLine(
+  type: "AUDIO" | "SUBTITLES",
+  group: string,
+  published: PublishedTrack,
+  offer: { isDefault: boolean; autoselect: boolean },
+): string {
+  const { name, language } = published.label;
+  return [
+    `#EXT-X-MEDIA:TYPE=${type}`,
+    `GROUP-ID="${group}"`,
+    `NAME="${name}"`,
+    ...(language ? [`LANGUAGE="${language}"`] : []),
+    `DEFAULT=${offer.isDefault ? "YES" : "NO"}`,
+    `AUTOSELECT=${offer.autoselect ? "YES" : "NO"}`,
+    `URI="${mediaPlaylistName(published.track)}"`,
+  ].join(",");
 }
 
 /**

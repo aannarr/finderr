@@ -18,7 +18,13 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { initName } from "../test/playback-names";
-import { RUN_INIT_NAME, segmentFileName, type Timeline, type TrackTimelines } from "./hls-timeline";
+import {
+  type PublishedTracks,
+  RUN_INIT_NAME,
+  segmentFileName,
+  type Timeline,
+  type Track,
+} from "./hls-timeline";
 import type { PlaybackPlan } from "./playback-plan";
 import {
   EXPENSIVE_SESSIONS,
@@ -36,18 +42,29 @@ import {
   TranscodeSessions,
 } from "./transcode-session";
 
+const ENGLISH = { name: "English", language: "eng" };
+
 const CHEAP: PlaybackPlan = {
   video: { action: "copy", sourceIndex: 0, codec: "h264", scaleWidth: null },
-  audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-  subtitles: { action: "none", sourceIndex: null },
+  audio: [{ action: "transcode", sourceIndex: 1, codec: "aac", label: ENGLISH }],
+  subtitles: [],
   reasons: [],
 };
 
 const EXPENSIVE: PlaybackPlan = {
   video: { action: "transcode", sourceIndex: 0, codec: "h264", scaleWidth: 1280 },
-  audio: { action: "transcode", sourceIndex: 1, codec: "aac" },
-  subtitles: { action: "none", sourceIndex: null },
+  audio: [{ action: "transcode", sourceIndex: 1, codec: "aac", label: ENGLISH }],
+  subtitles: [],
   reasons: [],
+};
+
+/** The same file offering a second audio track, which is a DIFFERENT plan for the same input. */
+const DUBBED: PlaybackPlan = {
+  ...CHEAP,
+  audio: [
+    ...CHEAP.audio,
+    { action: "copy", sourceIndex: 2, codec: "aac", label: { name: "Japanese", language: "jpn" } },
+  ],
 };
 
 /**
@@ -65,7 +82,17 @@ const AUDIO_TIMELINE: Timeline = {
   starts: Array.from({ length: 60 }, (_, i) => i * 6),
   endSec: 360.36,
 };
-const TIMELINES: TrackTimelines = { video: VIDEO_TIMELINE, audio: AUDIO_TIMELINE };
+
+const VIDEO: Track = { kind: "video", ordinal: 0 };
+const AUDIO: Track = { kind: "audio", ordinal: 0 };
+/** The alternate audio rendition a dubbed title publishes beside the default. */
+const AUDIO_2: Track = { kind: "audio", ordinal: 1 };
+
+const label = { name: "Track", language: null };
+const TRACKS: PublishedTracks = [
+  { track: VIDEO, timeline: VIDEO_TIMELINE, label },
+  { track: AUDIO, timeline: AUDIO_TIMELINE, label },
+];
 
 /**
  * What a run of the fake ffmpeg is told to write, read back out of its own argv.
@@ -145,7 +172,7 @@ const mgr = (spawn: Spawner, onRun?: (run: SegmentRun) => void) =>
 const opts = (over: Partial<Parameters<TranscodeSessions["start"]>[0]> = {}) => ({
   input: "/plex/a.mkv",
   plan: CHEAP,
-  timelines: TIMELINES,
+  tracks: TRACKS,
   ...over,
 });
 
@@ -160,7 +187,7 @@ describe("starting a session", () => {
 
     expect(f.spawned).toHaveLength(0);
     expect(existsSync(s.dir)).toBe(true);
-    expect(s.timelines).toBe(TIMELINES);
+    expect(s.tracks).toBe(TRACKS);
   });
 
   /**
@@ -207,6 +234,17 @@ describe("starting a session", () => {
     expect(sessionKey(base)).toBe(sessionKey({ ...base }));
     expect(sessionKey(base)).not.toBe(sessionKey({ ...base, input: "/plex/b.mkv" }));
     expect(sessionKey(base)).not.toBe(sessionKey({ ...base, plan: EXPENSIVE }));
+  });
+
+  /**
+   * EVERY rendition is in the key, not just the one being watched. Two browsers with different
+   * codec support get different per-track answers on the same file -- Safari copies an eac3
+   * alternate that Chrome must re-encode -- and a key naming only the first would join them
+   * onto ONE output directory, where the second viewer is served the first's audio.
+   */
+  test("a plan that differs only in an ALTERNATE rendition is a different session", () => {
+    const base = opts();
+    expect(sessionKey(base)).not.toBe(sessionKey({ ...base, plan: DUBBED }));
   });
 });
 
@@ -301,9 +339,9 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    const path = await m.segmentPath(s.id, "video", 12);
+    const path = await m.segmentPath(s.id, VIDEO, 12);
 
-    expect(path).toBe(join(s.dir, segmentFileName("video", 12)));
+    expect(path).toBe(join(s.dir, segmentFileName(VIDEO, 12)));
     expect(existsSync(path as string)).toBe(true);
     expect(f.spawned).toHaveLength(1);
     // The range comes from the VIDEO timeline, so the segment covers 72.072s..78.078s of the
@@ -322,9 +360,9 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    const path = await m.segmentPath(s.id, "audio", 12);
+    const path = await m.segmentPath(s.id, AUDIO, 12);
 
-    expect(path).toBe(join(s.dir, segmentFileName("audio", 12)));
+    expect(path).toBe(join(s.dir, segmentFileName(AUDIO, 12)));
     expect(f.spawned[0]?.join(" ")).toContain("-ss 72.000000");
     expect(f.spawned[0]?.join(" ")).toContain("-to 78.000000");
   });
@@ -334,25 +372,64 @@ describe("producing a segment on demand", () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
-    await m.segmentPath(s.id, "video", 4);
-    await m.segmentPath(s.id, "audio", 4);
+    await m.segmentPath(s.id, VIDEO, 4);
+    await m.segmentPath(s.id, AUDIO, 4);
 
-    expect(await Bun.file(join(s.dir, initName("video", 4))).text()).toBe(
-      `init for ${segmentFileName("video", 4)}`,
+    expect(await Bun.file(join(s.dir, initName(VIDEO, 4))).text()).toBe(
+      `init for ${segmentFileName(VIDEO, 4)}`,
     );
-    expect(await Bun.file(join(s.dir, initName("audio", 4))).text()).toBe(
-      `init for ${segmentFileName("audio", 4)}`,
+    expect(await Bun.file(join(s.dir, initName(AUDIO, 4))).text()).toBe(
+      `init for ${segmentFileName(AUDIO, 4)}`,
     );
+  });
+
+  /**
+   * TWO RENDITIONS OF ONE KIND SHARE THE DIRECTORY TOO, and this is the case the ordinal was
+   * added for: the second audio track publishing over the first would serve a viewer who chose
+   * Japanese the English bytes, under the right file name, with nothing anywhere reporting it.
+   */
+  test("two renditions of the SAME kind never write over each other", async () => {
+    const f = fakeFfmpeg();
+    const m = mgr(f.spawn);
+    const s = m.start(
+      opts({ plan: DUBBED, tracks: [...TRACKS, { track: AUDIO_2, timeline: AUDIO_TIMELINE, label }] }),
+    );
+
+    await m.segmentPath(s.id, AUDIO, 4);
+    await m.segmentPath(s.id, AUDIO_2, 4);
+
+    expect(await Bun.file(join(s.dir, segmentFileName(AUDIO, 4))).text()).toBe("media for 4");
+    expect(await Bun.file(join(s.dir, segmentFileName(AUDIO_2, 4))).text()).toBe("media for 4");
+    // Each run carried its own source stream, which is the half a shared name would hide.
+    expect(f.spawned[0]?.join(" ")).toContain("-map 0:1");
+    expect(f.spawned[1]?.join(" ")).toContain("-map 0:2");
+  });
+
+  /** Its own ceiling, or selecting an alternate would eat the default's back-pressure budget. */
+  test("each rendition of a kind has its own concurrency slots", async () => {
+    const f = fakeFfmpeg({ manual: true });
+    const m = mgr(f.spawn);
+    const s = m.start(
+      opts({ plan: DUBBED, tracks: [...TRACKS, { track: AUDIO_2, timeline: AUDIO_TIMELINE, label }] }),
+    );
+
+    const held = [];
+    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, AUDIO, i));
+    held.push(m.segmentPath(s.id, AUDIO_2, 0));
+
+    expect(f.spawned).toHaveLength(SEGMENT_CONCURRENCY + 1);
+    for (const done of f.finish) done();
+    for (const path of await Promise.all(held)) expect(path).not.toBeNull();
   });
 
   /** A rendition this title does not publish has no segments, and asking costs no ffmpeg. */
   test("a track the session has no timeline for is null rather than an ffmpeg run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts({ timelines: { video: VIDEO_TIMELINE } }));
+    const s = m.start(opts({ tracks: TRACKS.slice(0, 1) }));
 
-    expect(await m.segmentPath(s.id, "audio", 0)).toBeNull();
-    expect(await m.initPath(s.id, "audio", 0)).toBeNull();
+    expect(await m.segmentPath(s.id, AUDIO, 0)).toBeNull();
+    expect(await m.initPath(s.id, AUDIO, 0)).toBeNull();
     expect(f.spawned).toHaveLength(0);
   });
 
@@ -362,8 +439,8 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    await m.segmentPath(s.id, "video", 3);
-    await m.segmentPath(s.id, "video", 3);
+    await m.segmentPath(s.id, VIDEO, 3);
+    await m.segmentPath(s.id, VIDEO, 3);
 
     expect(f.spawned).toHaveLength(1);
   });
@@ -378,7 +455,7 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    const both = Promise.all([m.segmentPath(s.id, "video", 5), m.segmentPath(s.id, "video", 5)]);
+    const both = Promise.all([m.segmentPath(s.id, VIDEO, 5), m.segmentPath(s.id, VIDEO, 5)]);
     expect(f.spawned).toHaveLength(1);
     f.finish[0]?.();
     const [a, b] = await both;
@@ -396,8 +473,8 @@ describe("producing a segment on demand", () => {
     const s = m.start(opts());
 
     const held = [];
-    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, "video", i));
-    const refused = await m.segmentPath(s.id, "video", SEGMENT_CONCURRENCY);
+    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i));
+    const refused = await m.segmentPath(s.id, VIDEO, SEGMENT_CONCURRENCY);
 
     expect(refused).toBeNull();
     expect(f.spawned).toHaveLength(SEGMENT_CONCURRENCY);
@@ -416,8 +493,8 @@ describe("producing a segment on demand", () => {
     const s = m.start(opts());
 
     const held = [];
-    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, "video", i));
-    held.push(m.segmentPath(s.id, "audio", 0));
+    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i));
+    held.push(m.segmentPath(s.id, AUDIO, 0));
 
     expect(f.spawned).toHaveLength(SEGMENT_CONCURRENCY + 1);
     for (const done of f.finish) done();
@@ -431,7 +508,7 @@ describe("producing a segment on demand", () => {
     const s = m.start(opts());
 
     for (let i = 0; i < SEGMENT_CONCURRENCY + 2; i++) {
-      expect(await m.segmentPath(s.id, "video", i)).not.toBeNull();
+      expect(await m.segmentPath(s.id, VIDEO, i)).not.toBeNull();
     }
   });
 
@@ -440,15 +517,15 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.segmentPath(s.id, "video", 999)).toBeNull();
-    expect(await m.segmentPath(s.id, "video", -1)).toBeNull();
+    expect(await m.segmentPath(s.id, VIDEO, 999)).toBeNull();
+    expect(await m.segmentPath(s.id, VIDEO, -1)).toBeNull();
     expect(f.spawned).toHaveLength(0);
   });
 
   test("a session that no longer exists yields null rather than throwing", async () => {
     const m = mgr(fakeFfmpeg().spawn);
-    expect(await m.segmentPath("nope", "video", 0)).toBeNull();
-    expect(await m.initPath("nope", "video", 0)).toBeNull();
+    expect(await m.segmentPath("nope", VIDEO, 0)).toBeNull();
+    expect(await m.initPath("nope", VIDEO, 0)).toBeNull();
   });
 
   /**
@@ -460,8 +537,8 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.segmentPath(s.id, "video", 4)).toBeNull();
-    expect(existsSync(join(s.dir, segmentFileName("video", 4)))).toBe(false);
+    expect(await m.segmentPath(s.id, VIDEO, 4)).toBeNull();
+    expect(existsSync(join(s.dir, segmentFileName(VIDEO, 4)))).toBe(false);
     expect(readdirSync(s.dir)).toHaveLength(0);
   });
 
@@ -474,12 +551,12 @@ describe("producing a segment on demand", () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
-    await m.segmentPath(s.id, "video", 2);
-    await m.segmentPath(s.id, "video", 9);
+    await m.segmentPath(s.id, VIDEO, 2);
+    await m.segmentPath(s.id, VIDEO, 9);
 
     for (const index of [2, 9]) {
-      expect(await Bun.file(join(s.dir, initName("video", index))).text()).toBe(
-        `init for ${segmentFileName("video", index)}`,
+      expect(await Bun.file(join(s.dir, initName(VIDEO, index))).text()).toBe(
+        `init for ${segmentFileName(VIDEO, index)}`,
       );
     }
   });
@@ -493,8 +570,8 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.initPath(s.id, "video", 7)).toBe(join(s.dir, initName("video", 7)));
-    expect(await m.segmentPath(s.id, "video", 7)).toBe(join(s.dir, segmentFileName("video", 7)));
+    expect(await m.initPath(s.id, VIDEO, 7)).toBe(join(s.dir, initName(VIDEO, 7)));
+    expect(await m.segmentPath(s.id, VIDEO, 7)).toBe(join(s.dir, segmentFileName(VIDEO, 7)));
     expect(f.spawned).toHaveLength(1);
     expect(f.spawned[0]?.join(" ")).toContain("-start_number 7");
   });
@@ -508,16 +585,16 @@ describe("producing a segment on demand", () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
-    for (let i = 0; i < SEGMENT_CACHE + 3; i++) await m.segmentPath(s.id, "video", i);
+    for (let i = 0; i < SEGMENT_CACHE + 3; i++) await m.segmentPath(s.id, VIDEO, i);
 
     for (const gone of [0, 2]) {
-      expect(existsSync(join(s.dir, segmentFileName("video", gone)))).toBe(false);
+      expect(existsSync(join(s.dir, segmentFileName(VIDEO, gone)))).toBe(false);
       // An init outlives its segment for nothing: it is useless beside any other one.
-      expect(existsSync(join(s.dir, initName("video", gone)))).toBe(false);
+      expect(existsSync(join(s.dir, initName(VIDEO, gone)))).toBe(false);
     }
     for (const kept of [3, SEGMENT_CACHE + 2]) {
-      expect(existsSync(join(s.dir, segmentFileName("video", kept)))).toBe(true);
-      expect(existsSync(join(s.dir, initName("video", kept)))).toBe(true);
+      expect(existsSync(join(s.dir, segmentFileName(VIDEO, kept)))).toBe(true);
+      expect(existsSync(join(s.dir, initName(VIDEO, kept)))).toBe(true);
     }
   });
 
@@ -526,7 +603,7 @@ describe("producing a segment on demand", () => {
     const s = m.start(opts());
 
     clock += IDLE_REAP_MS - 1;
-    await m.segmentPath(s.id, "video", 1);
+    await m.segmentPath(s.id, VIDEO, 1);
     clock += IDLE_REAP_MS - 1;
 
     expect(m.reap()).toBe(0);
@@ -628,7 +705,7 @@ describe("ending a session", () => {
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    const pending = m.segmentPath(s.id, "video", 1);
+    const pending = m.segmentPath(s.id, VIDEO, 1);
     m.stop(s.id);
 
     expect(f.killed[0]?.signal).toBe(15);
@@ -699,7 +776,7 @@ describe("ending a session", () => {
     const m = mgr(f.spawn);
     const a = m.start(opts({ input: "/plex/a.mkv" }));
     const b = m.start(opts({ input: "/plex/b.mkv" }));
-    const pending = [m.segmentPath(a.id, "video", 0), m.segmentPath(b.id, "video", 0)];
+    const pending = [m.segmentPath(a.id, VIDEO, 0), m.segmentPath(b.id, VIDEO, 0)];
 
     m.stopAll();
 
@@ -750,7 +827,7 @@ describe("reporting what a run cost", () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ cpuMs: 137 }).spawn, (r) => runs.push(r));
     const s = m.start(opts());
-    await m.segmentPath(s.id, "video", 0);
+    await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([{ sessionId: s.id, cpuMs: 137 }]);
   });
@@ -763,7 +840,7 @@ describe("reporting what a run cost", () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ exitCode: 1, cpuMs: 91 }).spawn, (r) => runs.push(r));
     const s = m.start(opts());
-    expect(await m.segmentPath(s.id, "video", 0)).toBeNull();
+    expect(await m.segmentPath(s.id, VIDEO, 0)).toBeNull();
 
     expect(runs).toEqual([{ sessionId: s.id, cpuMs: 91 }]);
   });
@@ -777,7 +854,7 @@ describe("reporting what a run cost", () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg().spawn, (r) => runs.push(r));
     const s = m.start(opts());
-    await m.segmentPath(s.id, "video", 0);
+    await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([]);
   });
@@ -786,7 +863,7 @@ describe("reporting what a run cost", () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ cpuMs: null }).spawn, (r) => runs.push(r));
     const s = m.start(opts());
-    await m.segmentPath(s.id, "video", 0);
+    await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([]);
   });
@@ -798,6 +875,6 @@ describe("reporting what a run cost", () => {
     });
     const s = m.start(opts());
 
-    expect(await m.segmentPath(s.id, "video", 0)).not.toBeNull();
+    expect(await m.segmentPath(s.id, VIDEO, 0)).not.toBeNull();
   });
 });

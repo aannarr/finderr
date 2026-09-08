@@ -104,8 +104,11 @@ export function playbackDiagnostics(input: {
   segmenting: SegmentingFacts;
   encoder?: EncoderChoice;
 }): PlaybackDiagnostics {
-  const video = streamAt(input.probe, input.plan.video.sourceIndex);
-  const audio = streamAt(input.probe, input.plan.audio.sourceIndex);
+  const video = streamAt(input.probe, input.plan.video?.sourceIndex ?? null);
+  // The FIRST audio rendition, which is the one that will play -- `planPlayback` puts the
+  // container's default there. The alternates are named in the plan's own reasons rather than
+  // here: this block describes the SOURCE, and a viewer who switches tracks has not changed it.
+  const audio = streamAt(input.probe, input.plan.audio[0]?.sourceIndex ?? null);
   return {
     source: {
       container: input.probe.formatName,
