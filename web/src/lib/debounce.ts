@@ -23,17 +23,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-
-/** The clock a debouncer runs on. `setTimeout`'s shape, narrowed to what is used. */
-export interface Timers {
-  set: (fn: () => void, ms: number) => unknown;
-  clear: (handle: unknown) => void;
-}
-
-export const realTimers: Timers = {
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
+import { realTimers, type Timers } from "./timers";
 
 /**
  * How long the box must be STILL before a query is worth a round trip.

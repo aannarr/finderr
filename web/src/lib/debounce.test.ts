@@ -6,42 +6,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { debouncer, SEARCH_DEBOUNCE_MS, type Timers } from "./debounce";
-
-/**
- * A virtual clock. Timers fire when `advance` passes their deadline, so a 150ms policy
- * costs a test nothing and assertions read as elapsed milliseconds.
- */
-function fakeTimers() {
-  let now = 0;
-  let next = 1;
-  const pending = new Map<number, { at: number; fn: () => void }>();
-  const timers: Timers = {
-    set: (fn, ms) => {
-      const id = next++;
-      pending.set(id, { at: now + ms, fn });
-      return id;
-    },
-    clear: (handle) => {
-      pending.delete(handle as number);
-    },
-  };
-  return {
-    timers,
-    advance(ms: number) {
-      now += ms;
-      for (const [id, t] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
-        if (t.at <= now) {
-          pending.delete(id);
-          t.fn();
-        }
-      }
-    },
-    get scheduled() {
-      return pending.size;
-    },
-  };
-}
+import { fakeTimers } from "../test/fake-timers";
+import { debouncer, SEARCH_DEBOUNCE_MS } from "./debounce";
 
 /** Types `text` one character at a time, `gap` ms apart, and returns what got emitted. */
 function type(text: string, gap: number, ms = SEARCH_DEBOUNCE_MS): string[] {

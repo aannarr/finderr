@@ -14,6 +14,7 @@
 
 import type { PlaybackPlan } from "./playback-types";
 import { EndpointRing, electEndpoint, type StreamEndpoint, streamUrl } from "./stream-endpoints";
+import { realTimers, type Timers } from "./timers";
 
 /**
  * The codecs worth asking about, and the MIME string that asks.
@@ -140,7 +141,13 @@ export interface PlaybackSession {
    * exactly what playback did before multi-homing existed.
    */
   streamToken?: string;
-  /** Seconds until `streamToken` stops being accepted. The player renews well inside it. */
+  /**
+   * Seconds until `streamToken` stops being accepted. The player renews well inside it.
+   *
+   * **May be ZERO, and that is not an error state**: starting a session JOINS a running one for
+   * the same title, so a second viewer is handed a token that is already partly or wholly
+   * spent. `renewStreamToken` reads a zero as "renew now" for exactly this reason.
+   */
   streamTokenTtlSec?: number;
   /** Where else this session's media can be fetched from, best first. Absent means nowhere else. */
   endpoints?: StreamEndpoint[];
@@ -294,36 +301,112 @@ export async function electStreamEndpoint(
 }
 
 /**
+ * The shortest life this will ever schedule against, in seconds.
+ *
+ * Only reached when the server has stopped answering renewals: the estimate halves on every
+ * attempt that tells us nothing, and without a floor it would converge on a tight loop against
+ * a session that is simply gone. Half of this is the retry interval, so a dead renewal
+ * endpoint is asked once every thirty seconds rather than thousands of times a second.
+ */
+const MIN_ASSUMED_TTL_SEC = 60;
+
+/**
  * Keep a ring's token live for as long as playback runs, and hand back the cancel.
  *
- * **Renews at HALF the stated life**, so one failed renewal is survivable rather than an
- * interruption -- and the renewal goes to the app's own origin, which is the only place
- * allowed to mint one. A failure is deliberately silent: the current token is still valid for
- * the rest of its window, and there is another attempt before it lapses.
+ * **Renews at HALF the token's remaining life**, so one failed renewal is survivable rather
+ * than an interruption -- and the renewal goes to the app's own origin, which is the only
+ * place allowed to mint one. A failure is deliberately silent: the current token is usually
+ * still valid for the rest of its window, and there is another attempt before it lapses.
  *
- * A session with no token at all (a server older than this feature) schedules nothing, which
- * is why the caller can wire this unconditionally.
+ * > [!IMPORTANT] THE CADENCE FOLLOWS THE SERVER, WHICH IS WHY THIS IS A CHAIN OF TIMEOUTS
+ * > `TranscodeSessions.start` JOINS an existing session for the same key, so a second viewer
+ * > receives that session's CURRENT token with only its REMAINING life -- possibly none of it.
+ * > An interval computed once from the start response therefore got both edges wrong: a
+ * > viewer joining at minute 14 of somebody else's cycle renewed every 30 seconds for the rest
+ * > of the film, and a viewer joining after the window had lapsed scheduled nothing at all and
+ * > played on an expired token. Only the ring's cross-origin requests carry that token, and a
+ * > 401 is deliberately not `pathIsDead`, so the failure was hls.js exhausting its retries
+ * > against an endpoint that was working perfectly.
+ * >
+ * > Each renewal is therefore scheduled from the life the PREVIOUS response reported, and
+ * > `POST /api/play/s/:id/token` reports one on every call.
+ *
+ * A TTL of zero means "already spent" and renews NOW. A session with no TTL FIELD at all is a
+ * different thing -- a server older than this feature, which has no renewal endpoint to call
+ * either -- and schedules nothing, which is why the caller can wire this unconditionally.
  */
-export function renewStreamToken(session: PlaybackSession, ring: EndpointRing): () => void {
-  const ttlSec = session.streamTokenTtlSec ?? 0;
-  if (!session.streamToken || ttlSec <= 0) return () => {};
-  const timer = setInterval(
-    async () => {
-      const minted = await remintStreamToken(session.sessionId);
-      if (minted) ring.setToken(minted);
-    },
-    (ttlSec / 2) * 1000,
-  );
-  return () => clearInterval(timer);
+export function renewStreamToken(
+  session: PlaybackSession,
+  ring: EndpointRing,
+  timers: Timers = realTimers,
+): () => void {
+  const initialTtlSec = session.streamTokenTtlSec;
+  if (!session.streamToken || initialTtlSec === undefined) return () => {};
+
+  let handle: unknown = null;
+  let cancelled = false;
+
+  const schedule = (ttlSec: number) => {
+    handle = timers.set(() => {
+      handle = null;
+      void (async () => {
+        const minted = await remintStreamToken(session.sessionId);
+        // The player may have gone while the request was in flight; a token set on a ring
+        // nobody reads is harmless, but re-arming the chain would leak a timer per session.
+        if (cancelled) return;
+        if (minted) ring.setToken(minted.streamToken);
+        schedule(minted?.streamTokenTtlSec ?? assumedRemainingSec(ttlSec));
+      })();
+    }, renewalDelayMs(ttlSec));
+  };
+
+  schedule(initialTtlSec);
+  return () => {
+    cancelled = true;
+    if (handle !== null) timers.clear(handle);
+  };
 }
 
-/** Ask the app for a fresh stream token. Null on any failure -- the caller keeps the old one. */
-async function remintStreamToken(sessionId: string): Promise<string | null> {
+/** When to renew a token with `ttlSec` of life left: halfway through it, or now if it has none. */
+function renewalDelayMs(ttlSec: number): number {
+  return Math.max(0, (ttlSec * 1000) / 2);
+}
+
+/**
+ * What to assume is left after an attempt that reported nothing -- a refused re-mint, or one
+ * answered by a server that sends no TTL.
+ *
+ * Half of what was believed before, because half of it is exactly what was just waited out.
+ * That decays the retry interval towards `MIN_ASSUMED_TTL_SEC` instead of holding a stale
+ * fifteen-minute cadence while the token expires underneath it.
+ */
+function assumedRemainingSec(ttlSec: number): number {
+  return Math.max(MIN_ASSUMED_TTL_SEC, ttlSec / 2);
+}
+
+/** A freshly minted stream token and its life, exactly as the server states them. */
+interface MintedToken {
+  streamToken: string;
+  /** Absent only from a server that does not report one; see `assumedRemainingSec`. */
+  streamTokenTtlSec?: number;
+}
+
+/**
+ * Ask the app for a fresh stream token. Null on any failure -- the caller keeps the old one.
+ *
+ * The TTL rides back with it because the renewal cadence is re-derived from every response;
+ * a reply with a token but no TTL is honoured for the token and left to the caller's decay.
+ */
+async function remintStreamToken(sessionId: string): Promise<MintedToken | null> {
   try {
     const res = await fetch(`/api/play/s/${encodeURIComponent(sessionId)}/token`, { method: "POST" });
     if (!res.ok) return null;
-    const body = (await res.json()) as { streamToken?: unknown };
-    return typeof body.streamToken === "string" ? body.streamToken : null;
+    const body = (await res.json()) as { streamToken?: unknown; streamTokenTtlSec?: unknown };
+    if (typeof body.streamToken !== "string") return null;
+    return {
+      streamToken: body.streamToken,
+      streamTokenTtlSec: typeof body.streamTokenTtlSec === "number" ? body.streamTokenTtlSec : undefined,
+    };
   } catch {
     return null;
   }
