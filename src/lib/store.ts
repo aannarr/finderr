@@ -14,6 +14,7 @@ import { applyAuthSchema } from "./auth-store";
 import type { AwardPersonClass, AwardPersonTally, Nomination } from "./awards";
 import type { Config } from "./config";
 import { paths } from "./config";
+import { applyKeyframeCacheSchema } from "./keyframe-cache";
 import { type MediaFileRow, mediaFileRow, NOT_AN_EPISODE } from "./media-file";
 import type { PlexItem } from "./plex";
 import type { RequestDiagnostic } from "./request-diagnostics";
@@ -1046,6 +1047,9 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     // Same rule, same reason: `shelf_pref` cascades off `app_user`. See
     // `SHELF_PREFERENCE_SCHEMA`.
     applyShelfPreferenceSchema(this.db);
+    // Where a file can be cut, remembered per file. Order-independent -- it cascades off
+    // nothing, because it is keyed by a path on disk rather than by anything this app owns.
+    applyKeyframeCacheSchema(this.db);
     addMissingColumns(this.db, ADDED_COLUMNS);
   }
 
