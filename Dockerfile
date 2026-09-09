@@ -114,11 +114,28 @@ FROM oven/bun:1.4.0-alpine AS runtime
 # > is correct, and silent. `/api/health` reporting `playback.encoder.hardware: false` on a box
 # > with an iGPU is what that looks like; see `docker-compose.override.example.yml`.
 #
+# > [!CAUTION] IT IS x86-ONLY, SO IT IS GATED ON `TARGETARCH` -- an unconditional install
+# > publishes NOTHING, and does it quietly
+# > Alpine has no `aarch64` build of this package, so on the arm64 leg `apk add` is
+# > `no such package` rather than a no-op. `docker.yml` builds both architectures natively
+# > and only its `merge` job moves a tag, and `merge` is `needs`-gated on both -- so one red
+# > leg means no `sha-<full40>` and no moved `:latest`. From outside that is INDISTINGUISHABLE
+# > from a slow build: `:latest` goes on answering 200 with the previous image, so a
+# > `docker compose pull` on the NAS reports success and changes nothing. It shipped this way
+# > on 2026-09-08 and every deploy failed silently until 2026-09-09.
+# >
+# > Dropping it on arm64 costs nothing real: there is no Intel iGPU there to drive, and
+# > `chooseEncoder` already falls to software when the runtime or the render node is absent.
+# > The deployment NAS is amd64 and its hardware encode is untouched. Pinned by
+# > `src/lib/runtime-deps.test.ts`, which fails in a second rather than after a CI build.
+#
 # Alpine's ffmpeg is 6.1.2 here (verified on the built image), comfortably past the one hard
 # version floor this codebase has: `-hls_segment_options` reached hlsenc in November 2021, is
 # NOT probed, and an ffmpeg without it fails at spawn on every single segment. If this line is
 # ever changed to a pinned or hand-built ffmpeg to save space, check that date first.
-RUN apk add --no-cache gzip tini ca-certificates ffmpeg intel-media-driver \
+ARG TARGETARCH
+RUN apk add --no-cache gzip tini ca-certificates ffmpeg \
+ && if [ "$TARGETARCH" = "amd64" ]; then apk add --no-cache intel-media-driver; fi \
  && ffmpeg -hide_banner -version \
  && ffprobe -hide_banner -version
 

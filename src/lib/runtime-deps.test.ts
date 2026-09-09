@@ -141,4 +141,39 @@ describe("what the container ships", () => {
       intelMediaDriver: runtime.includes("intel-media-driver"),
     }).toEqual({ ffmpeg: true, intelMediaDriver: true });
   });
+
+  /**
+   * The driver is x86-ONLY, and installing it unconditionally breaks the arm64 image.
+   *
+   * `intel-media-driver` is the iHD VAAPI driver for Intel GPUs, and Alpine publishes no
+   * `aarch64` build of it -- `apk add` there is `no such package`, not a no-op. `docker.yml`
+   * builds `linux/amd64` and `linux/arm64` natively and its `merge` job is `needs`-gated on
+   * both, so ONE red leg publishes NOTHING: no `sha-<full40>`, no moved `:latest`.
+   *
+   * That failure is expensive precisely because it is quiet from the outside. `:latest` goes
+   * on answering 200 with the PREVIOUS image, so `docker compose pull` on the NAS reports
+   * success and changes nothing, and `deploy.sh` can only report a 404 that never clears.
+   * Measured 2026-09-09 on Alpine 3.22.5: the arm64 leg of run 34383299543 died at
+   * `apk add`, having been broken since playback added the line the day before.
+   *
+   * Losing the driver on arm64 costs nothing real -- there is no Intel iGPU on that machine
+   * to drive, and `chooseEncoder` already falls to software whenever the runtime or the
+   * render node is missing. The deployment NAS is amd64 and keeps hardware encode.
+   */
+  test("the Intel driver install is guarded by TARGETARCH, since Alpine has no aarch64 build", () => {
+    const runtime = dockerfile.slice(dockerfile.indexOf("AS runtime"));
+    // Fold `\`-continued lines so a multi-line RUN reads as the single command it is.
+    const joined = runtime.replace(/\\\r?\n\s*/g, " ");
+    // Comments are dropped BEFORE the search: the Dockerfile argues for this driver in prose
+    // directly above the command, so the first line naming it is a `#` and never the install.
+    const driverCommand = joined
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .find((line) => line.includes("intel-media-driver"));
+    expect(driverCommand).toBeDefined();
+    expect({
+      argDeclared: /^ARG TARGETARCH\s*$/m.test(runtime),
+      installGuarded: driverCommand?.includes("TARGETARCH") ?? false,
+    }).toEqual({ argDeclared: true, installGuarded: true });
+  });
 });
