@@ -287,9 +287,6 @@ interface FileNaming {
   extension: string;
 }
 
-/** Which published file of a segment: the media itself, or the header it needs. */
-type ProducedFileKind = "segment" | "init";
-
 /** How many digits a segment index carries in a published name. `%05d` in ffmpeg's template. */
 const INDEX_DIGITS = 5;
 
@@ -298,30 +295,43 @@ const INDEX_DIGITS = 5;
  *
  * `vseg0-00042.m4s`. The ordinal is UNPADDED, so the two numbers cannot be told apart by
  * width alone and something has to sit between them -- and a separator that is neither a
- * digit nor part of any prefix or extension makes `producedIn` a split rather than a regex.
+ * digit nor part of any prefix or extension makes the parse a split rather than a regex.
  */
 const ORDINAL_SEPARATOR = "-";
 
-function publishedName(naming: FileNaming, track: Track, index: number): string {
-  const at = String(index).padStart(INDEX_DIGITS, "0");
-  return `${naming.prefix}${track.ordinal}${ORDINAL_SEPARATOR}${at}${naming.extension}`;
+/**
+ * What every published name of one rendition begins with: the kind's prefix and the ordinal.
+ *
+ * The two name shapes below differ only in what follows this, so the part they share is
+ * written once -- a rendition whose segments and init disagreed about which rendition they
+ * belong to is the bug this stem makes unspellable.
+ */
+function publishedStem(naming: FileNaming, track: Track): string {
+  return `${naming.prefix}${track.ordinal}`;
 }
 
 /** How a media segment file is named. The one owner of that spelling. */
 export function segmentFileName(track: Track, index: number): string {
-  return publishedName(TRACK_FILES[track.kind].segment, track, index);
+  const naming = TRACK_FILES[track.kind].segment;
+  const at = String(index).padStart(INDEX_DIGITS, "0");
+  return `${publishedStem(naming, track)}${ORDINAL_SEPARATOR}${at}${naming.extension}`;
 }
 
 /**
- * How a published initialisation segment is named, or null for a rendition that has none.
+ * How a rendition's initialisation segment is named, or null for one that has none.
+ *
+ * **ONE PER RENDITION, WITH NO SEGMENT INDEX IN IT** -- `vinit0.mp4`, not `vinit0-00042.mp4`.
+ * That is the whole shape of this file: every run of a rendition writes a byte-identical init
+ * (see `mediaPlaylist`), so a name that varied per segment would be naming one file several
+ * times over, and the playlist would have to re-declare it before every fragment.
  *
  * Null is a real answer rather than a failure: WebVTT segments carry no fMP4 header, so a
  * subtitle rendition publishes nothing beside its media and every caller decides what that
- * means for it -- no `EXT-X-MAP` in the playlist, nothing to rename, nothing to evict.
+ * means for it -- no `EXT-X-MAP` in the playlist, nothing to rename, nothing to serve.
  */
-export function initFileName(track: Track, index: number): string | null {
+export function initFileName(track: Track): string | null {
   const naming = TRACK_FILES[track.kind].init;
-  return naming ? publishedName(naming, track, index) : null;
+  return naming ? `${publishedStem(naming, track)}${naming.extension}` : null;
 }
 
 /** What a produced media segment of this rendition is served as. The one owner of that. */
@@ -356,12 +366,14 @@ export function mediaPlaylistName(track: Track): string {
  */
 export const RUN_INIT_NAME = "init.mp4";
 
-/** One file a session publishes, as named on the wire. */
-export interface ProducedName {
-  track: Track;
-  file: ProducedFileKind;
-  index: number;
-}
+/**
+ * One file a session publishes, as named on the wire.
+ *
+ * A UNION rather than one shape with an optional index: an init belongs to a whole rendition
+ * and has no segment index to carry, so a shared `index` field would be a number every caller
+ * had to know not to read.
+ */
+export type ProducedName = { file: "segment"; track: Track; index: number } | { file: "init"; track: Track };
 
 /**
  * Read a published file name back into the thing it names, or null when it is not one of ours.
@@ -372,41 +384,53 @@ export interface ProducedName {
  * before anything touches the filesystem -- no `..`, no slash, no dot-file, no extension we
  * did not write. Parsing lives here, beside the spelling it has to agree with, so the route
  * never re-types a pattern that could drift from the names actually produced.
+ *
+ * Both halves guard the same way: the split is a GUESS and the ROUND TRIP is the check. A name
+ * is accepted only when re-generating it from the parsed numbers -- through the very functions
+ * that publish it -- reproduces the name EXACTLY, which settles the prefix, the digit count,
+ * the padding, the separator and the extension in one comparison.
  */
 export function parseProducedName(name: string): ProducedName | null {
   for (const kind of TRACK_KINDS) {
-    for (const file of ["segment", "init"] as const) {
-      const found = producedIn(kind, file, name);
-      if (found) return found;
-    }
+    const found = parsedSegment(kind, name) ?? parsedInit(kind, name);
+    if (found) return found;
   }
   return null;
 }
 
-/**
- * The rendition and segment this name carries, or null when it is not this naming at all.
- *
- * The split is a guess and the round trip is the guard: a name is accepted only when
- * re-generating it from the parsed numbers reproduces the name EXACTLY, which settles the
- * prefix, the digit count, the padding, the separator and the extension in one comparison. So
- * there is no separate pattern to keep in step with `publishedName`, and no way for a name
- * that merely resembles ours to slip through.
- */
-function producedIn(kind: TrackKind, file: ProducedFileKind, name: string): ProducedName | null {
-  const naming = TRACK_FILES[kind][file];
-  // A rendition with no initialisation segment has no name to match, and matching one would
-  // admit a file this server never writes.
-  if (!naming) return null;
-  const body = name.slice(naming.prefix.length, name.length - naming.extension.length);
+/** The rendition and segment index this media name carries, or null if it is not one. */
+function parsedSegment(kind: TrackKind, name: string): ProducedName | null {
+  const body = nameBody(TRACK_FILES[kind].segment, name);
+  if (body === null) return null;
   const [ordinalText, indexText] = body.split(ORDINAL_SEPARATOR);
   if (!isDigits(ordinalText) || !isDigits(indexText)) return null;
   const track: Track = { kind, ordinal: Number(ordinalText) };
   const index = Number(indexText);
-  return publishedName(naming, track, index) === name ? { track, file, index } : null;
+  return segmentFileName(track, index) === name ? { file: "segment", track, index } : null;
 }
 
-function isDigits(text: string | undefined): text is string {
-  return text !== undefined && /^\d+$/.test(text);
+/** The rendition this init name carries, or null if it is not one. */
+function parsedInit(kind: TrackKind, name: string): ProducedName | null {
+  const body = nameBody(TRACK_FILES[kind].init, name);
+  if (!isDigits(body)) return null;
+  const track: Track = { kind, ordinal: Number(body) };
+  return initFileName(track) === name ? { file: "init", track } : null;
+}
+
+/**
+ * What sits between a kind's prefix and its extension in `name`, or null when neither fits.
+ *
+ * Null for a rendition with no such file at all -- a WebVTT init -- because matching one would
+ * admit a name this server never writes.
+ */
+function nameBody(naming: FileNaming | undefined, name: string): string | null {
+  if (!naming) return null;
+  if (!name.startsWith(naming.prefix) || !name.endsWith(naming.extension)) return null;
+  return name.slice(naming.prefix.length, name.length - naming.extension.length);
+}
+
+function isDigits(text: string | null | undefined): text is string {
+  return typeof text === "string" && /^\d+$/.test(text);
 }
 
 /** The playlist a player is pointed at: the one that names the renditions. */
@@ -516,26 +540,26 @@ function mediaLine(
  * total duration, and enables the full scrub bar. Version 7 is the floor for fMP4
  * (`EXT-X-MAP` with a media initialisation section).
  *
- * > [!NOTE] EVERY SEGMENT STILL NAMES ITS OWN `EXT-X-MAP`, and it no longer HAS to
- * > It had to until 2026-09-08. Two inits produced at different seek offsets differed in six
- * > bytes, those six bytes were the EDIT LIST, and it encoded where that run had started --
- * > so playing segment 401 against segment 400's init shifted its whole presentation by
- * > 6.882 s, the distance between the two boundaries.
+ * > [!IMPORTANT] ONE `EXT-X-MAP` FOR THE WHOLE RENDITION, and that is measured rather than
+ * > assumed
+ * > `EXT-X-MAP` applies to every segment after it until another one replaces it, so declaring
+ * > it once in the header covers the film. It could NOT be declared once until 2026-09-08: two
+ * > inits produced at different seek offsets differed in six bytes, those six bytes were the
+ * > EDIT LIST, and it encoded where that run had started -- so playing segment 401 against
+ * > segment 400's init shifted its whole presentation by 6.882 s, the distance between the two
+ * > boundaries.
  * >
- * > `SEGMENT_MUXER_OPTIONS` in `playback-plan.ts` moved that placement out of the init and
- * > into each fragment's own `tfdt`, where every consumer reads it -- hls.js implements no
- * > edit lists at all -- and the inits a rendition produces are now BYTE-IDENTICAL whatever
- * > the seek offset. Serving one per segment is therefore redundant rather than required: the
- * > same 765 bytes, produced by the run that made the segment anyway.
- * >
- * > It is kept because collapsing it to a single `EXT-X-MAP` is a change to the playlist that
- * > buys one saved request per segment and needs its own browser verification. Card:
- * > `one-ext-x-map-per-rendition-now-that-every-init-is-byte-iden`.
+ * > `SEGMENT_MUXER_OPTIONS` in `playback-plan.ts` moved that placement out of the init and into
+ * > each fragment's own `tfdt`, where every consumer reads it -- hls.js implements no edit
+ * > lists at all -- and the inits a rendition produces are now BYTE-IDENTICAL whatever the seek
+ * > offset, measured with `cmp` on segments 0 and 2 of the same source, 765 bytes each. So the
+ * > rendition has ONE init, `initFileName` names it without a segment index, and the player
+ * > fetches it once instead of once per fragment.
  *
  * > [!NOTE] A SUBTITLE RENDITION WRITES NO `EXT-X-MAP` AT ALL, and that is not an omission
  * > WebVTT segments are plain text with no initialisation section, so there is nothing to map
- * > to. `initFileName` answers null for that rendition and this loop skips the line rather
- * > than publishing a URI that would 404 once per segment.
+ * > to. `initFileName` answers null for that rendition and the line is left out rather than
+ * > publishing a URI that would 404.
  */
 export function mediaPlaylist(track: Track, t: Timeline): string {
   const lines = [
@@ -546,14 +570,14 @@ export function mediaPlaylist(track: Track, t: Timeline): string {
     "#EXT-X-MEDIA-SEQUENCE:0",
     "#EXT-X-INDEPENDENT-SEGMENTS",
   ];
+  // RELATIVE names, here and below, which is what lets a client retarget the media at a
+  // different endpoint from the playlist. An absolute base would weld every segment to one
+  // address and make multi-homed playback impossible without rewriting the playlist.
+  const init = initFileName(track);
+  if (init) lines.push(`#EXT-X-MAP:URI="${init}"`);
   for (let i = 0; i < t.starts.length; i++) {
     const range = segmentRange(t, i);
     if (!range) continue;
-    // RELATIVE names, which is what lets a client retarget the media at a different endpoint
-    // from the playlist. An absolute base here would weld every segment to one address and
-    // make multi-homed playback impossible without rewriting the playlist.
-    const init = initFileName(track, i);
-    if (init) lines.push(`#EXT-X-MAP:URI="${init}"`);
     lines.push(`#EXTINF:${(range.endSec - range.startSec).toFixed(6)},`);
     lines.push(segmentFileName(track, i));
   }

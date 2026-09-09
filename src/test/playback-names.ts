@@ -11,8 +11,8 @@
 import { initFileName, type Track } from "../lib/hls-timeline";
 
 /** The init name of a rendition that has one. Throws for one that does not. */
-export function initName(track: Track, index: number): string {
-  const name = initFileName(track, index);
+export function initName(track: Track): string {
+  const name = initFileName(track);
   if (name === null) throw new Error(`the ${track} rendition publishes no initialisation segment`);
   return name;
 }

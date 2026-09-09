@@ -375,12 +375,8 @@ describe("producing a segment on demand", () => {
     await m.segmentPath(s.id, VIDEO, 4);
     await m.segmentPath(s.id, AUDIO, 4);
 
-    expect(await Bun.file(join(s.dir, initName(VIDEO, 4))).text()).toBe(
-      `init for ${segmentFileName(VIDEO, 4)}`,
-    );
-    expect(await Bun.file(join(s.dir, initName(AUDIO, 4))).text()).toBe(
-      `init for ${segmentFileName(AUDIO, 4)}`,
-    );
+    expect(await Bun.file(join(s.dir, initName(VIDEO))).text()).toBe(`init for ${segmentFileName(VIDEO, 4)}`);
+    expect(await Bun.file(join(s.dir, initName(AUDIO))).text()).toBe(`init for ${segmentFileName(AUDIO, 4)}`);
   });
 
   /**
@@ -429,7 +425,7 @@ describe("producing a segment on demand", () => {
     const s = m.start(opts({ tracks: TRACKS.slice(0, 1) }));
 
     expect(await m.segmentPath(s.id, AUDIO, 0)).toBeNull();
-    expect(await m.initPath(s.id, AUDIO, 0)).toBeNull();
+    expect(await m.initPath(s.id, AUDIO)).toBeNull();
     expect(f.spawned).toHaveLength(0);
   });
 
@@ -525,7 +521,7 @@ describe("producing a segment on demand", () => {
   test("a session that no longer exists yields null rather than throwing", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     expect(await m.segmentPath("nope", VIDEO, 0)).toBeNull();
-    expect(await m.initPath("nope", VIDEO, 0)).toBeNull();
+    expect(await m.initPath("nope", VIDEO)).toBeNull();
   });
 
   /**
@@ -543,37 +539,51 @@ describe("producing a segment on demand", () => {
   });
 
   /**
-   * EACH SEGMENT KEEPS ITS OWN INIT, because the init carries an edit list naming where its
-   * run started -- measured 2026-09-08, the wrong one shifted a segment by 6.882 s, exactly
-   * the distance between the two boundaries.
+   * ONE INIT FOR THE RENDITION, written by whichever run got there first and never rewritten.
+   * Every run produces a byte-identical one since the placement moved into each fragment's
+   * `tfdt` -- so the second run has nothing to add, and a rename underneath a player that is
+   * reading the file would be a risk taken for no gain.
    */
-  test("every produced segment keeps the init that was produced with it", async () => {
+  test("a rendition publishes exactly one init, from the first run that made one", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
     await m.segmentPath(s.id, VIDEO, 2);
     await m.segmentPath(s.id, VIDEO, 9);
 
-    for (const index of [2, 9]) {
-      expect(await Bun.file(join(s.dir, initName(VIDEO, index))).text()).toBe(
-        `init for ${segmentFileName(VIDEO, index)}`,
-      );
-    }
+    expect(readdirSync(s.dir).filter((n) => n.startsWith("vinit"))).toEqual([initName(VIDEO)]);
+    expect(await Bun.file(join(s.dir, initName(VIDEO))).text()).toBe(`init for ${segmentFileName(VIDEO, 2)}`);
   });
 
   /**
-   * A player asks for the init immediately before the media, so the pair must cost ONE
-   * transcode of those six seconds rather than two.
+   * A player asks for the init immediately before the first media segment, so the pair must
+   * cost ONE transcode of those six seconds rather than two.
    */
-  test("the init and its segment come out of a single run", async () => {
+  test("the init and the first segment come out of a single run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
     const s = m.start(opts());
 
-    expect(await m.initPath(s.id, VIDEO, 7)).toBe(join(s.dir, initName(VIDEO, 7)));
-    expect(await m.segmentPath(s.id, VIDEO, 7)).toBe(join(s.dir, segmentFileName(VIDEO, 7)));
+    expect(await m.initPath(s.id, VIDEO)).toBe(join(s.dir, initName(VIDEO)));
+    expect(await m.segmentPath(s.id, VIDEO, 0)).toBe(join(s.dir, segmentFileName(VIDEO, 0)));
     expect(f.spawned).toHaveLength(1);
-    expect(f.spawned[0]?.join(" ")).toContain("-start_number 7");
+    expect(f.spawned[0]?.join(" ")).toContain("-start_number 0");
+  });
+
+  /**
+   * THE POINT OF ONE SHARED INIT: a viewer who seeks into the middle of a film asks for the
+   * init named by the playlist and gets the one the segment they are watching already wrote.
+   * A per-segment init would have made this a second ffmpeg for a position nobody is at.
+   */
+  test("an init asked for after any segment costs no further run", async () => {
+    const f = fakeFfmpeg();
+    const m = mgr(f.spawn);
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 42);
+
+    expect(await m.initPath(s.id, VIDEO)).toBe(join(s.dir, initName(VIDEO)));
+    expect(f.spawned).toHaveLength(1);
   });
 
   /**
@@ -581,7 +591,7 @@ describe("producing a segment on demand", () => {
    * Re-producing an evicted segment costs the measured 0.08 s, so a rewind past the window is
    * cheap rather than broken.
    */
-  test("only the most recent SEGMENT_CACHE segments stay on disk, init and all", async () => {
+  test("only the most recent SEGMENT_CACHE segments stay on disk", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
 
@@ -589,13 +599,13 @@ describe("producing a segment on demand", () => {
 
     for (const gone of [0, 2]) {
       expect(existsSync(join(s.dir, segmentFileName(VIDEO, gone)))).toBe(false);
-      // An init outlives its segment for nothing: it is useless beside any other one.
-      expect(existsSync(join(s.dir, initName(VIDEO, gone)))).toBe(false);
     }
     for (const kept of [3, SEGMENT_CACHE + 2]) {
       expect(existsSync(join(s.dir, segmentFileName(VIDEO, kept)))).toBe(true);
-      expect(existsSync(join(s.dir, initName(VIDEO, kept)))).toBe(true);
     }
+    // THE INIT IS NOT EVICTABLE. The playlist names it once for the whole film, so dropping it
+    // with the segment that happened to produce it would 404 every fragment after that.
+    expect(existsSync(join(s.dir, initName(VIDEO)))).toBe(true);
   });
 
   test("reading a segment counts as being wanted", async () => {

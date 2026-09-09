@@ -176,6 +176,18 @@ export const TOKEN_GRACE_MS = SEGMENT_TIMEOUT_MS;
 /** Grace between asking ffmpeg to stop and insisting. */
 const SIGKILL_AFTER_MS = 2_000;
 
+/**
+ * Which segment's run is asked to write a rendition's initialisation segment, when nothing has.
+ *
+ * A FREE CHOICE, because every run of a rendition writes a byte-identical init -- and zero is
+ * the one that is usually already made: `warmFirstSegments` produces segment 0 of the video and
+ * the default audio rendition before the start request is even answered, so by the time a
+ * player reads a playlist the init it names is on disk and no run happens here at all. It costs
+ * one extra ffmpeg only for a rendition selected mid-film, once per session, and that run's
+ * media segment is kept rather than thrown away.
+ */
+const INIT_FROM_SEGMENT = 0;
+
 export class SessionRefused extends Error {
   constructor(readonly reason: "too-many" | "too-many-expensive") {
     super(reason);
@@ -525,27 +537,25 @@ export class TranscodeSessions {
   }
 
   /**
-   * The path of that segment's fMP4 initialisation segment, producing it if need be.
+   * The path of this rendition's ONE fMP4 initialisation segment, producing it if need be.
    *
-   * Every run writes its own init and the session keeps it BESIDE its segment rather than
-   * sharing one -- which is now redundant rather than required, for the reason in
-   * `mediaPlaylist`'s note: since the placement moved into each fragment's `tfdt`, a
-   * rendition's inits are byte-identical whatever the seek offset. A player asks for this
-   * immediately before the media, so on a cold session this call is usually what pays for the
-   * segment too, and the request that follows it is already satisfied.
+   * Every run of a rendition writes a byte-identical init -- see `mediaPlaylist` for the
+   * measurement and for what had to change first -- so there is a single file here, the single
+   * `EXT-X-MAP` at the top of the playlist names it, and whichever run lands first has produced
+   * it for the life of the session.
    *
    * Null without producing anything for a rendition that has no init at all -- WebVTT. No
    * playlist names one, so reaching here for subtitles means the name came from somewhere
    * other than a playlist this server wrote.
    */
-  initPath(id: string, track: Track, index: number): Promise<string | null> {
-    const name = initFileName(track, index);
+  initPath(id: string, track: Track): Promise<string | null> {
+    const name = initFileName(track);
     if (!name) return Promise.resolve(null);
-    return this.published(id, track, index, name);
+    return this.published(id, track, INIT_FROM_SEGMENT, name);
   }
 
   /**
-   * One published file of a segment -- its media or its init -- produced if need be.
+   * One published file -- a media segment, or the rendition's init -- produced if need be.
    *
    * Both come out of the SAME ffmpeg run, so both questions are the same question and asking
    * them through one method is what stops a player's init request and its media request
@@ -667,27 +677,31 @@ export class TranscodeSessions {
   }
 
   /**
-   * Move the finished media segment, and its init where it has one, out of the working
-   * directory.
+   * Move the finished media segment out of the working directory, and the rendition's init with
+   * it the first time.
    *
-   * BOTH together where there are both: an init belongs to the segment its run produced and is
-   * useless beside any other one. The media is renamed LAST so that a segment file appearing
-   * implies its init is already there -- a player asks for them in the other order, but nothing
-   * enforces that.
+   * The media is renamed LAST so that a segment file appearing implies the init is already
+   * there -- a player asks for them in the other order, but nothing enforces that.
    *
-   * A WebVTT rendition has no init, so there is nothing to move first and nothing to wait for.
+   * A run whose rendition HAS an init and did not write one publishes nothing: a segment served
+   * without the header it needs is a decode error rather than a retryable 404. A WebVTT
+   * rendition has no init, so there is nothing to move first and nothing to wait for.
    */
   private publish(state: SessionState, track: Track, work: string, index: number): boolean {
     const trackState = state.byTrack.get(trackKey(track));
     if (!trackState) return false;
     const { dir } = state.session;
     const media = segmentFileName(track, index);
-    const init = initFileName(track, index);
+    const init = initFileName(track);
     try {
       if (!existsSync(join(work, media))) return false;
       if (init) {
         if (!existsSync(join(work, RUN_INIT_NAME))) return false;
-        renameSync(join(work, RUN_INIT_NAME), join(dir, init));
+        // ONE init per rendition, and every run writes a byte-identical one -- so the first run
+        // to reach here has published it for good, and renaming again would replace a file with
+        // its own bytes underneath a player that is reading it.
+        const published = join(dir, init);
+        if (!existsSync(published)) renameSync(join(work, RUN_INIT_NAME), published);
       }
       renameSync(join(work, media), join(dir, media));
     } catch {
@@ -698,14 +712,19 @@ export class TranscodeSessions {
     return true;
   }
 
-  /** Drop the oldest productions, every file of each, once a rendition holds too many. */
+  /**
+   * Drop the oldest media segments once a rendition holds too many.
+   *
+   * THE INIT IS NEVER EVICTED, and that is why this is only about media now: there is one per
+   * rendition, the single `EXT-X-MAP` at the top of its playlist names it for the life of the
+   * session, and dropping it would leave every later fragment pointing at a 404. It is 765
+   * bytes against the gigabytes this method exists to bound.
+   */
   private evict(state: SessionState, track: Track, trackState: TrackState): void {
     while (trackState.produced.length > SEGMENT_CACHE) {
       const oldest = trackState.produced.shift();
       if (oldest === undefined) return;
       rmSync(join(state.session.dir, segmentFileName(track, oldest)), { force: true });
-      const init = initFileName(track, oldest);
-      if (init) rmSync(join(state.session.dir, init), { force: true });
     }
   }
 

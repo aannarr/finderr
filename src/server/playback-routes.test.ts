@@ -116,9 +116,10 @@ function fakeSessions(dir: string) {
       return session;
     },
     segmentPath: (id: string, track: Track, index: number) => found(id, segmentFileName(track, index)),
-    initPath: (id: string, track: Track, index: number) => {
-      // Mirrors the real manager: a rendition with no init has no name to look for.
-      const name = initFileName(track, index);
+    initPath: (id: string, track: Track) => {
+      // Mirrors the real manager: a rendition with no init has no name to look for, and the
+      // one that does has a single init for the whole film rather than one per segment.
+      const name = initFileName(track);
       return name === null ? Promise.resolve(null) : found(id, name);
     },
     stop: (id: string) => {
@@ -183,9 +184,9 @@ beforeEach(() => {
   mkdtempSync(`${root}/x-`);
   require("node:fs").mkdirSync(sessionDir, { recursive: true });
   writeFileSync(join(sessionDir, MASTER_PLAYLIST_NAME), "#EXTM3U\n");
-  writeFileSync(join(sessionDir, initName(VIDEO, 1)), "init");
+  writeFileSync(join(sessionDir, initName(VIDEO)), "init");
   writeFileSync(join(sessionDir, segmentFileName(VIDEO, 1)), "segment-bytes");
-  writeFileSync(join(sessionDir, initName(AUDIO, 1)), "init");
+  writeFileSync(join(sessionDir, initName(AUDIO)), "init");
   writeFileSync(join(sessionDir, segmentFileName(AUDIO, 1)), "segment-bytes");
   writeFileSync(join(sessionDir, segmentFileName(SUBTITLES, 1)), "WEBVTT\n");
   // A file OUTSIDE the session directory, next door -- the thing traversal would reach.
@@ -203,7 +204,10 @@ beforeEach(() => {
   writeFileSync(join(sessionDir, "index.m3u8.bak"), "the admin api key");
   writeFileSync(join(sessionDir, "vseg1.m4s"), "the admin api key");
   writeFileSync(join(sessionDir, "vseg00001.m4s.txt"), "the admin api key");
-  writeFileSync(join(sessionDir, "vinit1.mp4"), "the admin api key");
+  // The per-segment init spelling this server wrote until 2026-09-08. A rendition has ONE init
+  // now and its name carries no segment index, so this is no longer a name we publish.
+  writeFileSync(join(sessionDir, "vinit0-00001.mp4"), "the admin api key");
+  writeFileSync(join(sessionDir, "vinit.mp4"), "the admin api key");
   writeFileSync(join(sessionDir, "init.mp4"), "the admin api key");
   // The name a run writes INSIDE its private working directory, and the one an earlier
   // version of this route would have served: it is not a published name and must not be one.
@@ -275,7 +279,8 @@ describe("a segment name cannot walk out of its session directory", () => {
     "vseg1.m4s",
     "vseg00001.m4s.txt",
     "VINIT00001.MP4",
-    "vinit1.mp4",
+    "vinit0-00001.mp4",
+    "vinit.mp4",
     "init.mp4",
     "seg00001.m4s",
   ])("refuses %s with a 404", async (name) => {
@@ -292,9 +297,9 @@ describe("a segment name cannot walk out of its session directory", () => {
       mediaPlaylistName(VIDEO),
       mediaPlaylistName(AUDIO),
       mediaPlaylistName(SUBTITLES),
-      initName(VIDEO, 1),
+      initName(VIDEO),
       segmentFileName(VIDEO, 1),
-      initName(AUDIO, 1),
+      initName(AUDIO),
       segmentFileName(AUDIO, 1),
       segmentFileName(SUBTITLES, 1),
     ];
@@ -332,7 +337,7 @@ describe("a segment name cannot walk out of its session directory", () => {
 
     expect(await typeOf(segmentFileName(SUBTITLES, 1))).toBe("text/vtt");
     expect(await typeOf(segmentFileName(VIDEO, 1))).toBe("video/iso.segment");
-    expect(await typeOf(initName(AUDIO, 1))).toBe("video/iso.segment");
+    expect(await typeOf(initName(AUDIO))).toBe("video/iso.segment");
   });
 
   test("an unknown session is a 404 rather than a read of some other directory", async () => {

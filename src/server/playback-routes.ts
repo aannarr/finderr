@@ -217,10 +217,14 @@ interface ProducedFile {
 /**
  * The produced file this name asks for, producing it if nobody has yet.
  *
- * Null for a name that is not one of ours, which is the traversal guard: the index comes out
- * of a closed vocabulary and is then a NUMBER, so nothing a caller writes ever reaches the
- * filesystem as text. The track comes back with the path because it is what decides the
+ * Null for a name that is not one of ours, which is the traversal guard: the ordinal and index
+ * come out of a closed vocabulary and are then NUMBERS, so nothing a caller writes ever reaches
+ * the filesystem as text. The track comes back with the path because it is what decides the
  * content type -- an fMP4 segment and a WebVTT one are not served as the same thing.
+ *
+ * An init is asked for by RENDITION and a media segment by rendition and index, which is the
+ * whole difference between the two branches: there is one init per rendition, named by the
+ * single `EXT-X-MAP` at the top of its playlist.
  */
 async function producedFile(
   sessions: TranscodeSessions,
@@ -229,8 +233,9 @@ async function producedFile(
 ): Promise<ProducedFile | null> {
   const asked = parseProducedName(name);
   if (!asked) return null;
-  const of = asked.file === "segment" ? sessions.segmentPath : sessions.initPath;
-  const path = await of.call(sessions, id, asked.track, asked.index);
+  const path = await (asked.file === "segment"
+    ? sessions.segmentPath(id, asked.track, asked.index)
+    : sessions.initPath(id, asked.track));
   return path === null ? null : { path, track: asked.track };
 }
 

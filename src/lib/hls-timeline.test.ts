@@ -48,12 +48,12 @@ const SUBTITLES = track("subtitles");
 const FIRST_OF_EACH: readonly Track[] = TRACK_KINDS.map((kind) => track(kind));
 
 /**
- * The renditions that publish an fMP4 initialisation segment beside every media segment.
+ * The renditions that publish an fMP4 initialisation segment.
  *
  * DERIVED from the naming table rather than listed a second time: the day a fourth rendition
  * arrives, this answer moves with it instead of quietly excluding it from every init test.
  */
-const FMP4_TRACKS = FIRST_OF_EACH.filter((t) => initFileName(t, 0) !== null);
+const FMP4_TRACKS = FIRST_OF_EACH.filter((t) => initFileName(t) !== null);
 
 /** One published rendition, with a label good enough for the manifest to name it. */
 const publish = (
@@ -184,39 +184,39 @@ describe("a rendition's VOD playlist", () => {
   });
 
   /**
-   * NOT one shared init, and that is measured. The init carries an edit list naming where its
-   * own ffmpeg run started, so playing segment 401 against segment 400's init shifted it by
-   * 6.882 s -- exactly the distance between the two boundaries.
+   * ONE SHARED INIT, and it took a measurement to get here. Until 2026-09-08 the init carried
+   * an edit list naming where its own ffmpeg run started, so playing segment 401 against
+   * segment 400's init shifted it by 6.882 s -- exactly the distance between the two
+   * boundaries, and exactly what a single `EXT-X-MAP` would have caused. `SEGMENT_MUXER_OPTIONS`
+   * moved that placement into each fragment's own `tfdt` and the inits went byte-identical.
    *
-   * The audio rendition needs this exactly as much, and that is measured rather than assumed:
-   * two audio-only runs six seconds apart on the same file produced inits differing at byte
-   * 275, in both copy and re-encode mode.
+   * The audio rendition needed it exactly as much: two audio-only runs six seconds apart on the
+   * same file produced inits differing at byte 275, in both copy and re-encode mode.
    */
-  test.each([...FMP4_TRACKS])("every $kind segment names the init produced with it", (t2: Track) => {
+  test.each([...FMP4_TRACKS])("the $kind rendition declares one init for the film", (t2: Track) => {
     const rendition = mediaPlaylist(t2, t);
-    expect(rendition.match(/#EXT-X-MAP/g)).toHaveLength(segmentCount(t));
-    for (let i = 0; i < segmentCount(t); i++) {
-      expect(rendition).toContain(`#EXT-X-MAP:URI="${initName(t2, i)}"`);
-    }
+    expect(rendition.match(/#EXT-X-MAP/g)).toHaveLength(1);
+    expect(rendition).toContain(`#EXT-X-MAP:URI="${initName(t2)}"`);
   });
 
-  test("each init is declared before the segment it belongs to", () => {
+  /** `EXT-X-MAP` applies to what FOLLOWS it, so one before the first segment covers them all. */
+  test("the init is declared before every segment it applies to", () => {
     const lines = text.split("\n");
+    const map = lines.indexOf(`#EXT-X-MAP:URI="${initName(VIDEO)}"`);
+    expect(map).toBeGreaterThanOrEqual(0);
     for (let i = 0; i < segmentCount(t); i++) {
-      expect(lines.indexOf(`#EXT-X-MAP:URI="${initName(VIDEO, i)}"`)).toBeLessThan(
-        lines.indexOf(segmentFileName(VIDEO, i)),
-      );
+      expect(map).toBeLessThan(lines.indexOf(segmentFileName(VIDEO, i)));
     }
   });
 
   /**
-   * A WebVTT segment has no initialisation section, so a `URI` naming one would 404 once per
-   * segment for the whole film. The line is absent rather than empty.
+   * A WebVTT segment has no initialisation section, so a `URI` naming one would 404 for the
+   * whole film. The line is absent rather than empty.
    */
   test("the subtitle rendition names no init at all", () => {
     const rendition = mediaPlaylist(SUBTITLES, t);
     expect(rendition).not.toContain("#EXT-X-MAP");
-    expect(initFileName(SUBTITLES, 0)).toBeNull();
+    expect(initFileName(SUBTITLES)).toBeNull();
     for (let i = 0; i < segmentCount(t); i++) {
       expect(rendition).toContain(segmentFileName(SUBTITLES, i));
     }
@@ -420,7 +420,7 @@ test.each([...FIRST_OF_EACH, track("audio", 3)])(
  */
 test("no two published names collide", () => {
   const tracks = [...FIRST_OF_EACH, track("audio", 1), track("audio", 2), track("subtitles", 1)];
-  const names = tracks.flatMap((t) => [segmentFileName(t, 42), initFileName(t, 42), mediaPlaylistName(t)]);
+  const names = tracks.flatMap((t) => [segmentFileName(t, 42), initFileName(t), mediaPlaylistName(t)]);
   const real = names.filter((name) => name !== null);
   expect(new Set(real).size).toBe(real.length);
 });
@@ -440,7 +440,7 @@ describe("reading a published name back", () => {
       expect(parseProducedName(segmentFileName(t, 42))).toEqual({ track: t, file: "segment", index: 42 });
     }
     for (const t of [...FMP4_TRACKS, track("audio", 11)]) {
-      expect(parseProducedName(initName(t, 7))).toEqual({ track: t, file: "init", index: 7 });
+      expect(parseProducedName(initName(t))).toEqual({ track: t, file: "init" });
     }
   });
 
@@ -454,6 +454,14 @@ describe("reading a published name back", () => {
     "seg0-00001.m4s",
     "vinit0-00001.m4s",
     "init.mp4",
+    // A rendition has ONE init and its name carries no segment index, so the per-segment
+    // spelling this server wrote until 2026-09-08 is no longer a name it writes.
+    "vinit0-00000.mp4",
+    "ainit0-00042.mp4",
+    // An init still needs its ordinal, unpadded, exactly as a segment does.
+    "vinit.mp4",
+    "vinit00.mp4",
+    "vinitx.mp4",
     // The ordinal is UNPADDED, so a padded one is a name this server never writes -- and the
     // round-trip guard is what catches it rather than a second pattern.
     "vseg00-00001.m4s",
@@ -461,6 +469,7 @@ describe("reading a published name back", () => {
     "vseg00001.m4s",
     // A subtitle rendition publishes NO init, so this name pattern is one nothing writes --
     // and the guard admits only what is written.
+    "sinit0.mp4",
     "sinit0-00001.mp4",
     "sseg0-00001.m4s",
     MASTER_PLAYLIST_NAME,
