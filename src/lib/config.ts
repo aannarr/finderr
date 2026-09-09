@@ -959,10 +959,12 @@ export interface Config {
     /**
      * Every address a player may fetch this server's media from, besides the page's own.
      *
-     * `kind=origin` pairs, comma separated -- the same shape as `volumes`, so an operator
-     * learns one format: `lan=http://172.20.7.12:7979,wan=https://finderr.frst.dev`.
-     * `src/lib/stream-endpoints.ts` owns parsing it and explains why the `kind=` is required
-     * and the address family is not.
+     * One address per entry, comma separated, and the simple case is a BARE list:
+     * `192.168.1.20,2001:db8::20,finderr.example.com`. Scheme, port, address family and
+     * lan/wan locality are all derived from the entry itself. A `lan=`/`wan=` prefix is an
+     * OPTIONAL override, and only a NAME needs it -- DNS cannot say whether one is local.
+     * `parseStaticEndpoints` in `src/lib/stream-endpoints.ts` owns parsing it, and the table
+     * of what each omitted part is filled in with lives on that function.
      *
      * Empty is the default and means the page's origin is the only way in, which is what
      * every deployment did before this existed. Setting it buys FAILOVER: HLS segments are
