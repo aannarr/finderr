@@ -622,9 +622,9 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
   });
 
   /**
-   * REGRESSION, tt2209764 on Safari 2026-09-14: `media element error 4` with every segment a 200.
-   * ffmpeg writes a copied HEVC stream as `hev1` unless told otherwise, and Safari's MSE only
-   * decodes `hvc1` -- so the browser said yes to HEVC and then refused the init segment.
+   * The probe asks `hvc1` only, so the server must write exactly that. ffmpeg writes a copied
+   * HEVC stream as `hev1` unless told otherwise. (Added 2026-09-14 believing Safari refuses
+   * `hev1`; it does not -- see the note in `web/src/lib/playback-api.ts`.)
    */
   test("a copied HEVC stream is tagged hvc1, the sample entry every HEVC-capable browser accepts", () => {
     const hevc = planPlayback(parseProbe(RANGO), CHROME_HEVC);

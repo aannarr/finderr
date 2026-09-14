@@ -8,9 +8,8 @@
  * > report disagreed with the screenshot beside it.
  *
  * The report carries two things the panel does not draw: the user agent and the codec list this
- * browser CLAIMED. Both are the first question about any playback failure -- tt2209764 died
- * because Safari claimed HEVC in a form the server did not send -- and neither is worth a row on
- * screen, where a human already knows which browser they are holding.
+ * browser CLAIMED. Both are the first question about any playback failure, and neither is worth
+ * a row on screen, where a human already knows which browser they are holding.
  */
 
 import type {

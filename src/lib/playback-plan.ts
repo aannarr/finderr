@@ -937,10 +937,11 @@ function codecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
  */
 function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
   if (plan.video?.action !== "transcode") {
-    // ffmpeg keeps an HEVC stream's `hev1` sample entry unless told otherwise, and Safari's MSE
-    // decodes only `hvc1` -- the other spelling of the same bitstream, with its parameter sets
-    // in the init segment. Every browser that plays HEVC takes `hvc1`, so it is the one we write
-    // and the one `detectCapabilities` asks about. Verified on the NAS's ffmpeg 6.1 against a
+    // ffmpeg keeps an HEVC stream's `hev1` sample entry unless told otherwise. `hvc1` is the
+    // other spelling of the same bitstream, with its parameter sets in the init segment, and it
+    // is the one every HEVC-capable player takes -- so it is the one we write and the one
+    // `detectCapabilities` asks about. NOT a Safari MSE fix: Safari 26.6.2 accepts `hev1` too
+    // (measured 2026-09-15; the error 4 blamed on it was the CSP). Verified on the NAS's ffmpeg 6.1 against a
     // 10-bit Main 10 mkv, 2026-09-14.
     const tag = plan.video?.codec === "hevc" ? ["-tag:v", "hvc1"] : [];
     return ["-an", "-c:v", "copy", ...tag];

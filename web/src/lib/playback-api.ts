@@ -24,12 +24,16 @@ import { realTimers, type Timers } from "./timers";
  * act on. The codec strings are the RFC 6381 forms browsers actually match on: `avc1.42E01E`
  * is baseline h264 and `hvc1.1.6.L93.B0` is main-profile HEVC.
  *
- * > [!CAUTION] HEVC IS ASKED AS `hvc1` ONLY, because `hvc1` is what the server writes
- * > This used to accept `hev1` as well. Safari answers no to `hev1` and yes to `hvc1`, Chromium
- * > answers yes to both, and a copied stream arrived as `hev1` -- so Safari claimed HEVC, was
- * > sent an `hev1` init segment and died with `media element error 4` (tt2209764, 2026-09-14).
- * > The probe has to ask about the exact thing that will be delivered: `ffmpegArgs` tags every
- * > copied HEVC stream `hvc1`, and a browser that cannot take that must get a transcode.
+ * > [!NOTE] HEVC IS ASKED AS `hvc1` ONLY, because `hvc1` is what the server writes
+ * > The probe asks about the exact sample entry that will be delivered: `ffmpegArgs` tags every
+ * > copied HEVC stream `hvc1`, so a browser that cannot take that must get a transcode.
+ * >
+ * > CORRECTED 2026-09-15: this change was made believing Safari refuses `hev1`, as the cause of
+ * > `media element error 4` on tt2209764. **Both halves were wrong.** Safari 26.6.2 answers
+ * > `true` to `isTypeSupported('video/mp4; codecs="hev1.1.6.L93.B0"')`, and the error 4 was the
+ * > CSP refusing hls.js's `blob:` MediaSource (`src/server/html-headers.ts`). The `hvc1` tag
+ * > stays because it is the one spelling every HEVC-capable player takes, not because it fixed
+ * > anything measured.
  */
 const VIDEO_PROBES: { codec: string; mimes: string[] }[] = [
   { codec: "h264", mimes: ['video/mp4; codecs="avc1.42E01E"', 'video/mp4; codecs="avc1.4D401F"'] },
