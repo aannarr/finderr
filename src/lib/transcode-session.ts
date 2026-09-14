@@ -60,6 +60,7 @@ import {
   initFileName,
   type PublishedTracks,
   RUN_INIT_NAME,
+  segmentCount,
   segmentFileName,
   segmentRange,
   type Timeline,
@@ -130,6 +131,34 @@ export const SEGMENT_CONCURRENCY = 2;
  * past the window is cheap rather than broken.
  */
 export const SEGMENT_CACHE = 10;
+
+/**
+ * How many segments past the one a player just asked for are produced in the background.
+ *
+ * hls.js asks for one fragment per rendition at a time and only once the previous one has
+ * arrived, so a design that produces strictly on request serialises the whole warm-up behind
+ * ffmpeg's start time -- and on the NAS the AUDIO rendition is the slow one: measured
+ * 2026-09-15 on the J4125, a copy-mode title's video segment took 100-270 ms but its
+ * EAC3-to-AAC audio segment 470-860 ms, so 60 s of media took 6.4-7.4 s to be in hand. Running
+ * a few ahead turns the player's next request into a stat and an fd.
+ *
+ * **It is NOT back-pressure-free work, it is work outside the back-pressure BUDGET**: a
+ * read-ahead run takes no `SEGMENT_CONCURRENCY` slot, so a scrub storm is refused exactly as
+ * before, and it is bounded instead by running at most ONE background production per
+ * rendition at a time. A request elsewhere moves the window, so a seek abandons whatever had
+ * not started yet. Plex and Jellyfin get the same property from a transcoder that runs ahead
+ * and throttles; this keeps seek-anywhere and short-lived processes.
+ */
+export const READ_AHEAD = 3;
+
+/**
+ * Read-ahead for a session that re-encodes video: ONE.
+ *
+ * A VAAPI segment costs about a second of wall clock on the J4125 and the encode block is
+ * shared by every expensive session, so a deep window would spend it on media a viewer who
+ * seeks never watches.
+ */
+export const READ_AHEAD_EXPENSIVE = 1;
 
 /** How long one segment production may take before it is killed. */
 export const SEGMENT_TIMEOUT_MS = 45_000;
@@ -375,6 +404,20 @@ export interface ManagerOpts {
    * that succeeds says nothing: one line per segment would bury the one line that matters.
    */
   log?: (line: string) => void;
+  /**
+   * How deep to read ahead. Defaults to `READ_AHEAD` / `READ_AHEAD_EXPENSIVE`; a test pinning
+   * one production per request passes zeros so its spawn counts stay about that alone.
+   */
+  readAhead?: { cheap: number; expensive: number };
+}
+
+/** Where a rendition's read-ahead is aimed: the segment last asked for, and the run after it. */
+interface AheadWindow {
+  /** The segment the player asked for most recently. Protected from eviction with the rest. */
+  at: number;
+  from: number;
+  /** Inclusive, already clamped to the last segment -- `from > to` means nothing is left. */
+  to: number;
 }
 
 /** One rendition's bookkeeping: what it is making, and what it has already made. */
@@ -382,8 +425,14 @@ interface TrackState {
   timeline: Timeline;
   /** Segment index -> the production in flight for it, so two requests cost one ffmpeg. */
   producing: Map<number, Promise<boolean>>;
+  /** The subset of `producing` that is read-ahead, which spends no back-pressure slot. */
+  background: Set<number>;
   /** Produced segment indices in the order they landed, for eviction. */
   produced: number[];
+  /** Null until a player has asked for a segment of this rendition. */
+  ahead: AheadWindow | null;
+  /** Whether the one background loop this rendition may run is running. */
+  aheadRunning: boolean;
 }
 
 /** Everything a session keeps that a caller has no business seeing. */
@@ -401,11 +450,13 @@ export class TranscodeSessions {
   private readonly spawn: Spawner;
   private readonly now: () => number;
   private readonly ffmpeg: string;
+  private readonly readAhead: { cheap: number; expensive: number };
 
   constructor(private readonly opts: ManagerOpts) {
     this.spawn = opts.spawn ?? defaultSpawner;
     this.now = opts.now ?? Date.now;
     this.ffmpeg = opts.ffmpegPath ?? "ffmpeg";
+    this.readAhead = opts.readAhead ?? { cheap: READ_AHEAD, expensive: READ_AHEAD_EXPENSIVE };
   }
 
   /**
@@ -460,7 +511,10 @@ export class TranscodeSessions {
       byTrack.set(trackKey(published.track), {
         timeline: published.timeline,
         producing: new Map(),
+        background: new Set(),
         produced: [],
+        ahead: null,
+        aheadRunning: false,
       });
     }
     this.states.set(session.id, { session, byTrack, running: new Set() });
@@ -551,7 +605,72 @@ export class TranscodeSessions {
    * is a state a player retries out of, which is why they share an answer.
    */
   segmentPath(id: string, track: Track, index: number): Promise<string | null> {
-    return this.published(id, track, index, segmentFileName(track, index));
+    // The request is started FIRST so its own production is spawned before any read-ahead run:
+    // `produce` spawns synchronously, and the segment asked for is the one somebody is waiting on.
+    const asked = this.published(id, track, index, segmentFileName(track, index));
+    this.aimAhead(id, track, index);
+    return asked;
+  }
+
+  /**
+   * Point this rendition's read-ahead at the segments after `index`, and start its loop if idle.
+   *
+   * Only a SEGMENT request aims it -- never an init request, and never a rendition nobody
+   * fetches, so subtitles cost nothing until a player switches them on. Moving the window is
+   * the whole of cancellation: the loop re-reads it before every production, so segments queued
+   * for a position the viewer has left are simply never started.
+   */
+  private aimAhead(id: string, track: Track, index: number): void {
+    const state = this.states.get(id);
+    const trackState = state?.byTrack.get(trackKey(track));
+    if (!state || !trackState) return;
+    const depth = state.session.expensive ? this.readAhead.expensive : this.readAhead.cheap;
+    if (depth <= 0 || index < 0) return;
+    const last = segmentCount(trackState.timeline) - 1;
+    if (index > last) return;
+    // Clamped to the timeline, so a window at the end of the film is empty rather than a run of
+    // productions `segmentRange` would refuse one by one.
+    trackState.ahead = { at: index, from: index + 1, to: Math.min(index + depth, last) };
+    if (!trackState.aheadRunning) void this.runAhead(state, track, trackState);
+  }
+
+  /**
+   * The ONE background loop a rendition may run: produce the first missing segment of the
+   * current window, then look again.
+   *
+   * > [!IMPORTANT] AN IN-FLIGHT RUN IS LEFT TO FINISH WHEN THE PLAYHEAD JUMPS, deliberately
+   * > It is at most one ffmpeg per rendition -- one copy-mode segment, or one VAAPI segment of
+   * > about a second -- so killing it saves less than a segment. Killing it would also turn a
+   * > seek into a logged ffmpeg failure, which is the line an operator reads when something is
+   * > really broken. What a seek must never do is START work for the old position, and the
+   * > window re-read before every production is what guarantees that.
+   *
+   * A failed production ends the loop rather than retrying: the next request re-aims it, and a
+   * loop that retried a file ffmpeg cannot read would burn the box for nobody.
+   */
+  private async runAhead(state: SessionState, track: Track, trackState: TrackState): Promise<void> {
+    trackState.aheadRunning = true;
+    try {
+      while (this.states.get(state.session.id) === state) {
+        const next = this.nextAhead(state, track, trackState);
+        if (next === null) return;
+        if (!(await this.produce(state, track, next, "ahead"))) return;
+      }
+    } finally {
+      trackState.aheadRunning = false;
+    }
+  }
+
+  /** The first segment of the window that is neither on disk nor already being produced. */
+  private nextAhead(state: SessionState, track: Track, trackState: TrackState): number | null {
+    const window = trackState.ahead;
+    if (!window) return null;
+    for (let i = window.from; i <= window.to; i++) {
+      if (trackState.producing.has(i)) continue;
+      if (existsSync(join(state.session.dir, segmentFileName(track, i)))) continue;
+      return i;
+    }
+    return null;
   }
 
   /**
@@ -595,17 +714,28 @@ export class TranscodeSessions {
    * The dedupe is not an optimisation: two ffmpegs writing one segment file would hand a
    * player half of each.
    */
-  private produce(state: SessionState, track: Track, index: number): Promise<boolean> {
+  private produce(
+    state: SessionState,
+    track: Track,
+    index: number,
+    kind: "request" | "ahead" = "request",
+  ): Promise<boolean> {
     const trackState = state.byTrack.get(trackKey(track));
     if (!trackState) return Promise.resolve(false);
+    // A request JOINS a read-ahead run already making its segment, which is the point of it.
     const already = trackState.producing.get(index);
     if (already) return already;
-    if (trackState.producing.size >= SEGMENT_CONCURRENCY) return Promise.resolve(false);
+    // Only requests count against the ceiling: read-ahead is bounded by being one loop per
+    // rendition, and letting it spend a slot would refuse the very request it is running ahead of.
+    const requests = trackState.producing.size - trackState.background.size;
+    if (kind === "request" && requests >= SEGMENT_CONCURRENCY) return Promise.resolve(false);
     const range = segmentRange(trackState.timeline, index);
     if (!range) return Promise.resolve(false);
 
+    if (kind === "ahead") trackState.background.add(index);
     const run = this.runFfmpeg(state, track, index, range).finally(() => {
       trackState.producing.delete(index);
+      trackState.background.delete(index);
     });
     trackState.producing.set(index, run);
     return run;
@@ -768,8 +898,15 @@ export class TranscodeSessions {
    * bytes against the gigabytes this method exists to bound.
    */
   private evict(state: SessionState, track: Track, trackState: TrackState): void {
+    const window = trackState.ahead;
+    // THE SEGMENT BEING READ AND THE ONES ABOUT TO BE ARE NEVER EVICTED. Order of LANDING is
+    // not order of playback: a viewer who returns to a segment produced long ago would
+    // otherwise have it dropped by the very read-ahead run that lands behind it.
+    const kept = (i: number) => window !== null && i >= window.at && i <= window.to;
     while (trackState.produced.length > SEGMENT_CACHE) {
-      const oldest = trackState.produced.shift();
+      const at = trackState.produced.findIndex((i) => !kept(i));
+      if (at < 0) return;
+      const [oldest] = trackState.produced.splice(at, 1);
       if (oldest === undefined) return;
       rmSync(join(state.session.dir, segmentFileName(track, oldest)), { force: true });
     }
