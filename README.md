@@ -280,13 +280,15 @@ they come back in their own row above the results, best known first, with the fa
 already hold from some title's cast.
 
 A title says where it was filmed, and every place is a page. The index build pulls
-Wikidata's filming-location statements for every title that has an IMDb id -- about 42,000
-of them -- and files each place as a site (Monument Valley, a castle, a studio) or an area
-(Almería, Los Angeles). Countries are dropped: "filmed in the United States" is a caption,
-not a place. `/place/Q10400` is everything we hold that was shot in Almería, most-voted
-first, with a link out to OpenStreetMap and to the Wikidata item a wrong entry is corrected
-on. A place with only the one title you are already looking at stays plain text. No map is
-embedded and no map API is called; it is two local tables.
+Wikidata's filming-location statements for every title that has an IMDb id, plus the ones
+made about a single episode or season, which count toward the series. Each place is filed
+as a site (Monument Valley, a castle, a studio) or an area (Almería, Los Angeles).
+Countries, continents, oceans and seas are dropped: "filmed in the United States" is a
+caption, not a place. `/place/Q10400` is everything we hold that was shot in Almería,
+most-voted first, with a link out to OpenStreetMap and to the Wikidata item a wrong entry
+is corrected on. A series that is there because of some of its episodes says how many under
+its poster. A place with only the one title you are already looking at stays plain text. No
+map is embedded and no map API is called; it is two local tables.
 
 Requests return immediately. The POST answers `202`, a background worker adds the title
 to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
@@ -1337,9 +1339,14 @@ Every line here is a real limitation. It is not a roadmap.
   image: the poster itself still comes from Radarr and Sonarr's lookup endpoints, and a
   title neither can resolve gets a typographic tile.
 - A filming location can be as broad as a state. Wikidata files some productions under
-  "California" or "Alberta" rather than a street, and only sovereign countries are dropped, so
-  a title can list a region that hundreds of other titles share. Those places still link,
-  because the page is real and ranked; it is simply less of a discovery than a castle is.
+  "California" or "Alberta" rather than a street, and only countries, continents, oceans, seas
+  and former states are dropped, so a title can list a region that hundreds of other titles
+  share. Those places still link, because the page is real and ranked; it is simply less of a
+  discovery than a castle is.
+- Filming locations are only as complete as Wikidata. Most titles outside the popular head
+  have none, and an episode's count covers only the episodes Wikidata records a location for
+  -- a series shot in Dubrovnik for a whole season can read "2 episodes" if only two were
+  entered. An episode's location is filed under its series, never shown on the episode itself.
 - Plex must have matched the item with the modern agent. finderr finds a title in Plex by
   the `imdb://` guid the new agent writes. A library scanned by a legacy agent
   (`com.plexapp.agents.*`) matches nothing, and `/api/health` shows `plex.items: 0` beside

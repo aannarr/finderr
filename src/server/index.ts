@@ -39,16 +39,8 @@ import {
 } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
-import { parsePlaceId } from "../lib/filming-locations";
 import { rollback } from "../lib/index-builder";
-import {
-  boundedHeader,
-  boundedQuery,
-  boundedText,
-  clampInt,
-  LIMITS,
-  refusalMessage,
-} from "../lib/input-guards";
+import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
 import { KeyframeCacheStore } from "../lib/keyframe-cache";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
@@ -132,6 +124,7 @@ import { json } from "./json-response";
 import { completionPayload, type ListsDeps } from "./lists";
 import { LiveIndex } from "./live-index";
 import { withPayloadGuard } from "./payload-guard";
+import { placeResponse } from "./place-route";
 import { playbackRoutes } from "./playback-routes";
 import { type PersonPreviewDeps, type PreviewDeps, personPreviewResponse, previewResponse } from "./preview";
 import {
@@ -2515,30 +2508,14 @@ const appRoutes = {
 
   /**
    * One filming location and a page of the titles filmed there, most-voted first.
-   *
-   * Local SQLite only: `place` and `title_place` are built into the index from Wikidata, so
-   * this asks nothing of anybody. A place we hold no title for, a malformed id and an index
-   * built before the stage are all the same 404 -- there is no page here, and the last one
-   * fixes itself at the next rebuild.
+   * `./place-route.ts` owns the rules; this only hands it the live engine.
    *
    * Paged like a filmography, because a city is a long list: Los Angeles is 1,374 titles on the
    * 2026-09-14 build.
    */
-  "/api/place/:id": (req: Bun.BunRequest<"/api/place/:id">) => {
-    const id = parsePlaceId(req.params.id);
-    if (id === null) return bad("unknown place", 404);
-    const u = new URL(req.url);
-    const limit = clampInt(u.searchParams.get("limit"), { min: 1, max: 200, fallback: 60 }) ?? 60;
-    const offset = clampInt(u.searchParams.get("offset"), { min: 0, max: 1_000_000, fallback: 0 }) ?? 0;
+  "/api/place/:id": (req: Bun.BunRequest<"/api/place/:id">) =>
     // `live.current` read at the moment of use, for the reason stated in `live-index.ts`.
-    const page = live.current.placePage(id, { limit, offset });
-    if (!page) return bad("unknown place", 404);
-    return json(
-      { place: page.place, titles: decorate(page.titles), total: page.total },
-      // The index only changes at a rebuild, so this is as cacheable as a browse page.
-      { cache: perSession(300) },
-    );
-  },
+    placeResponse(live.current, decorate, req.params.id, new URL(req.url)),
 
   /**
    * The terms one title carries, and whether each of them goes anywhere.

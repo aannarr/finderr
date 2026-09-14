@@ -154,7 +154,9 @@ export const INDEX_CAPABILITIES = {
   genreYear: (db) => columnExists(db, "title_genre", "year"),
   browseCounts: (db) => tableExists(db, "browse_count"),
   episodes: (db) => tableExists(db, "episode"),
-  places: (db) => tableExists(db, "place") && tableExists(db, "title_place"),
+  // `episodes` is part of the capability rather than a second one: the place page selects it,
+  // and an index with the tables but not the column never reached a deployment.
+  places: (db) => tableExists(db, "place") && columnExists(db, "title_place", "episodes"),
   // `satisfies` rather than an annotation, the shape `INDEX_STAGES` uses: the keys stay
   // literal, so `INDEX_CAPABILITIES.people` is a function rather than a possibly-undefined
   // index read and a typo in a caller is a compile error.

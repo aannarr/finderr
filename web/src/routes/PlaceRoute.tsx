@@ -16,12 +16,21 @@
  */
 
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { type Place, placeMapUrl, placeWikidataUrl } from "../../../src/lib/filming-locations";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useKeyAction } from "../components/Kbd";
 import { PageHeading } from "../components/PageHeading";
+import type { CardNote } from "../components/TitleCard";
 import { TitleGrid } from "../components/TitleGrid";
-import { cachedPlaceRun, getPlace, type PlacePage, subscribeTitleState, titleStateVersion } from "../lib/api";
+import {
+  cachedPlaceRun,
+  getPlace,
+  type Place,
+  type PlacePage,
+  subscribeTitleState,
+  type Title,
+  titleStateVersion,
+} from "../lib/api";
+import { placeMapUrl, placeWikidataUrl } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
 
 const PAGE = 60;
@@ -46,6 +55,22 @@ function countryName(code: string | null): string | null {
   } catch {
     return code;
   }
+}
+
+/**
+ * "3 episodes" under a series that is here on the strength of some of its episodes.
+ *
+ * The note is what separates "Game of Thrones was shot in Dubrovnik" from "one episode was".
+ * A title that made the statement of itself gets no note. Built once per `episodes` map and
+ * memo'd by the caller, because `TitleGrid` is memo'd and `noteFor` must be a stable reference.
+ */
+function episodeNoteFor(episodes: Record<string, number>): (t: Title) => CardNote | null {
+  return (t) => {
+    const n = episodes[t.tconst];
+    if (!n) return null;
+    const text = n === 1 ? "1 episode" : `${n} episodes`;
+    return { text, full: `Filmed here in ${text}` };
+  };
 }
 
 /**
@@ -78,8 +103,12 @@ export function PlaceRoute() {
     A failed "Show more" is its OWN state, beside the grid, never `error`. `error` replaces the
     whole page, so a page-2 failure used to throw away the sixty titles already on screen --
     found by the quality review of 2026-09-14.
+
+    Held as WHICH place failed rather than a boolean, because this route is not remounted
+    between places: a failure on Almería used to follow the reader onto Tabernas.
   */
-  const [moreFailed, setMoreFailed] = useState(false);
+  const [moreFailedFor, setMoreFailedFor] = useState<string | null>(null);
+  const moreFailed = moreFailedFor === id;
 
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
@@ -112,24 +141,30 @@ export function PlaceRoute() {
   const loadMore = async () => {
     if (!page || !canLoadMore) return;
     setLoading(true);
-    setMoreFailed(false);
+    setMoreFailedFor(null);
     try {
       const next = await getPlace(id, { limit: PAGE, offset: page.titles.length });
       // Appended only onto the SAME place: a reader who navigated away mid-fetch must not get
       // this page's rows stitched under another place's header.
       setPage((prev) =>
         prev && prev.place.id === next.place.id
-          ? { ...next, titles: [...prev.titles, ...next.titles] }
+          ? {
+              ...next,
+              titles: [...prev.titles, ...next.titles],
+              episodes: { ...prev.episodes, ...next.episodes },
+            }
           : prev,
       );
     } catch {
-      setMoreFailed(true);
+      setMoreFailedFor(id);
     } finally {
       setLoading(false);
     }
   };
 
   const loadMoreKey = useKeyAction("loadMore", () => void loadMore(), canLoadMore);
+  const episodes = page?.episodes;
+  const noteFor = useMemo(() => (episodes ? episodeNoteFor(episodes) : undefined), [episodes]);
 
   if (error) {
     /*
@@ -218,7 +253,7 @@ export function PlaceRoute() {
         </div>
       </div>
 
-      <TitleGrid titles={page.titles} />
+      <TitleGrid titles={page.titles} noteFor={noteFor} />
 
       {page.titles.length < page.total && (
         <div className="mt-6 flex justify-center">

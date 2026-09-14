@@ -368,7 +368,9 @@ export const INDEX_STAGES = {
    * pairs exist on an index whose schema did not move -- an index at v1 is missing thousands of
    * series places and would say nothing about it.
    */
-  places: () => JSON.stringify({ v: 2 }),
+  // v3: continents, oceans, seas and former states dropped as captions, and `title_place`
+  // gained `episodes` -- both change what an existing index would answer.
+  places: () => JSON.stringify({ v: 3 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

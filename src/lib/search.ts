@@ -1969,24 +1969,39 @@ export class SearchEngine {
    * tie so paging is stable -- a title must never appear on two pages or on none.
    *
    * `total` is the place's precomputed count, never a live `count(*)`.
+   *
+   * `episodes` maps a series' tconst to how many of its episodes were filmed here, and holds
+   * nothing for a title that said it of itself. A map beside the rows rather than a field on
+   * them, because it is a fact about this (place, title) pair and means nothing on a card
+   * anywhere else -- the same reason a filmography's role is a note and not a `Title` field.
    */
   placePage(
     id: number,
     opts: { limit: number; offset: number },
-  ): { place: Place; titles: TitleRow[]; total: number } | null {
+  ): { place: Place; titles: TitleRow[]; total: number; episodes: Record<string, number> } | null {
     if (!this.hasPlaces) return null;
     const place = placeById(this.db, id);
     if (!place) return null;
-    const titles = this.db
+    // The page of rowids is chosen INSIDE the subquery, on the covering index alone, so an
+    // offset of 1,200 skips index entries rather than 1,200 joined title rows. The outer
+    // order repeats the inner one, because a join is free to hand rows back in any order.
+    const rows = this.db
       .query(
-        `select ${titleCols(this.hasTitleLang, "t.")}
-           from title_place tp join title t on t.rowid_ = tp.title_rowid
-          where tp.place_id = ?
-          order by tp.votes desc, tp.title_rowid
-          limit ? offset ?`,
+        `select ${titleCols(this.hasTitleLang, "t.")}, tp.episodes as place_episodes
+           from (select title_rowid, votes, episodes from title_place
+                  where place_id = ?
+                  order by votes desc, title_rowid
+                  limit ? offset ?) tp
+           join title t on t.rowid_ = tp.title_rowid
+          order by tp.votes desc, tp.title_rowid`,
       )
-      .all(id, opts.limit, opts.offset) as TitleRow[];
-    return { place, titles, total: place.titles };
+      .all(id, opts.limit, opts.offset) as (TitleRow & { place_episodes: number })[];
+    const episodes: Record<string, number> = {};
+    const titles = rows.map(({ place_episodes, ...row }) => {
+      if (place_episodes > 0) episodes[row.tconst] = place_episodes;
+      return row;
+    });
+    return { place, titles, total: place.titles, episodes };
   }
 
   /**

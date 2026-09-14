@@ -128,6 +128,41 @@ export function countRows(v: unknown): number {
   return 1;
 }
 
+/**
+ * The place scenarios, or NONE when the index has no place tables.
+ *
+ * Omitted rather than run against a null fixture: a scenario that returns `null` in 0.00 ms
+ * prints a row indistinguishable from a very fast place page. The runners print
+ * `placeScenariosSkipped` instead, so the absence is said out loud.
+ */
+function placeScenarios(placeId: number | null): Scenario[] {
+  if (placeId === null) return [];
+  return [
+    {
+      id: "place.page",
+      surface: "place",
+      args: `place=Q${placeId} limit=60 offset=0`,
+      run: (e) => e.placePage(placeId, { limit: 60, offset: 0 }),
+    },
+    {
+      id: "place.pageLast",
+      surface: "place",
+      args: `place=Q${placeId} limit=60 offset=last`,
+      run: (e) => {
+        const total = e.placePage(placeId, { limit: 1, offset: 0 })?.total ?? 0;
+        return e.placePage(placeId, { limit: 60, offset: Math.max(0, total - 60) });
+      },
+    },
+  ];
+}
+
+/** The line a runner prints when the place scenarios were left out, or null when they ran. */
+export function placeScenariosSkipped(f: BenchFixtures): string | null {
+  return f.placeId === null
+    ? "# place.page, place.pageLast: NOT MEASURED -- this index has no place tables"
+    : null;
+}
+
 export function scenarios(f: BenchFixtures): Scenario[] {
   return [
     // --- filming locations. The title pane asks on EVERY title page; the place page is paged,
@@ -138,22 +173,7 @@ export function scenarios(f: BenchFixtures): Scenario[] {
       args: `tconst=${f.tconst}`,
       run: (e) => e.placesOf(f.tconst),
     },
-    {
-      id: "place.page",
-      surface: "place",
-      args: `place=Q${f.placeId} limit=60 offset=0`,
-      run: (e) => (f.placeId === null ? null : e.placePage(f.placeId, { limit: 60, offset: 0 })),
-    },
-    {
-      id: "place.pageLast",
-      surface: "place",
-      args: `place=Q${f.placeId} limit=60 offset=last`,
-      run: (e) => {
-        if (f.placeId === null) return null;
-        const total = e.placePage(f.placeId, { limit: 1, offset: 0 })?.total ?? 0;
-        return e.placePage(f.placeId, { limit: 60, offset: Math.max(0, total - 60) });
-      },
-    },
+    ...placeScenarios(f.placeId),
 
     // --- the front page. Every one of these runs before anything is on screen.
     { id: "discover.topGenres", surface: "discover", args: "limit=6", run: (e) => e.topGenres(6) },

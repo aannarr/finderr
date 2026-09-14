@@ -11,7 +11,6 @@ import {
   parsePlacesCsv,
   parseTitlePlacesCsv,
   placeById,
-  placeMapUrl,
   placesForTitle,
   type TitlePlaceSourceRow,
 } from "./filming-locations";
@@ -46,6 +45,14 @@ const site = (id: number, label: string, extra: Partial<PlaceSourceRow> = {}): P
 
 const E = "http://www.wikidata.org/entity/";
 
+/** A pair as the source hands it over. `work` is the Wikidata item that carried the statement. */
+const pair = (imdb: string, place: number, work = 1, episode = false): TitlePlaceSourceRow => ({
+  imdb,
+  place,
+  work,
+  episode,
+});
+
 describe("parseCsvRecord", () => {
   test("a quoted field keeps its commas and un-doubles its quotes", () => {
     expect(parseCsvRecord(`${E}Q1,"Festetics Palace, Dég","POINT(1 2)",HU`)).toEqual([
@@ -69,19 +76,24 @@ describe("parseCsvRecord", () => {
 describe("parsePlacesCsv", () => {
   const header = "place,label,coord,country,studio,area,nation";
 
-  test("classifies on the flags, and a nation beats an area", () => {
+  test("classifies on the flags, and a caption beats an area or a site", () => {
     const rows = parsePlacesCsv(
       [
         header,
         `${E}Q10400,Almería,POINT(-2.463889 36.841667),ES,false,true,false`,
         `${E}Q30,United States,POINT(-98.5 39.8),US,false,true,true`,
+        // A continent and an ocean are captions too, whatever else Wikidata calls them.
+        `${E}Q46,Europe,POINT(15 54),,false,false,true`,
+        `${E}Q97,Atlantic Ocean,POINT(-30 0),,false,false,true`,
         `${E}Q192017,Monument Valley,POINT(-110.1 36.98),US,false,false,false`,
         `${E}Q1,Pinewood Studios,POINT(-0.53 51.54),GB,true,false,false`,
       ].join("\n"),
     );
     expect(rows.map((r) => [r.id, r.kind, r.studio])).toEqual([
       [10400, "area", false],
-      [30, "country", false],
+      [30, "caption", false],
+      [46, "caption", false],
+      [97, "caption", false],
       [192017, "site", false],
       [1, "site", true],
     ]);
@@ -115,17 +127,24 @@ describe("parsePlacesCsv", () => {
 });
 
 describe("parseTitlePlacesCsv", () => {
-  test("keeps tt ids against entity IRIs and nothing else", () => {
+  test("keeps tt ids against entity IRIs, with the work that said so and how it reached the title", () => {
     const rows = parseTitlePlacesCsv(
       [
-        "imdb,place",
+        "imdb,place,w,via",
+        `tt0060196,${E}Q10400,${E}Q1,title`,
+        `tt0944947,${E}Q10400,${E}Q2,episode`,
+        `tt0944947,${E}Q10400,${E}Q3,season`,
+        `nm0000001,${E}Q10400,${E}Q1,title`,
+        `tt0060196,http://www.wikidata.org/.well-known/genid/abc,${E}Q1,title`,
+        `tt0060196,${E}Q10400,${E}Q1,film`,
         `tt0060196,${E}Q10400`,
-        `nm0000001,${E}Q10400`,
-        "tt0060196,http://www.wikidata.org/.well-known/genid/abc",
-        `tt0060196,${E}Q10400,extra`,
       ].join("\n"),
     );
-    expect(rows).toEqual([{ imdb: "tt0060196", place: 10400 }]);
+    expect(rows).toEqual([
+      { imdb: "tt0060196", place: 10400, work: 1, episode: false },
+      { imdb: "tt0944947", place: 10400, work: 2, episode: true },
+      { imdb: "tt0944947", place: 10400, work: 3, episode: false },
+    ]);
   });
 });
 
@@ -166,16 +185,16 @@ describe("loadPlaces", () => {
     const places = [
       site(100, "Almería", { kind: "area" }),
       site(200, "Monument Valley"),
-      site(300, "United States", { kind: "country" }),
+      site(300, "United States", { kind: "caption" }),
       site(400, "Nowhere we hold"),
     ];
     const pairs: TitlePlaceSourceRow[] = [
-      { imdb: "tt1", place: 100 },
-      { imdb: "tt2", place: 100 },
-      { imdb: "tt2", place: 100 }, // the same pair twice is one pair
-      { imdb: "tt2", place: 200 },
-      { imdb: "tt2", place: 300 },
-      { imdb: "tt9", place: 400 }, // a title this index does not hold
+      pair("tt1", 100),
+      pair("tt2", 100),
+      pair("tt2", 100), // the same pair twice is one pair
+      pair("tt2", 200),
+      pair("tt2", 300),
+      pair("tt9", 400), // a title this index does not hold
     ];
     expect(loadPlaces(db, places, pairs)).toEqual({ places: 2, pairs: 3 });
     expect(placeById(db, 100)?.titles).toBe(2);
@@ -200,11 +219,7 @@ describe("loadPlaces", () => {
     const res = loadPlaces(
       db,
       [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
-      [
-        { imdb: "tt9001", place: 100 },
-        { imdb: "tt9002", place: 100 },
-        { imdb: "tt2", place: 200 },
-      ],
+      [pair("tt9001", 100, 9001), pair("tt9002", 100, 9002), pair("tt2", 200, 2)],
     );
     expect(res).toEqual({ places: 2, pairs: 2 });
     for (const sql of INDEXES.places) db.run(sql);
@@ -212,17 +227,42 @@ describe("loadPlaces", () => {
     expect(placeById(db, 100)?.titles).toBe(1);
   });
 
-  test("denormalises votes, so the place page's order needs no join to find its rows", () => {
-    const db = indexWith(titles);
+  /*
+    HOW MANY EPISODES, because a series "filmed at" a place on the strength of one episode is a
+    weaker claim than a film shot there, and the place page said nothing to tell them apart --
+    found by the quality review of 2026-09-14.
+
+    One episode reaches the source by TWO routes (its own IMDb id, and P179 to its series), so
+    the count is over the Wikidata ITEM that carried the statement, never over the rows. A
+    season is rolled up but is not an episode, and the series' own statement counts nothing.
+  */
+  test("counts the distinct episodes behind a series' place, once each whichever route they came by", () => {
+    const db = indexWith([{ tconst: "tt2", votes: 5 }]);
+    db.run(
+      "insert into episode (tconst, parent, season, number) values ('tt9001', 'tt2', 1, 1), ('tt9002', 'tt2', 1, 2)",
+    );
     loadPlaces(
       db,
-      [site(100, "Almería")],
+      [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
       [
-        { imdb: "tt1", place: 100 },
-        { imdb: "tt2", place: 100 },
-        { imdb: "tt3", place: 100 },
+        pair("tt9001", 100, 9001), // an episode, by its own IMDb id
+        pair("tt2", 100, 9001, true), // the SAME episode, by P179
+        pair("tt9002", 100, 9002),
+        pair("tt2", 100, 9003, true), // an episode with no IMDb id of its own
+        pair("tt2", 100, 8000), // a season -- rolled up, not an episode
+        pair("tt2", 200, 2), // the series' own statement
       ],
     );
+    const rows = db.query("select place_id, episodes from title_place order by place_id").all();
+    expect(rows).toEqual([
+      { place_id: 100, episodes: 3 },
+      { place_id: 200, episodes: 0 },
+    ]);
+  });
+
+  test("denormalises votes, so the place page's order needs no join to find its rows", () => {
+    const db = indexWith(titles);
+    loadPlaces(db, [site(100, "Almería")], [pair("tt1", 100), pair("tt2", 100), pair("tt3", 100)]);
     for (const sql of INDEXES.places) db.run(sql);
     const order = db
       .query("select votes from title_place where place_id = 100 order by votes desc, title_rowid")
@@ -241,7 +281,7 @@ describe("loadPlaces", () => {
     const n = 40_000;
     const db = indexWith(Array.from({ length: n }, (_, i) => ({ tconst: `tt${i}`, votes: i })));
     const places = Array.from({ length: 5_000 }, (_, i) => site(i + 1, `P${i}`));
-    const pairs = Array.from({ length: n }, (_, i) => ({ imdb: `tt${i}`, place: (i % 5_000) + 1 }));
+    const pairs = Array.from({ length: n }, (_, i) => pair(`tt${i}`, (i % 5_000) + 1, i + 1));
     const t0 = performance.now();
     const res = loadPlaces(db, places, pairs);
     const ms = performance.now() - t0;
@@ -268,14 +308,7 @@ describe("placesForTitle", () => {
         site(3, "Fort Bravo"),
         site(4, "Zebra Rock"),
       ],
-      [
-        { imdb: "tt1", place: 1 },
-        { imdb: "tt1", place: 2 },
-        { imdb: "tt1", place: 3 },
-        { imdb: "tt1", place: 4 },
-        { imdb: "tt2", place: 4 },
-        { imdb: "tt2", place: 1 },
-      ],
+      [pair("tt1", 1), pair("tt1", 2), pair("tt1", 3), pair("tt1", 4), pair("tt2", 4), pair("tt2", 1)],
     );
     for (const sql of INDEXES.places) db.run(sql);
     expect(placesForTitle(db, "tt1").map((p) => p.label)).toEqual([
@@ -291,14 +324,5 @@ describe("placesForTitle", () => {
     const db = indexWith([{ tconst: "tt1", votes: 1 }]);
     expect(placesForTitle(db, "tt1")).toEqual([]);
     expect(placesForTitle(db, "tt404")).toEqual([]);
-  });
-});
-
-describe("placeMapUrl", () => {
-  test("OpenStreetMap, lat before lon, and nothing without a coordinate", () => {
-    expect(placeMapUrl({ lat: 36.841667, lon: -2.463889 })).toBe(
-      "https://www.openstreetmap.org/?mlat=36.84167&mlon=-2.46389#map=14/36.84167/-2.46389",
-    );
-    expect(placeMapUrl({ lat: null, lon: 1 })).toBeNull();
   });
 });

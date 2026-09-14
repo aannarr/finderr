@@ -920,6 +920,8 @@ export interface PlacePage {
   titles: Title[];
   /** Every title we hold for this place, which `titles` may be a page of. */
   total: number;
+  /** Series tconst -> how many of its episodes were filmed here. Absent for a title that said it of itself. */
+  episodes: Record<string, number>;
 }
 
 const placeCache = new Cache<PlacePage>(100);
@@ -938,12 +940,14 @@ export function cachedPlaceRun(id: string, limit: number): PlacePage | undefined
   const first = placeCache.get(placeKey(id, limit, 0));
   if (!first) return undefined;
   const titles = [...first.titles];
+  const episodes = { ...first.episodes };
   for (let offset = limit; ; offset += limit) {
     const page = placeCache.get(placeKey(id, limit, offset));
     if (!page) break;
     titles.push(...page.titles);
+    Object.assign(episodes, page.episodes);
   }
-  return { ...first, titles };
+  return { ...first, titles, episodes };
 }
 
 export async function getPlace(id: string, opts: { limit: number; offset: number }): Promise<PlacePage> {

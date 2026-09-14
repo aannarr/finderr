@@ -51,6 +51,7 @@ import {
   type BenchFixtures,
   busiestPlaceId,
   countRows,
+  placeScenariosSkipped,
   type Scenario,
   scenarios,
 } from "../lib/bench-scenarios";
@@ -239,6 +240,8 @@ async function main(): Promise<void> {
     placeId: busiestPlaceId(fx),
   };
   fx.close();
+  const skipped = placeScenariosSkipped(fixtures);
+  if (skipped) console.log(skipped);
   residency.afterOpen = readMemoryUsage();
 
   /*

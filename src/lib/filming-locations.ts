@@ -23,8 +23,15 @@
  * - **area** -- a settlement or an administrative region: Almería, Los Angeles, Notting Hill.
  *   Still a real destination -- everything shot in Almería is a run of spaghetti westerns and
  *   a Bond film -- so it is kept and linked, and drawn after the sites.
- * - **country** -- a sovereign state. DROPPED at load. The title already says where it is from,
- *   and a page of every film shot somewhere in the United States is not a place.
+ * - **caption** -- a sovereign state, a continent, an ocean, a sea, or a state that no longer
+ *   exists. DROPPED at load. A page of every film shot somewhere in the United States, in
+ *   Europe or on the Atlantic is not a place anybody goes to look at.
+ *
+ * The continent/ocean/sea/former-state half was added 2026-09-14, after the quality review
+ * found Europe filed as a site and Antarctica and Yugoslavia as areas. Those four classes are
+ * dropped ONLY when the item is not also a human settlement: Hamburg and Bremen are typed as
+ * historical countries (the old city-states), and they are cities people film in. Islands and
+ * the UK's constituent countries (England, Scotland) are deliberately kept as areas.
  *
  * The classification is Wikidata's own class tree (`P31/P279*`), asked in the query rather than
  * re-derived here, with ONE correction measured against the data: Czech and German castles are
@@ -53,7 +60,7 @@ export const PLACE_SOURCE: CrosswalkSource = {
   query: `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?country) (MAX(?st) AS ?studio) (MAX(?ar) AS ?area) (MAX(?cy) AS ?nation) WHERE {
+SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?country) (MAX(?st) AS ?studio) (MAX(?ar) AS ?area) (MAX(?cy) AS ?caption) WHERE {
   { SELECT DISTINCT ?place WHERE { ?w wdt:P915 ?place } }
   OPTIONAL { ?place rdfs:label ?l FILTER(LANG(?l) = "en") }
   OPTIONAL { ?place wdt:P625 ?co }
@@ -61,7 +68,10 @@ SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?co
   BIND(EXISTS { ?place wdt:P31/wdt:P279* wd:Q375336 } AS ?st)
   BIND((EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q56061 })
        && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q811979 } AS ?ar)
-  BIND(EXISTS { ?place wdt:P31/wdt:P279* wd:Q6256 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3624078 } AS ?cy)
+  BIND(EXISTS { ?place wdt:P31/wdt:P279* wd:Q6256 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3624078 }
+       || ((EXISTS { ?place wdt:P31/wdt:P279* wd:Q5107 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q9430 }
+            || EXISTS { ?place wdt:P31/wdt:P279* wd:Q165 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3024240 })
+           && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 }) AS ?cy)
 } GROUP BY ?place`,
 };
 
@@ -82,19 +92,23 @@ SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?co
  * branch on the belief that the first branch already counted them. It did not -- the loader
  * dropped those rows as unknown titles -- and the quality review measured 2,167 of 42,150
  * pairs lost across 130 series, Game of Thrones keeping 1 of its 9 places.
+ *
+ * Every row also carries `?w`, the item that MADE the statement, and `?via`, the branch that
+ * found it. That is what lets `loadPlaces` count how many episodes stand behind a series'
+ * place: one episode arrives by two routes, and only its item id says the two rows are one.
  */
 export const TITLE_PLACE_SOURCE: CrosswalkSource = {
   file: "wikidata-title-places.csv",
   label: "filming locations",
   query: `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wd: <http://www.wikidata.org/entity/>
-SELECT DISTINCT ?imdb ?place WHERE {
+SELECT DISTINCT ?imdb ?place ?w ?via WHERE {
   ?w wdt:P915 ?place .
-  { ?w wdt:P345 ?imdb . }
+  { ?w wdt:P345 ?imdb . BIND("title" AS ?via) }
   UNION
-  { ?w wdt:P31/wdt:P279* wd:Q21191270 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . }
+  { ?w wdt:P31/wdt:P279* wd:Q21191270 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . BIND("episode" AS ?via) }
   UNION
-  { ?w wdt:P31/wdt:P279* wd:Q3464665 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . }
+  { ?w wdt:P31/wdt:P279* wd:Q3464665 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . BIND("season" AS ?via) }
   FILTER(STRSTARTS(?imdb, "tt"))
 }`,
 };
@@ -110,7 +124,7 @@ export const PLACES_SCHEMA = `
 -- plain text on it and the place page prints it, and a count on the render path is the one
 -- query that cannot become a seek. It counts titles in THIS index, never Wikidata's.
 --
--- kind is 'site' or 'area'. Countries never reach this table -- see filming-locations.ts.
+-- kind is 'site' or 'area'. Captions (countries, continents, oceans) never reach this table.
 -- No backticks in this string: it is a template literal.
 create table place (
   id      integer primary key,
@@ -126,17 +140,23 @@ create table place (
 -- One row per (place, title). votes is DENORMALISED from title so the place page is one
 -- ordered seek on ix_place_titles that never reaches into title until the page of rows is
 -- already chosen -- the same trade title_genre and title_lang make.
+--
+-- episodes is how many distinct EPISODES of a series carried the statement, 0 when the title
+-- said it of itself. It is what separates "the series was shot here" from "one episode was".
 create table title_place (
   place_id    integer not null,
   title_rowid integer not null,
-  votes       integer not null default 0
+  votes       integer not null default 0,
+  episodes    integer not null default 0
 );
 `;
 
 /** The index DDL, built by the stage after the rows are in. `INDEXES.places` holds it. */
 export const PLACE_INDEXES = [
-  // The place page: one place, most-voted first, rowid as the stable tie-break.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid)",
+  // The place page: one place, most-voted first, rowid as the stable tie-break. `episodes`
+  // rides along so the page's subquery stays COVERING: an OFFSET walk must skip index entries,
+  // not fetch a table row for every title it skips.
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
   // The title pane: every place one title was filmed at.
   "create index ix_title_place on title_place(title_rowid, place_id)",
 ] as const;
@@ -150,7 +170,7 @@ export interface PlaceSourceRow {
   lat: number | null;
   lon: number | null;
   country: string | null;
-  kind: PlaceKind | "country";
+  kind: PlaceKind | "caption";
   studio: boolean;
 }
 
@@ -158,6 +178,10 @@ export interface PlaceSourceRow {
 export interface TitlePlaceSourceRow {
   imdb: string;
   place: number;
+  /** The Wikidata item that made the statement, as an integer: the film, or one episode. */
+  work: number;
+  /** Reached the series through an episode's P179. A season's statement is not an episode. */
+  episode: boolean;
 }
 
 /**
@@ -271,7 +295,7 @@ export function parsePlacesCsv(text: string): PlaceSourceRow[] {
     if (!line) continue;
     const cols = parseCsvRecord(line);
     if (cols?.length !== 7) continue;
-    const [iri, rawLabel, coord, country, studio, area, nation] = cols;
+    const [iri, rawLabel, coord, country, studio, area, caption] = cols;
     const id = placeIdOfIri(iri);
     const label = rawLabel?.trim() ?? "";
     if (id === null || label === "" || label.length > 200) continue;
@@ -285,14 +309,20 @@ export function parsePlacesCsv(text: string): PlaceSourceRow[] {
       country: /^[A-Z]{2}$/.test(cc) ? cc : null,
       // The order is the whole rule: a sovereign state is also an administrative entity, and
       // must not survive as an "area" just because that flag was asked second.
-      kind: flag(nation) ? "country" : flag(area) ? "area" : "site",
+      kind: flag(caption) ? "caption" : flag(area) ? "area" : "site",
       studio: flag(studio),
     });
   }
   return out;
 }
 
-/** The two-column pairs CSV. Anything that is not `tt<digits>,<entity IRI>` is dropped. */
+const VIAS = new Set(["title", "episode", "season"]);
+
+/**
+ * The four-column pairs CSV: `tt<digits>,<place IRI>,<work IRI>,<title|episode|season>`.
+ * Anything else is dropped, including the two-column shape an older download had -- the
+ * query stamp re-fetches that file, and a row with no work cannot be counted honestly.
+ */
 export function parseTitlePlacesCsv(text: string): TitlePlaceSourceRow[] {
   const out: TitlePlaceSourceRow[] = [];
   const lines = text.split("\n");
@@ -300,12 +330,13 @@ export function parseTitlePlacesCsv(text: string): TitlePlaceSourceRow[] {
     const line = lines[i]?.replace(/\r$/, "");
     if (!line) continue;
     const parts = line.split(",");
-    if (parts.length !== 2) continue;
-    const [imdb, iri] = parts;
-    if (!imdb || !/^tt\d+$/.test(imdb)) continue;
-    const place = placeIdOfIri(iri);
-    if (place === null) continue;
-    out.push({ imdb, place });
+    if (parts.length !== 4) continue;
+    const [imdb, placeIri, workIri, via] = parts;
+    if (!imdb || !/^tt\d+$/.test(imdb) || !via || !VIAS.has(via)) continue;
+    const place = placeIdOfIri(placeIri);
+    const work = placeIdOfIri(workIri);
+    if (place === null || work === null) continue;
+    out.push({ imdb, place, work, episode: via === "episode" });
   }
   return out;
 }
@@ -337,28 +368,38 @@ export function loadPlaces(
        country text, kind text not null, studio integer not null)`,
   );
   const insPlace = db.prepare("insert or ignore into place_in values (?,?,?,?,?,?,?)");
-  db.run("create temporary table tp_in (imdb text not null, place integer not null)");
-  const insPair = db.prepare("insert into tp_in values (?,?)");
+  db.run(
+    `create temporary table tp_in (
+       imdb text not null, place integer not null, work integer not null, episode integer not null)`,
+  );
+  const insPair = db.prepare("insert into tp_in values (?,?,?,?)");
   db.transaction(() => {
     for (const p of places) {
-      if (p.kind === "country") continue;
+      if (p.kind === "caption") continue;
       insPlace.run(p.id, p.label, p.lat, p.lon, p.country, p.kind, p.studio ? 1 : 0);
     }
-    for (const r of pairs) insPair.run(r.imdb, r.place);
+    for (const r of pairs) insPair.run(r.imdb, r.place, r.work, r.episode ? 1 : 0);
   })();
 
   /*
     An id that names an EPISODE is rolled up to its series here, through `episode.tconst`'s
     unique index -- a seek per pair, and a miss for every pair that already names a title.
-    `distinct` is what makes a place two episodes share one pair rather than two.
+    GROUPED so a place two episodes share is one pair rather than two.
+
+    `episodes` counts distinct WORKS that are episodes: a row is an episode's when its IMDb id
+    resolved through the episode table, or when the query reached the series through an
+    episode's P179. The same episode arriving both ways has one work id, so it counts once.
+    `max(t.votes)` is `t.votes` -- one title per group -- spelled as an aggregate.
   */
   db.run(`
-    insert into title_place (place_id, title_rowid, votes)
-    select distinct i.place, t.rowid_, t.votes
+    insert into title_place (place_id, title_rowid, votes, episodes)
+    select i.place, t.rowid_, max(t.votes),
+           count(distinct case when e.tconst is not null or i.episode = 1 then i.work end)
       from tp_in i
       left join episode e on e.tconst = i.imdb
       join title t on t.tconst = coalesce(e.parent, i.imdb)
       join place_in p on p.id = i.place
+     group by i.place, t.rowid_
   `);
   db.run("drop table tp_in");
 
@@ -443,24 +484,4 @@ export function placesForTitle(db: Database, tconst: string): Place[] {
 export function placeById(db: Database, id: number): Place | null {
   const row = db.query(`select ${PLACE_COLS} from place p where p.id = ?`).get(id) as PlaceDbRow | undefined;
   return row ? toPlace(row) : null;
-}
-
-/**
- * Where a place is on a map, as an OpenStreetMap link, or null without a coordinate.
- *
- * DERIVED, never stored -- the same rule `titleLinks` follows for every other link out.
- * OpenStreetMap rather than Google: no key, no tracking script, and the link is to a page
- * rather than an embed, so nothing third-party loads on ours. Zoom 14 is a neighbourhood,
- * which is right for a castle and merely a little close for a city.
- */
-export function placeMapUrl(place: Pick<Place, "lat" | "lon">): string | null {
-  if (place.lat === null || place.lon === null) return null;
-  const lat = place.lat.toFixed(5);
-  const lon = place.lon.toFixed(5);
-  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=14/${lat}/${lon}`;
-}
-
-/** The place's own Wikidata page: the source of every fact on ours, and where to correct one. */
-export function placeWikidataUrl(place: Pick<Place, "id">): string {
-  return `https://www.wikidata.org/wiki/${place.id}`;
 }

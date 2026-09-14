@@ -1207,7 +1207,9 @@ function FilmingLocations({ places }: { places: readonly Place[] }) {
   const setExpanded = (toggle: (open: boolean) => boolean) =>
     setExpandedFor(toggle(expanded) ? setKey : null);
   if (places.length === 0) return null;
-  const foldable = places.length > PLACES_SHOWN;
+  // `+ 1`: a control that reveals ONE row takes the line that row would have, so nine places
+  // show all nine and a fold always hides at least two.
+  const foldable = places.length > PLACES_SHOWN + 1;
   const shown = expanded || !foldable ? places : places.slice(0, PLACES_SHOWN);
   return (
     <Pane heading="Filming locations" variant="rail">

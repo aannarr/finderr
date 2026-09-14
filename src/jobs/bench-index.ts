@@ -56,6 +56,7 @@ import {
   type BenchFixtures,
   busiestPlaceId,
   countRows,
+  placeScenariosSkipped,
   type Scenario,
   scenarios,
 } from "../lib/bench-scenarios";
@@ -503,6 +504,8 @@ async function main(): Promise<void> {
   console.log(
     `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre} place=${fixtures.placeId === null ? "none" : `Q${fixtures.placeId}`}`,
   );
+  const skipped = placeScenariosSkipped(fixtures);
+  if (skipped) console.log(skipped);
   console.log(`# runs=${args.runs} per scenario\n`);
 
   const all = scenarios(fixtures);

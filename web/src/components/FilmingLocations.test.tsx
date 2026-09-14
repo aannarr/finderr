@@ -102,4 +102,17 @@ describe("TitleFactsCard filming locations", () => {
     expect(screen.getByText("Place 8")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  // A button that reveals ONE row costs the same line the row would, so it is not a fold.
+  test("nine places show all nine rather than hiding one behind a button", async () => {
+    await renderFacts(Array.from({ length: 9 }, (_, i) => place(i)));
+    expect(screen.getByText("Place 9")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  test("ten places fold, so the control always hides at least two", async () => {
+    await renderFacts(Array.from({ length: 10 }, (_, i) => place(i)));
+    expect(screen.queryByText("Place 9")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show all 10" })).toBeTruthy();
+  });
 });

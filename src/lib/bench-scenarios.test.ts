@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { countRows } from "./bench-scenarios";
+import { type BenchFixtures, countRows, placeScenariosSkipped, scenarios } from "./bench-scenarios";
 import type { PersonPage } from "./people";
 import type { BrowseResult, SearchResult } from "./search";
 
@@ -62,5 +62,35 @@ describe("countRows", () => {
     // entry in ROW_KEYS, and the only way to make that a step nobody skips is to fail loudly.
     expect(() => countRows({ awards: [1, 2, 3], total: 3 })).toThrow(/awards/);
     expect(() => countRows({ awards: [] })).toThrow(/ROW_KEYS/);
+  });
+});
+
+/*
+  An index with no place tables used to run both place scenarios against a null fixture, and a
+  scenario returning null in 0.00 ms prints exactly like a very fast place page. Found by the
+  quality review of 2026-09-14.
+*/
+describe("place scenarios", () => {
+  const base: BenchFixtures = {
+    tconst: "tt1",
+    seriesTconst: "tt2",
+    nconst: "nm1",
+    genre: "Drama",
+    placeId: 65,
+  };
+  const placeIds = (f: BenchFixtures) =>
+    scenarios(f)
+      .map((s) => s.id)
+      .filter((id) => id.startsWith("place."));
+
+  test("run when the index has a place to measure", () => {
+    expect(placeIds(base)).toEqual(["place.page", "place.pageLast"]);
+    expect(placeScenariosSkipped(base)).toBeNull();
+  });
+
+  test("are left out, and said to be, when it has none", () => {
+    const none = { ...base, placeId: null };
+    expect(placeIds(none)).toEqual([]);
+    expect(placeScenariosSkipped(none)).toMatch(/NOT MEASURED/);
   });
 });
