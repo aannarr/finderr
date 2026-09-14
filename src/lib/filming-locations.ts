@@ -265,7 +265,7 @@ export function parsePlacesCsv(text: string): PlaceSourceRow[] {
     const line = lines[i]?.replace(/\r$/, "");
     if (!line) continue;
     const cols = parseCsvRecord(line);
-    if (!cols || cols.length !== 7) continue;
+    if (cols?.length !== 7) continue;
     const [iri, rawLabel, coord, country, studio, area, nation] = cols;
     const id = placeIdOfIri(iri);
     const label = rawLabel?.trim() ?? "";
