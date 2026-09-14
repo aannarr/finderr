@@ -9,19 +9,20 @@
  * The STATE lives in `usePlayHere`, not in the button, because the title page offers this
  * from two places: as the default half of `PlayMenu` when Plex does not hold the title, and
  * as an item in that menu when it does. Either way one hook owns the session and the
- * overlay, so a menu item and a button cannot grow two players.
+ * player, so a menu item and a button cannot grow two players.
+ *
+ * WHAT THE VIEWER SEES is `player/PlayerStage.tsx`, the full-window player judged against the
+ * comp. This file owns the session, hls.js, the element's source and the diagnostics feed.
  *
  * > [!IMPORTANT] hls.js is loaded with a DYNAMIC import, and that is a performance decision
  * > It is ~200 KB and it is needed by one control on one page for one role. A static import
  * > would put it in the application chunk every reader downloads, which is the shape rule
  * > four exists to refuse. `import()` makes it its own chunk, fetched the first time an
  * > admin actually presses play and never otherwise.
- * >
- * > Safari needs none of it -- it plays HLS natively -- so on that path the chunk is never
- * > fetched at all.
  */
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { candidateLoader } from "../lib/hls-candidate-loader";
 import {
   electStreamEndpoint,
@@ -32,12 +33,10 @@ import {
   startPlayback,
   stopPlayback,
 } from "../lib/playback-api";
-import { type BrowserStats, PlaybackTelemetry } from "../lib/playback-telemetry";
-import { isExpensivePlan, planSummary } from "../lib/playback-types";
+import { type BrowserStats, PlaybackTelemetry, watchPolicyViolations } from "../lib/playback-telemetry";
 import { readTrackChoices, type TrackChoices, type TrackReader } from "../lib/player-tracks";
 import { PRIMARY_BUTTON } from "../lib/ui";
-import { PlayerStats } from "./PlayerStats";
-import { PlayerTracks } from "./PlayerTracks";
+import { PlayerStage } from "./player/PlayerStage";
 
 /**
  * Whether this reader can play this title in this tab -- the two facts, in one place.
@@ -52,31 +51,41 @@ export function canPlayHere(title: { hasFile: boolean }, isAdmin: boolean): bool
   return title.hasFile && isAdmin;
 }
 
+/** Which episode to play, and how to name it on screen. Absent for a film. */
+export interface PlayTarget {
+  season?: number;
+  episode?: number;
+  /** `S1E3 · Episode name`, drawn under the title. */
+  episodeLabel?: string | null;
+}
+
 type State =
   | { kind: "idle" }
   | { kind: "starting" }
-  | { kind: "playing"; session: PlaybackSession }
+  | { kind: "playing"; session: PlaybackSession; target: PlayTarget }
   | { kind: "failed"; message: string };
 
 export interface PlayHereControl {
   state: State;
   /** Ask the server for a session. Safe to call from a button or a menu item alike. */
-  play: () => Promise<void>;
-  /** The player overlay while a session is playing, else null. Fixed-position, so it can mount anywhere. */
-  player: ReactNode;
+  play: (target?: PlayTarget) => Promise<void>;
+  /** The player while a session is playing, else null. Portalled, so it can mount anywhere. */
+  player: React.ReactNode;
 }
 
 export function usePlayHere({
   tconst,
+  title,
   season,
   episode,
 }: {
   tconst: string;
+  /** What the player's top bar calls this title. */
+  title?: string;
   season?: number;
   episode?: number;
 }): PlayHereControl {
   const [state, setState] = useState<State>({ kind: "idle" });
-  const [statsOpen, setStatsOpen] = useState(false);
   /*
     What the player is offering, and what it is on. STATE rather than a ref, unlike the
     instance below, because this one is DRAWN: the menus have to re-render when hls.js finishes
@@ -84,7 +93,19 @@ export function usePlayHere({
     Null until then, and on the native path where there is no hls.js instance to ask.
   */
   const [tracks, setTracks] = useState<TrackChoices | null>(null);
+  /** A failure the player will not recover from on its own, in the words it failed with. */
+  const [fatal, setFatal] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  /*
+    The element as STATE as well as a ref: the controls subscribe to its events, and a ref
+    changing does not re-render anything. The callback is stable so React does not detach and
+    reattach it -- and set state -- on every render.
+  */
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    setVideo(el);
+  }, []);
   // Held in a ref rather than state: tearing hls.js down is a side effect on unmount, and
   // putting it in state would re-render the player every time it changed.
   const hlsRef = useRef<(TrackReader & { destroy(): void; bandwidthEstimate?: number }) | null>(null);
@@ -92,15 +113,22 @@ export function usePlayHere({
   // rendition, so routing them through state would re-render the video element itself. The
   // stats panel samples this on its own timer, and only while it is open.
   const telemetryRef = useRef(new PlaybackTelemetry());
+  /*
+    Where focus was when play was pressed, so closing the player hands it back there. Captured
+    at the press rather than looked up at close: by then the page underneath has been inert for
+    the whole film and `document.activeElement` is the body.
+  */
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const refocusOnIdle = useRef(false);
 
   const session = state.kind === "playing" ? state.session : null;
   const sessionId = session?.sessionId ?? null;
 
   /** What the browser knows right now, or null before there is an element to ask. */
   const readBrowserStats = useCallback((): BrowserStats | null => {
-    const video = videoRef.current;
-    if (!video) return null;
-    return telemetryRef.current.read(video, hlsRef.current?.bandwidthEstimate ?? null);
+    const el = videoRef.current;
+    if (!el) return null;
+    return telemetryRef.current.read(el, hlsRef.current?.bandwidthEstimate ?? null);
   }, []);
 
   /*
@@ -112,144 +140,98 @@ export function usePlayHere({
     guess.
   */
   useEffect(() => {
-    const video = videoRef.current;
-    if (!session || !video) return;
+    const el = videoRef.current;
+    if (!session || !el) return;
     let cancelled = false;
     let stopRenewal: () => void = () => {};
+    telemetryRef.current = new PlaybackTelemetry();
+    const telemetry = telemetryRef.current;
+    // A refused `blob:` raises nothing in hls.js and only `code 4` on the element -- see
+    // `watchPolicyViolations`. Listening is what lets the stats panel and the error name it.
+    const stopWatching = watchPolicyViolations(document, telemetry);
+    const onElementError = () => setFatal(`Media element error ${el.error?.code ?? "unknown"}`);
+    el.addEventListener("error", onElementError);
 
     /*
       MSE FIRST, NATIVE ONLY AS THE FALLBACK. This order is the fix for a real bug and it is
       the opposite of what reads naturally.
 
-      The obvious shape is "if the browser plays HLS itself, hand it the URL" -- and it is
-      wrong, because **Chromium answers `canPlayType("application/vnd.apple.mpegurl")` with
-      `"maybe"`**. Any truthiness test on that string claims native support that does not
-      exist: the src is set, nothing loads, no request is even made, and the element sits at
-      `error.code 4` with an empty console. Measured in a real headless Chromium on
-      2026-09-08, after the component passed every unit test.
-
-      Requiring `"probably"` instead would be the other half of the same mistake, because
-      iOS Safari also says `"maybe"` and native HLS is the ONLY path there -- it has no
-      MediaSource at all. So neither answer to "can you play HLS" is usable, and the
-      question that IS decidable gets asked instead: `Hls.isSupported()` tests for real MSE
-      support, which every desktop browser has and iOS does not. Ask that first, and the
-      native path becomes exactly what remains.
+      **Chromium answers `canPlayType("application/vnd.apple.mpegurl")` with `"maybe"`**, so a
+      truthiness test claims native support that does not exist, and iOS Safari also says
+      `"maybe"` while native HLS is its ONLY path. `Hls.isSupported()` tests for real MSE, which
+      every desktop browser has and iOS does not. Ask that first; native is what remains.
+      Measured in a real headless Chromium on 2026-09-08.
     */
     void (async () => {
       const { default: Hls } = await import("hls.js");
       if (cancelled) return;
       if (!Hls.isSupported()) {
-        /*
-          THE NATIVE PATH IS SAME-ORIGIN, AND IT CANNOT BE ANYTHING ELSE.
-
-          There is no loader to install: the element follows the playlist itself and resolves
-          each segment name against the playlist's own URL, so nothing gets to retarget a
-          request or attach a token. Multi-homing is therefore an MSE-path feature, and on
-          iOS Safari playback runs exactly as it did before -- from the origin the page was
-          loaded at, on the session cookie. Working, rather than degraded.
-        */
+        // Same-origin by construction: the element follows the playlist itself, so there is no
+        // loader to retarget a request and multi-homing is an MSE-path feature.
         if (hasNativeHls()) {
-          video.src = session.playlist;
-          void video.play().catch(() => {});
+          el.src = session.playlist;
+          void el.play()?.catch?.(() => {});
         }
         return;
       }
 
-      /*
-        WHICH ADDRESS TO STREAM FROM, decided before the first playlist request.
-
-        The race costs one master playlist -- a few hundred bytes -- and it is what makes the
-        server safe to advertise a LAN address to a client that turns out to be remote: an
-        unroutable address does not fail, it hangs, and a strictly ordered walk would stall
-        here for a SYN timeout. With no advertised endpoints this resolves immediately to a
-        ring holding only the page's origin, and the loader below is then a no-op rewrite.
-      */
+      // WHICH ADDRESS TO STREAM FROM, decided before the first playlist request. See
+      // `electStreamEndpoint`: an unroutable LAN address hangs rather than failing.
       const ring = await electStreamEndpoint(session, location.origin);
       if (cancelled) return;
-      // The token outlives no film, so it is renewed while the film plays -- from THIS origin,
-      // which is the only one allowed to mint one. Cancelled with the player below.
       stopRenewal = renewStreamToken(session, ring);
 
       const hls = new Hls({
-        // Every request -- master, both rendition playlists, init segments, media segments,
-        // subtitle segments -- goes through the ring, which retargets it at the current
-        // candidate and demotes that candidate when the PATH (rather than the segment) fails.
         loader: candidateLoader(Hls.DefaultConfig.loader, ring, location.origin),
-        // The playlist names the whole film before any of it has been produced, so a
-        // fragment request is what CAUSES its segment to be made. Two settings follow from
-        // that and neither is a default worth keeping.
-        //
-        // The retries cover a segment the server declined to start right now -- too many
-        // productions already in flight, which is the back-pressure a viewer dragging the
-        // scrubber runs into. Those come back 404 by design (hls.js retries a 404 and gives
-        // up on a 500).
+        // A fragment request is what CAUSES its segment to be made, so the retries cover a
+        // production the server declined right now (back-pressure answers 404, which hls.js
+        // retries) and the timeout covers PRODUCING a segment, not just transferring it.
         manifestLoadingMaxRetry: 8,
         levelLoadingMaxRetry: 8,
         fragLoadingMaxRetry: 8,
-        // The timeout has to cover PRODUCING the fragment, not just transferring it. A
-        // copy-mode segment is 0.08 s on the NAS; a 4K software re-encode of one is seconds,
-        // and the default 20 s would abandon it just as it finished.
         fragLoadingTimeOut: 60_000,
-        // NO `maxBufferHole` OVERRIDE, and its absence is the assertion. It was aannarr's
-        // temporary hatch over a stutter every six seconds: copy-mode fragments were placed
-        // 0.083 s later than the one before, cumulatively, because a segment hid its position
-        // in an edit list hls.js does not implement. `SEGMENT_MUXER_OPTIONS` in
-        // `playback-plan.ts` moved that position into each fragment's own `tfdt`, so there is
-        // no hole left to tolerate. Re-adding a tolerance here would put the cover back.
+        // Sixty seconds ahead rather than the default thirty: on the LAN the fetch is cheap, the
+        // server's read-ahead is already producing past the playhead, and a deeper buffer is
+        // what rides out a busy array (STREAM epic, the warm-up stall card).
+        maxBufferLength: 60,
+        // NO `maxBufferHole` OVERRIDE, and its absence is the assertion: `SEGMENT_MUXER_OPTIONS`
+        // in `playback-plan.ts` moved each fragment's position into its own `tfdt`.
       });
       hlsRef.current = hls;
-      /*
-        THE MENUS ARE FED BY EVENTS, because the renditions do not exist yet.
-
-        hls.js fills `audioTracks` and `subtitleTracks` when it parses the manifest, which is
-        several network round trips after this line -- so reading them now would answer "no
-        tracks" forever. Five events rather than one: the lists arrive at MANIFEST_PARSED and
-        can be replaced by a `*_TRACKS_UPDATED`, and the two switch events are what keep the
-        control agreeing with the player after a change the control did not make (Safari's own
-        menu, or hls.js autoselecting by system language).
-      */
+      // THE MENUS ARE FED BY EVENTS, because the renditions do not exist until the manifest is
+      // parsed, and the switch events keep the control agreeing with the player.
       const syncTracks = () => setTracks(readTrackChoices(hls));
       hls.on(Hls.Events.MANIFEST_PARSED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncTracks);
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncTracks);
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, syncTracks);
-      /*
-        Feed the stats panel, in the ONE place that holds an hls.js instance.
-
-        The four numbers are extracted here rather than handing the instance to the telemetry
-        module, which is what keeps that module free of hls.js entirely -- pure, testable with
-        an object literal, and unaffected the day this library renames a field.
-      */
+      // Feed the stats panel from the ONE place that holds an hls.js instance, as plain data.
       hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
-        telemetryRef.current.fragmentLoaded({
-          // `sn` is `"initSegment"` for the initialisation segment, which has no place on the
-          // timeline; everything else is the segment index the playlist named.
+        telemetry.fragmentLoaded({
           index: typeof data.frag.sn === "number" ? data.frag.sn : null,
           track: data.frag.type ?? null,
-          // The timings hang off the FRAGMENT rather than off the event -- `FragLoadedData`
-          // itself carries only the payload.
           loadMs: Math.round(data.frag.stats.loading.end - data.frag.stats.loading.start),
-          // `loaded` rather than `total`: bytes that actually arrived, rather than what the
-          // response declared it would send.
           bytes: data.frag.stats.loaded,
         });
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        telemetryRef.current.failed(`${data.details}${data.fatal ? " (fatal)" : ""}`);
+        telemetry.failed(`${data.details}${data.fatal ? " (fatal)" : ""}`);
+        // A fatal error is hls.js having given up; nothing else will tell the viewer.
+        if (data.fatal) setFatal(`The player gave up: ${data.details}`);
       });
       hls.loadSource(session.playlist);
-      hls.attachMedia(video);
-      void video.play().catch(() => {});
+      hls.attachMedia(el);
+      void el.play()?.catch?.(() => {});
     })();
 
     return () => {
       cancelled = true;
       stopRenewal();
+      stopWatching();
+      el.removeEventListener("error", onElementError);
       hlsRef.current?.destroy();
       hlsRef.current = null;
-      // The menus describe a player that no longer exists, so they go with it rather than
-      // hanging around to offer tracks nothing would switch.
       setTracks(null);
     };
   }, [session]);
@@ -257,10 +239,8 @@ export function usePlayHere({
   /**
    * Switch a rendition, and show the switch immediately.
    *
-   * The optimistic update is not decoration: a `<select>` whose value comes from state is
-   * CONTROLLED, so without it the menu would snap back to the old entry until hls.js finished
-   * the switch and fired its event. The event still arrives and re-reads the player, which is
-   * what corrects an optimistic answer the player declined.
+   * The optimistic update keeps the checked menu row from snapping back until hls.js finishes
+   * the switch; the switch event still arrives and corrects an answer the player declined.
    */
   const selectTrack = useCallback((pick: (player: TrackReader) => void, at: Partial<TrackChoices>) => {
     const player = hlsRef.current;
@@ -294,22 +274,11 @@ export function usePlayHere({
   /*
     Give the slot back when the TAB goes away.
 
-    `pagehide` rather than `beforeunload`: it is the one that fires on iOS and on a bfcache
-    navigation, which is most of how a tab actually leaves.
-
     > [!CAUTION] THE CLEANUP MUST NOT STOP THE SESSION, and that cost a working player
-    > The obvious version releases in the cleanup as well, so an unmount frees the slot
-    > immediately. **In development that kills the session about a millisecond after it
-    > starts**: StrictMode mounts, unmounts and remounts every component, the simulated
-    > unmount runs the cleanup, and the remount comes back holding a `sessionId` the server
-    > has already stopped. Every subsequent playlist request is a 404, hls.js retries its
-    > budget and gives up, and the console says nothing at all. Measured in a real browser
-    > 2026-09-08 -- the unit tests passed throughout, because none of them unmount.
-    >
-    > There is no way to tell a simulated unmount from a real one, so the release simply
-    > does not live here. The three real exits are covered: the Stop button, `pagehide`, and
-    > `IDLE_REAP_MS` -- and the reaper is not a consolation prize, it is the mechanism built
-    > for exactly this case, a client that went away without saying so.
+    > StrictMode mounts, unmounts and remounts every component; a release in the cleanup stopped
+    > the session a millisecond after it started and every playlist request 404'd with nothing in
+    > the console. Measured in a real browser 2026-09-08. The three real exits are covered:
+    > Close, `pagehide`, and `IDLE_REAP_MS` on the server.
   */
   useEffect(() => {
     if (!sessionId) return;
@@ -318,15 +287,26 @@ export function usePlayHere({
     return () => window.removeEventListener("pagehide", release);
   }, [sessionId]);
 
-  async function play() {
+  // Focus back to the control that opened the player, once the page is no longer inert.
+  useEffect(() => {
+    if (state.kind !== "idle" || !refocusOnIdle.current) return;
+    refocusOnIdle.current = false;
+    returnFocus.current?.focus();
+  }, [state.kind]);
+
+  async function play(target: PlayTarget = {}) {
+    if (document.activeElement instanceof HTMLElement) returnFocus.current = document.activeElement;
     setState({ kind: "starting" });
+    setFatal(null);
     try {
       // Subtitles are always ASKED FOR and never switched on: the server publishes a
-      // `DEFAULT=NO` WebVTT rendition when the file has a text track, the player's own caption
-      // menu is what selects it, and nothing is fetched or transcoded until somebody does.
-      // Not asking would mean a title whose subtitles exist and are simply not offered.
-      const s = await startPlayback(tconst, { season, episode, wantSubtitles: true });
-      setState({ kind: "playing", session: s });
+      // `DEFAULT=NO` WebVTT rendition and nothing is fetched until somebody selects it.
+      const s = await startPlayback(tconst, {
+        season: target.season ?? season,
+        episode: target.episode ?? episode,
+        wantSubtitles: true,
+      });
+      setState({ kind: "playing", session: s, target });
     } catch (err) {
       const message =
         err instanceof PlaybackRefused && err.status === 503
@@ -338,78 +318,31 @@ export function usePlayHere({
     }
   }
 
-  /*
-    The PLAYER IS AN OVERLAY and the BUTTON stays in the header, which is a layout decision
-    rather than a stylistic one.
-
-    This control sits in the header's action column -- about 200px
-    wide. Expanding a 16:9 video into it would be unwatchable, and expanding it anywhere
-    else in the header would push the header around, which is the one thing that region's
-    rule forbids. An overlay leaves the page underneath exactly as it was, which is also
-    what a reader wants when they stop: they are back where they were, not scrolled
-    somewhere new.
-  */
   if (state.kind !== "playing") return { state, play, player: null };
 
-  const { plan } = state.session;
   const close = () => {
     stopPlayback(state.session.sessionId);
+    refocusOnIdle.current = true;
     setState({ kind: "idle" });
   };
-  // `role="dialog"` is not decoration to satisfy a linter: it is what makes Escape a
-  // legitimate handler here rather than a key listener bolted to a decorative div, and
-  // it is what tells a screen reader that the page behind this is inert.
-  const player = (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Player"
-      tabIndex={-1}
-      ref={(el) => el?.focus()}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") close();
-      }}
-    >
-      {/* `max-h-full overflow-y-auto` is what makes the stats panel safe to open on a short
-            window: the column grows past the viewport, and a centred flex child that overflows
-            has its TOP cut off with no way to reach it. One scroller here rather than a second
-            one inside the panel. */}
-      <div className="max-h-full w-full max-w-5xl space-y-2 overflow-y-auto">
-        {/* biome-ignore lint/a11y/useMediaCaption: subtitles arrive as a separate HLS
-              rendition named in the master playlist, which hls.js turns into a native
-              TextTrack (and Safari reads itself), so there is no static <track> to declare --
-              a hard-coded one would name a file this player never fetches. */}
-        <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
-        {/* Nothing at all on the native path, where `tracks` stays null: iOS Safari draws
-              its own menu for both kinds and a second one would fight it. */}
-        {tracks ? (
-          <PlayerTracks choices={tracks} onAudio={selectAudio} onSubtitles={selectSubtitles} />
-        ) : null}
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
-          <span>
-            {planSummary(plan)}
-            {isExpensivePlan(plan) ? " · re-encoding video" : ""}
-          </span>
-          <span className="flex items-baseline gap-4">
-            {/* The panel is MOUNTED only while it is open, which is what stops its two
-                  timers rather than a flag inside it -- see `PlayerStats`. */}
-            <button
-              type="button"
-              onClick={() => setStatsOpen((was) => !was)}
-              aria-expanded={statsOpen}
-              className="text-muted hover:text-ink"
-            >
-              {statsOpen ? "Hide stats" : "Stats for nerds"}
-            </button>
-            <button type="button" onClick={close} className="text-muted hover:text-ink">
-              Stop
-            </button>
-          </span>
-        </div>
-        {statsOpen ? <PlayerStats session={state.session} readBrowserStats={readBrowserStats} /> : null}
-      </div>
-    </div>
+
+  // PORTALLED to the body so the page's own root can be made `inert` underneath it -- which is
+  // what makes `aria-modal` true rather than a claim, and keeps Tab from wandering behind the film.
+  const player = createPortal(
+    <PlayerStage
+      title={title ?? "Now playing"}
+      episodeLabel={state.target.episodeLabel}
+      session={state.session}
+      video={video}
+      attachVideo={attachVideo}
+      tracks={tracks}
+      onAudio={selectAudio}
+      onSubtitles={selectSubtitles}
+      fatal={fatal}
+      readBrowserStats={readBrowserStats}
+      onClose={close}
+    />,
+    document.body,
   );
   return { state, play, player };
 }
@@ -417,33 +350,33 @@ export function usePlayHere({
 /** "Play here" as a standalone button. `PlayMenu` uses the hook directly instead. */
 export function PlayHere({
   tconst,
+  title,
   season,
   episode,
   isAdmin,
 }: {
   tconst: string;
+  title?: string;
   season?: number;
   episode?: number;
   isAdmin: boolean;
 }) {
-  const { state, play, player } = usePlayHere({ tconst, season, episode });
+  const { state, play, player } = usePlayHere({ tconst, title, season, episode });
   if (!isAdmin) return null;
-  if (player) return player;
 
   return (
     <div className="space-y-1.5">
       <button
         type="button"
-        onClick={play}
+        onClick={() => void play()}
         disabled={state.kind === "starting"}
-        // The accent, because this is the one thing a title we already hold is FOR. Only
-        // `disabled` is local: the rest is the shared primary look, so this button and the
-        // Request button it replaces cannot drift into two different-looking answers.
+        // The accent, because this is the one thing a title we already hold is FOR.
         className={`${PRIMARY_BUTTON} disabled:opacity-60`}
       >
         {state.kind === "starting" ? "Starting…" : "Play here"}
       </button>
       {state.kind === "failed" ? <p className="text-center text-xs text-muted">{state.message}</p> : null}
+      {player}
     </div>
   );
 }

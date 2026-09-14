@@ -131,14 +131,33 @@ describe("starting a session", () => {
     render(<PlayHere tconst="tt1" isAdmin={true} />);
     fireEvent.click(screen.getByRole("button", { name: /play here/i }));
 
-    const toggle = await screen.findByRole("button", { name: /stats for nerds/i });
+    const toggle = await screen.findByRole("button", { name: "Stats for nerds" });
     expect(screen.queryByText(/ready state/i)).toBeNull();
 
     fireEvent.click(toggle);
     await waitFor(() => expect(screen.getByText(/ready state/i)).toBeTruthy());
 
-    fireEvent.click(screen.getByRole("button", { name: /hide stats/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide stats for nerds" }));
     expect(screen.queryByText(/ready state/i)).toBeNull();
+  });
+
+  test("the player fills the window, and closing it hands focus back to the control that opened it", async () => {
+    servingSession();
+    render(<PlayHere tconst="tt1" title="Sintel" isAdmin={true} />);
+    const opener = screen.getByRole("button", { name: /play here/i });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const stage = await screen.findByRole("dialog", { name: "Player: Sintel" });
+    // No native controls: every control on screen is ours.
+    expect(stage.querySelector("video")?.hasAttribute("controls")).toBe(false);
+    expect(stage.className).toContain("fixed inset-0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close player" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Player: Sintel" })).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: /play here/i })),
+    );
   });
 
   test("a refusal that is not overload shows the server's own message", async () => {

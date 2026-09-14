@@ -42,6 +42,7 @@ import {
 } from "react";
 import { CARD_LINK_SELECTOR } from "../lib/card-dom";
 import { jumpLabelAt, jumpLabelFor } from "../lib/jump-keys";
+import { keyboardClaimed } from "../lib/keyboard-claim";
 import { HOST_PLATFORM, KEYMAP, matchesBinding } from "../lib/keymap";
 
 /**
@@ -222,6 +223,8 @@ export function JumpKeysProvider({ children }: { children: ReactNode }) {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // Labelling the cards behind a full-window player would label things nobody can see.
+      if (keyboardClaimed()) return;
       // The one way IN, and the only part of this that is a named binding. It carries
       // `mod`, so `firesFrom` lets it through the caret in the search box -- which is
       // where a reader almost always is when they want it.

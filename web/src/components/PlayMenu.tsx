@@ -75,11 +75,11 @@ export function PlayMenu({
   isAdmin,
   arrLink,
 }: {
-  title: Pick<Title, "tconst" | "hasFile" | "plex">;
+  title: Pick<Title, "tconst" | "hasFile" | "plex"> & { title?: string };
   isAdmin: boolean;
   arrLink: ArrLink;
 }) {
-  const { state, play, player } = usePlayHere({ tconst: title.tconst });
+  const { state, play, player } = usePlayHere({ tconst: title.tconst, title: title.title });
   const primary = playDefault(title, isAdmin);
   if (!primary) return null;
 
@@ -96,7 +96,7 @@ export function PlayMenu({
         ) : (
           <button
             type="button"
-            onClick={play}
+            onClick={() => void play()}
             disabled={starting}
             className={cn(PRIMARY_BUTTON, MAIN_HALF, "disabled:opacity-60")}
           >

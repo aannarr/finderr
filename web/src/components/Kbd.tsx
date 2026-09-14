@@ -12,6 +12,7 @@
  */
 
 import { type ReactNode, useEffect, useRef, useSyncExternalStore } from "react";
+import { keyboardClaimed } from "../lib/keyboard-claim";
 import {
   type ActionId,
   ariaKeyShortcuts,
@@ -127,6 +128,8 @@ export function useKeyAction(action: ActionId, run: () => void, enabled = true):
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // The player (or anything else drawn over the page) owns the keyboard -- see `keyboard-claim.ts`.
+      if (keyboardClaimed()) return;
       if (!matchesBinding(event, binding, HOST_PLATFORM)) return;
       if (!firesFrom(event.target as KeyTarget | null, binding)) return;
       event.preventDefault();

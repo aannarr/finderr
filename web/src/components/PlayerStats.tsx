@@ -39,6 +39,7 @@ import {
   bytes,
   clock,
   fragmentLine,
+  lastErrorLine,
   playbackReport,
   segmentLine,
   text,
@@ -148,7 +149,11 @@ function BrowserFacts(props: { stats: BrowserStats | null }) {
       />
       <Fact label="Throughput" value={bitrate(s?.bandwidthBps ?? null)} />
       <Fact label="Last segment" value={fragmentLine(s)} />
-      <Fact label="Last error" value={s?.lastError ? "yes" : "none"} hint={s?.lastError ?? undefined} />
+      <Fact
+        label="Last error"
+        value={lastErrorLine(s) ? "yes" : "none"}
+        hint={lastErrorLine(s) ?? undefined}
+      />
     </Facts>
   );
 }
@@ -180,7 +185,7 @@ type CopyState = "idle" | "copied" | "failed";
  * uses. A failure is named rather than swallowed: the clipboard API needs a secure context, so a
  * plain-http LAN address has none, and a button that silently does nothing there reads as broken.
  */
-function CopyReport(props: { build: () => string }) {
+export function CopyReport(props: { build: () => string; className?: string }) {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -206,7 +211,11 @@ function CopyReport(props: { build: () => string }) {
   };
 
   return (
-    <button type="button" onClick={() => void copy()} className="text-xs text-muted hover:text-ink">
+    <button
+      type="button"
+      onClick={() => void copy()}
+      className={props.className ?? "text-xs text-muted hover:text-ink"}
+    >
       {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy diagnostics"}
     </button>
   );
@@ -229,6 +238,7 @@ function CopyReport(props: { build: () => string }) {
 export function PlayerStats(props: {
   session: PlaybackSession;
   readBrowserStats: () => BrowserStats | null;
+  className?: string;
 }) {
   const [browser, setBrowser] = useState<BrowserStats | null>(null);
   const [report, setReport] = useState<SessionsReport | null>(null);
@@ -275,7 +285,7 @@ export function PlayerStats(props: {
     });
 
   return (
-    <div className="rounded-lg border border-line bg-black/60 px-3 py-2 text-left">
+    <div className={props.className ?? "rounded-lg border border-line bg-black/60 px-3 py-2 text-left"}>
       <div className="grid gap-x-6 sm:grid-cols-2">
         <ServerFacts session={props.session} report={report} now={now} />
         <BrowserFacts stats={browser} />

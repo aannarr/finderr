@@ -18,7 +18,7 @@ import type {
   PlaybackSession,
   SessionsReport,
 } from "./playback-api";
-import { type BrowserStats, readyStateLabel } from "./playback-telemetry";
+import { type BrowserStats, type PolicyViolation, readyStateLabel } from "./playback-telemetry";
 import { planSummary } from "./playback-types";
 import { count, formatBytes, uptime } from "./units";
 
@@ -102,6 +102,29 @@ export function fragmentLine(stats: BrowserStats | null): string {
   ]);
 }
 
+/**
+ * A CSP refusal as one line: `media-src refused blob:`.
+ *
+ * Named after what the browser did rather than after a guess at why, because the directive and
+ * the refused scheme ARE the diagnosis -- `media-src refused blob:` is the exact line that would
+ * have saved the 2026-09-15 misdiagnosis.
+ */
+export function violationLine(violation: PolicyViolation | null | undefined): string | null {
+  return violation ? `${violation.directive} refused ${violation.blocked}` : null;
+}
+
+/**
+ * The last error in words, with any CSP refusal beside it.
+ *
+ * Both, when both happened: a refused `blob:` is precisely what turns into `media element error 4`
+ * a moment later, and printing only the second is how that failure was misread.
+ */
+export function lastErrorLine(stats: BrowserStats | null): string | null {
+  const csp = violationLine(stats?.policyViolation);
+  const parts = [stats?.lastError ?? null, csp ? `CSP: ${csp}` : null].filter((p): p is string => p !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export interface ReportInput {
   session: PlaybackSession;
   browser: BrowserStats | null;
@@ -156,7 +179,8 @@ export function playbackReport(input: ReportInput): string {
     ],
     ["Throughput", bitrate(b?.bandwidthBps ?? null)],
     ["Last segment", fragmentLine(b)],
-    ["Last error", b?.lastError ?? "none"],
+    ["Last error", lastErrorLine(b) ?? "none"],
+    ["Blocked by CSP", violationLine(b?.policyViolation) ?? "nothing"],
   ];
 
   const reasons = session.plan.reasons.map((r) => `- ${r}`);

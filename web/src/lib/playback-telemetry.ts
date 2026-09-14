@@ -58,6 +58,78 @@ export interface BrowserStats {
   lastFragment: FragmentLoad | null;
   /** The most recent failure, in the words the player used. Null while nothing has failed. */
   lastError: string | null;
+  /**
+   * The last thing the page's Content-Security-Policy refused while the player was mounted.
+   *
+   * Optional because every existing reader builds this type from a literal, and absent means
+   * "nothing was refused" exactly as null does.
+   */
+  policyViolation?: PolicyViolation | null;
+}
+
+/**
+ * A CSP refusal, reduced to what is safe to show and paste.
+ *
+ * > [!IMPORTANT] THIS IS THE ONE FAILURE NEITHER hls.js NOR THE ELEMENT CAN REPORT
+ * > When the CSP refused hls.js's `blob:` MediaSource, hls.js raised no ERROR event and the
+ * > element reported `code 4` and nothing else. The real cause was only in Safari's console, and
+ * > it cost a wrong diagnosis and a deploy. The browser DOES fire `securitypolicyviolation` on
+ * > the document, so the player listens for it.
+ */
+export interface PolicyViolation {
+  /** `media-src`, `worker-src`, ... -- the directive that refused. */
+  directive: string;
+  /**
+   * What was refused, as an ORIGIN or a scheme keyword and never a full URL: the URLs the player
+   * requests carry `?t=<stream token>`, and this lands in a report somebody pastes into a chat.
+   */
+  blocked: string;
+}
+
+/**
+ * A refused URI as something safe to print.
+ *
+ * `blob:https://host/uuid` becomes `blob:`, an http(s) URL becomes its origin, and the CSP
+ * keywords the browser reports instead of a URL (`inline`, `eval`, `data`) pass through. Anything
+ * unparseable is reported as `unknown` rather than echoed -- an unparseable string is exactly the
+ * one that might still carry a token.
+ */
+export function redactBlockedUri(uri: string): string {
+  const trimmed = uri.trim();
+  if (/^(inline|eval|wasm-eval|data|blob|trusted-types-sink|self)$/i.test(trimmed))
+    return trimmed.toLowerCase();
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.origin;
+    return url.protocol;
+  } catch {
+    return "unknown";
+  }
+}
+
+/** The fields of a `SecurityPolicyViolationEvent` this reads. Structural, so a test fakes it. */
+interface ViolationEventLike {
+  violatedDirective?: string;
+  effectiveDirective?: string;
+  blockedURI?: string;
+}
+
+/**
+ * Record every CSP refusal on `target` into `telemetry` until the returned function is called.
+ *
+ * A function rather than an effect body so the wiring is testable with a plain `EventTarget` and
+ * a synthetic event -- happy-dom has no `SecurityPolicyViolationEvent` to construct.
+ */
+export function watchPolicyViolations(target: EventTarget, telemetry: PlaybackTelemetry): () => void {
+  const onViolation = (event: Event) => {
+    const e = event as Event & ViolationEventLike;
+    telemetry.policyViolated({
+      directive: e.effectiveDirective || e.violatedDirective || "unknown",
+      blocked: redactBlockedUri(e.blockedURI ?? ""),
+    });
+  };
+  target.addEventListener("securitypolicyviolation", onViolation);
+  return () => target.removeEventListener("securitypolicyviolation", onViolation);
 }
 
 /**
@@ -105,6 +177,12 @@ function bufferedAhead(video: PlayheadSource): number {
 export class PlaybackTelemetry {
   private fragment: FragmentLoad | null = null;
   private error: string | null = null;
+  private violation: PolicyViolation | null = null;
+
+  /** Record a CSP refusal. Already redacted by `watchPolicyViolations`; the last one wins. */
+  policyViolated(violation: PolicyViolation): void {
+    this.violation = violation;
+  }
 
   fragmentLoaded(load: FragmentLoad): void {
     this.fragment = load;
@@ -135,6 +213,7 @@ export class PlaybackTelemetry {
       // the CAUSE ("fragLoadError") while the element reports only that decoding stopped. On
       // the native-HLS path there is no hls.js, and `code 4` is all there ever is.
       lastError: this.error ?? (video.error ? `media element error ${video.error.code}` : null),
+      policyViolation: this.violation,
     };
   }
 }

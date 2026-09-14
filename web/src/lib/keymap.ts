@@ -208,7 +208,9 @@ export function firesWhileTyping(binding: KeyBinding): boolean {
  */
 export function firesFrom(target: KeyTarget | null | undefined, binding: KeyBinding): boolean {
   if (isTypingTarget(target)) return firesWhileTyping(binding);
-  if (binding.key === "Enter" && binding.mod === undefined) return !isActivationTarget(target);
+  if ((binding.key === "Enter" || binding.key === " ") && binding.mod === undefined) {
+    return !isActivationTarget(target);
+  }
   return true;
 }
 
@@ -260,3 +262,155 @@ export function detectPlatform(source: PlatformSource | undefined): Platform {
 export const HOST_PLATFORM: Platform = detectPlatform(
   typeof navigator === "undefined" ? undefined : navigator,
 );
+
+/* ============================================================================================
+   THE PLAYER'S KEYS.
+
+   YouTube's set, because it is the set every viewer already has in their fingers -- Plex and
+   Jellyfin copy it for the same reason. A second table rather than more `ActionId`s because a
+   player action is bound to SEVERAL keys (Space and k both play) and the page's table is one key
+   per action; the `KeyBinding` shape and `matchesBinding`/`firesFrom` are shared, so the two
+   tables cannot disagree about what a keystroke is.
+
+   ONE OWNER, the same promise the page table makes: the player's handler reads
+   `playerActionFor`, the `?` overlay renders `PLAYER_SHORTCUT_ROWS`, and a control's tooltip
+   reads `playerGlyph`. `keymap.test.ts` asserts every action appears in the overlay exactly
+   once, so a binding added here and forgotten there is a red test rather than a secret key.
+   ============================================================================================ */
+
+export type PlayerActionId =
+  | "playPause"
+  | "back10"
+  | "forward10"
+  | "back5"
+  | "forward5"
+  | "volumeUp"
+  | "volumeDown"
+  | "mute"
+  | "fullscreen"
+  | "subtitles"
+  | "nextAudio"
+  | "seekPercent"
+  | "seekStart"
+  | "seekEnd"
+  | "frameBack"
+  | "frameForward"
+  | "slower"
+  | "faster"
+  | "stats"
+  | "shortcuts"
+  | "close";
+
+const key = (value: string, glyph: string = value): KeyBinding => ({ key: value, glyph });
+
+export const PLAYER_KEYMAP: Record<PlayerActionId, KeyBinding[]> = {
+  // `KeyboardEvent.key` for the space bar is a literal space, not "Space".
+  playPause: [key(" ", "Space"), key("k")],
+  back10: [key("j")],
+  forward10: [key("l")],
+  back5: [key("ArrowLeft", "←")],
+  forward5: [key("ArrowRight", "→")],
+  volumeUp: [key("ArrowUp", "↑")],
+  volumeDown: [key("ArrowDown", "↓")],
+  mute: [key("m")],
+  fullscreen: [key("f")],
+  subtitles: [key("c")],
+  nextAudio: [key("a")],
+  seekPercent: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => key(d)),
+  seekStart: [key("Home")],
+  seekEnd: [key("End")],
+  // Comma and period, YouTube's frame keys. The PERIOD is also the assistant's key, but only
+  // with ⌘/Ctrl held, and `matchesBinding` refuses a modified chord for an unmodified binding.
+  frameBack: [key(",")],
+  frameForward: [key(".")],
+  // Shift is not checked by `matchesBinding`, so `<` and `>` match however the layout produces them.
+  slower: [key("<")],
+  faster: [key(">")],
+  stats: [key("i")],
+  shortcuts: [key("?")],
+  close: [key("Escape", "esc")],
+};
+
+export type PlayerKeyGroup = "Playback" | "Seeking" | "Sound" | "View";
+
+export interface ShortcutRow {
+  label: string;
+  actions: PlayerActionId[];
+  /** Drawn instead of every binding's own glyph -- ten digit keys read as `0-9`. */
+  glyphs?: string[];
+}
+
+/** The `?` overlay, in reading order. Pairs share a row because a viewer learns them as pairs. */
+export const PLAYER_SHORTCUT_ROWS: { group: PlayerKeyGroup; rows: ShortcutRow[] }[] = [
+  {
+    group: "Playback",
+    rows: [
+      { label: "Play / pause", actions: ["playPause"] },
+      { label: "Previous / next frame", actions: ["frameBack", "frameForward"] },
+      { label: "Slower / faster", actions: ["slower", "faster"] },
+    ],
+  },
+  {
+    group: "Seeking",
+    rows: [
+      { label: "Back / forward 10 s", actions: ["back10", "forward10"] },
+      { label: "Back / forward 5 s", actions: ["back5", "forward5"] },
+      { label: "Jump to 0-90%", actions: ["seekPercent"], glyphs: ["0-9"] },
+      { label: "Start / end", actions: ["seekStart", "seekEnd"] },
+    ],
+  },
+  {
+    group: "Sound",
+    rows: [
+      { label: "Volume up / down", actions: ["volumeUp", "volumeDown"] },
+      { label: "Mute", actions: ["mute"] },
+      { label: "Next audio track", actions: ["nextAudio"] },
+    ],
+  },
+  {
+    group: "View",
+    rows: [
+      { label: "Subtitles on / off", actions: ["subtitles"] },
+      { label: "Fullscreen", actions: ["fullscreen"] },
+      { label: "Stats for nerds", actions: ["stats"] },
+      { label: "These shortcuts", actions: ["shortcuts"] },
+      { label: "Close", actions: ["close"] },
+    ],
+  },
+];
+
+/** The keys one overlay row draws. */
+export function shortcutGlyphs(row: ShortcutRow): string[] {
+  return row.glyphs ?? row.actions.flatMap((action) => PLAYER_KEYMAP[action].map((b) => b.glyph));
+}
+
+/** The glyph a control's tooltip wears: its action's first key. */
+export function playerGlyph(action: PlayerActionId): string {
+  return PLAYER_KEYMAP[action][0]?.glyph ?? "";
+}
+
+/**
+ * Which player action a keystroke fires, and which key fired it -- or null.
+ *
+ * The KEY comes back because one action reads it: `seekPercent` needs to know which digit.
+ * Single letters are folded to lower case first, so Caps Lock does not silently disable every
+ * letter shortcut; a shifted letter is still the same key to a viewer.
+ *
+ * `firesFrom` is asked exactly as the page asks it, so Space on a focused button activates the
+ * button and does not ALSO toggle playback -- the double-fire the card names.
+ */
+export function playerActionFor(
+  chord: KeyChord,
+  target: KeyTarget | null | undefined,
+  platform: Platform,
+): { action: PlayerActionId; key: string } | null {
+  const folded = /^[A-Z]$/.test(chord.key) ? { ...chord, key: chord.key.toLowerCase() } : chord;
+  for (const [action, bindings] of Object.entries(PLAYER_KEYMAP) as [PlayerActionId, KeyBinding[]][]) {
+    for (const binding of bindings) {
+      if (matchesBinding(folded, binding, platform) && firesFrom(target, binding)) {
+        return { action, key: binding.key };
+      }
+    }
+  }
+  return null;
+}
