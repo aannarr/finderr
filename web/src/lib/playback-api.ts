@@ -142,6 +142,11 @@ export interface PlaybackDiagnostics {
 
 export interface PlaybackSession {
   sessionId: string;
+  /**
+   * This player's own hold on the session, which other viewers of the title may share. Handed
+   * back on stop so closing this player cannot end their stream. Absent from an older server.
+   */
+  viewer?: string;
   playlist: string;
   /**
    * The bearer secret for this session's playlists and segments.
@@ -448,8 +453,10 @@ async function probeEndpoint(
   }
 }
 
-export function stopPlayback(sessionId: string): void {
-  void fetch(`/api/play/s/${encodeURIComponent(sessionId)}`, {
+export function stopPlayback(sessionId: string, viewer?: string): void {
+  // Without the handle the server may only end a session nobody else holds.
+  const hold = viewer ? `?viewer=${encodeURIComponent(viewer)}` : "";
+  void fetch(`/api/play/s/${encodeURIComponent(sessionId)}${hold}`, {
     method: "DELETE",
     keepalive: true,
   }).catch(() => {});

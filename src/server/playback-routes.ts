@@ -143,6 +143,13 @@ const json = (body: unknown, status = 200) =>
 const bad = (error: string, status = 400) => json({ error }, status);
 
 /**
+ * The shape of a viewer handle `TranscodeSessions.start` issues: a UUID and nothing else. The
+ * pattern IS the bound, length and alphabet at once, so anything else is refused rather than
+ * compared against the holder set.
+ */
+const VIEWER_HANDLE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
  * The stream token a request carries, or null.
  *
  * `URL` rather than a hand-rolled scan of the query string: this runs on the segment route,
@@ -545,7 +552,7 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
         }
 
         try {
-          const session = deps.sessions.start({
+          const { session, viewer } = deps.sessions.start({
             input: resolved.path,
             plan,
             tracks,
@@ -570,6 +577,9 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
 
           return json({
             sessionId: session.id,
+            // THIS caller's hold on a session other viewers may have joined. DELETE carries it
+            // back, so closing one player cannot end another viewer's stream.
+            viewer,
             // RELATIVE, so a client may retarget it at any endpoint that serves this server
             // -- the property multi-homed playback needs and the reason the playlist itself
             // carries relative segment names too.
@@ -692,7 +702,9 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
       DELETE: (req: Bun.BunRequest<"/api/play/s/:id">) => {
         const refused = deps.requireAdmin(req);
         if (refused) return refused;
-        deps.sessions.stop(req.params.id);
+        const viewer = new URL(req.url).searchParams.get("viewer");
+        if (viewer !== null && !VIEWER_HANDLE.test(viewer)) return bad("viewer is not a handle", 400);
+        deps.sessions.stop(req.params.id, viewer ?? undefined);
         return json({ stopped: true });
       },
     },

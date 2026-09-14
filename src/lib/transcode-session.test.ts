@@ -194,7 +194,7 @@ describe("starting a session", () => {
    */
   test("costs a directory and a slot, and starts no ffmpeg at all", () => {
     const f = fakeFfmpeg();
-    const s = mgr(f.spawn).start(opts());
+    const s = mgr(f.spawn).start(opts()).session;
 
     expect(f.spawned).toHaveLength(0);
     expect(existsSync(s.dir)).toBe(true);
@@ -207,8 +207,8 @@ describe("starting a session", () => {
    */
   test("a second identical request joins the session rather than making another", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const a = m.start(opts());
-    const b = m.start(opts());
+    const a = m.start(opts()).session;
+    const b = m.start(opts()).session;
 
     expect(b.id).toBe(a.id);
     expect(b.dir).toBe(a.dir);
@@ -217,10 +217,10 @@ describe("starting a session", () => {
 
   test("joining counts as being wanted, so a busy session is never reaped under a viewer", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const a = m.start(opts());
+    const a = m.start(opts()).session;
 
     clock += IDLE_REAP_MS - 1;
-    m.start(opts());
+    m.start(opts()).session;
     clock += IDLE_REAP_MS - 1;
 
     expect(m.reap()).toBe(0);
@@ -229,8 +229,8 @@ describe("starting a session", () => {
 
   test("a different plan for the same file is a different session", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    m.start(opts());
-    m.start(opts({ plan: EXPENSIVE }));
+    m.start(opts()).session;
+    m.start(opts({ plan: EXPENSIVE })).session;
     expect(m.list()).toHaveLength(2);
   });
 
@@ -267,20 +267,20 @@ describe("starting a session", () => {
  */
 describe("the stream token", () => {
   test("is not the session id, so printing an id never leaks the right to stream it", () => {
-    const s = mgr(fakeFfmpeg().spawn).start(opts());
+    const s = mgr(fakeFfmpeg().spawn).start(opts()).session;
     expect(s.token).not.toBe(s.id);
     expect(s.token.length).toBeGreaterThan(20);
   });
 
   test("two sessions get different tokens", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    expect(m.start(opts()).token).not.toBe(m.start(opts({ plan: EXPENSIVE })).token);
+    expect(m.start(opts()).session.token).not.toBe(m.start(opts({ plan: EXPENSIVE })).session.token);
   });
 
   test("admits its own session and nothing else", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const a = m.start(opts());
-    const b = m.start(opts({ plan: EXPENSIVE }));
+    const a = m.start(opts()).session;
+    const b = m.start(opts({ plan: EXPENSIVE })).session;
 
     expect(m.admitsToken(a.id, a.token)).toBe(true);
     expect(m.admitsToken(b.id, a.token)).toBe(false);
@@ -290,7 +290,7 @@ describe("the stream token", () => {
 
   test("stops being accepted once its window has passed", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     clock += STREAM_TOKEN_TTL_MS - 1;
     expect(m.admitsToken(s.id, s.token)).toBe(true);
@@ -306,7 +306,7 @@ describe("the stream token", () => {
    */
   test("the previous token keeps working for the grace window, then does not", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     const before = s.token;
 
     const after = m.remintToken(s.id)?.token;
@@ -322,7 +322,7 @@ describe("the stream token", () => {
   /** Renewal is what makes the short window survivable across a feature film. */
   test("a re-mint gives a full fresh window", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     clock += STREAM_TOKEN_TTL_MS - 1;
     const renewed = m.remintToken(s.id);
@@ -336,7 +336,7 @@ describe("the stream token", () => {
   /** The token dies with the session, so an abandoned playback's credential dies with it. */
   test("a reaped session admits its token no longer", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     clock += IDLE_REAP_MS + 1;
     m.reap();
@@ -348,7 +348,7 @@ describe("producing a segment on demand", () => {
   test("asking for a segment runs ffmpeg for exactly that segment and publishes it", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const path = await m.segmentPath(s.id, VIDEO, 12);
 
@@ -369,7 +369,7 @@ describe("producing a segment on demand", () => {
   test("an audio segment is cut on the audio grid, not the video one", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const path = await m.segmentPath(s.id, AUDIO, 12);
 
@@ -381,7 +381,7 @@ describe("producing a segment on demand", () => {
   /** Both renditions land in one directory, so each must publish under its own names. */
   test("the two renditions never write over each other", async () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 4);
     await m.segmentPath(s.id, AUDIO, 4);
@@ -400,7 +400,7 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(
       opts({ plan: DUBBED, tracks: [...TRACKS, { track: AUDIO_2, timeline: AUDIO_TIMELINE, label }] }),
-    );
+    ).session;
 
     await m.segmentPath(s.id, AUDIO, 4);
     await m.segmentPath(s.id, AUDIO_2, 4);
@@ -418,7 +418,7 @@ describe("producing a segment on demand", () => {
     const m = mgr(f.spawn);
     const s = m.start(
       opts({ plan: DUBBED, tracks: [...TRACKS, { track: AUDIO_2, timeline: AUDIO_TIMELINE, label }] }),
-    );
+    ).session;
 
     const held = [];
     for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, AUDIO, i));
@@ -433,7 +433,7 @@ describe("producing a segment on demand", () => {
   test("a track the session has no timeline for is null rather than an ffmpeg run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts({ tracks: TRACKS.slice(0, 1) }));
+    const s = m.start(opts({ tracks: TRACKS.slice(0, 1) })).session;
 
     expect(await m.segmentPath(s.id, AUDIO, 0)).toBeNull();
     expect(await m.initPath(s.id, AUDIO)).toBeNull();
@@ -444,7 +444,7 @@ describe("producing a segment on demand", () => {
   test("a segment already produced is served without running ffmpeg again", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 3);
     await m.segmentPath(s.id, VIDEO, 3);
@@ -460,7 +460,7 @@ describe("producing a segment on demand", () => {
   test("two requests for the same segment share one production", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const both = Promise.all([m.segmentPath(s.id, VIDEO, 5), m.segmentPath(s.id, VIDEO, 5)]);
     expect(f.spawned).toHaveLength(1);
@@ -477,7 +477,7 @@ describe("producing a segment on demand", () => {
   test("a session will not produce more than SEGMENT_CONCURRENCY segments at once", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const held = [];
     for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i));
@@ -497,7 +497,7 @@ describe("producing a segment on demand", () => {
   test("filling one rendition's concurrency does not refuse the other's", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const held = [];
     for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i));
@@ -512,7 +512,7 @@ describe("producing a segment on demand", () => {
   test("a finished production frees its concurrency slot", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     for (let i = 0; i < SEGMENT_CONCURRENCY + 2; i++) {
       expect(await m.segmentPath(s.id, VIDEO, i)).not.toBeNull();
@@ -522,7 +522,7 @@ describe("producing a segment on demand", () => {
   test("a segment the timeline does not have is null rather than an ffmpeg run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     expect(await m.segmentPath(s.id, VIDEO, 999)).toBeNull();
     expect(await m.segmentPath(s.id, VIDEO, -1)).toBeNull();
@@ -542,7 +542,7 @@ describe("producing a segment on demand", () => {
   test("a failed run publishes nothing and leaves no working directory behind", async () => {
     const f = fakeFfmpeg({ exitCode: 1 });
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     expect(await m.segmentPath(s.id, VIDEO, 4)).toBeNull();
     expect(existsSync(join(s.dir, segmentFileName(VIDEO, 4)))).toBe(false);
@@ -571,7 +571,7 @@ describe("producing a segment on demand", () => {
       log: (l) => lines.push(l),
       readAhead: NO_READ_AHEAD,
     });
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 4);
 
@@ -590,7 +590,7 @@ describe("producing a segment on demand", () => {
       ffmpegPath: "ffmpeg",
       log: (l) => lines.push(l),
     });
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 4);
 
@@ -599,7 +599,7 @@ describe("producing a segment on demand", () => {
 
   test("a rendition publishes exactly one init, from the first run that made one", async () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 2);
     await m.segmentPath(s.id, VIDEO, 9);
@@ -615,7 +615,7 @@ describe("producing a segment on demand", () => {
   test("the init and the first segment come out of a single run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     expect(await m.initPath(s.id, VIDEO)).toBe(join(s.dir, initName(VIDEO)));
     expect(await m.segmentPath(s.id, VIDEO, 0)).toBe(join(s.dir, segmentFileName(VIDEO, 0)));
@@ -631,7 +631,7 @@ describe("producing a segment on demand", () => {
   test("an init asked for after any segment costs no further run", async () => {
     const f = fakeFfmpeg();
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 42);
 
@@ -646,7 +646,7 @@ describe("producing a segment on demand", () => {
    */
   test("only the most recent SEGMENT_CACHE segments stay on disk", async () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     for (let i = 0; i < SEGMENT_CACHE + 3; i++) await m.segmentPath(s.id, VIDEO, i);
 
@@ -663,7 +663,7 @@ describe("producing a segment on demand", () => {
 
   test("reading a segment counts as being wanted", async () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     clock += IDLE_REAP_MS - 1;
     await m.segmentPath(s.id, VIDEO, 1);
@@ -705,7 +705,7 @@ describe("read-ahead", () => {
   test("a request for segment N produces the next READ_AHEAD of that rendition, and nothing else", async () => {
     const f = fakeFfmpeg();
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 5);
     await settle();
@@ -720,7 +720,7 @@ describe("read-ahead", () => {
   test("the player's next request is served from disk and moves the window one on", async () => {
     const f = fakeFfmpeg();
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 5);
     await settle();
@@ -734,7 +734,7 @@ describe("read-ahead", () => {
   test("a request for a segment read-ahead is still producing joins it", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const first = m.segmentPath(s.id, VIDEO, 5);
     const next = m.segmentPath(s.id, VIDEO, 6);
@@ -753,7 +753,7 @@ describe("read-ahead", () => {
   test("a seek abandons the old run-ahead and reads ahead from the new position", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const before = m.segmentPath(s.id, VIDEO, 5);
     expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6]);
@@ -773,7 +773,7 @@ describe("read-ahead", () => {
   test("read-ahead takes no back-pressure slot, and a scrub storm is still refused", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const held = [];
     for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i * 20));
@@ -789,7 +789,7 @@ describe("read-ahead", () => {
   test("read-ahead stops at the end of the timeline", async () => {
     const f = fakeFfmpeg();
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     await m.segmentPath(s.id, VIDEO, 58);
     await settle();
@@ -802,7 +802,7 @@ describe("read-ahead", () => {
   test("a session that re-encodes video reads ahead READ_AHEAD_EXPENSIVE", async () => {
     const f = fakeFfmpeg();
     const m = ahead(f.spawn);
-    const s = m.start(opts({ plan: EXPENSIVE }));
+    const s = m.start(opts({ plan: EXPENSIVE })).session;
 
     await m.segmentPath(s.id, VIDEO, 5);
     await settle();
@@ -818,7 +818,7 @@ describe("read-ahead", () => {
    */
   test("the segment being read and its window are never evicted", async () => {
     const m = ahead(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     for (const i of [5, 40, 20]) {
       await m.segmentPath(s.id, VIDEO, i);
@@ -838,7 +838,7 @@ describe("read-ahead", () => {
   test("stopping a session ends its read-ahead", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = ahead(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const pending = m.segmentPath(s.id, VIDEO, 5);
     m.stop(s.id);
@@ -857,33 +857,35 @@ describe("the two budgets", () => {
   test("expensive sessions are capped well below the total", () => {
     const m = mgr(fakeFfmpeg().spawn);
     for (let i = 0; i < EXPENSIVE_SESSIONS; i++) {
-      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE }));
+      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE })).session;
     }
-    expect(() => m.start(opts({ input: "/plex/one-too-many.mkv", plan: EXPENSIVE }))).toThrow(SessionRefused);
+    expect(() => m.start(opts({ input: "/plex/one-too-many.mkv", plan: EXPENSIVE })).session).toThrow(
+      SessionRefused,
+    );
   });
 
   test("a cheap session is still admitted when the expensive budget is full", () => {
     const m = mgr(fakeFfmpeg().spawn);
     for (let i = 0; i < EXPENSIVE_SESSIONS; i++) {
-      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE }));
+      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE })).session;
     }
-    expect(() => m.start(opts({ input: "/plex/cheap.mkv" }))).not.toThrow();
+    expect(() => m.start(opts({ input: "/plex/cheap.mkv" })).session).not.toThrow();
   });
 
   test("the total is capped too", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    for (let i = 0; i < MAX_SESSIONS; i++) m.start(opts({ input: `/plex/c${i}.mkv` }));
-    expect(() => m.start(opts({ input: "/plex/over.mkv" }))).toThrow(SessionRefused);
+    for (let i = 0; i < MAX_SESSIONS; i++) m.start(opts({ input: `/plex/c${i}.mkv` })).session;
+    expect(() => m.start(opts({ input: "/plex/over.mkv" })).session).toThrow(SessionRefused);
   });
 
   /** Refusing rather than queueing: a queued playback is a person watching a spinner. */
   test("the refusal names which budget it was", () => {
     const m = mgr(fakeFfmpeg().spawn);
     for (let i = 0; i < EXPENSIVE_SESSIONS; i++) {
-      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE }));
+      m.start(opts({ input: `/plex/e${i}.mkv`, plan: EXPENSIVE })).session;
     }
     try {
-      m.start(opts({ input: "/plex/x.mkv", plan: EXPENSIVE }));
+      m.start(opts({ input: "/plex/x.mkv", plan: EXPENSIVE })).session;
       throw new Error("should have refused");
     } catch (err) {
       expect(err).toBeInstanceOf(SessionRefused);
@@ -903,8 +905,8 @@ describe("the two budgets", () => {
       expensive: { used: 0, max: EXPENSIVE_SESSIONS },
     });
 
-    m.start(opts({ input: "/plex/cheap.mkv" }));
-    m.start(opts({ input: "/plex/hot.mkv", plan: EXPENSIVE }));
+    m.start(opts({ input: "/plex/cheap.mkv" })).session;
+    m.start(opts({ input: "/plex/hot.mkv", plan: EXPENSIVE })).session;
 
     expect(m.budgets()).toEqual({
       sessions: { used: 2, max: MAX_SESSIONS },
@@ -915,10 +917,10 @@ describe("the two budgets", () => {
   /** An abandoned session must never keep a live viewer out. */
   test("start reaps before it refuses", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    for (let i = 0; i < MAX_SESSIONS; i++) m.start(opts({ input: `/plex/c${i}.mkv` }));
+    for (let i = 0; i < MAX_SESSIONS; i++) m.start(opts({ input: `/plex/c${i}.mkv` })).session;
 
     clock += IDLE_REAP_MS + 1;
-    expect(() => m.start(opts({ input: "/plex/fresh.mkv" }))).not.toThrow();
+    expect(() => m.start(opts({ input: "/plex/fresh.mkv" })).session).not.toThrow();
     expect(m.list()).toHaveLength(1);
   });
 });
@@ -926,7 +928,7 @@ describe("the two budgets", () => {
 describe("ending a session", () => {
   test("stop removes the session and its directory", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     const dir = s.dir;
 
     m.stop(s.id);
@@ -942,7 +944,7 @@ describe("ending a session", () => {
   test("stop signals whatever the session is running", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = mgr(f.spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     const pending = m.segmentPath(s.id, VIDEO, 1);
     m.stop(s.id);
@@ -952,16 +954,89 @@ describe("ending a session", () => {
     expect(await pending).toBeNull();
   });
 
+  /**
+   * SHARED SESSIONS COUNT THEIR VIEWERS. Two clients on one title JOIN one session, so a stop
+   * from one of them must not take the stream away from the other. Reproduced on the NAS
+   * 2026-09-15: three clients on one title, and the first DELETE killed the other two.
+   */
+  test("one of two joined viewers stopping leaves the session and its directory serving", async () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+    const b = m.start(opts({}));
+    expect(a.viewer).not.toBe(b.viewer);
+
+    m.stop(a.session.id, a.viewer);
+
+    expect(m.get(a.session.id)).not.toBeNull();
+    expect(existsSync(a.session.dir)).toBe(true);
+    expect(await m.segmentPath(b.session.id, VIDEO, 1)).not.toBeNull();
+  });
+
+  test("the last viewer stopping tears the session down", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+    const b = m.start(opts({}));
+
+    m.stop(a.session.id, a.viewer);
+    m.stop(b.session.id, b.viewer);
+
+    expect(m.get(a.session.id)).toBeNull();
+    expect(existsSync(a.session.dir)).toBe(false);
+  });
+
+  /** A client may send both an explicit Stop and a `pagehide` beacon for one play. */
+  test("the same handle stopped twice does not remove the other viewer", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+    m.start(opts({}));
+
+    m.stop(a.session.id, a.viewer);
+    m.stop(a.session.id, a.viewer);
+
+    expect(m.get(a.session.id)).not.toBeNull();
+    expect(existsSync(a.session.dir)).toBe(true);
+  });
+
+  test("an unknown handle is a no-op", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+
+    m.stop(a.session.id, "not-a-viewer");
+
+    expect(m.get(a.session.id)).not.toBeNull();
+  });
+
+  /** An old cached client sends no handle; it may only end a session nobody else holds. */
+  test("a stop without a handle does not tear down a session two viewers hold", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+    m.start(opts({}));
+
+    m.stop(a.session.id);
+
+    expect(m.get(a.session.id)).not.toBeNull();
+    expect(existsSync(a.session.dir)).toBe(true);
+  });
+
+  test("a stop without a handle still ends a session one viewer holds", () => {
+    const m = mgr(fakeFfmpeg().spawn);
+    const a = m.start(opts({}));
+
+    m.stop(a.session.id);
+
+    expect(m.get(a.session.id)).toBeNull();
+  });
+
   test("stopping twice is harmless", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     m.stop(s.id);
     expect(() => m.stop(s.id)).not.toThrow();
   });
 
   test("an idle session is reaped", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     clock += IDLE_REAP_MS - 1;
     expect(m.reap()).toBe(0);
@@ -973,7 +1048,7 @@ describe("ending a session", () => {
 
   test("touch keeps a session alive", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     for (let i = 0; i < 5; i++) {
       clock += IDLE_REAP_MS - 1;
@@ -989,7 +1064,7 @@ describe("ending a session", () => {
    */
   test("the hard TTL kills a session that is being touched forever", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     while (clock - s.startedAt < HARD_TTL_MS) {
       clock += IDLE_REAP_MS / 2;
@@ -1013,8 +1088,8 @@ describe("ending a session", () => {
   test("stopAll signals every running ffmpeg", async () => {
     const f = fakeFfmpeg({ manual: true });
     const m = mgr(f.spawn);
-    const a = m.start(opts({ input: "/plex/a.mkv" }));
-    const b = m.start(opts({ input: "/plex/b.mkv" }));
+    const a = m.start(opts({ input: "/plex/a.mkv" })).session;
+    const b = m.start(opts({ input: "/plex/b.mkv" })).session;
     const pending = [m.segmentPath(a.id, VIDEO, 0), m.segmentPath(b.id, VIDEO, 0)];
 
     m.stopAll();
@@ -1028,8 +1103,8 @@ describe("ending a session", () => {
   /** The other half of the orphan problem: what a SIGKILL leaves on disk. */
   test("sweepStale removes session directories from a previous life", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const a = m.start(opts({ input: "/plex/a.mkv" }));
-    const b = m.start(opts({ input: "/plex/b.mkv" }));
+    const a = m.start(opts({ input: "/plex/a.mkv" })).session;
+    const b = m.start(opts({ input: "/plex/b.mkv" })).session;
     expect(existsSync(a.dir)).toBe(true);
 
     // A fresh manager over the same root is exactly what a restarted process sees.
@@ -1047,9 +1122,9 @@ describe("ending a session", () => {
   /** A stopped session's key must be free, or that file can never be played again. */
   test("a stopped session's key is released so the same file can start again", () => {
     const m = mgr(fakeFfmpeg().spawn);
-    const a = m.start(opts());
+    const a = m.start(opts()).session;
     m.stop(a.id);
-    const b = m.start(opts());
+    const b = m.start(opts()).session;
     expect(b.id).not.toBe(a.id);
   });
 });
@@ -1065,7 +1140,7 @@ describe("reporting what a run cost", () => {
   test("a finished run reports its child's CPU against its session", async () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ cpuMs: 137 }).spawn, (r) => runs.push(r));
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([{ sessionId: s.id, cpuMs: 137 }]);
@@ -1078,7 +1153,7 @@ describe("reporting what a run cost", () => {
   test("a FAILED run still reports what it cost", async () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ exitCode: 1, cpuMs: 91 }).spawn, (r) => runs.push(r));
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     expect(await m.segmentPath(s.id, VIDEO, 0)).toBeNull();
 
     expect(runs).toEqual([{ sessionId: s.id, cpuMs: 91 }]);
@@ -1092,7 +1167,7 @@ describe("reporting what a run cost", () => {
   test("a spawner that cannot account for its children reports nothing", async () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg().spawn, (r) => runs.push(r));
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([]);
@@ -1101,7 +1176,7 @@ describe("reporting what a run cost", () => {
   test("a spawner that answers null reports nothing either", async () => {
     const runs: SegmentRun[] = [];
     const m = mgr(fakeFfmpeg({ cpuMs: null }).spawn, (r) => runs.push(r));
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
     await m.segmentPath(s.id, VIDEO, 0);
 
     expect(runs).toEqual([]);
@@ -1112,7 +1187,7 @@ describe("reporting what a run cost", () => {
     const m = mgr(fakeFfmpeg({ cpuMs: 5 }).spawn, () => {
       throw new Error("the books are on fire");
     });
-    const s = m.start(opts());
+    const s = m.start(opts()).session;
 
     expect(await m.segmentPath(s.id, VIDEO, 0)).not.toBeNull();
   });

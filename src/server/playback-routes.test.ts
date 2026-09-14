@@ -62,6 +62,9 @@ const TRACKS: PublishedTracks = [VIDEO, AUDIO, AUDIO_2, SUBTITLES].map((track) =
 /** The stream token the fake session carries. Any opaque string; the route compares, never parses. */
 const SESSION_TOKEN = "stream-token-1";
 
+/** The viewer handle the fake manager issues. A real one is a UUID, and the route checks that shape. */
+const VIEWER = "0b7c1f3e-2d4a-4e8b-9c6f-1a2b3c4d5e6f";
+
 /** A pinned clock, so "how long has this token left" is an assertable number rather than a race. */
 const NOW = 1_700_000_000_000;
 
@@ -76,7 +79,7 @@ const WAN: StreamEndpoint = { base: "https://finderr.example", family: null, kin
  * find something, and the traversal cases stay meaningful.
  */
 function fakeSessions(dir: string) {
-  const stopped: string[] = [];
+  const stopped: { id: string; viewer: string | undefined }[] = [];
   let refuse: SessionRefused | null = null;
   let listed = true;
   const session: Session = {
@@ -103,7 +106,7 @@ function fakeSessions(dir: string) {
   const api = {
     start: () => {
       if (refuse) throw refuse;
-      return session;
+      return { session, viewer: VIEWER };
     },
     touch: (id: string) => (id === "sess-1" ? session : null),
     get: (id: string) => (id === "sess-1" ? session : null),
@@ -122,8 +125,8 @@ function fakeSessions(dir: string) {
       const name = initFileName(track);
       return name === null ? Promise.resolve(null) : found(id, name);
     },
-    stop: (id: string) => {
-      stopped.push(id);
+    stop: (id: string, viewer?: string) => {
+      stopped.push({ id, viewer });
     },
     list: () => (listed ? [session] : []),
     budgets: () => ({ sessions: { used: 1, max: 8 }, expensive: { used: 0, max: 3 } }),
@@ -629,7 +632,27 @@ describe("stopping and listing", () => {
       url: "http://x",
     } as never)) as Response;
     expect(res.status).toBe(200);
-    expect(sessions.stopped).toEqual(["sess-1"]);
+    expect(sessions.stopped).toEqual([{ id: "sess-1", viewer: undefined }]);
+  });
+
+  test("delete passes the viewer handle through, so one viewer cannot end a shared session", async () => {
+    const { routes, sessions } = build({});
+    const res = (await routes["/api/play/s/:id"]?.DELETE?.({
+      params: { id: "sess-1" },
+      url: `http://x/api/play/s/sess-1?viewer=${VIEWER}`,
+    } as never)) as Response;
+    expect(res.status).toBe(200);
+    expect(sessions.stopped).toEqual([{ id: "sess-1", viewer: VIEWER }]);
+  });
+
+  test("a viewer that is not a handle is refused, and stops nothing", async () => {
+    const { routes, sessions } = build({});
+    const res = (await routes["/api/play/s/:id"]?.DELETE?.({
+      params: { id: "sess-1" },
+      url: `http://x/api/play/s/sess-1?viewer=${"a".repeat(5000)}`,
+    } as never)) as Response;
+    expect(res.status).toBe(400);
+    expect(sessions.stopped).toEqual([]);
   });
 
   test("the session list reports what is running", async () => {

@@ -146,6 +146,7 @@ export function usePlayHere({
 
   const session = state.kind === "playing" ? state.session : null;
   const sessionId = session?.sessionId ?? null;
+  const viewer = session?.viewer;
   const playingTarget = state.kind === "playing" ? state.target : null;
   /*
     The resume point for the session being attached, read by the attach effect. A ref rather than
@@ -350,10 +351,10 @@ export function usePlayHere({
   */
   useEffect(() => {
     if (!sessionId) return;
-    const release = () => stopPlayback(sessionId);
+    const release = () => stopPlayback(sessionId, viewer);
     window.addEventListener("pagehide", release);
     return () => window.removeEventListener("pagehide", release);
-  }, [sessionId]);
+  }, [sessionId, viewer]);
 
   // Focus back to the control that opened the player, once the page is no longer inert.
   useEffect(() => {
@@ -395,7 +396,11 @@ export function usePlayHere({
         The trigger is the control a keyboard reader returns to; the vanished row is nowhere.
       */
       if (!switching && !returnFocus.current?.isConnected) captureFocus();
-      if (switching && switching.sessionId !== s.sessionId) stopPlayback(switching.sessionId);
+      // Release by HANDLE: switching into the same session still took a second hold on it.
+      const sameHold = switching?.viewer
+        ? switching.viewer === s.viewer
+        : switching?.sessionId === s.sessionId;
+      if (switching && !sameHold) stopPlayback(switching.sessionId, switching.viewer);
       const resumeAt = resumeFor(watch, at);
       resumeRef.current = resumeAt;
       setState({ kind: "playing", session: s, target: { ...target, ...at }, resumeAt });
@@ -415,7 +420,7 @@ export function usePlayHere({
   if (state.kind !== "playing") return { state, play, player: null };
 
   const close = () => {
-    stopPlayback(state.session.sessionId);
+    stopPlayback(state.session.sessionId, state.session.viewer);
     refocusOnIdle.current = true;
     setState({ kind: "idle" });
     onClosed?.();

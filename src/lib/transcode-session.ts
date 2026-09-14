@@ -50,6 +50,14 @@
  * > The seek offset is NOT part of the key any more, and that is the shape of the whole
  * > change. It used to be, because a session was a position; a session is now a whole film
  * > and a position is just which segment gets asked for first.
+ * >
+ * > So a stop COUNTS HOLDERS. Every `start`, new or joined, hands its caller a viewer handle,
+ * > and `stop(id, viewer)` ends the session only when the last handle is gone. It used to end
+ * > it outright, and on the NAS on 2026-09-15 the first of three viewers to close the player
+ * > killed the other two mid-segment. A stale or repeated handle is a no-op, because Stop and
+ * > a `pagehide` beacon can both fire for one play; a stop with NO handle (a client older than
+ * > this) ends only a session with at most one holder. A viewer who vanishes without a stop
+ * > is the idle reaper's, exactly as before.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
@@ -442,6 +450,15 @@ interface SessionState {
   byTrack: Map<string, TrackState>;
   /** Live children, so shutdown can kill what is running rather than orphaning it. */
   running: Set<ReturnType<Spawner>>;
+  /** One handle per viewer holding this session; it ends when the last is released. */
+  holders: Set<string>;
+}
+
+/** A session as one caller holds it: the shared session, and that caller's own handle on it. */
+export interface Started {
+  session: Session;
+  /** Pass back to `stop` so releasing this viewer cannot end a stream another viewer shares. */
+  viewer: string;
 }
 
 export class TranscodeSessions {
@@ -465,14 +482,16 @@ export class TranscodeSessions {
    * Cheap by construction: no process is started here. What it spends is a slot and a
    * directory, and what it refuses is a ninth viewer or a third re-encode.
    */
-  start(o: StartOpts): Session {
+  start(o: StartOpts): Started {
     const key = sessionKey(o);
     const joined = this.byKey.get(key);
     if (joined) {
       const state = this.states.get(joined);
       if (state) {
         state.session.lastAccessAt = this.now();
-        return state.session;
+        const viewer = crypto.randomUUID();
+        state.holders.add(viewer);
+        return { session: state.session, viewer };
       }
     }
 
@@ -517,9 +536,10 @@ export class TranscodeSessions {
         aheadRunning: false,
       });
     }
-    this.states.set(session.id, { session, byTrack, running: new Set() });
+    const viewer = crypto.randomUUID();
+    this.states.set(session.id, { session, byTrack, running: new Set(), holders: new Set([viewer]) });
     this.byKey.set(key, session.id);
-    return session;
+    return { session, viewer };
   }
 
   /** Mark a session as still wanted. Called on every playlist and segment read. */
@@ -913,13 +933,31 @@ export class TranscodeSessions {
   }
 
   /**
-   * Stop a session: kill whatever it is running, drop its directory, free its slot.
+   * Release one viewer's hold on a session, and end the session once nobody holds it.
+   *
+   * An unknown or already-released `viewer` changes nothing. No `viewer` at all is a client
+   * older than handles, and it may only end a session held by at most one viewer -- see the
+   * holder paragraph in this module's header.
+   */
+  stop(id: string, viewer?: string): void {
+    const state = this.states.get(id);
+    if (!state) return;
+    if (viewer === undefined) {
+      if (state.holders.size > 1) return;
+    } else if (!state.holders.delete(viewer) || state.holders.size > 0) {
+      return;
+    }
+    this.end(id);
+  }
+
+  /**
+   * End a session whoever holds it: kill whatever it is running, drop its directory, free its slot.
    *
    * SIGTERM first because ffmpeg closes its output cleanly on it. The SIGKILL is a backstop
    * for a process wedged on a stalled read -- a NAS share going away mid-stream is the real
    * case, and it is exactly when a hung ffmpeg would otherwise hold a slot forever.
    */
-  stop(id: string): void {
+  private end(id: string): void {
     const state = this.states.get(id);
     if (!state) return;
     for (const proc of state.running) {
@@ -962,7 +1000,7 @@ export class TranscodeSessions {
       const idle = t - s.lastAccessAt >= IDLE_REAP_MS;
       const old = t - s.startedAt >= HARD_TTL_MS;
       if (idle || old) {
-        this.stop(s.id);
+        this.end(s.id);
         dropped++;
       }
     }
@@ -984,7 +1022,7 @@ export class TranscodeSessions {
    * > seconds of a Celeron. `bindShutdown` is not optional wiring.
    */
   stopAll(): void {
-    for (const s of this.list()) this.stop(s.id);
+    for (const s of this.list()) this.end(s.id);
   }
 
   /**
