@@ -25,7 +25,35 @@ export interface ParsedQuery {
   episode?: number;
   /** Release-name noise that was stripped, for showing "we ignored: 1080p, x265". */
   stripped: string[];
+  /** Every closed quoted span, in order, verbatim apart from whitespace. */
+  phrases: string[];
+  /** What is left OUTSIDE the quotes, after signal extraction. */
+  unquoted: string;
+  /**
+   * A closed pair of quotes was typed: these words exactly. `search()` reads it as a ban on
+   * every loosening -- no prefix star on a quoted word, no OR escalation, no fuzzy tier.
+   */
+  exact: boolean;
 }
+
+/**
+ * A CLOSED quoted span. Straight and typographic quotes are interchangeable, because iOS
+ * types `“` and `”` by default and a reader cannot see which one they got.
+ *
+ * An unclosed quote matches nothing and stays in the text for `normalize` to strip, which is
+ * right for a live search box: `"star` is somebody part-way through typing, and reading it as
+ * exact would freeze the results on a half-word -- the same commit gesture
+ * `collectionTokenOf` reads on the client.
+ */
+const QUOTED = /["“”„]([^"“”„]*)["“”„]/g;
+
+/**
+ * Stands in for a phrase while the signal passes run, so a year or a type word INSIDE quotes
+ * is never extracted and word order survives. Private-use code points: no `\b`, digit or
+ * letter class in this file can match one. The index rides in the second code point.
+ */
+const HOLE = "";
+const HOLE_RE = /([-])/g;
 
 /** Scene-release noise. People paste these constantly. */
 const RELEASE_JUNK =
@@ -49,7 +77,17 @@ const DECADE = /\b((?:19|20)\d0)'?s\b/i;
 
 export function parseQuery(raw: string): ParsedQuery {
   const stripped: string[] = [];
-  let q = ` ${raw.trim()} `;
+
+  // 0. quoted phrases -- lifted out FIRST, because everything between quotes is title text.
+  // Past 6,399 phrases the hole index runs out of code points; `boundedQuery` caps a query
+  // far below that, and anything beyond is dropped rather than wrapped onto another phrase.
+  const phrases: string[] = [];
+  let q = ` ${raw.trim()} `.replace(QUOTED, (_, inner: string) => {
+    const phrase = inner.replace(/\s+/g, " ").trim();
+    if (phrase.length === 0 || phrases.length >= 0xf8ff - 0xe001) return " ";
+    phrases.push(phrase);
+    return ` ${HOLE}${String.fromCharCode(0xe001 + phrases.length - 1)} `;
+  });
 
   // 1. release junk -- always noise, never part of a title
   q = q.replace(RELEASE_JUNK, (m) => {
@@ -57,7 +95,7 @@ export function parseQuery(raw: string): ParsedQuery {
     return " ";
   });
 
-  const out: ParsedQuery = { text: "", raw, stripped };
+  const out: ParsedQuery = { text: "", raw, stripped, phrases, unquoted: "", exact: phrases.length > 0 };
 
   // 2. season / episode markers. These also imply the thing is a series.
   const se = q.match(SEASON_EPISODE);
@@ -95,6 +133,7 @@ export function parseQuery(raw: string): ParsedQuery {
   });
   if (candidates.length > 0) {
     const chosen = candidates[candidates.length - 1];
+    // A phrase hole counts as something to search on, so `"1917" 2019` keeps its year.
     const remainder = q.replace(chosen[0], " ").replace(/\s+/g, " ").trim();
     if (remainder.length > 0) {
       out.year = Number.parseInt(chosen[1], 10);
@@ -110,7 +149,11 @@ export function parseQuery(raw: string): ParsedQuery {
     q = q.replace(TYPE_WORDS, " ");
   }
 
-  out.text = q.replace(/\s+/g, " ").trim();
+  out.unquoted = q.replace(HOLE_RE, " ").replace(/\s+/g, " ").trim();
+  out.text = q
+    .replace(HOLE_RE, (_, i: string) => phrases[i.charCodeAt(0) - 0xe001] ?? " ")
+    .replace(/\s+/g, " ")
+    .trim();
   // If stripping left us with nothing, the "noise" was the query. Fall back.
   if (out.text.length === 0) out.text = raw.trim();
   return out;

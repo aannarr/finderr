@@ -330,6 +330,72 @@ describe("an exact title match with a small but real audience", () => {
   });
 });
 
+/**
+ * A QUOTED QUERY NEVER LOOSENS. aannarr, 2026-09-14: `"sealook"` answered Sherlock, because
+ * every tier after the first exists to find something the reader did NOT type. Quotes say they
+ * typed it. So: no prefix, no OR escalation, no fuzzy tier, and the phrase must appear whole.
+ *
+ * The fuzzy half cannot be pinned here -- a fixture has no spellfix vocabulary, so the tier is
+ * absent either way. The OR escalation and the prefix star CAN, and they are the same gate;
+ * `CANARY_CASES` carries `"sealook"` and `"interstelar"` against the real index for the rest.
+ */
+describe("a quoted query", () => {
+  const rows: Row[] = [
+    { tconst: "tt-sea", title: "In the Heart of the Sea", year: 2015, votes: 160_542 },
+    { tconst: "tt-office", title: "The Office", year: 2005, votes: 700_000 },
+    { tconst: "tt-dead", title: "Office of the Dead", year: 2019, votes: 900_000 },
+    { tconst: "tt-seal", title: "Sealook", year: 2023, votes: 40 },
+  ];
+
+  test("does not escalate to OR when the words are not all there", () => {
+    const engine = engineOf(rows);
+    try {
+      // The control: unquoted, the OR tier finds a title holding one of the two words.
+      expect(engine.search("heart xyzbeast").hits.map((h) => h.tconst)).toContain("tt-sea");
+      const quoted = engine.search('"heart xyzbeast"');
+      expect(quoted.hits).toEqual([]);
+      expect(quoted.tier).toBe("empty");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("matches whole words, not prefixes", () => {
+    const engine = engineOf(rows);
+    try {
+      expect(engine.search("sealoo").hits[0]?.tconst).toBe("tt-seal");
+      expect(engine.search('"sealoo"').hits).toEqual([]);
+      const exact = engine.search('"sealook"');
+      expect(exact.hits.map((h) => h.tconst)).toEqual(["tt-seal"]);
+      expect(exact.tier).toBe("exact");
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("requires the phrase whole and in order, not merely its words", () => {
+    const engine = engineOf(rows);
+    try {
+      // "Office of the Dead" holds both words and more votes; it is not "the office".
+      expect(engine.search('"the office"').hits.map((h) => h.tconst)).toEqual(["tt-office"]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("leaves the unquoted words beside it their prefix", () => {
+    const engine = engineOf([
+      ...rows,
+      { tconst: "tt-dune2", title: "Dune: Part Two", year: 2024, votes: 600_000 },
+    ]);
+    try {
+      expect(engine.search('"dune" par').hits.map((h) => h.tconst)).toEqual(["tt-dune2"]);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
 /*
   THE `interstelar` PAIR IS NOT PINNED HERE, AND THAT IS DELIBERATE.
 

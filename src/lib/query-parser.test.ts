@@ -103,6 +103,59 @@ describe("parseQuery -- release junk", () => {
   });
 });
 
+/**
+ * A CLOSED PAIR OF QUOTES MEANS "THESE WORDS, EXACTLY" -- aannarr, 2026-09-14, after `"sealook"`
+ * answered Sherlock. What is inside the quotes is title text, never a signal: a year, a type
+ * word or a scene tag between quotes belongs to the name the reader is spelling out.
+ */
+describe("parseQuery -- quoted phrases", () => {
+  test("a quoted query is exact and keeps its words", () => {
+    const p = parseQuery('"sealook"');
+    expect(p.exact).toBe(true);
+    expect(p.phrases).toEqual(["sealook"]);
+    expect(p.text).toBe("sealook");
+  });
+
+  test("typographic quotes count, because a phone keyboard types them", () => {
+    expect(parseQuery("“sealook”").exact).toBe(true);
+    expect(parseQuery("„sealook“").phrases).toEqual(["sealook"]);
+  });
+
+  test("an UNCLOSED quote is still being typed, so it is not exact", () => {
+    const p = parseQuery('"sealook');
+    expect(p.exact).toBe(false);
+    expect(p.phrases).toEqual([]);
+  });
+
+  test("empty quotes are not a phrase", () => {
+    expect(parseQuery('""').exact).toBe(false);
+    expect(parseQuery('dune ""').exact).toBe(false);
+  });
+
+  test("signals inside quotes are title words; signals outside still apply", () => {
+    const p = parseQuery('"the office series" 2005');
+    expect(p.kind).toBeUndefined();
+    expect(p.year).toBe(2005);
+    expect(p.phrases).toEqual(["the office series"]);
+    expect(p.unquoted).toBe("");
+    expect(p.text).toBe("the office series");
+  });
+
+  test("a year outside quotes is a year even when the quotes hold the only other text", () => {
+    // The year rule demands something left to search on; a phrase is something.
+    const p = parseQuery('"1917" 2019');
+    expect(p.year).toBe(2019);
+    expect(p.text).toBe("1917");
+  });
+
+  test("word order survives, so an exact-title match still sees the name as typed", () => {
+    const p = parseQuery('dune "part two"');
+    expect(p.text).toBe("dune part two");
+    expect(p.unquoted).toBe("dune");
+    expect(p.phrases).toEqual(["part two"]);
+  });
+});
+
 describe("yearScore", () => {
   test("rewards an exact year and punishes a distant one", () => {
     expect(yearScore(1999, 1999)).toBe(9);

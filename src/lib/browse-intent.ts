@@ -138,6 +138,8 @@ export function browseIntentOf(raw: string, now: Date = new Date()): BrowseInten
   // `parseQuery` already owns the year, the decade, the kind and the release junk. Reading
   // what it left means this module holds ONLY the two vocabularies that one does not have.
   const parsed = parseQuery(raw);
+  // Quotes spell out a title. A shelf suggestion would answer the question they ruled out.
+  if (parsed.exact) return null;
   const intent: BrowseIntent = {};
   if (parsed.kind) intent.kind = parsed.kind;
   if (parsed.year !== undefined) intent.year = parsed.year;

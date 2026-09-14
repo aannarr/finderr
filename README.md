@@ -837,6 +837,13 @@ coverage or a thin margin between the top two. You never ask for fuzzy matching.
 | `or` | Same, OR'd, stopwords dropped, gated on token coverage | 30-70 ms |
 | `fuzzy` | SQLite's `spellfix1` (edit distance + phonetics) over a vocabulary stored in the index | ~12 ms |
 
+**Quotes turn the ladder off.** `"sealook"` means those letters: a quoted word is an exact
+term with no prefix, the phrase must appear whole and in order, and no `or` or `fuzzy` pass
+follows (tier `exact`). A name the index does not hold returns nothing rather than the
+nearest famous title. Words outside the quotes keep their prefix, a year or type word outside
+still counts, and an unclosed quote is read as still being typed. Straight and typographic
+quotes both work.
+
 Candidates pile up across tiers and the one scorer weights votes, year, kind and title
 similarity on a single scale. The fuzzy vocabulary only holds titles above
 `FUZZY_MIN_VOTES`, which is what stops a typo surfacing some 40-vote short over the film

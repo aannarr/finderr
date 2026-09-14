@@ -197,6 +197,22 @@ export const CANARY_CASES: CanaryCase[] = [
   // field's own note warns about. They only have anything to CATCH when the tier is present.
   { query: "xyzzyplughfoo", want: null, note: "returned Casablanca" },
   { query: "qwertzuiopasdf", want: null, note: "returned Spirited Away" },
+
+  // --- quotes mean exact: no prefix, no OR, no fuzzy (aannarr, 2026-09-14)
+  //
+  // Both only have something to CATCH with the fuzzy tier present, which is why they belong
+  // here rather than in a fixture -- and why neither is `fuzzyOnly`: without the tier they pass
+  // for the wrong reason, not fail.
+  {
+    query: '"sealook"',
+    want: null,
+    note: "unquoted answers Sherlock through the fuzzy tier; the Netflix show has no IMDb id",
+  },
+  {
+    query: '"interstelar"',
+    want: "Interstelar",
+    note: "the obscure exact title, never the famous film it would otherwise be read as a typo of",
+  },
 ];
 
 /**

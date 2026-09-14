@@ -86,6 +86,14 @@ describe("browseIntentOf", () => {
     expect(intent("the italian job")).toBeNull();
   });
 
+  test("quotes mean a title, never a shelf", () => {
+    // The reader spelled out a name. Offering "Browse Korean" for `"korean"` answers a
+    // question they took the trouble to rule out.
+    expect(intent("korean")).not.toBeNull();
+    expect(intent('"korean"')).toBeNull();
+    expect(intent('"swedish crime" drama')).toBeNull();
+  });
+
   test("a word we cannot honour blocks it rather than being dropped", () => {
     // "old" names a period `/browse` has no filter for. Answering with every decade of
     // Swedish crime is the "nearest plausible thing" this whole feature exists to stop.

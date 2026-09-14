@@ -82,9 +82,24 @@ import {
  * has to be able to CHECK a string against the vocabulary at runtime. A second hand-written
  * array beside a union is two copies of one fact, and the copy is always the stale one.
  */
-export const TIERS = ["fts", "or", "lev", "fuzzy", "stopword", "empty"] as const;
+export const TIERS = ["fts", "or", "lev", "fuzzy", "stopword", "exact", "empty"] as const;
 
 export type Tier = (typeof TIERS)[number];
+
+/**
+ * Does the title (or its original form) hold every quoted phrase whole and in order?
+ *
+ * Compared on `normalize`, NOT `normalizeStripped`: the stored `ntitle` has its leading article
+ * removed, so "The Office" is `office` there and `"the office"` would never be found in it.
+ * Space-padded so a phrase matches whole words only -- `"sea"` is not in "Sealook".
+ */
+function holdsPhrases(h: TitleRow, phrases: string[]): boolean {
+  const forms = [h.title, h.orig].map((v) => ` ${normalize(v)} `);
+  return phrases.every((phrase) => {
+    const n = normalize(phrase);
+    return n.length === 0 || forms.some((f) => f.includes(` ${n} `));
+  });
+}
 
 export function isTier(v: unknown): v is Tier {
   return typeof v === "string" && (TIERS as readonly string[]).includes(v);
@@ -1106,6 +1121,24 @@ export class SearchEngine {
   }
 
   /**
+   * The MATCH expression for a query holding quotes: every quoted word as an exact term, the
+   * words outside the quotes exactly as `matchExpr` would treat them.
+   *
+   * Stopwords inside a phrase are dropped from the EXPRESSION for the same latency reason
+   * `matchExpr` gives, and are still enforced -- `holdsPhrases` checks the whole phrase, in
+   * order, against the candidates this returns. So `"the office"` seeks on `office` alone and
+   * still refuses "Office of the Dead".
+   */
+  private exactExpr(p: ParsedQuery): string | null {
+    const quoted = [...new Set(p.phrases.flatMap((phrase) => normalize(phrase).split(" ")))]
+      .filter((t) => t.length > 0 && !STOPWORDS.has(t))
+      .map((t) => `"${t}"`);
+    const bare = this.matchExpr(p.unquoted, false);
+    const parts = bare ? [...quoted, bare] : quoted;
+    return parts.length > 0 ? parts.join(" ") : null;
+  }
+
+  /**
    * The most popular titles whose name STARTS with a stopword-only query.
    *
    * See `search-stopwords.ts` for why this exists, what it measured and why the floor and
@@ -1332,7 +1365,8 @@ export class SearchEngine {
       measured.push({ row: r, ys, nameMatch, exact, prefix, textSim, coverage: cov, votes: r.votes });
     }
 
-    const typoTwin = hasTypoTwin(measured);
+    // Quotes are the reader saying this is not a misspelling, so the typo discount never applies.
+    const typoTwin = !p.exact && hasTypoTwin(measured);
 
     for (const c of measured) {
       const r = c.row;
@@ -1592,6 +1626,21 @@ export class SearchEngine {
     if (stopwords) {
       tier = "stopword";
       ranked = this.popularStopwordHits(stopwords);
+    } else if (parsed.exact) {
+      /*
+        A QUOTED QUERY RUNS ONE PASS AND NEVER ESCALATES. aannarr, 2026-09-14, after `"sealook"`
+        answered Sherlock: every tier below exists to find something the reader did not type,
+        and quotes say they typed it. An empty page is the correct answer for a name the index
+        does not hold -- a confident wrong one is the bug.
+
+        It is also the CHEAPEST path here, not a new cost: a quoted word is an exact FTS term
+        with no prefix star, so it reads one posting list where `"sealook"*` reads a range, and
+        no OR or spellfix query follows it.
+      */
+      tier = "exact";
+      const expr = this.exactExpr(parsed);
+      if (expr) add(this.ftsCandidates(expr));
+      ranked = this.rank([...candidates.values()], parsed);
     } else {
       const andExpr = this.matchExpr(parsed.text, false);
       if (andExpr) add(this.ftsCandidates(andExpr));
@@ -1626,6 +1675,10 @@ export class SearchEngine {
     }
 
     const candidateCount = candidates.size;
+
+    // FTS matched the quoted WORDS; this is what makes them a phrase. It also covers the
+    // stopword path, which a quoted `"it"` takes.
+    if (parsed.exact) ranked = ranked.filter((h) => holdsPhrases(h, parsed.phrases));
 
     // Facet filters from the UI narrow the ranked set.
     let filtered = ranked;
