@@ -154,6 +154,7 @@ export const INDEX_CAPABILITIES = {
   genreYear: (db) => columnExists(db, "title_genre", "year"),
   browseCounts: (db) => tableExists(db, "browse_count"),
   episodes: (db) => tableExists(db, "episode"),
+  places: (db) => tableExists(db, "place") && tableExists(db, "title_place"),
   // `satisfies` rather than an annotation, the shape `INDEX_STAGES` uses: the keys stay
   // literal, so `INDEX_CAPABILITIES.people` is a function rather than a possibly-undefined
   // index read and a typo in a caller is a compile error.

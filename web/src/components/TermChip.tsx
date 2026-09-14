@@ -14,8 +14,8 @@
  */
 
 import { Link } from "@tanstack/react-router";
-import { isTermLinkable, type TermDimension } from "../../../src/lib/terms";
-import type { Term } from "../lib/api";
+import { isTermLinkable, MIN_TERM_TITLES, type TermDimension } from "../../../src/lib/terms";
+import type { Place, Term } from "../lib/api";
 import { CHIP_PILL, InertChip } from "./Chip";
 
 /**
@@ -41,6 +41,28 @@ export function TermChip({ term, label }: { term: Term | undefined; label: strin
       title={`${term.label} -- ${term.titles} titles we hold`}
     >
       {label}
+    </Link>
+  );
+}
+
+/**
+ * A filming location, on the SAME rule: a link once we hold more than this one title for it.
+ *
+ * Its own component rather than a fifth term dimension, because a place is built into the
+ * title index and goes to `/place/$id` -- but the threshold is `MIN_TERM_TITLES`, read from
+ * the same constant, so a place chip and a keyword chip can never disagree about what counts
+ * as somewhere to go. The count is the server's, measured at build time.
+ */
+export function PlaceChip({ place }: { place: Place }) {
+  if (place.titles < MIN_TERM_TITLES) return <InertChip label={place.label} />;
+  return (
+    <Link
+      to="/place/$id"
+      params={{ id: place.id }}
+      className={`${CHIP_PILL} hover:text-ink`}
+      title={`${place.label} -- ${place.titles} titles we hold`}
+    >
+      {place.label}
     </Link>
   );
 }

@@ -15,6 +15,7 @@ import type { AwardMark } from "../../../src/lib/award-marks";
 import { AWARDS } from "../../../src/lib/award-registry";
 import type { CollectionSummary } from "../../../src/lib/collections";
 import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
+import type { Place } from "../../../src/lib/filming-locations";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
@@ -397,6 +398,7 @@ const detailCache = new Cache<TitleDetailExtras>(500);
  */
 const DETAIL_ONLY: Record<keyof TitleDetailExtras, true> = {
   people: true,
+  places: true,
   collectionTitles: true,
   relatedTitles: true,
   panes: true,
@@ -658,6 +660,14 @@ export interface TitleDetail extends Title {
    */
   people?: PersonLinks;
   /**
+   * Where this title was filmed, from our own index, sites before areas.
+   *
+   * NOT a facet, like `awards`: complete when the response lands and never `pending`. Each
+   * place carries how many titles we hold for it, which is what decides whether its chip is
+   * a link. Absent on a server older than the stage; empty for most of the corpus.
+   */
+  places?: Place[];
+  /**
    * The other films in this title's collection, as OUR rows, in release order.
    *
    * Decorated server-side like any search hit, because a card needs a poster, library
@@ -896,6 +906,58 @@ export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise
     // Same as search and browse: holding the rows means opening one from a filmography
     // paints its local half with no request.
     for (const c of data.credits) titleCache.set(c.tconst, c);
+    return data;
+  });
+}
+
+// --- places ----------------------------------------------------------------
+
+export type { Place };
+
+/** One filming location and a page of what was filmed there, most-voted first. */
+export interface PlacePage {
+  place: Place;
+  titles: Title[];
+  /** Every title we hold for this place, which `titles` may be a page of. */
+  total: number;
+}
+
+const placeCache = new Cache<PlacePage>(100);
+
+/** Upper-cased, so `/place/q10400` and `/place/Q10400` are one cache entry, as they are one page. */
+function placeKey(id: string, limit: number, offset: number): string {
+  return `${id.toUpperCase()}|${limit}|${offset}`;
+}
+
+/**
+ * Every consecutive page of a place we hold, concatenated -- `cachedPersonRun`'s twin, for
+ * the same measured reason: the route unmounts whenever a title is opened, and seeding from
+ * the first page alone would throw away every "Show more" on the way back.
+ */
+export function cachedPlaceRun(id: string, limit: number): PlacePage | undefined {
+  const first = placeCache.get(placeKey(id, limit, 0));
+  if (!first) return undefined;
+  const titles = [...first.titles];
+  for (let offset = limit; ; offset += limit) {
+    const page = placeCache.get(placeKey(id, limit, offset));
+    if (!page) break;
+    titles.push(...page.titles);
+  }
+  return { ...first, titles };
+}
+
+export async function getPlace(id: string, opts: { limit: number; offset: number }): Promise<PlacePage> {
+  const key = placeKey(id, opts.limit, opts.offset);
+  const hit = placeCache.fresh(key);
+  if (hit) return hit;
+
+  return dedupe(`place:${key}`, async () => {
+    const qs = `limit=${opts.limit}${opts.offset ? `&offset=${opts.offset}` : ""}`;
+    const res = await fetch(`/api/place/${encodeURIComponent(id)}?${qs}`);
+    if (!res.ok) throw new Error(res.status === 404 ? "unknown place" : `place failed: ${res.status}`);
+    const data = (await res.json()) as PlacePage;
+    placeCache.set(key, data);
+    for (const t of data.titles) titleCache.set(t.tconst, t);
     return data;
   });
 }

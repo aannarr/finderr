@@ -52,6 +52,9 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, statSync } from "node:fs";
+// A cycle only at the TYPE level: that module imports `CrosswalkSource` as a type, which is
+// erased, so at runtime this is a one-way edge.
+import { FILMING_LOCATION_SOURCES } from "./filming-locations";
 
 /**
  * A Wikidata mirror that can answer a query over the whole graph.
@@ -221,12 +224,19 @@ SELECT ?imdb ?code WHERE {
 }`,
 };
 
-/** Every crosswalk the build job downloads, in the order it downloads them. */
+/**
+ * Every crosswalk the build job downloads, in the order it downloads them.
+ *
+ * The filming-location pair rides here too. It is not an id mapping, but it is the same kind of
+ * file from the same mirror on the same weekly cadence, and one list is what keeps the build
+ * job from growing a second download loop.
+ */
 export const CROSSWALK_SOURCES: readonly CrosswalkSource[] = [
   TITLE_CROSSWALK,
   PERSON_CROSSWALK,
   LANGUAGE_CROSSWALK,
   COUNTRY_CROSSWALK,
+  ...FILMING_LOCATION_SOURCES,
 ];
 
 /**

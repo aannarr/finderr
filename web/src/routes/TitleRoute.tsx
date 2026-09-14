@@ -70,6 +70,7 @@ export function TitleRoute() {
     title,
     facets,
     people,
+    places,
     collectionTitles,
     relatedTitles,
     panes,
@@ -281,6 +282,7 @@ export function TitleRoute() {
             working={working}
             problems={problems}
             terms={terms}
+            places={places}
             className="mt-4"
           />
         </aside>
@@ -475,6 +477,7 @@ export function TitleRoute() {
         episodeScores={episodeScores}
         awards={awards}
         terms={terms}
+        places={places}
         onRequestEpisode={requestEpisode}
         onRequestSeason={requestSeason}
       />

@@ -20,6 +20,7 @@ import {
   type EpisodeState,
   getTitleDetail,
   type PersonLinks,
+  type Place,
   type RenderedPane,
   subscribeTitleState,
   type Title,
@@ -136,6 +137,11 @@ export interface TitleDetailView {
    * becomes a link. Either half is empty on an index built before the stage that fills it.
    */
   people: PersonLinks | undefined;
+  /**
+   * Where this title was filmed, from our own index. Undefined until the response lands, and
+   * like `awards` it arrives complete -- nothing about it belongs in the poll.
+   */
+  places: Place[] | undefined;
   /** The rest of this title's collection, decorated. Undefined until the response lands. */
   collectionTitles: Title[] | undefined;
   /**
@@ -249,6 +255,7 @@ export function useTitleDetail(tconst: string): TitleDetailView {
     title: cachedTitle(tconst) ?? detail ?? null,
     facets: detail?.facets,
     people: detail?.people,
+    places: detail?.places,
     collectionTitles: detail?.collectionTitles,
     relatedTitles: detail?.relatedTitles,
     panes: detail?.panes,

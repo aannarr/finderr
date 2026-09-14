@@ -38,6 +38,7 @@ import { CollectionRoute } from "./routes/CollectionRoute";
 import { ListsRoute } from "./routes/ListsRoute";
 import { LogRoute } from "./routes/LogRoute";
 import { PersonRoute } from "./routes/PersonRoute";
+import { PlaceRoute } from "./routes/PlaceRoute";
 import { RequestsRoute } from "./routes/RequestsRoute";
 import { RootLayout } from "./routes/RootLayout";
 import { SearchRoute } from "./routes/SearchRoute";
@@ -130,6 +131,20 @@ const termRoute = createRoute({
   path: "/term/$dimension/$value",
   validateSearch,
   component: TermRoute,
+});
+
+/**
+ * `/place/Q10400` -- one filming location and everything we hold that was filmed there.
+ *
+ * Its own route rather than a fourth term dimension: a term lives in the app database and is
+ * only as complete as the facet cache, while a place is built into the title index, so the two
+ * have different loaders, different paging and a different 404. The id is Wikidata's, `Q` and
+ * all, because that is the form a reader can look up.
+ */
+const placeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/place/$id",
+  component: PlaceRoute,
 });
 
 /**
@@ -360,6 +375,7 @@ const routeTree = rootRoute.addChildren([
   personRoute,
   collectionRoute,
   termRoute,
+  placeRoute,
   awardsRoute,
   awardPeopleRoute,
   ceremonyRoute,

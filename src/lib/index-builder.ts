@@ -171,6 +171,15 @@ import {
   TITLE_CROSSWALK,
 } from "./crosswalk";
 import { intOrNull, nullable, streamTsv } from "./dumps";
+import {
+  loadPlaces,
+  PLACE_INDEXES,
+  PLACE_SOURCE,
+  PLACES_SCHEMA,
+  parsePlacesCsv,
+  parseTitlePlacesCsv,
+  TITLE_PLACE_SOURCE,
+} from "./filming-locations";
 import { capabilitiesOfFile, type IndexCapability } from "./index-capabilities";
 import { INDEX_STAGES, stampStages, unreleasedCastCutoffYear } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
@@ -430,7 +439,7 @@ create table episode (
   votes   integer not null default 0,
   year    integer
 );
-${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}${ORIGIN_SCHEMA}`;
+${CROSSWALK_SCHEMA}${PERSON_CROSSWALK_SCHEMA}${ORIGIN_SCHEMA}${PLACES_SCHEMA}`;
 
 /**
  * The FTS index every title query runs through, over the normalized columns.
@@ -827,6 +836,12 @@ export const INDEXES = {
    * so the third rule's "widen the row" trade has nothing to buy at that size.
    */
   breakout: ["create index ix_breakout on title_breakout(local, love desc, reach)"],
+
+  /**
+   * Built by `placesStage`, after `title_place` is filled. The DDL and the argument for each
+   * column order live beside the tables in `./filming-locations.ts`.
+   */
+  places: PLACE_INDEXES,
 } satisfies Record<string, readonly string[]>;
 
 /**
@@ -1198,11 +1213,13 @@ export async function buildIndex(
   // AFTER originStage, never beside it: this reads title.lang and title.country, which that
   // stage is what fills. Run it first and every title looks locale-less.
   const breakout = breakoutStage(db, log);
+  const places = placesStage(db, dumpDir, log);
 
   log("building secondary indexes ...");
   for (const sql of INDEXES.secondary) db.run(sql);
   for (const sql of INDEXES.origin) db.run(sql);
   for (const sql of INDEXES.breakout) db.run(sql);
+  for (const sql of INDEXES.places) db.run(sql);
 
   log("counting every browse slice ...");
   const countRows = buildBrowseCounts(db);
@@ -1227,6 +1244,8 @@ export async function buildIndex(
   setMeta.run("origin_lang_titles", String(origin.withLang));
   setMeta.run("origin_country_titles", String(origin.withCountry));
   setMeta.run("breakout_rows", String(breakout.rows));
+  setMeta.run("place_rows", String(places.places));
+  setMeta.run("title_place_rows", String(places.pairs));
   setMeta.run(BREAKOUT_META.reach, String(breakout.reachCutoff));
   setMeta.run(BREAKOUT_META.love, String(breakout.loveCutoff));
   setMeta.run(BREAKOUT_META.rankHead, String(breakout.rankHeadCutoff));
@@ -1359,6 +1378,37 @@ function originStage(
     `  ${res.withLang.toLocaleString()} titles carry a language (${pct(res.withLang)}), ` +
       `${res.withCountry.toLocaleString()} a country (${pct(res.withCountry)})`,
   );
+  return res;
+}
+
+/**
+ * Fill `place` and `title_place` -- where each title was filmed.
+ *
+ * ADDITIVE AND OPTIONAL like every stage around it: with no source on disk both tables exist
+ * and are empty, every title pane simply has no filming locations, and the stage is still
+ * stamped -- no source is an answer, and rebuilding would give the same one.
+ *
+ * **READS THE DISK AND NEVER THE NETWORK**, the same division `crosswalkStage` follows.
+ */
+function placesStage(
+  db: Database,
+  dumpDir: string,
+  log: (m: string) => void,
+): { places: number; pairs: number } {
+  const placesPath = `${dumpDir}/${PLACE_SOURCE.file}`;
+  const pairsPath = `${dumpDir}/${TITLE_PLACE_SOURCE.file}`;
+  if (!existsSync(placesPath) || !existsSync(pairsPath)) {
+    log("no filming locations on disk -- titles carry none, as before");
+    return { places: 0, pairs: 0 };
+  }
+
+  log("loading filming locations ...");
+  const res = loadPlaces(
+    db,
+    parsePlacesCsv(readFileSync(placesPath, "utf8")),
+    parseTitlePlacesCsv(readFileSync(pairsPath, "utf8")),
+  );
+  log(`  ${res.pairs.toLocaleString()} title-place pairs over ${res.places.toLocaleString()} places`);
   return res;
 }
 

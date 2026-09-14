@@ -39,8 +39,16 @@ import {
 } from "../lib/episodes";
 import { FacetResolver, isLiveContribution, type ResolvedFacets } from "../lib/facet-resolver";
 import { type EntityKind, entityKindFor, type FacetEntity, type PersonCredit } from "../lib/facets";
+import { parsePlaceId } from "../lib/filming-locations";
 import { rollback } from "../lib/index-builder";
-import { boundedHeader, boundedQuery, boundedText, LIMITS, refusalMessage } from "../lib/input-guards";
+import {
+  boundedHeader,
+  boundedQuery,
+  boundedText,
+  clampInt,
+  LIMITS,
+  refusalMessage,
+} from "../lib/input-guards";
 import { KeyframeCacheStore } from "../lib/keyframe-cache";
 import { LIST_SIZE } from "../lib/lists";
 import { loadLogoIndex } from "../lib/logos";
@@ -2248,6 +2256,15 @@ const appRoutes = {
           */
         people: titlePeople,
         /*
+            WHERE IT WAS FILMED, from our own index -- sites first, then areas.
+
+            Beside the facets like `people`: no provider owes this an answer, so it is complete
+            the moment the response lands and never sits `pending`. One seek on
+            `ix_title_place` plus a primary-key read per place. Each place carries its own
+            title count, which is what decides link versus plain text in the browser.
+          */
+        places: live.current.placesOf(row.tconst),
+        /*
             WHAT THE WORLD SCORED EACH EPISODE, from our own index.
 
             Beside the facets for the same reason `people` and `episodeState` are: the
@@ -2493,6 +2510,32 @@ const appRoutes = {
       // more titles are viewed and pre-warmed, and a long cache would hide one that
       // arrived a minute ago.
       { cache: perSession(60) },
+    );
+  },
+
+  /**
+   * One filming location and a page of the titles filmed there, most-voted first.
+   *
+   * Local SQLite only: `place` and `title_place` are built into the index from Wikidata, so
+   * this asks nothing of anybody. A place we hold no title for, a malformed id and an index
+   * built before the stage are all the same 404 -- there is no page here, and the last one
+   * fixes itself at the next rebuild.
+   *
+   * Paged like a filmography, because a city is a long list: Los Angeles is 646 titles.
+   */
+  "/api/place/:id": (req: Bun.BunRequest<"/api/place/:id">) => {
+    const id = parsePlaceId(req.params.id);
+    if (id === null) return bad("unknown place", 404);
+    const u = new URL(req.url);
+    const limit = clampInt(u.searchParams.get("limit"), { min: 1, max: 200, fallback: 60 }) ?? 60;
+    const offset = clampInt(u.searchParams.get("offset"), { min: 0, max: 1_000_000, fallback: 0 }) ?? 0;
+    // `live.current` read at the moment of use, for the reason stated in `live-index.ts`.
+    const page = live.current.placePage(id, { limit, offset });
+    if (!page) return bad("unknown place", 404);
+    return json(
+      { place: page.place, titles: decorate(page.titles), total: page.total },
+      // The index only changes at a rebuild, so this is as cacheable as a browse page.
+      { cache: perSession(300) },
     );
   },
 

@@ -354,6 +354,16 @@ export const INDEX_STAGES = {
    * two numbers.
    */
   vocab: (cfg) => JSON.stringify({ v: 2, minVotes: cfg.index.fuzzyMinVotes }),
+
+  /**
+   * `place` + `title_place` -- where each title was filmed, from Wikidata P915.
+   *
+   * No knob, so a bare version like `ids`. Bump `v` when the CLASSIFICATION moves -- the
+   * site/area/country rule lives in the source query, so editing it changes which rows exist
+   * while leaving the schema alone, which is exactly the silent-staleness shape this stamp is
+   * for. (The query stamp beside the CSV already forces a re-download; this forces the rebuild.)
+   */
+  places: () => JSON.stringify({ v: 1 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

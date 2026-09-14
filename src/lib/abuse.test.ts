@@ -22,6 +22,7 @@
 import { describe, expect, test } from "bun:test";
 import { stripImageExt } from "../server/cache-policy";
 import { FORBIDDEN_PATTERNS, HOSTILE, HOSTILE_CASES, NON_STRINGS, RLO } from "./abuse-corpus";
+import { parsePlaceId } from "./filming-locations";
 import {
   boundedHeader,
   boundedList,
@@ -144,6 +145,12 @@ const TEXT_ENTRY_POINTS: {
     run: (v) => mapMediaPath(v, [{ arr: "/plex", local: "/plex" }]),
     accepts: "unknown",
   },
+  /*
+    `parsePlaceId` is the `/api/place/:id` guard. It returns an INTEGER or null, never text, so
+    it declares no `textOut` -- the same reasoning `mapMediaPath` gives. What it inherits here
+    is that 22 KB of Zalgo and a NUL cannot make a closed regex throw or crawl.
+  */
+  { name: "parsePlaceId", run: (v) => parsePlaceId(v), accepts: "unknown" },
 ];
 
 describe("no text entry point throws on any hostile input", () => {

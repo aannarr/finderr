@@ -21,9 +21,9 @@
  */
 
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
-import type { EpisodeState, PersonLinks, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
+import type { EpisodeState, PersonLinks, Place, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
 import type { EpisodeScore } from "../lib/episode-scores";
@@ -75,7 +75,7 @@ import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./Face
 import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
 import { PluginPanes, panesForSlot } from "./PluginPane";
 import { SeriesPane } from "./SeriesPane";
-import { findTerm, TermChip } from "./TermChip";
+import { findTerm, PlaceChip, TermChip } from "./TermChip";
 import { TitleCard } from "./TitleCard";
 
 export interface TitlePanesProps {
@@ -106,6 +106,14 @@ export interface TitlePanesProps {
    * what they all did before this existed, and is the correct output for a fresh cache.
    */
   terms?: readonly Term[];
+  /**
+   * Where this title was filmed, from our own index, sites before areas.
+   *
+   * NOT a facet, like `awards`: complete when the response lands, so it never reaches
+   * `paneView` and has no skeleton. Undefined before the response and empty for most titles,
+   * and both draw nothing.
+   */
+  places?: readonly Place[];
   /**
    * The rest of this title's collection, already decorated and already filtered to what
    * we hold. Separate from `facets` for the same reason `people` is: the facet is the
@@ -232,8 +240,14 @@ function factsVisible(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] | undefined,
   problems: readonly FacetProblem[] | undefined,
+  places: readonly Place[] | undefined,
 ) {
-  return FACT_FACETS.some((f) => paneView(facets, f, working, problems).state !== "hidden");
+  // Places are the one fact here that is not a facet, so they are asked directly: a title
+  // every provider came back empty for can still have been filmed somewhere.
+  return (
+    (places?.length ?? 0) > 0 ||
+    FACT_FACETS.some((f) => paneView(facets, f, working, problems).state !== "hidden")
+  );
 }
 
 /**
@@ -250,12 +264,13 @@ export function TitleFactsCard({
   working,
   problems,
   terms,
+  places,
   className = "",
-}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms"> & { className?: string }) {
-  if (!factsVisible(facets, working, problems)) return null;
+}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms" | "places"> & { className?: string }) {
+  if (!factsVisible(facets, working, problems, places)) return null;
   return (
     <div className={`rounded-xl border border-line bg-surface p-4 ${className}`}>
-      <TitleFactsPanes facets={facets} working={working} problems={problems} terms={terms} />
+      <TitleFactsPanes facets={facets} working={working} problems={problems} terms={terms} places={places} />
     </div>
   );
 }
@@ -265,7 +280,8 @@ function TitleFactsPanes({
   working,
   problems,
   terms = [],
-}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms">) {
+  places = [],
+}: Pick<TitlePanesProps, "facets" | "working" | "problems" | "terms" | "places">) {
   const shared = { facets, working, problems, variant: "rail" as const };
   return (
     <>
@@ -328,6 +344,13 @@ function TitleFactsPanes({
         render={(entries: WatchProviders[]) => <WatchProviderRows entries={entries} terms={terms} />}
       />
 
+      {/*
+        Where it was filmed, BEFORE the keywords: a place is a fact about the film you can go
+        and stand in, and keywords are a provider's tagging. Not a `FacetPane` -- the rows are
+        our own index's and complete at t=0, the same reason `AwardsPane` is not one.
+      */}
+      <FilmingLocations places={places} />
+
       <FacetPane
         {...shared}
         facet="keywords"
@@ -368,6 +391,7 @@ export function TitleLowerPanes({
   episodeScores,
   awards,
   terms,
+  places,
   onRequestEpisode,
   onRequestSeason,
 }: TitlePanesProps) {
@@ -432,11 +456,17 @@ export function TitleLowerPanes({
         visible. Gated on the same emptiness check as the card, so neither mount ever
         draws chrome over nothing.
       */}
-      {factsVisible(facets, working, problems) && (
+      {factsVisible(facets, working, problems, places) && (
         <details className="mt-8 rounded-xl border border-line bg-surface p-4 sm:hidden">
           <summary className="cursor-pointer text-sm font-medium text-ink">Details</summary>
           <div className="mt-3">
-            <TitleFactsPanes facets={facets} working={working} problems={problems} terms={terms} />
+            <TitleFactsPanes
+              facets={facets}
+              working={working}
+              problems={problems}
+              terms={terms}
+              places={places}
+            />
           </div>
         </details>
       )}
@@ -1137,6 +1167,50 @@ function LanguageNames({ langs }: { langs: Language[] }) {
   // Plain text and no chip. The comment where this pane is mounted says why, and says
   // which half of the old reason stopped being true -- the index grew a language filter.
   return <p className="text-sm text-ink">{names.join(", ")}</p>;
+}
+
+// --- filming locations -----------------------------------------------------
+
+/**
+ * How many places the rail shows before offering the rest.
+ *
+ * EIGHT, from the data rather than from taste. Measured 2026-09-14 over the 27,207 titles
+ * Wikidata gives a location: median 1, p95 4, p99 8, max 44. So 99% of titles show every place
+ * they have, and the 1% that would turn the rail into a wall of chips (a 44-place travelogue)
+ * show their eight best -- sites first, most-filmed first -- behind one control.
+ */
+const PLACES_SHOWN = 8;
+
+/**
+ * Where the title was filmed, each place a link once it has somewhere to go.
+ *
+ * `PlaceChip` owns the link rule; this component decides only two things: an empty list draws
+ * no section at all, and a long one is folded at `PLACES_SHOWN`.
+ */
+function FilmingLocations({ places }: { places: readonly Place[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (places.length === 0) return null;
+  const shown = expanded ? places : places.slice(0, PLACES_SHOWN);
+  const hidden = places.length - shown.length;
+  return (
+    <Pane heading="Filming locations" variant="rail">
+      <div className="flex flex-wrap gap-1.5">
+        {shown.map((p) => (
+          <PlaceChip key={p.id} place={p} />
+        ))}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="rounded-full px-2 py-0.5 text-xs text-muted underline decoration-line underline-offset-4
+                       hover:text-ink hover:decoration-muted"
+          >
+            {hidden} more
+          </button>
+        )}
+      </div>
+    </Pane>
+  );
 }
 
 // --- keywords --------------------------------------------------------------

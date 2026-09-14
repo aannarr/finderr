@@ -26,6 +26,7 @@ import { BREAKOUT_META, BREAKOUT_SHELF } from "./breakout";
 import type { Config } from "./config";
 import { ENGLISH_LANG, type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
 import type { PersonCredit } from "./facets";
+import { type Place, placeById, placesForTitle } from "./filming-locations";
 // The builder is already in the server's module graph (`src/server/index.ts` imports
 // `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
 // the point: the live fallback and the build must compute the same answer or the precompute
@@ -847,6 +848,13 @@ export class SearchEngine {
   readonly hasEpisodes: boolean;
 
   /**
+   * `place` + `title_place`. False on an index built before the filming-location stage, and
+   * then every title has no places and every place page is a 404 until the next rebuild --
+   * which the stage stamp orders at boot.
+   */
+  readonly hasPlaces: boolean;
+
+  /**
    * The engine's OWN handle, for the one caller that needs raw SQL.
    *
    * `findConnections` walks the cast graph with SQL this class does not expose, and the
@@ -936,6 +944,7 @@ export class SearchEngine {
     this.hasBrowseCounts = has("browseCounts");
     this.hasRankIndexes = has("rankIndexes");
     this.hasEpisodes = has("episodes");
+    this.hasPlaces = has("places");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
     );
@@ -1939,6 +1948,45 @@ export class SearchEngine {
       .query("select lang from title_lang where title_rowid = ? and lang != '' order by lang")
       .all(row.rowid_) as { lang: string }[];
     return { lang: langs.map((l) => l.lang), country: row.country ? row.country.split(",") : [] };
+  }
+
+  /**
+   * Where one title was filmed, sites before areas. `[]` on an index without the stage.
+   *
+   * An empty list rather than `null` here, unlike `originOf`: nothing downstream reasons about
+   * the absence -- the title pane simply draws no section -- so the distinction would be a
+   * branch every caller writes and none of them uses.
+   */
+  placesOf(tconst: string): Place[] {
+    return this.hasPlaces ? placesForTitle(this.db, tconst) : [];
+  }
+
+  /**
+   * One place and a page of the titles filmed there, most-voted first.
+   *
+   * ONE ordered seek on `ix_place_titles`: the page of rowids is chosen from the index's own
+   * `votes` copy and only then joined to `title` for the rows it draws. `rowid` breaks a vote
+   * tie so paging is stable -- a title must never appear on two pages or on none.
+   *
+   * `total` is the place's precomputed count, never a live `count(*)`.
+   */
+  placePage(
+    id: number,
+    opts: { limit: number; offset: number },
+  ): { place: Place; titles: TitleRow[]; total: number } | null {
+    if (!this.hasPlaces) return null;
+    const place = placeById(this.db, id);
+    if (!place) return null;
+    const titles = this.db
+      .query(
+        `select ${titleCols(this.hasTitleLang, "t.")}
+           from title_place tp join title t on t.rowid_ = tp.title_rowid
+          where tp.place_id = ?
+          order by tp.votes desc, tp.title_rowid
+          limit ? offset ?`,
+      )
+      .all(id, opts.limit, opts.offset) as TitleRow[];
+    return { place, titles, total: place.titles };
   }
 
   /**
