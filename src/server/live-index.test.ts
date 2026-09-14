@@ -263,7 +263,11 @@ describe("LiveIndex", () => {
     console.log(
       `retired-engine reads: ${seen.threw} threw, ${seen.answered} served the pre-promote file, 0 served the promoted one`,
     );
-  });
+    // Its own budget, because 40 real promotes are disk work and bun's 5 s default is not.
+    // Measured 2026-09-14 in `oven/bun:1.4.0` linux/arm64: 9.1-9.9 s with every read correct,
+    // so the default killed a PASSING test -- which is what red-gated CI on `4a2dc0f`. Well
+    // under a second on the M1 Max, which is why it never showed there.
+  }, 60_000);
 
   test("the swap closes the outgoing engine, so a stale reference fails EVERY time", () => {
     const path = freshPath("retire");
