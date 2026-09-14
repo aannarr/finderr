@@ -510,7 +510,9 @@ export function PlayerStage(props: PlayerStageProps) {
           <PlayerStats
             session={session}
             readBrowserStats={props.readBrowserStats}
-            className="rounded-xl bg-black/75 px-3 py-2 text-left ring-1 ring-white/10 backdrop-blur"
+            // 90%, not the comp's 75%: measured over a saturated frame in Chromium, 75% let the
+            // colours behind bleed through the numbers.
+            className="rounded-xl bg-black/90 px-3 py-2 text-left ring-1 ring-white/10 backdrop-blur"
           />
         </div>
       ) : null}

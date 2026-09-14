@@ -295,7 +295,12 @@ export function usePlayHere({
   }, [state.kind]);
 
   async function play(target: PlayTarget = {}) {
-    if (document.activeElement instanceof HTMLElement) returnFocus.current = document.activeElement;
+    const captureFocus = () => {
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+        returnFocus.current = document.activeElement;
+      }
+    };
+    captureFocus();
     setState({ kind: "starting" });
     setFatal(null);
     try {
@@ -306,6 +311,12 @@ export function usePlayHere({
         episode: target.episode ?? episode,
         wantSubtitles: true,
       });
+      /*
+        Captured AGAIN once the request is back. Started from `PlayMenu`'s item, focus was on a
+        menu row that unmounts as the menu closes -- and the menu then hands focus to its trigger.
+        The trigger is the control a keyboard reader returns to; the vanished row is nowhere.
+      */
+      if (!returnFocus.current?.isConnected) captureFocus();
       setState({ kind: "playing", session: s, target });
     } catch (err) {
       const message =
