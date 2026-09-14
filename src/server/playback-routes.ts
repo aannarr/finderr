@@ -72,6 +72,12 @@ import { type Session, SessionRefused, type TranscodeSessions } from "../lib/tra
  */
 const FIRST_SEGMENT_WAIT_MS = 5_000;
 
+/**
+ * How many leading segments of each first-frame rendition the start request tries to have on
+ * disk before it answers: the first eighteen seconds, still inside `FIRST_SEGMENT_WAIT_MS`.
+ */
+const WARM_SEGMENTS = 3;
+
 export interface PlaybackDeps {
   store: Store;
   sessions: TranscodeSessions;
@@ -251,9 +257,13 @@ async function producedFile(
  * the production carries on and the client's own request joins it.
  */
 async function warmFirstSegments(sessions: TranscodeSessions, session: Session): Promise<void> {
-  const first = tracksBlockingFirstFrame(session.tracks).map((track) =>
-    sessions.segmentPath(session.id, track, 0),
-  );
+  // In order within a rendition, so each request aims the read-ahead one further and later ones
+  // JOIN a run already started instead of spending a second back-pressure slot.
+  const first = tracksBlockingFirstFrame(session.tracks).map(async (track) => {
+    for (let index = 0; index < WARM_SEGMENTS; index++) {
+      if ((await sessions.segmentPath(session.id, track, index)) === null) return;
+    }
+  });
   await Promise.race([Promise.all(first), Bun.sleep(FIRST_SEGMENT_WAIT_MS)]);
 }
 

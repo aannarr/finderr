@@ -31,6 +31,8 @@ import {
   HARD_TTL_MS,
   IDLE_REAP_MS,
   MAX_SESSIONS,
+  READ_AHEAD,
+  READ_AHEAD_EXPENSIVE,
   SEGMENT_CACHE,
   SEGMENT_CONCURRENCY,
   type SegmentRun,
@@ -170,8 +172,14 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * Read-ahead OFF for every test outside its own block: those tests pin what ONE request costs,
+ * and a background run beside it would turn each spawn count into a statement about read-ahead.
+ */
+const NO_READ_AHEAD = { cheap: 0, expensive: 0 };
+
 const mgr = (spawn: Spawner, onRun?: (run: SegmentRun) => void) =>
-  new TranscodeSessions({ root, spawn, now, ffmpegPath: "ffmpeg", onRun });
+  new TranscodeSessions({ root, spawn, now, ffmpegPath: "ffmpeg", onRun, readAhead: NO_READ_AHEAD });
 const opts = (over: Partial<Parameters<TranscodeSessions["start"]>[0]> = {}) => ({
   input: "/plex/a.mkv",
   plan: CHEAP,
@@ -561,6 +569,7 @@ describe("producing a segment on demand", () => {
       now,
       ffmpegPath: "ffmpeg",
       log: (l) => lines.push(l),
+      readAhead: NO_READ_AHEAD,
     });
     const s = m.start(opts());
 
@@ -661,6 +670,182 @@ describe("producing a segment on demand", () => {
     clock += IDLE_REAP_MS - 1;
 
     expect(m.reap()).toBe(0);
+  });
+});
+
+/** Let fake runs resolve, publish, and the background loop take its next step. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Bun.sleep(1);
+}
+
+/** The segment indices spawned for one rendition, in spawn order. */
+function spawnedFor(spawned: string[][], track: Track): number[] {
+  return spawned
+    .map(outputOf)
+    .filter((o) => o.media === segmentFileName(track, o.index))
+    .map((o) => o.index);
+}
+
+/**
+ * Finish every held run exactly once, including runs started because an earlier one finished,
+ * until nothing new is spawned. Each `finish` is called once: calling one twice would write
+ * into a working directory its first completion already removed.
+ */
+async function drain(f: ReturnType<typeof fakeFfmpeg>): Promise<void> {
+  let done = 0;
+  while (done < f.finish.length) {
+    for (; done < f.finish.length; done++) f.finish[done]?.();
+    await settle();
+  }
+}
+
+describe("read-ahead", () => {
+  const ahead = (spawn: Spawner) => new TranscodeSessions({ root, spawn, now, ffmpegPath: "ffmpeg" });
+
+  test("a request for segment N produces the next READ_AHEAD of that rendition, and nothing else", async () => {
+    const f = fakeFfmpeg();
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 5);
+    await settle();
+
+    const expected = Array.from({ length: READ_AHEAD + 1 }, (_, i) => 5 + i);
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual(expected);
+    // Only the rendition a player fetched: audio was never asked for, so it costs nothing.
+    expect(spawnedFor(f.spawned, AUDIO)).toEqual([]);
+    for (const i of expected) expect(existsSync(join(s.dir, segmentFileName(VIDEO, i)))).toBe(true);
+  });
+
+  test("the player's next request is served from disk and moves the window one on", async () => {
+    const f = fakeFfmpeg();
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 5);
+    await settle();
+    await m.segmentPath(s.id, VIDEO, 6);
+    await settle();
+
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6, 7, 8, 9]);
+  });
+
+  /** A request for a segment the loop is making joins that run rather than starting another. */
+  test("a request for a segment read-ahead is still producing joins it", async () => {
+    const f = fakeFfmpeg({ manual: true });
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    const first = m.segmentPath(s.id, VIDEO, 5);
+    const next = m.segmentPath(s.id, VIDEO, 6);
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6]);
+
+    await drain(f);
+    expect(await first).not.toBeNull();
+    expect(await next).not.toBeNull();
+    expect(spawnedFor(f.spawned, VIDEO).filter((i) => i === 6)).toHaveLength(1);
+  });
+
+  /**
+   * THE SEEK. Segments queued for the old position must never START; the one already running
+   * is left to finish (see `runAhead` for why it is not killed).
+   */
+  test("a seek abandons the old run-ahead and reads ahead from the new position", async () => {
+    const f = fakeFfmpeg({ manual: true });
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    const before = m.segmentPath(s.id, VIDEO, 5);
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6]);
+    const after = m.segmentPath(s.id, VIDEO, 40);
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6, 40]);
+
+    await drain(f);
+    await Promise.all([before, after]);
+
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6, 40, 41, 42, 43]);
+  });
+
+  /**
+   * BACK-PRESSURE SURVIVES. Read-ahead spends no request slot, so it neither refuses the
+   * request it runs beside nor opens a way round the ceiling for a scrub storm.
+   */
+  test("read-ahead takes no back-pressure slot, and a scrub storm is still refused", async () => {
+    const f = fakeFfmpeg({ manual: true });
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    const held = [];
+    for (let i = 0; i < SEGMENT_CONCURRENCY; i++) held.push(m.segmentPath(s.id, VIDEO, i * 20));
+    // Every request slot is spent AND a background run is in flight beside them.
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([0, 1, ...held.slice(1).map((_, i) => (i + 1) * 20)]);
+
+    expect(await m.segmentPath(s.id, VIDEO, 50)).toBeNull();
+
+    await drain(f);
+    for (const path of await Promise.all(held)) expect(path).not.toBeNull();
+  });
+
+  test("read-ahead stops at the end of the timeline", async () => {
+    const f = fakeFfmpeg();
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 58);
+    await settle();
+    await m.segmentPath(s.id, VIDEO, 59);
+    await settle();
+
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([58, 59]);
+  });
+
+  test("a session that re-encodes video reads ahead READ_AHEAD_EXPENSIVE", async () => {
+    const f = fakeFfmpeg();
+    const m = ahead(f.spawn);
+    const s = m.start(opts({ plan: EXPENSIVE }));
+
+    await m.segmentPath(s.id, VIDEO, 5);
+    await settle();
+
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual(
+      Array.from({ length: READ_AHEAD_EXPENSIVE + 1 }, (_, i) => 5 + i),
+    );
+  });
+
+  /**
+   * EVICTION IS BY LANDING ORDER, and a viewer returning to a segment that landed long ago must
+   * not have it dropped by the read-ahead run that lands behind it.
+   */
+  test("the segment being read and its window are never evicted", async () => {
+    const m = ahead(fakeFfmpeg().spawn);
+    const s = m.start(opts());
+
+    for (const i of [5, 40, 20]) {
+      await m.segmentPath(s.id, VIDEO, i);
+      await settle();
+    }
+    // Cache full: 7 and 8 are now the OLDEST landings on disk.
+    expect(existsSync(join(s.dir, segmentFileName(VIDEO, 7)))).toBe(true);
+
+    await m.segmentPath(s.id, VIDEO, 7);
+    await settle();
+
+    for (const kept of [7, 8, 9, 10])
+      expect(existsSync(join(s.dir, segmentFileName(VIDEO, kept)))).toBe(true);
+    expect(existsSync(join(s.dir, segmentFileName(VIDEO, 40)))).toBe(false);
+  });
+
+  test("stopping a session ends its read-ahead", async () => {
+    const f = fakeFfmpeg({ manual: true });
+    const m = ahead(f.spawn);
+    const s = m.start(opts());
+
+    const pending = m.segmentPath(s.id, VIDEO, 5);
+    m.stop(s.id);
+    await drain(f);
+    await pending;
+
+    expect(spawnedFor(f.spawned, VIDEO)).toEqual([5, 6]);
   });
 });
 
