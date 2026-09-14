@@ -79,6 +79,7 @@ import {
   VOLUME_STEP,
   volumeFeedback,
 } from "../../lib/player-controls";
+import { loadPrefs, safeStorage, savePrefs } from "../../lib/player-prefs";
 import { SUBTITLES_OFF, type TrackChoices } from "../../lib/player-tracks";
 import { realTimers, type Timers } from "../../lib/timers";
 import { useVideoState } from "../../lib/use-video-state";
@@ -194,6 +195,22 @@ export function PlayerStage(props: PlayerStageProps) {
     };
   }, []);
 
+  /*
+    The remembered volume, mute and speed, applied the moment there is an element.
+
+    `defaultPlaybackRate` as well as `playbackRate`: attaching a source runs the media element's
+    load algorithm, which resets `playbackRate` to the DEFAULT -- so setting only the live rate
+    would be undone by hls.js attaching a moment later.
+  */
+  useEffect(() => {
+    if (!video) return;
+    const prefs = loadPrefs(safeStorage());
+    video.volume = prefs.volume;
+    video.muted = prefs.muted;
+    video.defaultPlaybackRate = prefs.rate;
+    video.playbackRate = prefs.rate;
+  }, [video]);
+
   /* ---- actions ---- */
 
   const flash = useCallback(
@@ -227,16 +244,20 @@ export function PlayerStage(props: PlayerStageProps) {
     const next = clampVolume(volume);
     video.volume = next;
     video.muted = next === 0;
+    savePrefs(safeStorage(), { volume: next, muted: video.muted });
     flash(volumeFeedback(next, video.muted));
   };
   const toggleMute = () => {
     if (!video) return;
     video.muted = !video.muted;
+    savePrefs(safeStorage(), { muted: video.muted });
     flash(volumeFeedback(video.volume, video.muted));
   };
   const setRate = (rate: number) => {
     if (!video) return;
+    video.defaultPlaybackRate = rate;
     video.playbackRate = rate;
+    savePrefs(safeStorage(), { rate });
     flash(speedFeedback(rate));
   };
   const selectSubtitles = (index: number) => {

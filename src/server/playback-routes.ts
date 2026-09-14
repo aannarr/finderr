@@ -425,8 +425,9 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
     const produced = await producedFile(deps.sessions, id, name);
     if (!produced) {
       // Either the session is gone, the name is not one we produce, or ffmpeg could not make
-      // this segment right now. 404 rather than 5xx: hls.js retries a 404 and gives up on a
-      // 500, and every one of those states is one a retry can get out of.
+      // this segment right now. 404 rather than 5xx: the client's endpoint ring reads a 5xx as a
+      // dead PATH and rotates away, and every one of these states is one a retry can get out of.
+      // hls.js does NOT retry a 4xx by itself -- `web/src/lib/hls-retry.ts` teaches it this one.
       return bad("not ready", 404);
     }
     // Zero-copy: the bytes never enter the JS heap. This is the one route that runs

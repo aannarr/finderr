@@ -27,12 +27,12 @@ describe("what the player is offering", () => {
   test("every rendition becomes an entry, numbered as the player numbers them", () => {
     const choices = readTrackChoices(DUBBED);
     expect(choices.audio).toEqual([
-      { index: 0, name: "English" },
-      { index: 1, name: "Japanese" },
+      { index: 0, name: "English", lang: "eng" },
+      { index: 1, name: "Japanese", lang: "jpn" },
     ]);
     expect(choices.subtitles).toEqual([
-      { index: 0, name: "English (forced)" },
-      { index: 1, name: "German" },
+      { index: 0, name: "English (forced)", lang: "eng" },
+      { index: 1, name: "German", lang: "ger" },
     ]);
   });
 

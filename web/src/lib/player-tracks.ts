@@ -23,6 +23,12 @@ export interface TrackOption {
   index: number;
   /** The `NAME` the master playlist gave it. */
   name: string;
+  /**
+   * The `LANGUAGE` the master playlist gave it, when it gave one. What a remembered language
+   * preference (`player-prefs.ts`) is matched against -- never the display name, which the
+   * server builds for humans and which changes with a container title.
+   */
+  lang?: string;
 }
 
 /** What `subtitleTrack` is set to for "no subtitles". hls.js's own sentinel. */
@@ -83,8 +89,12 @@ export function readTrackChoices(player: TrackReader): TrackChoices {
  * entry is never blank: a menu row with no text cannot be chosen deliberately.
  */
 function optionsOf(renditions: readonly PlayerRendition[], noun: string): TrackOption[] {
-  return renditions.map((rendition, index) => ({
-    index,
-    name: rendition.name?.trim() || rendition.lang?.trim() || `${noun} ${index + 1}`,
-  }));
+  return renditions.map((rendition, index) => {
+    const lang = rendition.lang?.trim();
+    return {
+      index,
+      name: rendition.name?.trim() || lang || `${noun} ${index + 1}`,
+      ...(lang ? { lang } : {}),
+    };
+  });
 }

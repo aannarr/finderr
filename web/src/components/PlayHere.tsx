@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { candidateLoader } from "../lib/hls-candidate-loader";
+import { retryingNotReady } from "../lib/hls-retry";
 import {
   electStreamEndpoint,
   hasNativeHls,
@@ -34,7 +35,15 @@ import {
   stopPlayback,
 } from "../lib/playback-api";
 import { type BrowserStats, PlaybackTelemetry, watchPolicyViolations } from "../lib/playback-telemetry";
-import { readTrackChoices, type TrackChoices, type TrackReader } from "../lib/player-tracks";
+import {
+  loadPrefs,
+  preferredAudio,
+  preferredSubtitle,
+  safeStorage,
+  savePrefs,
+  trackLanguage,
+} from "../lib/player-prefs";
+import { readTrackChoices, SUBTITLES_OFF, type TrackChoices, type TrackReader } from "../lib/player-tracks";
 import { PRIMARY_BUTTON } from "../lib/ui";
 import { PlayerStage } from "./player/PlayerStage";
 
@@ -183,13 +192,14 @@ export function usePlayHere({
 
       const hls = new Hls({
         loader: candidateLoader(Hls.DefaultConfig.loader, ring, location.origin),
-        // A fragment request is what CAUSES its segment to be made, so the retries cover a
-        // production the server declined right now (back-pressure answers 404, which hls.js
-        // retries) and the timeout covers PRODUCING a segment, not just transferring it.
-        manifestLoadingMaxRetry: 8,
-        levelLoadingMaxRetry: 8,
-        fragLoadingMaxRetry: 8,
-        fragLoadingTimeOut: 60_000,
+        // A fragment request is what CAUSES its segment to be made, and a production the server
+        // declined right now answers 404. hls.js never retries a 4xx on its own -- see
+        // `hls-retry.ts` -- so every policy is taught that a 404 means "not yet". Built from the
+        // library's defaults, which keeps its 120 s segment budget: the old `fragLoadingTimeOut:
+        // 60_000` here, meant to cover PRODUCING a segment, had quietly halved it.
+        manifestLoadPolicy: retryingNotReady(Hls.DefaultConfig.manifestLoadPolicy),
+        playlistLoadPolicy: retryingNotReady(Hls.DefaultConfig.playlistLoadPolicy),
+        fragLoadPolicy: retryingNotReady(Hls.DefaultConfig.fragLoadPolicy),
         // Sixty seconds ahead rather than the default thirty: on the LAN the fetch is cheap, the
         // server's read-ahead is already producing past the playhead, and a deeper buffer is
         // what rides out a busy array (STREAM epic, the warm-up stall card).
@@ -200,7 +210,29 @@ export function usePlayHere({
       hlsRef.current = hls;
       // THE MENUS ARE FED BY EVENTS, because the renditions do not exist until the manifest is
       // parsed, and the switch events keep the control agreeing with the player.
-      const syncTracks = () => setTracks(readTrackChoices(hls));
+      /*
+        THE REMEMBERED LANGUAGES ARE APPLIED ONCE PER KIND, the first time that kind has tracks.
+        Once, because after that a switch is the viewer's own and re-applying on every
+        `*_TRACK_SWITCH` would fight them; per kind, because subtitles can arrive in a later
+        `SUBTITLE_TRACKS_UPDATED` than the audio. Written straight to hls.js rather than through
+        `selectSubtitles`, so applying a preference does not also re-save it.
+      */
+      const applied = { audio: false, subtitles: false };
+      const syncTracks = () => {
+        const offered = readTrackChoices(hls);
+        const prefs = loadPrefs(safeStorage());
+        if (!applied.subtitles && offered.subtitles.length > 0) {
+          applied.subtitles = true;
+          const pick = preferredSubtitle(offered, prefs.subtitleLanguage);
+          if (pick !== null && pick !== offered.subtitlesAt) hls.subtitleTrack = pick;
+        }
+        if (!applied.audio && offered.audio.length > 1) {
+          applied.audio = true;
+          const pick = preferredAudio(offered, prefs.audioLanguage);
+          if (pick !== null && pick !== offered.audioAt) hls.audioTrack = pick;
+        }
+        setTracks(readTrackChoices(hls));
+      };
       hls.on(Hls.Events.MANIFEST_PARSED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncTracks);
@@ -249,25 +281,36 @@ export function usePlayHere({
     setTracks((was) => (was ? { ...was, ...at } : was));
   }, []);
 
+  // The viewer's own switches are what get remembered -- by LANGUAGE, so the choice carries to a
+  // title whose tracks are numbered differently. Read through a ref so the callbacks stay stable.
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+
   const selectAudio = useCallback(
-    (index: number) =>
+    (index: number) => {
+      const lang = trackLanguage(tracksRef.current?.audio, index);
+      if (lang) savePrefs(safeStorage(), { audioLanguage: lang });
       selectTrack(
         (player) => {
           player.audioTrack = index;
         },
         { audioAt: index },
-      ),
+      );
+    },
     [selectTrack],
   );
 
   const selectSubtitles = useCallback(
-    (index: number) =>
+    (index: number) => {
+      const lang = index === SUBTITLES_OFF ? "off" : trackLanguage(tracksRef.current?.subtitles, index);
+      if (lang) savePrefs(safeStorage(), { subtitleLanguage: lang });
       selectTrack(
         (player) => {
           player.subtitleTrack = index;
         },
         { subtitlesAt: index },
-      ),
+      );
+    },
     [selectTrack],
   );
 
