@@ -40,6 +40,20 @@ export function episodesLabel(n: number): string {
   return n === 1 ? "1 episode" : `${n.toLocaleString()} episodes`;
 }
 
+/**
+ * What stands behind a series' place, or null when the series named it itself.
+ *
+ * Episodes win when both are known -- "3 episodes" is the finer grain -- and a place reached only
+ * through a season says "1 season" rather than nothing, which read as the show's own home until
+ * the round-4 review of 2026-09-14.
+ */
+export function partsLabel(parts: { episodes: number; seasons: number }): string | null {
+  if (parts.episodes > 0) return episodesLabel(parts.episodes);
+  if (parts.seasons > 0)
+    return parts.seasons === 1 ? "1 season" : `${parts.seasons.toLocaleString()} seasons`;
+  return null;
+}
+
 /** The place's own Wikidata page: the source of every fact on ours, and where to correct one. */
 export function placeWikidataUrl(place: Pick<Place, "id">): string {
   return `https://www.wikidata.org/wiki/${place.id}`;

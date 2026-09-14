@@ -114,8 +114,8 @@ const SLIM_INDEXES: readonly string[] = [
   // payload column, `episodes`, stays too: dropping it turns the page's offset walk from
   // skipping index entries into fetching a table row per skipped title, which is an ordering
   // question rather than this profile's.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
-  "create index ix_title_place on title_place(title_rowid, place_id, episodes)",
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes, seasons)",
+  "create index ix_title_place on title_place(title_rowid, place_id, episodes, seasons)",
   // Unchanged: two key columns, the episode seek and the place it names. Nothing to drop.
   "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ];
@@ -179,8 +179,8 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   "create index ix_ep_parent on episode(parent, season, number)",
   // Unchanged for the reason `slim` gives, `episodes` included: it is payload by position, but
   // the page reads it inside an OFFSET walk, where a non-covering index fetches every skipped row.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
-  "create index ix_title_place on title_place(title_rowid, place_id, episodes)",
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes, seasons)",
+  "create index ix_title_place on title_place(title_rowid, place_id, episodes, seasons)",
   // Unchanged for the reason `slim` gives: both columns are key.
   "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ];

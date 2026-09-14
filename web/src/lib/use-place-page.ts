@@ -118,7 +118,7 @@ export function usePlacePage(id: string, pageSize: number, source: PlacePageSour
           ? {
               ...next,
               titles: [...prev.titles, ...next.titles],
-              episodes: { ...prev.episodes, ...next.episodes },
+              parts: { ...prev.parts, ...next.parts },
             }
           : prev,
       );

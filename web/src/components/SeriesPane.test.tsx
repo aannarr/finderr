@@ -102,11 +102,34 @@ describe("where an episode was filmed", () => {
       />,
       ["/place/$id"],
     );
-    expect(html).toContain("Filmed at");
-    expect(html).toContain("Gaztelugatxe");
     expect(html).toContain('href="/place/Q1722"');
+    /*
+      Sites and areas are two groups with two prepositions. One prefix taken from the first
+      place read "Filmed at Snæfellsjökull, Lokrum" for Game of Thrones S2E5, and Lokrum is an
+      island -- found by the round-4 review of 2026-09-14.
+    */
+    expect(html.replace(/<[^>]+>/g, "")).toContain("Filmed at Gaztelugatxe; in Dubrovnik");
     // One episode has places, so one line -- The Kingsroad's row says nothing.
     expect(html.match(/Filmed at/g)).toHaveLength(1);
+  });
+
+  test("an episode filmed only in areas says 'in', not 'at'", async () => {
+    const html = await renderInRouter(
+      <SeriesPane
+        facets={ready}
+        working={["seasons", "episodes"]}
+        initialTab="episodes"
+        episodePlaces={[
+          {
+            season: 1,
+            number: 1,
+            places: [place({ id: "Q1722", label: "Dubrovnik", kind: "area", titles: 6 })],
+          },
+        ]}
+      />,
+      ["/place/$id"],
+    );
+    expect(html.replace(/<[^>]+>/g, "")).toContain("Filmed in Dubrovnik");
   });
 
   test("with no places every row draws exactly as before", async () => {

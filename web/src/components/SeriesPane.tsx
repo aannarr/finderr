@@ -616,26 +616,44 @@ function EpisodeRow({
         )}
         {/*
           One quiet line under the synopsis: a fact about THIS episode a reader may follow, not
-          the row's subject. `PlaceLink` owns link versus plain text, exactly as in the rail, and
-          the prefix is the place page's own ("Filmed at" a site, "Filmed in" an area).
+          the row's subject. `PlaceLink` owns link versus plain text, exactly as in the rail.
         */}
-        {places && places.length > 0 && (
-          <p className="mt-0.5 text-xs text-muted">
-            {placePrefix(places[0])}{" "}
-            {places.map((p, i) => (
-              <Fragment key={p.id}>
-                {i > 0 && ", "}
-                <PlaceLink place={p} />
-              </Fragment>
-            ))}
-          </p>
-        )}
+        {places && places.length > 0 && <EpisodePlacesLine places={places} />}
       </div>
       <EpisodeStandingMark
         standing={standing}
         onRequest={onRequest && (() => onRequest(episode.season, episode.number))}
       />
     </li>
+  );
+}
+
+/**
+ * "Filmed at Snæfellsjökull; in Lokrum" -- sites and areas as two groups, each with its own
+ * preposition, because one prefix taken from the first place read "at" for an island. Found by
+ * the round-4 review of 2026-09-14.
+ *
+ * The server already orders sites before areas and, within each, places with a page first, so
+ * this only splits the list where the kind changes. The prefix is the place page's own.
+ */
+function EpisodePlacesLine({ places }: { places: readonly Place[] }) {
+  const groups = [places.filter((p) => p.kind !== "area"), places.filter((p) => p.kind === "area")].filter(
+    (g) => g.length > 0,
+  );
+  return (
+    <p className="mt-0.5 text-xs text-muted">
+      {groups.map((group, g) => (
+        <Fragment key={group[0].id}>
+          {g === 0 ? placePrefix(group[0]) : "; in"}{" "}
+          {group.map((p, i) => (
+            <Fragment key={p.id}>
+              {i > 0 && ", "}
+              <PlaceLink place={p} />
+            </Fragment>
+          ))}
+        </Fragment>
+      ))}
+    </p>
   );
 }
 

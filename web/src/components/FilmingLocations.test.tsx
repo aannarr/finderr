@@ -24,6 +24,7 @@ const place = (i: number): TitlePlace => ({
   lon: 2,
   titles: 3,
   episodes: 0,
+  seasons: 0,
 });
 
 /** No facet answered and nobody owes one, so every facet pane is hidden and only places remain. */
@@ -104,6 +105,12 @@ describe("TitleFactsCard filming locations", () => {
     expect(screen.getByText("2 episodes")).toBeTruthy();
     expect(screen.getByText("1 episode")).toBeTruthy();
     expect(screen.queryAllByText(/episode/)).toHaveLength(2);
+  });
+
+  // Round-4 review, 2026-09-14: a place only a season named used to carry no note at all.
+  test("a place only a season named says so", async () => {
+    await renderFacts([{ ...place(0), seasons: 1 }, place(1)]);
+    expect(screen.getByText("1 season")).toBeTruthy();
   });
 
   test("exactly eight places need no control", async () => {

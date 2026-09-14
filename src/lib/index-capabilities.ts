@@ -159,6 +159,7 @@ export const INDEX_CAPABILITIES = {
   places: (db) =>
     tableExists(db, "place") &&
     columnExists(db, "title_place", "episodes") &&
+    columnExists(db, "title_place", "seasons") &&
     tableExists(db, "episode_place"),
   // `satisfies` rather than an annotation, the shape `INDEX_STAGES` uses: the keys stay
   // literal, so `INDEX_CAPABILITIES.people` is a function rather than a possibly-undefined

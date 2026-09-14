@@ -13,7 +13,7 @@ const page = (id: string, shown: number, total: number): PlacePage => ({
   place: { id, label: id, kind: "site", studio: false, country: null, lat: null, lon: null, titles: total },
   titles: Array.from({ length: shown }, (_, i) => ({ tconst: `tt${id}${i}` })) as unknown as Title[],
   total,
-  episodes: {},
+  parts: {},
 });
 
 /** Q1 is not cached and its request never settles until `release`; Q2 is already cached. */

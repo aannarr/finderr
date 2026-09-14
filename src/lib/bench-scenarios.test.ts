@@ -77,6 +77,7 @@ describe("place scenarios", () => {
     nconst: "nm1",
     genre: "Drama",
     place: { id: 65, titles: 1377 },
+    placeSeries: "tt0092455",
   };
   const placeIds = (f: BenchFixtures) =>
     scenarios(f)
@@ -86,6 +87,14 @@ describe("place scenarios", () => {
   test("run when the index has a place to measure", () => {
     expect(placeIds(base)).toEqual(["place.page", "place.pageLast"]);
     expect(placeScenariosSkipped(base)).toBeNull();
+  });
+
+  // Round-4 review, 2026-09-14: the series page's episode-places read ran unbenched.
+  test("a series page's episode places are measured, and said to be skipped when nothing carries one", () => {
+    expect(scenarios(base).some((s) => s.id === "title.episodePlaces")).toBe(true);
+    const none = { ...base, placeSeries: null };
+    expect(scenarios(none).some((s) => s.id === "title.episodePlaces")).toBe(false);
+    expect(placeScenariosSkipped(none)).toMatch(/title\.episodePlaces: NOT MEASURED/);
   });
 
   // The last page's offset comes from the fixture, so the timed scenario is ONE page read.

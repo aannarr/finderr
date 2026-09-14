@@ -54,6 +54,7 @@ import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../li
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
 import {
   type BenchFixtures,
+  busiestEpisodePlaceSeries,
   busiestPlace,
   countRows,
   placeScenariosSkipped,
@@ -500,6 +501,7 @@ async function main(): Promise<void> {
     nconst: person,
     genre: engine.topGenres(1)[0] ?? "Drama",
     place: busiestPlace(engine),
+    placeSeries: busiestEpisodePlaceSeries(engine),
   };
   console.log(
     `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre} place=${fixtures.place === null ? "none" : `Q${fixtures.place.id}`}`,

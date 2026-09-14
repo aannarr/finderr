@@ -47,12 +47,12 @@ const site = (id: number, label: string, extra: Partial<PlaceSourceRow> = {}): P
 const E = "http://www.wikidata.org/entity/";
 
 /** A pair as the source hands it over. `work` is the Wikidata item that carried the statement. */
-const pair = (imdb: string, place: number, work = 1, episode = false): TitlePlaceSourceRow => ({
-  imdb,
-  place,
-  work,
-  episode,
-});
+const pair = (
+  imdb: string,
+  place: number,
+  work = 1,
+  via: TitlePlaceSourceRow["via"] = "title",
+): TitlePlaceSourceRow => ({ imdb, place, work, via });
 
 describe("parseCsvRecord", () => {
   test("a quoted field keeps its commas and un-doubles its quotes", () => {
@@ -142,9 +142,9 @@ describe("parseTitlePlacesCsv", () => {
       ].join("\n"),
     );
     expect(rows).toEqual([
-      { imdb: "tt0060196", place: 10400, work: 1, episode: false },
-      { imdb: "tt0944947", place: 10400, work: 2, episode: true },
-      { imdb: "tt0944947", place: 10400, work: 3, episode: false },
+      { imdb: "tt0060196", place: 10400, work: 1, via: "title" },
+      { imdb: "tt0944947", place: 10400, work: 2, via: "episode" },
+      { imdb: "tt0944947", place: 10400, work: 3, via: "season" },
     ]);
   });
 });
@@ -247,17 +247,47 @@ describe("loadPlaces", () => {
       [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
       [
         pair("tt9001", 100, 9001), // an episode, by its own IMDb id
-        pair("tt2", 100, 9001, true), // the SAME episode, by P179
+        pair("tt2", 100, 9001, "episode"), // the SAME episode, by P179
         pair("tt9002", 100, 9002),
-        pair("tt2", 100, 9003, true), // an episode with no IMDb id of its own
-        pair("tt2", 100, 8000), // a season -- rolled up, not an episode
+        pair("tt2", 100, 9003, "episode"), // an episode with no IMDb id of its own
+        pair("tt2", 100, 8000, "season"), // a season -- rolled up, not an episode
         pair("tt2", 200, 2), // the series' own statement
       ],
     );
-    const rows = db.query("select place_id, episodes from title_place order by place_id").all();
+    const rows = db.query("select place_id, episodes, seasons from title_place order by place_id").all();
     expect(rows).toEqual([
-      { place_id: 100, episodes: 3 },
-      { place_id: 200, episodes: 0 },
+      { place_id: 100, episodes: 3, seasons: 1 },
+      { place_id: 200, episodes: 0, seasons: 0 },
+    ]);
+  });
+
+  /*
+    Found by the round-4 review of 2026-09-14, two ways one note lied. A series that names a
+    place ITSELF and also has episodes naming it read "2 episodes", hiding the stronger claim;
+    and a place reached only through a SEASON carried no note, reading as the show's own home.
+  */
+  test("a place the series claims itself carries no count; a season-only place counts its season", () => {
+    const db = indexWith([{ tconst: "tt2", votes: 5 }]);
+    db.run("insert into episode (tconst, parent, season, number) values ('tt9001', 'tt2', 1, 1)");
+    loadPlaces(
+      db,
+      [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
+      [
+        pair("tt2", 100, 2), // the series' own statement
+        pair("tt9001", 100, 9001), // and an episode by its own id
+        pair("tt2", 100, 9002, "episode"), // and another by P179
+        pair("tt2", 100, 8000, "season"), // and a season
+        pair("tt2", 200, 8000, "season"), // a place ONLY a season names
+      ],
+    );
+    expect(db.query("select place_id, episodes, seasons from title_place order by place_id").all()).toEqual([
+      { place_id: 100, episodes: 0, seasons: 0 },
+      { place_id: 200, episodes: 0, seasons: 1 },
+    ]);
+    for (const sql of INDEXES.places) db.run(sql);
+    expect(placesForTitle(db, "tt2").map((p) => [p.label, p.episodes, p.seasons])).toEqual([
+      ["Gaztelugatxe", 0, 1],
+      ["Dubrovnik", 0, 0],
     ]);
   });
 
@@ -277,9 +307,9 @@ describe("loadPlaces", () => {
       [
         pair("tt9001", 100, 9001),
         pair("tt9001", 200, 9001),
-        pair("tt2", 100, 9001, true), // the same episode by P179 -- no second row
+        pair("tt2", 100, 9001, "episode"), // the same episode by P179 -- no second row
         pair("tt9002", 100, 9002),
-        pair("tt2", 100, 9003, true), // no IMDb id of its own -- nothing to hang a row on
+        pair("tt2", 100, 9003, "episode"), // no IMDb id of its own -- nothing to hang a row on
         pair("tt2", 200, 2), // the series' own statement
       ],
     );

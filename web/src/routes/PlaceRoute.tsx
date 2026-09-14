@@ -21,8 +21,8 @@ import { useKeyAction } from "../components/Kbd";
 import { PageHeading } from "../components/PageHeading";
 import type { CardNote } from "../components/TitleCard";
 import { TitleGrid } from "../components/TitleGrid";
-import { subscribeTitleState, type Title, titleStateVersion } from "../lib/api";
-import { episodesLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "../lib/place-links";
+import { type PlaceParts, subscribeTitleState, type Title, titleStateVersion } from "../lib/api";
+import { partsLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
 import { usePlacePage } from "../lib/use-place-page";
 
@@ -45,12 +45,11 @@ function countryName(code: string | null): string | null {
  * A title that made the statement of itself gets no note. Built once per `episodes` map and
  * memo'd by the caller, because `TitleGrid` is memo'd and `noteFor` must be a stable reference.
  */
-function episodeNoteFor(episodes: Record<string, number>): (t: Title) => CardNote | null {
+function episodeNoteFor(parts: Record<string, PlaceParts>): (t: Title) => CardNote | null {
   return (t) => {
-    const n = episodes[t.tconst];
-    if (!n) return null;
-    const text = episodesLabel(n);
-    return { text, full: `Filmed here in ${text}` };
+    const p = parts[t.tconst];
+    const text = p ? partsLabel(p) : null;
+    return text ? { text, full: `Filmed here in ${text}` } : null;
   };
 }
 
@@ -62,8 +61,8 @@ export function PlaceRoute() {
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
   const loadMoreKey = useKeyAction("loadMore", () => void loadMore(), canLoadMore);
-  const episodes = page?.episodes;
-  const noteFor = useMemo(() => (episodes ? episodeNoteFor(episodes) : undefined), [episodes]);
+  const parts = page?.parts;
+  const noteFor = useMemo(() => (parts ? episodeNoteFor(parts) : undefined), [parts]);
 
   if (error) {
     /*

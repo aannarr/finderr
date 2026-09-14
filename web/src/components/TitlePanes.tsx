@@ -78,7 +78,7 @@ import type {
   Trailer,
   WatchProviders,
 } from "../lib/facets";
-import { episodesLabel } from "../lib/place-links";
+import { partsLabel } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
@@ -1236,9 +1236,7 @@ function FilmingLocations({ places }: { places: readonly TitlePlace[] }) {
               home until you learn one episode went there. Muted and small: it qualifies the
               link, it is not a second destination.
             */}
-            {p.episodes > 0 && (
-              <span className="ml-1.5 text-xs tabular-nums text-muted">{episodesLabel(p.episodes)}</span>
-            )}
+            {partsLabel(p) && <span className="ml-1.5 text-xs tabular-nums text-muted">{partsLabel(p)}</span>}
           </li>
         ))}
       </ul>

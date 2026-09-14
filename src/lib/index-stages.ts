@@ -375,7 +375,9 @@ export const INDEX_STAGES = {
   // v5: `ix_title_place` covers `episodes`. An index shape change is NOT drift -- measured
   // 2026-09-14, a build after the DDL edit alone said "no drift detected ... nothing to do" and
   // the old two-column index stayed -- so a new covering column needs a stamp like any stage.
-  places: () => JSON.stringify({ v: 5 }),
+  // v6: city-states kept (Singapore, Monaco), Great Britain and Ireland dropped as captions, and
+  // `title_place` gained `seasons` with both counts zeroed when the title claims a place itself.
+  places: () => JSON.stringify({ v: 6 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

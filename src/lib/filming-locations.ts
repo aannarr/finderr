@@ -84,7 +84,9 @@ SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?co
         || EXISTS { ?place wdt:P31/wdt:P279* wd:Q23442 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q23397 })
        && (!EXISTS { ?place wdt:P31/wdt:P279* wd:Q811979 } || EXISTS { ?place wdt:P1082 ?pop }) AS ?ar)
   BIND(((EXISTS { ?place wdt:P31/wdt:P279* wd:Q6256 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3624078 })
-        && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q3336843 })
+        && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q3336843 }
+        && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 })
+       || ?place = wd:Q23666 || ?place = wd:Q22890
        || ((EXISTS { ?place wdt:P31/wdt:P279* wd:Q5107 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q9430 }
             || EXISTS { ?place wdt:P31/wdt:P279* wd:Q165 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3024240 })
            && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 }) AS ?cy)
@@ -157,13 +159,16 @@ create table place (
 -- ordered seek on ix_place_titles that never reaches into title until the page of rows is
 -- already chosen -- the same trade title_genre and title_lang make.
 --
--- episodes is how many distinct EPISODES of a series carried the statement, 0 when the title
--- said it of itself. It is what separates "the series was shot here" from "one episode was".
+-- episodes and seasons are how many distinct EPISODES and SEASONS of a series carried the
+-- statement -- and both are 0 whenever the title ALSO said it of itself, because then the place
+-- is the show's own and "2 episodes" would hide the stronger claim. They are what separates "the
+-- series was shot here" from "one episode was" and "one season was".
 create table title_place (
   place_id    integer not null,
   title_rowid integer not null,
   votes       integer not null default 0,
-  episodes    integer not null default 0
+  episodes    integer not null default 0,
+  seasons     integer not null default 0
 );
 
 -- One row per (episode, place), for an episode whose OWN IMDb id the index holds in episode.
@@ -181,11 +186,11 @@ export const PLACE_INDEXES = [
   // The place page: one place, most-voted first, rowid as the stable tie-break. `episodes`
   // rides along so the page's subquery stays COVERING: an OFFSET walk must skip index entries,
   // not fetch a table row for every title it skips.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes, seasons)",
   // The title pane: every place one title was filmed at.
-  // `episodes` rides along so the title pane's read stays COVERING: without it the v4 bench
-  // (M1 Max, 2026-09-14) showed `SEARCH tp USING INDEX`, a table row fetched per place.
-  "create index ix_title_place on title_place(title_rowid, place_id, episodes)",
+  // `episodes, seasons` ride along so the title pane's read stays COVERING: without them the v4
+  // bench (M1 Max, 2026-09-14) showed `SEARCH tp USING INDEX`, a table row fetched per place.
+  "create index ix_title_place on title_place(title_rowid, place_id, episodes, seasons)",
   // An episode row's places: `ix_ep_parent` finds the series' episodes, this finds each one's.
   "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ] as const;
@@ -209,8 +214,11 @@ export interface TitlePlaceSourceRow {
   place: number;
   /** The Wikidata item that made the statement, as an integer: the film, or one episode. */
   work: number;
-  /** Reached the series through an episode's P179. A season's statement is not an episode. */
-  episode: boolean;
+  /**
+   * Which branch found it: the item's own IMDb id, or an episode's or a season's P179 to its
+   * series. An episode that has its own id arrives as `title` and is recognised by the loader.
+   */
+  via: "title" | "episode" | "season";
 }
 
 /**
@@ -235,12 +243,19 @@ export interface Place {
 /**
  * A place as ONE title's list carries it.
  *
- * `episodes` is how many of that title's episodes were filmed there, and 0 when the title said
- * it of itself. It lives on the pair, never on `Place`, because the same Dubrovnik is "2
- * episodes" of Game of Thrones and a whole film of something else.
+ * `episodes` and `seasons` are how many of that title's episodes and seasons were filmed there,
+ * and both 0 when the title said it of itself. They live on the pair, never on `Place`, because
+ * the same Dubrovnik is "2 episodes" of Game of Thrones and a whole film of something else.
  */
-export interface TitlePlace extends Place {
+export interface TitlePlace extends Place, PlaceParts {}
+
+/**
+ * How much of a series stands behind its place: the episodes and seasons that named it. Both 0
+ * when the title named the place itself, which is the ordinary case for a film.
+ */
+export interface PlaceParts {
   episodes: number;
+  seasons: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +391,7 @@ export function parseTitlePlacesCsv(text: string): TitlePlaceSourceRow[] {
     const place = placeIdOfIri(placeIri);
     const work = placeIdOfIri(workIri);
     if (place === null || work === null) continue;
-    out.push({ imdb, place, work, episode: via === "episode" });
+    out.push({ imdb, place, work, via: via as TitlePlaceSourceRow["via"] });
   }
   return out;
 }
@@ -410,7 +425,7 @@ export function loadPlaces(
   const insPlace = db.prepare("insert or ignore into place_in values (?,?,?,?,?,?,?)");
   db.run(
     `create temporary table tp_in (
-       imdb text not null, place integer not null, work integer not null, episode integer not null)`,
+       imdb text not null, place integer not null, work integer not null, via text not null)`,
   );
   const insPair = db.prepare("insert into tp_in values (?,?,?,?)");
   db.transaction(() => {
@@ -418,7 +433,7 @@ export function loadPlaces(
       if (p.kind === "caption") continue;
       insPlace.run(p.id, p.label, p.lat, p.lon, p.country, p.kind, p.studio ? 1 : 0);
     }
-    for (const r of pairs) insPair.run(r.imdb, r.place, r.work, r.episode ? 1 : 0);
+    for (const r of pairs) insPair.run(r.imdb, r.place, r.work, r.via);
   })();
 
   /*
@@ -429,12 +444,23 @@ export function loadPlaces(
     `episodes` counts distinct WORKS that are episodes: a row is an episode's when its IMDb id
     resolved through the episode table, or when the query reached the series through an
     episode's P179. The same episode arriving both ways has one work id, so it counts once.
+    `seasons` counts season works the same way.
+
+    BOTH ARE ZERO WHEN THE TITLE ALSO CLAIMED THE PLACE ITSELF -- a row that named the title's
+    own id and did not resolve to an episode. Otherwise a series filmed in Dubrovnik that also
+    credits two episodes there read "2 episodes", which hides the stronger claim. And a place
+    reached only through a SEASON used to carry no note at all, reading as the show's home.
+    Both found by the round-4 review of 2026-09-14.
+
     `max(t.votes)` is `t.votes` -- one title per group -- spelled as an aggregate.
   */
   db.run(`
-    insert into title_place (place_id, title_rowid, votes, episodes)
+    insert into title_place (place_id, title_rowid, votes, episodes, seasons)
     select i.place, t.rowid_, max(t.votes),
-           count(distinct case when e.tconst is not null or i.episode = 1 then i.work end)
+           case when max(e.tconst is null and i.via = 'title') = 1 then 0
+                else count(distinct case when e.tconst is not null or i.via = 'episode' then i.work end) end,
+           case when max(e.tconst is null and i.via = 'title') = 1 then 0
+                else count(distinct case when i.via = 'season' then i.work end) end
       from tp_in i
       left join episode e on e.tconst = i.imdb
       join title t on t.tconst = coalesce(e.parent, i.imdb)
@@ -520,14 +546,14 @@ function toPlace(r: PlaceDbRow): Place {
 export function placesForTitle(db: Database, tconst: string): TitlePlace[] {
   const rows = db
     .query(
-      `select ${PLACE_COLS}, tp.episodes
+      `select ${PLACE_COLS}, tp.episodes, tp.seasons
          from title_place tp join place p on p.id = tp.place_id
         where tp.title_rowid = (select rowid_ from title where tconst = ?)
         order by p.titles >= ${MIN_TERM_TITLES} desc, case p.kind when 'site' then 0 else 1 end,
                  p.titles desc, p.label`,
     )
-    .all(tconst) as (PlaceDbRow & { episodes: number })[];
-  return rows.map((r) => ({ ...toPlace(r), episodes: r.episodes }));
+    .all(tconst) as (PlaceDbRow & { episodes: number; seasons: number })[];
+  return rows.map((r) => ({ ...toPlace(r), episodes: r.episodes, seasons: r.seasons }));
 }
 
 /** One episode's places, at the INDEX's `(season, number)`. */
@@ -543,7 +569,8 @@ export interface EpisodePlaces {
  * `ix_ep_parent` finds the series' episodes and `ix_episode_place` each one's places, so it is
  * two seeks and a primary-key read per place. The coordinates are the INDEX's, which disagree
  * with the provider's for some shows -- the handler aligns them the way it aligns scores.
- * Sites before areas within an episode, then the label, the order the title pane uses.
+ * Sites before areas within an episode -- the row prints them as two groups -- and within each,
+ * places WITH a page first, the rule the title pane follows, then the most-filmed and the label.
  */
 export function episodePlacesForSeries(db: Database, parent: string): EpisodePlaces[] {
   const rows = db
@@ -553,7 +580,8 @@ export function episodePlacesForSeries(db: Database, parent: string): EpisodePla
          join episode_place ep on ep.episode_rowid = e.rowid_
          join place p on p.id = ep.place_id
         where e.parent = ?
-        order by e.season, e.number, case p.kind when 'site' then 0 else 1 end, p.label`,
+        order by e.season, e.number, case p.kind when 'site' then 0 else 1 end,
+                 p.titles >= ${MIN_TERM_TITLES} desc, p.titles desc, p.label`,
     )
     .all(parent) as (PlaceDbRow & { season: number; number: number })[];
   const out: EpisodePlaces[] = [];

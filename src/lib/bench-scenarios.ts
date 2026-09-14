@@ -65,6 +65,28 @@ export interface BenchFixtures {
    * before the filming-location stage.
    */
   place: { id: number; titles: number } | null;
+  /**
+   * The series whose episodes carry the most places, so a series page's episode places are
+   * measured at their heaviest. `null` when no episode in the index carries a place.
+   */
+  placeSeries: string | null;
+}
+
+/**
+ * The series whose episodes name the most places, or `null`.
+ *
+ * Guarded on `hasPlaces` for the reason `busiestPlace` is. The group-by walks `episode_place`
+ * once, which is a fixture cost at bench start and never a render cost.
+ */
+export function busiestEpisodePlaceSeries(engine: SearchEngine): string | null {
+  if (!engine.hasPlaces) return null;
+  const row = engine.rawDb
+    .query(
+      `select e.parent from episode_place ep join episode e on e.rowid_ = ep.episode_rowid
+        group by e.parent order by count(*) desc limit 1`,
+    )
+    .get() as { parent: string } | undefined;
+  return row?.parent ?? null;
 }
 
 /**
@@ -156,11 +178,33 @@ function placeScenarios(place: BenchFixtures["place"]): Scenario[] {
   ];
 }
 
-/** The line a runner prints when the place scenarios were left out, or null when they ran. */
+/**
+ * Every read a series page makes for its episode places: the places themselves, and the
+ * episode list `episodePlacesFor` aligns them through. Found unbenched by the round-4 review
+ * of 2026-09-14 -- it runs on every series view.
+ */
+function episodePlaceScenarios(series: string | null): Scenario[] {
+  if (series === null) return [];
+  return [
+    {
+      id: "title.episodePlaces",
+      surface: "title",
+      args: `series=${series}`,
+      run: (e) => {
+        e.episodesOf(series);
+        return e.episodePlacesOf(series);
+      },
+    },
+  ];
+}
+
+/** The line a runner prints when place scenarios were left out, or null when they all ran. */
 export function placeScenariosSkipped(f: BenchFixtures): string | null {
-  return f.place === null
-    ? "# place.page, place.pageLast: NOT MEASURED -- this index has no place tables"
-    : null;
+  if (f.place === null)
+    return "# place.page, place.pageLast, title.episodePlaces: NOT MEASURED -- no place tables";
+  if (f.placeSeries === null)
+    return "# title.episodePlaces: NOT MEASURED -- no episode in this index carries a place";
+  return null;
 }
 
 export function scenarios(f: BenchFixtures): Scenario[] {
@@ -174,6 +218,7 @@ export function scenarios(f: BenchFixtures): Scenario[] {
       run: (e) => e.placesOf(f.tconst),
     },
     ...placeScenarios(f.place),
+    ...episodePlaceScenarios(f.placeSeries),
 
     // --- the front page. Every one of these runs before anything is on screen.
     { id: "discover.topGenres", surface: "discover", args: "limit=6", run: (e) => e.topGenres(6) },

@@ -16,7 +16,7 @@
  * caller who asked for a million would be an answer to a question nobody asked.
  */
 
-import { type Place, parsePlaceId } from "../lib/filming-locations";
+import { type Place, type PlaceParts, parsePlaceId } from "../lib/filming-locations";
 import { boundedInt, LIMITS, refusalMessage } from "../lib/input-guards";
 import type { TitleRow } from "../lib/search";
 import { perSession } from "./cache-policy";
@@ -30,7 +30,7 @@ export interface PlacePageSource {
   placePage(
     id: number,
     opts: { limit: number; offset: number },
-  ): { place: Place; titles: TitleRow[]; total: number; episodes: Record<string, number> } | null;
+  ): { place: Place; titles: TitleRow[]; total: number; parts: Record<string, PlaceParts> } | null;
 }
 
 const notFound = () => json({ error: "unknown place" }, { status: 404 });
@@ -52,7 +52,7 @@ export function placeResponse(
   const page = engine.placePage(id, { limit: limit.value ?? PLACE_PAGE_DEFAULT, offset: offset.value ?? 0 });
   if (!page) return notFound();
   return json(
-    { place: page.place, titles: decorate(page.titles), total: page.total, episodes: page.episodes },
+    { place: page.place, titles: decorate(page.titles), total: page.total, parts: page.parts },
     // The index only changes at a rebuild, so this is as cacheable as a browse page.
     { cache: perSession(300) },
   );

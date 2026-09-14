@@ -29,7 +29,7 @@ function harness(held: number[] = [10400]) {
       calls.push({ id, ...opts });
       if (!held.includes(id)) return null;
       const titles = [{ tconst: "tt0060196" }, { tconst: "tt0944947" }] as TitleRow[];
-      return { place: ALMERIA, titles, total: 3, episodes: { tt0944947: 2 } };
+      return { place: ALMERIA, titles, total: 3, parts: { tt0944947: { episodes: 2, seasons: 0 } } };
     },
   };
   const decorate = (rows: TitleRow[]) => rows.map((r) => ({ ...r, decorated: true }));
@@ -48,7 +48,7 @@ describe("/api/place/:id", () => {
     expect(calls).toEqual([{ id: 10400, limit: PLACE_PAGE_DEFAULT, offset: 0 }]);
     expect(body.place).toEqual(ALMERIA);
     expect(body.total).toBe(3);
-    expect(body.episodes).toEqual({ tt0944947: 2 });
+    expect(body.parts).toEqual({ tt0944947: { episodes: 2, seasons: 0 } });
     expect(body.titles).toEqual([
       { tconst: "tt0060196", decorated: true },
       { tconst: "tt0944947", decorated: true },

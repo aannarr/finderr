@@ -15,7 +15,7 @@ import type { AwardMark } from "../../../src/lib/award-marks";
 import { AWARDS } from "../../../src/lib/award-registry";
 import type { CollectionSummary } from "../../../src/lib/collections";
 import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
-import type { EpisodePlaces, Place, TitlePlace } from "../../../src/lib/filming-locations";
+import type { EpisodePlaces, Place, PlaceParts, TitlePlace } from "../../../src/lib/filming-locations";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
@@ -920,7 +920,7 @@ export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise
 
 // --- places ----------------------------------------------------------------
 
-export type { EpisodePlaces, Place, TitlePlace };
+export type { EpisodePlaces, Place, PlaceParts, TitlePlace };
 
 /** One filming location and a page of what was filmed there, most-voted first. */
 export interface PlacePage {
@@ -928,8 +928,8 @@ export interface PlacePage {
   titles: Title[];
   /** Every title we hold for this place, which `titles` may be a page of. */
   total: number;
-  /** Series tconst -> how many of its episodes were filmed here. Absent for a title that said it of itself. */
-  episodes: Record<string, number>;
+  /** Series tconst -> how many of its episodes and seasons were filmed here. Absent for a title that said it of itself. */
+  parts: Record<string, PlaceParts>;
 }
 
 const placeCache = new Cache<PlacePage>(100);
@@ -948,14 +948,14 @@ export function cachedPlaceRun(id: string, limit: number): PlacePage | undefined
   const first = placeCache.get(placeKey(id, limit, 0));
   if (!first) return undefined;
   const titles = [...first.titles];
-  const episodes = { ...first.episodes };
+  const parts = { ...first.parts };
   for (let offset = limit; ; offset += limit) {
     const page = placeCache.get(placeKey(id, limit, offset));
     if (!page) break;
     titles.push(...page.titles);
-    Object.assign(episodes, page.episodes);
+    Object.assign(parts, page.parts);
   }
-  return { ...first, titles, episodes };
+  return { ...first, titles, parts };
 }
 
 export async function getPlace(id: string, opts: { limit: number; offset: number }): Promise<PlacePage> {

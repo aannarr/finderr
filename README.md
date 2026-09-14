@@ -1347,7 +1347,8 @@ Every line here is a real limitation. It is not a roadmap.
 - Filming locations are only as complete as Wikidata. Most titles outside the popular head
   have none, and an episode's count covers only the episodes Wikidata records a location for
   -- a series shot in Dubrovnik for a whole season can read "2 episodes" if only two were
-  entered. An episode's location is filed under its series, never shown on the episode itself.
+  entered. An episode shows its own places only when Wikidata gives the episode an IMDb id this
+  index holds; the rest count toward the series alone.
 - Plex must have matched the item with the modern agent. finderr finds a title in Plex by
   the `imdb://` guid the new agent writes. A library scanned by a legacy agent
   (`com.plexapp.agents.*`) matches nothing, and `/api/health` shows `plex.items: 0` beside

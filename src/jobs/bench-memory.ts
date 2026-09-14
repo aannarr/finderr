@@ -49,6 +49,7 @@ import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import {
   type BenchFixtures,
+  busiestEpisodePlaceSeries,
   busiestPlace,
   countRows,
   placeScenariosSkipped,
@@ -238,6 +239,7 @@ async function main(): Promise<void> {
     nconst: fx.personPage("nm0000138") ? "nm0000138" : "nm0000199",
     genre: fx.topGenres(1)[0] ?? "Drama",
     place: busiestPlace(fx),
+    placeSeries: busiestEpisodePlaceSeries(fx),
   };
   fx.close();
   const skipped = placeScenariosSkipped(fixtures);

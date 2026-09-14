@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { episodesLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "./place-links";
+import { episodesLabel, partsLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "./place-links";
 
 describe("placeMapUrl", () => {
   test("OpenStreetMap, lat before lon, and nothing without a coordinate", () => {
@@ -23,6 +23,15 @@ describe("episodesLabel", () => {
     expect(episodesLabel(1)).toBe("1 episode");
     expect(episodesLabel(178)).toBe("178 episodes");
     expect(episodesLabel(1200)).toBe(`${(1200).toLocaleString()} episodes`);
+  });
+});
+
+describe("partsLabel", () => {
+  test("episodes are the finer grain, a season-only place says its season, and a series' own claim says nothing", () => {
+    expect(partsLabel({ episodes: 2, seasons: 1 })).toBe("2 episodes");
+    expect(partsLabel({ episodes: 0, seasons: 1 })).toBe("1 season");
+    expect(partsLabel({ episodes: 0, seasons: 3 })).toBe("3 seasons");
+    expect(partsLabel({ episodes: 0, seasons: 0 })).toBeNull();
   });
 });
 
