@@ -201,7 +201,20 @@ export function PersonHeader({
         <PersonPortrait name={person.name} image={image ?? null} />
       </div>
       <div className="min-w-0">
-        <h2 className="text-xl font-semibold tracking-tight">{person.name}</h2>
+        {/*
+          Share sits on the name's own line, right after it: it acts on this person, so it
+          belongs beside them rather than at the far edge of a full-width header. Renders
+          nothing where the browser has no share sheet, leaving the name exactly as it was.
+        */}
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-semibold tracking-tight">{person.name}</h2>
+          <ShareButton
+            name={person.name}
+            shareAs={person.name}
+            path={`/person/${person.nconst}`}
+            className="h-7 px-2"
+          />
+        </div>
         <p className="mt-0.5 text-xs text-muted">
           {years && <span className="tabular-nums">{years}</span>}
           {years && " · "}
@@ -215,17 +228,6 @@ export function PersonHeader({
         */}
         <PersonAwardsSummary awards={awards ?? null} />
       </div>
-      {/*
-        Pushed to the far edge of the header, level with the name: it acts on the whole page,
-        and nothing about the person should sit between a reader and it. Renders nothing where
-        the browser has no share sheet.
-      */}
-      <ShareButton
-        name={person.name}
-        shareAs={person.name}
-        path={`/person/${person.nconst}`}
-        className="ml-auto h-9"
-      />
     </div>
   );
 }

@@ -37,6 +37,28 @@ export const PRIMARY_BUTTON = `block w-full rounded-lg bg-accent px-3 py-2 text-
    text-black transition-opacity hover:opacity-90 active:opacity-75`;
 
 /**
+ * The colours of an outlined control at rest and under the pointer: a hairline and muted text,
+ * both going to ink on hover. `SECONDARY_BUTTON`, the watchlist toggle and the share button had
+ * each written it out, which is the line this file draws.
+ *
+ * Colours only -- no width, padding or border style -- because the three differ in SHAPE (a
+ * full-width block, a card-footer square, a header square) and agree on nothing else.
+ *
+ * Declared ABOVE `SECONDARY_BUTTON` on purpose: that string interpolates this one at module
+ * load, and a `const` read before its declaration is a ReferenceError that takes down every
+ * screen importing this file.
+ */
+export const OUTLINE_TONE = "border-line text-muted hover:border-ink hover:text-ink";
+
+/**
+ * The keyboard focus ring, in the accent, because DESIGN.md names the accent as the focus ring.
+ * A control without it falls back to the browser's own grey outline, which on this palette reads
+ * as a rendering glitch rather than as "you are here".
+ */
+export const FOCUS_RING =
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+
+/**
  * A real action that is not the point: the same size as `PRIMARY_BUTTON`, with an outline
  * instead of a fill.
  *
@@ -45,5 +67,5 @@ export const PRIMARY_BUTTON = `block w-full rounded-lg bg-accent px-3 py-2 text-
  * purpose: these are not smaller offers, they are quieter ones, and shrinking them would
  * make them harder to hit rather than easier to ignore.
  */
-export const SECONDARY_BUTTON = `block w-full rounded-lg border border-line px-3 py-2 text-center text-sm
-   text-muted transition hover:border-ink hover:text-ink`;
+export const SECONDARY_BUTTON = `block w-full rounded-lg border px-3 py-2 text-center text-sm transition
+   ${OUTLINE_TONE} ${FOCUS_RING}`;

@@ -69,9 +69,32 @@ describe("pressing it", () => {
 
     await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Share Heat" })).not.toHaveProperty("disabled", true),
+      expect(screen.getByRole("button", { name: "Share Heat" }).getAttribute("aria-disabled")).toBe("false"),
     );
     expect(screen.queryByText("Sharing Heat")).toBeNull();
+  });
+
+  test("a real failure tells the reader in one plain sentence, never the browser's message", async () => {
+    const share = mock<ShareFn>(async () => {
+      throw new DOMException(
+        "Failed to execute 'share' on 'Navigator': Must be handling a user gesture",
+        "NotAllowedError",
+      );
+    });
+    giveNavigatorShare(share);
+    const warn = mock(() => {});
+    const realWarn = console.warn;
+    console.warn = warn;
+    try {
+      mount();
+      fireEvent.click(screen.getByRole("button", { name: "Share Heat" }));
+
+      await waitFor(() => expect(screen.getByText("Couldn't open the share sheet.")).toBeTruthy());
+      expect(screen.queryByText(/Must be handling a user gesture/)).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      console.warn = realWarn;
+    }
   });
 });
 

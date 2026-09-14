@@ -23,6 +23,7 @@ import { Bookmark } from "lucide-react";
 import { useState } from "react";
 import type { Title } from "../lib/api";
 import { useToasts } from "../lib/toasts";
+import { FOCUS_RING, OUTLINE_TONE } from "../lib/ui";
 import { saveTitle, unsaveTitle, useIsSaved } from "../lib/watchlist";
 
 /** `icon` is a square beside a card's Request button; `block` fills the title page's column. */
@@ -40,8 +41,8 @@ const SHELL: Record<SaveTone, string> = {
  * the outlines apart.
  */
 const STATE_CLASS: Record<"saved" | "unsaved", string> = {
-  saved: "border-accent/60 text-accent",
-  unsaved: "border-line text-muted hover:border-ink hover:text-ink",
+  saved: `border-accent/60 text-accent ${FOCUS_RING}`,
+  unsaved: `${OUTLINE_TONE} ${FOCUS_RING}`,
 };
 
 export function SaveToWatchlist({ title, tone = "icon" }: { title: Title; tone?: SaveTone }) {
