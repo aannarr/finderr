@@ -419,6 +419,12 @@ function toPlace(r: PlaceDbRow): Place {
  * one-title site ahead of every city, so the rail's fold at eight kept the dead ends on screen
  * and hid Paris, Tokyo and Tangier behind "Show all". The threshold is `MIN_TERM_TITLES`, the
  * same constant the browser's link rule reads, so "has a page" means one thing on both sides.
+ *
+ * The plan ends in `USE TEMP B-TREE FOR ORDER BY`, and `bench-index` flags it as a sort. It is
+ * a sort of ONE title's places, found by a covering seek on `ix_title_place` -- at most 44 rows
+ * on the 2026-09-14 build -- so it never grows with the corpus. Measured on that build, M1 Max:
+ * `title.places` 0.01 ms p50, 0.04 ms p99, 1.6 ms cold. No index can serve this order anyway:
+ * two of its keys live on `place`, not on the table the seek walks.
  */
 export function placesForTitle(db: Database, tconst: string): Place[] {
   const rows = db
