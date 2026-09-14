@@ -622,6 +622,22 @@ describe("ffmpegArgs turns a plan into the flags that make ONE segment of ONE re
   });
 
   /**
+   * REGRESSION, tt2209764 on Safari 2026-09-14: `media element error 4` with every segment a 200.
+   * ffmpeg writes a copied HEVC stream as `hev1` unless told otherwise, and Safari's MSE only
+   * decodes `hvc1` -- so the browser said yes to HEVC and then refused the init segment.
+   */
+  test("a copied HEVC stream is tagged hvc1, the sample entry every HEVC-capable browser accepts", () => {
+    const hevc = planPlayback(parseProbe(RANGO), CHROME_HEVC);
+    expect(hevc.video).toMatchObject({ action: "copy", codec: "hevc" });
+    expect(args(hevc).join(" ")).toContain("-c:v copy -tag:v hvc1");
+  });
+
+  test("a copied h264 stream keeps its own tag", () => {
+    const h264 = { ...plan, video: plan.video ? { ...plan.video, codec: "h264" } : null };
+    expect(args(h264)).not.toContain("-tag:v");
+  });
+
+  /**
    * ONE RUN, ONE TRACK, and the refusal is explicit rather than implied by the `-map`. A
    * rendition that quietly picked up the other stream would be a muxed segment again -- which
    * is the thing that drops ~60 ms of sound at every boundary.

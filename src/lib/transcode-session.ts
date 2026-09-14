@@ -305,7 +305,15 @@ export interface SpawnedProcess {
    * recording a zero that would read as "transcoding is free".
    */
   cpuMillis?(): number | null;
+  /**
+   * Everything the child wrote to stderr, once it has exited. Optional for the same reason as
+   * `cpuMillis`: a fake that has nothing to say says so by not having it.
+   */
+  stderr?(): Promise<string>;
 }
+
+/** How much of a failed run's stderr reaches the log. ffmpeg's cause is on its LAST lines. */
+const STDERR_TAIL_CHARS = 600;
 
 /** Injected so tests need no ffmpeg. */
 export type Spawner = (argv: string[]) => SpawnedProcess;
@@ -325,9 +333,14 @@ export type Spawner = (argv: string[]) => SpawnedProcess;
  */
 const defaultSpawner: Spawner = (argv) => {
   const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "pipe" });
+  // Drained from the moment of spawn, not read after the exit: a pipe nobody reads fills at
+  // 64 KB and then BLOCKS the child, which a run spewing decode errors would reach -- and the
+  // segment timeout would then kill a run that was only waiting for us.
+  const stderr = new Response(proc.stderr).text().catch(() => "");
   return {
     kill: (s) => proc.kill(s),
     exited: proc.exited,
+    stderr: () => stderr,
     cpuMillis: () => {
       const micros = proc.resourceUsage()?.cpuTime?.total;
       return micros === undefined ? null : Number(micros) / 1000;
@@ -357,6 +370,11 @@ export interface ManagerOpts {
    * `TranscodeMeter.burned`.
    */
   onRun?: (run: SegmentRun) => void;
+  /**
+   * Where a FAILED run is reported, with its exit code and the tail of ffmpeg's stderr. A run
+   * that succeeds says nothing: one line per segment would bury the one line that matters.
+   */
+  log?: (line: string) => void;
 }
 
 /** One rendition's bookkeeping: what it is making, and what it has already made. */
@@ -652,9 +670,38 @@ export class TranscodeSessions {
       this.charge(session.id, proc);
     }
 
+    if (code !== 0) await this.reportFailure(session.id, track, index, code, proc);
     const published = code === 0 && this.publish(state, track, work, index);
     rmSync(work, { recursive: true, force: true });
     return published;
+  }
+
+  /**
+   * Say that a run failed, and what ffmpeg said about it.
+   *
+   * Without this a failing title leaves no trace on the box at all -- the player sees a 404 and
+   * the container log is silent. Like `charge`, it must never be able to fail the segment path.
+   */
+  private async reportFailure(
+    sessionId: string,
+    track: Track,
+    index: number,
+    code: number,
+    proc: SpawnedProcess,
+  ): Promise<void> {
+    const log = this.opts.log;
+    if (!log) return;
+    try {
+      const said = ((await proc.stderr?.()) ?? "")
+        .trim()
+        .slice(-STDERR_TAIL_CHARS)
+        .replace(/\s*\n\s*/g, " | ");
+      log(
+        `playback: ffmpeg exit ${code} for ${sessionId} ${trackKey(track)} segment ${index}${said ? `: ${said}` : ""}`,
+      );
+    } catch {
+      // A diagnostic is never worth an exception on the segment path.
+    }
   }
 
   /**

@@ -263,6 +263,7 @@ const transcodeMeter = new TranscodeMeter();
 const transcodeSessions = new TranscodeSessions({
   root: p.transcode,
   onRun: (run) => transcodeMeter.burned(run.sessionId, run.cpuMs),
+  log,
 });
 // Both halves of "a previous life of this process left something behind": the signal
 // handlers stop transcodes on the way out, and the sweep clears what a kill -9 could not.

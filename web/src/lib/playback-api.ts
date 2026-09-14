@@ -22,12 +22,18 @@ import { realTimers, type Timers } from "./timers";
  * fMP4 for every probe, because fMP4 is what the server packages -- asking whether the
  * browser can play HEVC in some other container would answer a question nobody is going to
  * act on. The codec strings are the RFC 6381 forms browsers actually match on: `avc1.42E01E`
- * is baseline h264, `hvc1.1.6.L93.B0` is main-profile HEVC, and Safari matches `hvc1` where
- * some builds only match `hev1`, so both are tried.
+ * is baseline h264 and `hvc1.1.6.L93.B0` is main-profile HEVC.
+ *
+ * > [!CAUTION] HEVC IS ASKED AS `hvc1` ONLY, because `hvc1` is what the server writes
+ * > This used to accept `hev1` as well. Safari answers no to `hev1` and yes to `hvc1`, Chromium
+ * > answers yes to both, and a copied stream arrived as `hev1` -- so Safari claimed HEVC, was
+ * > sent an `hev1` init segment and died with `media element error 4` (tt2209764, 2026-09-14).
+ * > The probe has to ask about the exact thing that will be delivered: `ffmpegArgs` tags every
+ * > copied HEVC stream `hvc1`, and a browser that cannot take that must get a transcode.
  */
 const VIDEO_PROBES: { codec: string; mimes: string[] }[] = [
   { codec: "h264", mimes: ['video/mp4; codecs="avc1.42E01E"', 'video/mp4; codecs="avc1.4D401F"'] },
-  { codec: "hevc", mimes: ['video/mp4; codecs="hvc1.1.6.L93.B0"', 'video/mp4; codecs="hev1.1.6.L93.B0"'] },
+  { codec: "hevc", mimes: ['video/mp4; codecs="hvc1.1.6.L93.B0"'] },
   { codec: "av1", mimes: ['video/mp4; codecs="av01.0.05M.08"'] },
   { codec: "vp9", mimes: ['video/mp4; codecs="vp09.00.10.08"'] },
 ];

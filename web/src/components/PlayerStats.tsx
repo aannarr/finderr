@@ -20,20 +20,34 @@
  *
  * Every value renders through `Facts`, the two-column list `/admin` health uses: a screen of
  * small measurements somebody is scanning for the one they came for. An unknown is a dash and
- * never `undefined`, and never a confident zero.
+ * never `undefined`, and never a confident zero. The words themselves come from
+ * `playback-report.ts`, which the Copy button reads too, so a pasted report says what the
+ * screen said.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type Budget,
+  detectCapabilities,
   fetchSessions,
-  type PlaybackDiagnostics,
   type PlaybackSession,
   type SessionsReport,
 } from "../lib/playback-api";
+import {
+  audioLine,
+  bitrate,
+  bytes,
+  clock,
+  fragmentLine,
+  playbackReport,
+  segmentLine,
+  text,
+  UNKNOWN,
+  videoLine,
+} from "../lib/playback-report";
 import { type BrowserStats, readyStateLabel } from "../lib/playback-telemetry";
 import { isExpensivePlan, planSummary } from "../lib/playback-types";
-import { count, formatBytes, uptime } from "../lib/units";
+import { uptime } from "../lib/units";
 import { Fact, Facts } from "./Facts";
 
 /** The browser half is a property read; a second is fast enough to watch a stall develop. */
@@ -42,88 +56,11 @@ const BROWSER_TICK_MS = 1_000;
 /** The server half is a request. Five seconds is a session table that cannot go stale unseen. */
 const SERVER_TICK_MS = 5_000;
 
-/** What a value nobody knows reads as. */
-const UNKNOWN = "—";
-
-const text = (value: string | null | undefined): string => value ?? UNKNOWN;
-
-const bytes = (n: number | null | undefined): string =>
-  n === null || n === undefined ? UNKNOWN : formatBytes(n);
-
-/** A number of seconds as a clock -- `2:28:00`, `9:41`. */
-function clock(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return UNKNOWN;
-  const whole = Math.max(0, Math.floor(seconds));
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const hours = Math.floor(whole / 3600);
-  const minutes = Math.floor(whole / 60) % 60;
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(whole % 60)}` : `${minutes}:${pad(whole % 60)}`;
-}
-
-/** Bits per second, as a person reads throughput. */
-function bitrate(bps: number | null): string {
-  if (bps === null) return UNKNOWN;
-  return bps >= 1e6 ? `${(bps / 1e6).toFixed(1)} Mbps` : `${Math.round(bps / 1e3)} kbps`;
-}
+/** How long "Copied" stays up before the button reads "Copy" again. */
+const COPIED_MS = 2_000;
 
 /** `2 of 3` -- the shape both limits are read in. */
 const spent = (budget: Budget): string => `${budget.used} of ${budget.max}`;
-
-/**
- * A line assembled from the parts that are PRESENT.
- *
- * Not a fixed template with dashes in the gaps: an arr row imported before it was scanned has
- * no bit depth and no dynamic range, and four dashes in a row say nothing except that this
- * panel does not know what it is looking at.
- */
-const line = (parts: (string | null | undefined)[]): string => parts.filter(Boolean).join(" · ") || UNKNOWN;
-
-const videoLine = (source: PlaybackDiagnostics["source"]): string =>
-  line([
-    source.videoCodec,
-    source.resolution,
-    source.bitDepth ? `${source.bitDepth}-bit` : null,
-    source.dynamicRange,
-  ]);
-
-const audioLine = (source: PlaybackDiagnostics["source"]): string =>
-  line([source.audioCodec, source.audioChannels === null ? null : count(source.audioChannels, "channel")]);
-
-/**
- * How the film was cut up, with the fallback said out loud.
- *
- * `uniform` means neither the container's own index nor the keyframe probe found anything
- * usable, so every boundary is a guess. That is the difference between "this title stutters"
- * and "this title fell back to a grid", and until this line existed it was only answerable by
- * reading a log on the box. The two real sources are named apart for the same reason the
- * server's own `videoGridNote` names them apart: a container index that works and a probe that
- * works are indistinguishable on screen otherwise, and only one of them is cheap.
- */
-function segmentLine(segmenting: PlaybackDiagnostics["segmenting"]): string {
-  const cut =
-    segmenting.source === "container"
-      ? "on the container's own index"
-      : segmenting.source === "probe"
-        ? "on probed keyframes"
-        : segmenting.source === "uniform"
-          ? "on a uniform grid"
-          : "no video timeline";
-  return `${count(segmenting.count, "segment")}, ~${segmenting.targetSec}s, ${cut}`;
-}
-
-/** What the last segment fetch was, as one line. */
-function fragmentLine(stats: BrowserStats | null): string {
-  const frag = stats?.lastFragment;
-  if (!frag) return UNKNOWN;
-  // An initialisation segment has no place on the timeline, and "still fetching init" is a
-  // different stage of a stall from "fetching segment 0".
-  return line([
-    frag.index === null ? "init" : `#${frag.index}`,
-    frag.track,
-    `${frag.loadMs} ms`,
-    bytes(frag.bytes),
-  ]);
-}
 
 /** The server half: the plan, the file it was made from, and what the box is spending. */
 function ServerFacts(props: { session: PlaybackSession; report: SessionsReport | null; now: number }) {
@@ -233,6 +170,48 @@ function PlanReasons(props: { reasons: string[] }) {
   );
 }
 
+type CopyState = "idle" | "copied" | "failed";
+
+/**
+ * Put the whole panel on the clipboard as text, so a failure can be pasted rather than
+ * screenshotted -- a screenshot cannot be searched, and it crops the plan's reasons.
+ *
+ * It says what happened in its own label and keeps focus, the same shape the share button
+ * uses. A failure is named rather than swallowed: the clipboard API needs a secure context, so a
+ * plain-http LAN address has none, and a button that silently does nothing there reads as broken.
+ */
+function CopyReport(props: { build: () => string }) {
+  const [state, setState] = useState<CopyState>("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const copy = async () => {
+    let next: CopyState = "failed";
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(props.build());
+        next = "copied";
+      }
+    } catch {
+      // Refused by the browser; "failed" says so.
+    }
+    setState(next);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), COPIED_MS);
+  };
+
+  return (
+    <button type="button" onClick={() => void copy()} className="text-xs text-muted hover:text-ink">
+      {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy diagnostics"}
+    </button>
+  );
+}
+
 /**
  * The panel.
  *
@@ -282,6 +261,19 @@ export function PlayerStats(props: {
     };
   }, []);
 
+  // Built at the moment of the click, from a FRESH browser read rather than the last tick:
+  // the second between ticks is exactly when a stall or an error lands.
+  const build = () =>
+    playbackReport({
+      session: props.session,
+      browser: readBrowserStats() ?? browser,
+      report,
+      capabilities: detectCapabilities(),
+      userAgent: navigator.userAgent,
+      page: window.location.href,
+      now: Date.now(),
+    });
+
   return (
     <div className="rounded-lg border border-line bg-black/60 px-3 py-2 text-left">
       <div className="grid gap-x-6 sm:grid-cols-2">
@@ -289,6 +281,9 @@ export function PlayerStats(props: {
         <BrowserFacts stats={browser} />
       </div>
       <PlanReasons reasons={props.session.plan.reasons} />
+      <div className="mt-2 flex justify-end border-t border-line/60 pt-2">
+        <CopyReport build={build} />
+      </div>
     </div>
   );
 }

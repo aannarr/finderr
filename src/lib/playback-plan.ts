@@ -936,7 +936,15 @@ function codecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
  * construction, which is the property `EXT-X-INDEPENDENT-SEGMENTS` promises.
  */
 function videoCodecArgs(plan: PlaybackPlan, opts: FfmpegOpts): string[] {
-  if (plan.video?.action !== "transcode") return ["-an", "-c:v", "copy"];
+  if (plan.video?.action !== "transcode") {
+    // ffmpeg keeps an HEVC stream's `hev1` sample entry unless told otherwise, and Safari's MSE
+    // decodes only `hvc1` -- the other spelling of the same bitstream, with its parameter sets
+    // in the init segment. Every browser that plays HEVC takes `hvc1`, so it is the one we write
+    // and the one `detectCapabilities` asks about. Verified on the NAS's ffmpeg 6.1 against a
+    // 10-bit Main 10 mkv, 2026-09-14.
+    const tag = plan.video?.codec === "hevc" ? ["-tag:v", "hvc1"] : [];
+    return ["-an", "-c:v", "copy", ...tag];
+  }
   const enc = videoEncoder(plan, opts);
   // Hardware encoders take a BITRATE rather than a quality target: none of the three
   // implements `-crf`, and passing it is a spawn error rather than an ignored flag.

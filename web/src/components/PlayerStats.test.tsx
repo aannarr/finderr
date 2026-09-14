@@ -11,7 +11,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { PlaybackDiagnostics, PlaybackSession, SessionsReport } from "../lib/playback-api";
 import type { BrowserStats } from "../lib/playback-telemetry";
-import { render, waitFor } from "../test/interact";
+import { fireEvent, render, screen, waitFor } from "../test/interact";
 import { PlayerStats } from "./PlayerStats";
 
 const realFetch = globalThis.fetch;
@@ -334,6 +334,44 @@ describe("it stops polling when it goes away", () => {
     show();
     await waitFor(() => expect(calls.length).toBeGreaterThan(0));
     expect([...new Set(calls)]).toEqual(["/api/play/sessions"]);
+  });
+});
+
+describe("copying the diagnostics", () => {
+  const realClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  afterEach(() => {
+    if (realClipboard) Object.defineProperty(navigator, "clipboard", realClipboard);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  const withClipboard = (writeText: (s: string) => Promise<void>) =>
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+  test("puts the panel on the clipboard as text and says so", async () => {
+    const written: string[] = [];
+    withClipboard(async (s) => {
+      written.push(s);
+    });
+    const failing: BrowserStats = { ...STATS, readyState: 0, lastError: "media element error 4" };
+    show({ stats: failing });
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy());
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain("Plan: video hevc copied");
+    expect(written[0]).toContain("Last error: media element error 4");
+    expect(written[0]).toContain("Claims video:");
+    expect(written[0]).not.toContain("undefined");
+  });
+
+  test("a browser with no clipboard says the copy failed rather than doing nothing", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    show();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy failed" })).toBeTruthy());
   });
 });
 

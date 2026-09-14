@@ -118,7 +118,9 @@ function outputOf(argv: string[]): { work: string; media: string; index: number 
  * `manual` withholds the exit so a test can hold a production open, and `exitCode` makes it
  * fail without writing -- the two states the publish path has to tell apart.
  */
-function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number; cpuMs?: number | null } = {}) {
+function fakeFfmpeg(
+  opts: { manual?: boolean; exitCode?: number; cpuMs?: number | null; stderr?: string } = {},
+) {
   const spawned: string[][] = [];
   const killed: { signal: number | undefined }[] = [];
   const finish: (() => void)[] = [];
@@ -149,6 +151,7 @@ function fakeFfmpeg(opts: { manual?: boolean; exitCode?: number; cpuMs?: number 
       // case for a runtime that cannot account for its children, and the manager has to
       // report nothing rather than zero -- see `charge`.
       ...(opts.cpuMs === undefined ? {} : { cpuMillis: () => opts.cpuMs ?? null }),
+      ...(opts.stderr === undefined ? {} : { stderr: () => Promise.resolve(opts.stderr ?? "") }),
     };
   };
   return { spawn, spawned, killed, finish };
@@ -544,6 +547,47 @@ describe("producing a segment on demand", () => {
    * `tfdt` -- so the second run has nothing to add, and a rename underneath a player that is
    * reading the file would be a risk taken for no gain.
    */
+  /**
+   * REGRESSION, 2026-09-14: diagnosing tt2209764 on the NAS found the container log said nothing
+   * at all about ffmpeg. Its stderr was piped and never read, so a run that failed left no trace
+   * anywhere a human could look -- only a 404 on a segment.
+   */
+  test("a failed run logs its exit code and what ffmpeg said", async () => {
+    const f = fakeFfmpeg({ exitCode: 1, stderr: "Error opening input: No such file or directory\n" });
+    const lines: string[] = [];
+    const m = new TranscodeSessions({
+      root,
+      spawn: f.spawn,
+      now,
+      ffmpegPath: "ffmpeg",
+      log: (l) => lines.push(l),
+    });
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 4);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(s.id);
+    expect(lines[0]).toContain("exit 1");
+    expect(lines[0]).toContain("No such file or directory");
+  });
+
+  test("a successful run logs nothing", async () => {
+    const lines: string[] = [];
+    const m = new TranscodeSessions({
+      root,
+      spawn: fakeFfmpeg().spawn,
+      now,
+      ffmpegPath: "ffmpeg",
+      log: (l) => lines.push(l),
+    });
+    const s = m.start(opts());
+
+    await m.segmentPath(s.id, VIDEO, 4);
+
+    expect(lines).toEqual([]);
+  });
+
   test("a rendition publishes exactly one init, from the first run that made one", async () => {
     const m = mgr(fakeFfmpeg().spawn);
     const s = m.start(opts());
