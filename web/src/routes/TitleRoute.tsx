@@ -18,8 +18,7 @@ import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { type KeyAction, useKeyAction } from "../components/Kbd";
-import { canPlayHere, PlayHere } from "../components/PlayHere";
-import { PlayOnPlex } from "../components/PlayOnPlex";
+import { hasPlayMenu, PlayMenu } from "../components/PlayMenu";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
@@ -366,19 +365,8 @@ export function TitleRoute() {
               choosable={choosable}
               onRequest={startRequest}
               requestKey={requestKey}
+              arrLink={arrLink}
             />
-
-            {/*
-              Plex, DEMOTED -- and drawn here rather than inside `PrimaryAction` because at
-              this point both offers are true at once: Plex plays it on the reader's TV with
-              their history and their subtitles, "Play here" plays it in the tab that is
-              already open. Only one of them can have the accent, and the reader who is
-              already looking at a browser is the one this control is for.
-
-              Nothing is lost when `PrimaryAction` took the Plex branch instead: this draws
-              only when Play won the slot.
-            */}
-            {canPlayHere(title, isAdmin) && title.plex && <PlayOnPlex plex={title.plex} variant="quiet" />}
 
             {/*
               A series we hold with holes in it: the SAME chooser, under whichever control
@@ -427,7 +415,8 @@ export function TitleRoute() {
               UNDER the request block and never in the header -- nothing arriving late may
               push the header around, which is the rule this route states about itself.
             */}
-            {isAdmin && arrLink && <ArrLinkRow link={arrLink} />}
+            {/* Where the play menu is drawn, this door is an item in it rather than a second line here. */}
+            {isAdmin && arrLink && !hasPlayMenu(title, isAdmin) && <ArrLinkRow link={arrLink} />}
           </div>
 
           {/*
@@ -507,6 +496,7 @@ export function PrimaryAction({
   choosable,
   onRequest,
   requestKey,
+  arrLink,
 }: {
   title: Title;
   isAdmin: boolean;
@@ -514,32 +504,27 @@ export function PrimaryAction({
   choosable: boolean;
   onRequest: () => void;
   requestKey: KeyAction;
+  /** Admin only, and late: it arrives with the detail response and lands inside the play menu. */
+  arrLink: TitleDetailView["arrLink"];
 }) {
   /*
-    PLAY IS THE DEFAULT for a title we hold and this reader may stream.
+    PLAY IS THE DEFAULT for a title we can play, as ONE split button: "Play on Plex" when Plex
+    holds it, "Play here" when only our own player can, and every other way in its menu.
 
     A muted "Available in your library" span used to own this slot for an owned title: a
-    fact, with no action, while the control that acted on it sat underneath in a border and
-    grey text. The fact is implied by the button, so the span is gone rather than moved.
+    fact, with no action. The fact is implied by the button, so the span is gone rather than
+    moved. `hasPlayMenu` rather than `title.hasFile` alone, because "Play here" is admin-only
+    -- asking it is what keeps the slot from collapsing to an empty box for everybody else.
 
-    `canPlayHere` rather than `title.hasFile` alone, because `PlayHere` draws nothing for a
-    non-admin -- asking it here is what keeps the slot from silently collapsing to an empty
-    box for everybody else. They fall through to the branches below.
+    Legitimately in the header: `title.plex` comes from the local Plex mirror and `hasFile`
+    from the arr mirror, both on the row at t=0, so which half is the default cannot change
+    late and push anything around.
   */
-  if (canPlayHere(title, isAdmin)) return <PlayHere tconst={title.tconst} isAdmin={isAdmin} />;
-
-  /*
-    Plex, for the reader who cannot play it here: no file the arr will admit to, or no
-    permission to stream one. It is the same offer that sits UNDER Play when both are
-    available -- see the route -- and it is legitimately in the header for the reason the
-    rule cares about: `title.plex` is built from the local Plex mirror and arrives with the
-    row at t=0, exactly like `inLibrary`, so it cannot pop in late and push anything around.
-  */
-  if (title.plex) return <PlayOnPlex plex={title.plex} />;
+  if (hasPlayMenu(title, isAdmin)) return <PlayMenu title={title} isAdmin={isAdmin} arrLink={arrLink} />;
 
   /*
     We hold it, and this reader cannot start it from here -- the honest end of the road. Not
-    reachable for an admin, who got the Play button four lines up.
+    reachable for an admin, who got the play menu above.
   */
   if (title.hasFile) {
     return (

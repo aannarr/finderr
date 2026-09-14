@@ -6,12 +6,10 @@
  * could use. A component that hid itself and no more would be a rule with two owners and
  * only one of them enforced.
  *
- * It sits ABOVE `PlayOnPlex` rather than replacing it, and the two answer different
- * questions: Plex plays on the reader's TV with their history and their subtitles; this
- * plays here, now, in the tab that is already open, on a machine that may have no Plex
- * client at all. Whoever is reading a title page in a browser is, by construction, at a
- * machine that can play it -- so this is the offer that goes first, wearing the accent, and
- * Plex is the one underneath.
+ * The STATE lives in `usePlayHere`, not in the button, because the title page offers this
+ * from two places: as the default half of `PlayMenu` when Plex does not hold the title, and
+ * as an item in that menu when it does. Either way one hook owns the session and the
+ * overlay, so a menu item and a button cannot grow two players.
  *
  * > [!IMPORTANT] hls.js is loaded with a DYNAMIC import, and that is a performance decision
  * > It is ~200 KB and it is needed by one control on one page for one role. A static import
@@ -23,7 +21,7 @@
  * > fetched at all.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { candidateLoader } from "../lib/hls-candidate-loader";
 import {
   electStreamEndpoint,
@@ -60,17 +58,23 @@ type State =
   | { kind: "playing"; session: PlaybackSession }
   | { kind: "failed"; message: string };
 
-export function PlayHere({
+export interface PlayHereControl {
+  state: State;
+  /** Ask the server for a session. Safe to call from a button or a menu item alike. */
+  play: () => Promise<void>;
+  /** The player overlay while a session is playing, else null. Fixed-position, so it can mount anywhere. */
+  player: ReactNode;
+}
+
+export function usePlayHere({
   tconst,
   season,
   episode,
-  isAdmin,
 }: {
   tconst: string;
   season?: number;
   episode?: number;
-  isAdmin: boolean;
-}) {
+}): PlayHereControl {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [statsOpen, setStatsOpen] = useState(false);
   /*
@@ -314,8 +318,6 @@ export function PlayHere({
     return () => window.removeEventListener("pagehide", release);
   }, [sessionId]);
 
-  if (!isAdmin) return null;
-
   async function play() {
     setState({ kind: "starting" });
     try {
@@ -340,75 +342,93 @@ export function PlayHere({
     The PLAYER IS AN OVERLAY and the BUTTON stays in the header, which is a layout decision
     rather than a stylistic one.
 
-    This control sits in the header's action column, above "Play on Plex" -- about 200px
+    This control sits in the header's action column -- about 200px
     wide. Expanding a 16:9 video into it would be unwatchable, and expanding it anywhere
     else in the header would push the header around, which is the one thing that region's
     rule forbids. An overlay leaves the page underneath exactly as it was, which is also
     what a reader wants when they stop: they are back where they were, not scrolled
     somewhere new.
   */
-  if (state.kind === "playing") {
-    const { plan } = state.session;
-    const close = () => {
-      stopPlayback(state.session.sessionId);
-      setState({ kind: "idle" });
-    };
-    // `role="dialog"` is not decoration to satisfy a linter: it is what makes Escape a
-    // legitimate handler here rather than a key listener bolted to a decorative div, and
-    // it is what tells a screen reader that the page behind this is inert.
-    return (
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Player"
-        tabIndex={-1}
-        ref={(el) => el?.focus()}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-        onKeyDown={(e) => {
-          if (e.key === "Escape") close();
-        }}
-      >
-        {/* `max-h-full overflow-y-auto` is what makes the stats panel safe to open on a short
+  if (state.kind !== "playing") return { state, play, player: null };
+
+  const { plan } = state.session;
+  const close = () => {
+    stopPlayback(state.session.sessionId);
+    setState({ kind: "idle" });
+  };
+  // `role="dialog"` is not decoration to satisfy a linter: it is what makes Escape a
+  // legitimate handler here rather than a key listener bolted to a decorative div, and
+  // it is what tells a screen reader that the page behind this is inert.
+  const player = (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Player"
+      tabIndex={-1}
+      ref={(el) => el?.focus()}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") close();
+      }}
+    >
+      {/* `max-h-full overflow-y-auto` is what makes the stats panel safe to open on a short
             window: the column grows past the viewport, and a centred flex child that overflows
             has its TOP cut off with no way to reach it. One scroller here rather than a second
             one inside the panel. */}
-        <div className="max-h-full w-full max-w-5xl space-y-2 overflow-y-auto">
-          {/* biome-ignore lint/a11y/useMediaCaption: subtitles arrive as a separate HLS
+      <div className="max-h-full w-full max-w-5xl space-y-2 overflow-y-auto">
+        {/* biome-ignore lint/a11y/useMediaCaption: subtitles arrive as a separate HLS
               rendition named in the master playlist, which hls.js turns into a native
               TextTrack (and Safari reads itself), so there is no static <track> to declare --
               a hard-coded one would name a file this player never fetches. */}
-          <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
-          {/* Nothing at all on the native path, where `tracks` stays null: iOS Safari draws
+        <video ref={videoRef} controls playsInline className="w-full rounded-lg bg-black" />
+        {/* Nothing at all on the native path, where `tracks` stays null: iOS Safari draws
               its own menu for both kinds and a second one would fight it. */}
-          {tracks ? (
-            <PlayerTracks choices={tracks} onAudio={selectAudio} onSubtitles={selectSubtitles} />
-          ) : null}
-          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
-            <span>
-              {planSummary(plan)}
-              {isExpensivePlan(plan) ? " · re-encoding video" : ""}
-            </span>
-            <span className="flex items-baseline gap-4">
-              {/* The panel is MOUNTED only while it is open, which is what stops its two
+        {tracks ? (
+          <PlayerTracks choices={tracks} onAudio={selectAudio} onSubtitles={selectSubtitles} />
+        ) : null}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs text-muted">
+          <span>
+            {planSummary(plan)}
+            {isExpensivePlan(plan) ? " · re-encoding video" : ""}
+          </span>
+          <span className="flex items-baseline gap-4">
+            {/* The panel is MOUNTED only while it is open, which is what stops its two
                   timers rather than a flag inside it -- see `PlayerStats`. */}
-              <button
-                type="button"
-                onClick={() => setStatsOpen((was) => !was)}
-                aria-expanded={statsOpen}
-                className="text-muted hover:text-ink"
-              >
-                {statsOpen ? "Hide stats" : "Stats for nerds"}
-              </button>
-              <button type="button" onClick={close} className="text-muted hover:text-ink">
-                Stop
-              </button>
-            </span>
-          </div>
-          {statsOpen ? <PlayerStats session={state.session} readBrowserStats={readBrowserStats} /> : null}
+            <button
+              type="button"
+              onClick={() => setStatsOpen((was) => !was)}
+              aria-expanded={statsOpen}
+              className="text-muted hover:text-ink"
+            >
+              {statsOpen ? "Hide stats" : "Stats for nerds"}
+            </button>
+            <button type="button" onClick={close} className="text-muted hover:text-ink">
+              Stop
+            </button>
+          </span>
         </div>
+        {statsOpen ? <PlayerStats session={state.session} readBrowserStats={readBrowserStats} /> : null}
       </div>
-    );
-  }
+    </div>
+  );
+  return { state, play, player };
+}
+
+/** "Play here" as a standalone button. `PlayMenu` uses the hook directly instead. */
+export function PlayHere({
+  tconst,
+  season,
+  episode,
+  isAdmin,
+}: {
+  tconst: string;
+  season?: number;
+  episode?: number;
+  isAdmin: boolean;
+}) {
+  const { state, play, player } = usePlayHere({ tconst, season, episode });
+  if (!isAdmin) return null;
+  if (player) return player;
 
   return (
     <div className="space-y-1.5">

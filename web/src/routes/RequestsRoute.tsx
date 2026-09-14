@@ -199,7 +199,7 @@ export function RequestActions({
         withholding Play until every episode landed would be this page declining to answer
         the question it exists for.
       */}
-      {request.plex && <PlayOnPlex plex={request.plex} variant="inline" />}
+      {request.plex && <PlayOnPlex plex={request.plex} />}
       <RetryControl request={request} onRetried={onWithdrawn} />
       <WithdrawControl request={request} onWithdrawn={onWithdrawn} />
       {/*

@@ -32,6 +32,7 @@ const render = (title: Title, isAdmin: boolean, choosable = false) =>
       choosable={choosable}
       onRequest={() => {}}
       requestKey={NO_KEY}
+      arrLink={null}
     />,
   );
 
@@ -53,10 +54,15 @@ describe("a title we hold the file for", () => {
     expect(html).not.toContain("Play here");
   });
 
-  test("PLAY outranks Plex, which the route redraws underneath it", () => {
+  /**
+   * aannarr, 2026-09-14: Plex is the default half of the split button, and "Play here" waits in
+   * its menu. The menu is closed at rest, so the item is not in the markup -- `PlayMenu.test`
+   * pins that it is offered.
+   */
+  test("Plex is the default even for an admin who could play it here", () => {
     const html = render(makeTitle({ inLibrary: true, hasFile: true, plex: PLEX }), true);
-    expect(html).toContain("Play here");
-    expect(html).not.toContain("Play on Plex");
+    expect(html).toContain("Play on Plex");
+    expect(html).toContain("More ways to play");
   });
 
   test("a non-admin whose Plex holds it is sent there instead of to a dead end", () => {

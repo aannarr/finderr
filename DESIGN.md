@@ -125,6 +125,13 @@ reader binds a control to the label it is next to.
 **A boolean is a switch, never a link.** A text link has to state the *inverse* of its own
 value to be useful, so the words on screen describe the state you are not in.
 
+**Several ways to do ONE thing is a split button, not a stack.** The default is the big half;
+the chevron holds the rest, each item with one muted line saying why you would pick it over the
+default. `PlayMenu` is the worked example: *Play on Plex*, then *Play here*, the Plex app and
+the arr. A stack of an accent button, an outlined one and two text links gave one film four
+decisions' worth of weight. A control that does something ELSE (*Add to watchlist*) stays its
+own button and never goes in the menu.
+
 **No magic values in a field.** Three states are three named choices. The quota was one number
 where `0` secretly meant unlimited and `null` meant follow-the-site — one character apart,
 explained in prose underneath. It is a radio group now.
