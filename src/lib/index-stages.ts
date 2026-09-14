@@ -363,7 +363,12 @@ export const INDEX_STAGES = {
    * while leaving the schema alone, which is exactly the silent-staleness shape this stamp is
    * for. (The query stamp beside the CSV already forces a re-download; this forces the rebuild.)
    */
-  places: () => JSON.stringify({ v: 1 }),
+  /*
+   * **`v: 2` (2026-09-14) rolls episode ids up to their series at load**, which changes which
+   * pairs exist on an index whose schema did not move -- an index at v1 is missing thousands of
+   * series places and would say nothing about it.
+   */
+  places: () => JSON.stringify({ v: 2 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

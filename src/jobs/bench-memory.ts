@@ -47,7 +47,13 @@ import { hostname, totalmem } from "node:os";
 import { join } from "node:path";
 import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
-import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
+import {
+  type BenchFixtures,
+  busiestPlaceId,
+  countRows,
+  type Scenario,
+  scenarios,
+} from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import { detectMemoryBudget, type MemoryUsage, readMemoryUsage } from "../lib/memory-budget";
 import { SearchEngine } from "../lib/search";
@@ -230,6 +236,7 @@ async function main(): Promise<void> {
     seriesTconst: series?.tconst ?? "tt0944947",
     nconst: fx.personPage("nm0000138") ? "nm0000138" : "nm0000199",
     genre: fx.topGenres(1)[0] ?? "Drama",
+    placeId: busiestPlaceId(fx),
   };
   fx.close();
   residency.afterOpen = readMemoryUsage();

@@ -32,7 +32,9 @@ const PAGE = 60;
  * means a sound stage rather than a location anybody could visit.
  */
 function placePrefix(place: Place): string {
-  if (place.studio) return "Filmed at the studio";
+  // A studio is "Filmed at Pinewood Studios" -- nearly every studio's own name already says
+  // "Studios", so "Filmed at the studio Pinewood Studios" said it twice. The kind is stated in
+  // the caption line under the heading instead.
   return place.kind === "area" ? "Filmed in" : "Filmed at";
 }
 
@@ -72,6 +74,12 @@ export function PlaceRoute() {
   const [page, setPage] = useState<PlacePage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  /*
+    A failed "Show more" is its OWN state, beside the grid, never `error`. `error` replaces the
+    whole page, so a page-2 failure used to throw away the sixty titles already on screen --
+    found by the quality review of 2026-09-14.
+  */
+  const [moreFailed, setMoreFailed] = useState(false);
 
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
 
@@ -104,6 +112,7 @@ export function PlaceRoute() {
   const loadMore = async () => {
     if (!page || !canLoadMore) return;
     setLoading(true);
+    setMoreFailed(false);
     try {
       const next = await getPlace(id, { limit: PAGE, offset: page.titles.length });
       // Appended only onto the SAME place: a reader who navigated away mid-fetch must not get
@@ -113,8 +122,8 @@ export function PlaceRoute() {
           ? { ...next, titles: [...prev.titles, ...next.titles] }
           : prev,
       );
-    } catch (e) {
-      setError((e as Error).message);
+    } catch {
+      setMoreFailed(true);
     } finally {
       setLoading(false);
     }
@@ -178,6 +187,7 @@ export function PlaceRoute() {
           row the title page uses for its own links out.
         */}
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          {place.studio && <span className="text-muted">Film studio</span>}
           {country && <span className="text-muted">{country}</span>}
           <ul aria-label="Links" className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {map && (
@@ -223,6 +233,12 @@ export function PlaceRoute() {
             {loadMoreKey.hint}
           </button>
         </div>
+      )}
+      {/* On the control that failed, not over the page -- DESIGN.md § Confirmation. */}
+      {moreFailed && (
+        <p role="status" className="mt-2 text-center text-xs text-muted">
+          The next titles did not load. Press the button to try again.
+        </p>
       )}
     </>
   );

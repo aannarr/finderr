@@ -35,7 +35,7 @@ export interface Scenario {
   /** Stable id -- the report is diffed across runs, so this must not drift casually. */
   id: string;
   /** Which surface pays for it, so a regression can be read as a page rather than a query. */
-  surface: "discover" | "search" | "browse" | "title" | "person" | "lists";
+  surface: "discover" | "search" | "browse" | "title" | "person" | "lists" | "place";
   /** The example arguments, printed in the report so a number can be reproduced by hand. */
   args: string;
   run: (engine: SearchEngine) => unknown;
@@ -58,6 +58,26 @@ export interface BenchFixtures {
   nconst: string;
   /** The genre the index actually has most of. */
   genre: string;
+  /**
+   * The most-filmed place, so the place page is measured at its longest rather than its easiest.
+   * `null` on an index built before the filming-location stage.
+   */
+  placeId: number | null;
+}
+
+/**
+ * The most-filmed place in this index, or `null` when the index has no place tables.
+ *
+ * ONE owner for both runners (`bench-index.ts` and `bench-memory.ts`), which otherwise each
+ * resolve their fixtures by hand. Guarded on the engine's own probe, because asking an index
+ * built before the stage throws `no such table` and takes the whole bench down with it.
+ */
+export function busiestPlaceId(engine: SearchEngine): number | null {
+  if (!engine.hasPlaces) return null;
+  const row = engine.rawDb.query("select id from place order by titles desc limit 1").get() as
+    | { id: number }
+    | undefined;
+  return row?.id ?? null;
 }
 
 /**
@@ -73,7 +93,7 @@ export interface BenchFixtures {
  * The column exists precisely because a query that got faster by returning less is not faster,
  * and it was blind for a sixth of the suite.
  */
-const ROW_KEYS = ["hits", "rows", "results", "credits"] as const;
+const ROW_KEYS = ["hits", "rows", "results", "credits", "titles"] as const;
 
 /**
  * How many rows a scenario produced, for anything shaped like a result.
@@ -110,6 +130,31 @@ export function countRows(v: unknown): number {
 
 export function scenarios(f: BenchFixtures): Scenario[] {
   return [
+    // --- filming locations. The title pane asks on EVERY title page; the place page is paged,
+    // and its last page is where an OFFSET walk would show up if the seek ever stopped covering.
+    {
+      id: "title.places",
+      surface: "title",
+      args: `tconst=${f.tconst}`,
+      run: (e) => e.placesOf(f.tconst),
+    },
+    {
+      id: "place.page",
+      surface: "place",
+      args: `place=Q${f.placeId} limit=60 offset=0`,
+      run: (e) => (f.placeId === null ? null : e.placePage(f.placeId, { limit: 60, offset: 0 })),
+    },
+    {
+      id: "place.pageLast",
+      surface: "place",
+      args: `place=Q${f.placeId} limit=60 offset=last`,
+      run: (e) => {
+        if (f.placeId === null) return null;
+        const total = e.placePage(f.placeId, { limit: 1, offset: 0 })?.total ?? 0;
+        return e.placePage(f.placeId, { limit: 60, offset: Math.max(0, total - 60) });
+      },
+    },
+
     // --- the front page. Every one of these runs before anything is on screen.
     { id: "discover.topGenres", surface: "discover", args: "limit=6", run: (e) => e.topGenres(6) },
     { id: "discover.topRated", surface: "discover", args: "limit=30", run: (e) => e.topRated({ limit: 30 }) },

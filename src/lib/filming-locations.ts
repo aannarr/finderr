@@ -21,8 +21,8 @@
  *
  * - **site** -- a castle, a street, a studio, a national park. The thing a reader goes to look at.
  * - **area** -- a settlement or an administrative region: Almería, Los Angeles, Notting Hill.
- *   Still a real destination ("everything shot in Almería" is 80 spaghetti westerns and a
- *   Bond film), so it is kept and linked, and drawn AFTER the sites.
+ *   Still a real destination -- everything shot in Almería is a run of spaghetti westerns and
+ *   a Bond film -- so it is kept and linked, and drawn after the sites.
  * - **country** -- a sovereign state. DROPPED at load. The title already says where it is from,
  *   and a page of every film shot somewhere in the United States is not a place.
  *
@@ -72,11 +72,16 @@ SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?co
  * the series it is part of (P179), and a SEASON's rolled up the same way. The index holds
  * series, never episodes, so an episode filmed at Dubrovnik is a fact about the show.
  *
- * An episode that has its own IMDb id is NOT rolled up -- its own id already produced a row
- * through the first branch, and that row names an episode we do not index, so it is dropped
- * at load. Rolling it up as well would be the right answer counted by a second route.
+ * An episode that has its OWN IMDb id arrives through the first branch too, naming an episode
+ * rather than a title we index -- and `loadPlaces` rolls THAT up through the `episode` table, so
+ * both routes land on the series and `distinct` counts the place once. The query rolls up what
+ * it can see (P179) and the loader rolls up what the index knows; an episode Wikidata never
+ * linked to its series is still caught by the second.
  *
- * Measured 2026-09-14: the rollup adds ~340 pairs to 41,810. Small, and free.
+ * CORRECTED 2026-09-14: the first build filtered episodes with their own id OUT of the P179
+ * branch on the belief that the first branch already counted them. It did not -- the loader
+ * dropped those rows as unknown titles -- and the quality review measured 2,167 of 42,150
+ * pairs lost across 130 series, Game of Thrones keeping 1 of its 9 places.
  */
 export const TITLE_PLACE_SOURCE: CrosswalkSource = {
   file: "wikidata-title-places.csv",
@@ -87,7 +92,7 @@ SELECT DISTINCT ?imdb ?place WHERE {
   ?w wdt:P915 ?place .
   { ?w wdt:P345 ?imdb . }
   UNION
-  { ?w wdt:P31/wdt:P279* wd:Q21191270 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . FILTER NOT EXISTS { ?w wdt:P345 ?own } }
+  { ?w wdt:P31/wdt:P279* wd:Q21191270 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . }
   UNION
   { ?w wdt:P31/wdt:P279* wd:Q3464665 . ?w wdt:P179 ?series . ?series wdt:P345 ?imdb . }
   FILTER(STRSTARTS(?imdb, "tt"))
@@ -342,11 +347,17 @@ export function loadPlaces(
     for (const r of pairs) insPair.run(r.imdb, r.place);
   })();
 
+  /*
+    An id that names an EPISODE is rolled up to its series here, through `episode.tconst`'s
+    unique index -- a seek per pair, and a miss for every pair that already names a title.
+    `distinct` is what makes a place two episodes share one pair rather than two.
+  */
   db.run(`
     insert into title_place (place_id, title_rowid, votes)
     select distinct i.place, t.rowid_, t.votes
       from tp_in i
-      join title t on t.tconst = i.imdb
+      left join episode e on e.tconst = i.imdb
+      join title t on t.tconst = coalesce(e.parent, i.imdb)
       join place_in p on p.id = i.place
   `);
   db.run("drop table tp_in");

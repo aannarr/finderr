@@ -1336,6 +1336,10 @@ Every line here is a real limitation. It is not a roadmap.
 - Posters depend on the arrs being reachable. The bulk crosswalk carries an id, not an
   image: the poster itself still comes from Radarr and Sonarr's lookup endpoints, and a
   title neither can resolve gets a typographic tile.
+- A filming location can be as broad as a state. Wikidata files some productions under
+  "California" or "Alberta" rather than a street, and only sovereign countries are dropped, so
+  a title can list a region that hundreds of other titles share. Those places still link,
+  because the page is real and ranked; it is simply less of a discovery than a castle is.
 - Plex must have matched the item with the modern agent. finderr finds a title in Plex by
   the `imdb://` guid the new agent writes. A library scanned by a legacy agent
   (`com.plexapp.agents.*`) matches nothing, and `/api/health` shows `plex.items: 0` beside

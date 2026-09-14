@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { useState } from "react";
 import type { Place } from "../lib/api";
 import { fireEvent, render, screen } from "../test/interact";
 import { inRouter } from "../test/render-in-router";
@@ -59,6 +60,41 @@ describe("TitleFactsCard filming locations", () => {
 
     fireEvent.click(open);
     expect(screen.queryByText("Place 9")).toBeNull();
+  });
+
+  /*
+    The fold's state belongs to ONE title. `TitleRoute` is not remounted between titles, so a
+    reader who opened "Show all" on one film landed on the next one already expanded -- found by
+    the quality review of 2026-09-14.
+  */
+  test("opening the fold on one title does not leave the next title's list open", async () => {
+    const first = Array.from({ length: 11 }, (_, i) => place(i));
+    const second = Array.from({ length: 10 }, (_, i) => place(i + 100));
+
+    /*
+      ONE mounted tree whose places change, which is what `TitleRoute` does between titles. A
+      `rerender` through a fresh `inRouter` builds a new router and REMOUNTS the card, which
+      resets the state by accident -- the first draft of this test passed against the bug.
+    */
+    function NextTitle() {
+      const [places, setPlaces] = useState(first);
+      return (
+        <>
+          <button type="button" onClick={() => setPlaces(second)}>
+            next title
+          </button>
+          <TitleFactsCard facets={{}} working={[]} problems={[]} places={places} />
+        </>
+      );
+    }
+    render(await inRouter(<NextTitle />, ["/place/$id"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all 11" }));
+    expect(screen.getByRole("button", { name: "Show fewer" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "next title" }));
+    expect(screen.getByRole("button", { name: "Show all 10" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Place 110")).toBeNull();
   });
 
   test("exactly eight places need no control", async () => {

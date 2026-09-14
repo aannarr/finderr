@@ -1195,7 +1195,17 @@ const PLACES_SHOWN = 8;
  * 24px target floor for a pointer, sized for this desktop rail rather than a phone's 44.
  */
 function FilmingLocations({ places }: { places: readonly Place[] }) {
-  const [expanded, setExpanded] = useState(false);
+  /*
+    OPEN FOR ONE SET OF PLACES, not open in general. `TitleRoute` is not remounted between
+    titles, so a plain boolean carried "Show all" from one film onto the next -- found by the
+    quality review of 2026-09-14. Keyed on the ids rather than on the array, because the title
+    page re-polls and hands over a NEW array with the same places, which must stay open.
+  */
+  const setKey = places.map((p) => p.id).join(",");
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const expanded = expandedFor === setKey;
+  const setExpanded = (toggle: (open: boolean) => boolean) =>
+    setExpandedFor(toggle(expanded) ? setKey : null);
   if (places.length === 0) return null;
   const foldable = places.length > PLACES_SHOWN;
   const shown = expanded || !foldable ? places : places.slice(0, PLACES_SHOWN);

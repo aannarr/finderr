@@ -184,6 +184,34 @@ describe("loadPlaces", () => {
     expect(placeById(db, 400)).toBeNull();
   });
 
+  /*
+    THE EPISODE ROLLUP, and it was broken on the first build. Wikidata gives many episodes their
+    own IMDb id, and that id names an episode this index does not hold as a title -- so the pair
+    was dropped at load and the series never learned it was filmed there. Measured by the
+    quality review of 2026-09-14: 2,167 of 42,150 pairs across 130 series, and Game of Thrones
+    kept 1 of its 9 places. The episode table knows every episode's parent, so the loader
+    rolls the id up through it.
+  */
+  test("an episode's own IMDb id rolls up to its series, and a place two episodes share counts once", () => {
+    const db = indexWith([{ tconst: "tt2", votes: 5 }]);
+    db.run(
+      "insert into episode (tconst, parent, season, number) values ('tt9001', 'tt2', 1, 1), ('tt9002', 'tt2', 1, 2)",
+    );
+    const res = loadPlaces(
+      db,
+      [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
+      [
+        { imdb: "tt9001", place: 100 },
+        { imdb: "tt9002", place: 100 },
+        { imdb: "tt2", place: 200 },
+      ],
+    );
+    expect(res).toEqual({ places: 2, pairs: 2 });
+    for (const sql of INDEXES.places) db.run(sql);
+    expect(placesForTitle(db, "tt2").map((p) => p.label)).toEqual(["Gaztelugatxe", "Dubrovnik"]);
+    expect(placeById(db, 100)?.titles).toBe(1);
+  });
+
   test("denormalises votes, so the place page's order needs no join to find its rows", () => {
     const db = indexWith(titles);
     loadPlaces(

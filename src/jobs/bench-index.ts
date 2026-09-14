@@ -52,7 +52,13 @@ import { dirname, join } from "node:path";
 import { readCapabilities } from "../lib/bench-caps";
 import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../lib/bench-io";
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
-import { type BenchFixtures, countRows, type Scenario, scenarios } from "../lib/bench-scenarios";
+import {
+  type BenchFixtures,
+  busiestPlaceId,
+  countRows,
+  type Scenario,
+  scenarios,
+} from "../lib/bench-scenarios";
 import { loadConfig } from "../lib/config";
 import {
   allIndexes,
@@ -492,9 +498,10 @@ async function main(): Promise<void> {
     seriesTconst: series?.tconst ?? "tt0944947",
     nconst: person,
     genre: engine.topGenres(1)[0] ?? "Drama",
+    placeId: busiestPlaceId(engine),
   };
   console.log(
-    `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre}`,
+    `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre} place=${fixtures.placeId === null ? "none" : `Q${fixtures.placeId}`}`,
   );
   console.log(`# runs=${args.runs} per scenario\n`);
 
