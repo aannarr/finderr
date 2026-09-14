@@ -15,6 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { KeyAction } from "../components/Kbd";
+import type { PlayHereControl } from "../components/PlayHere";
 import { requestStatePatch, type Title } from "../lib/api";
 import { makeTitle } from "../test/title-fixture";
 import { PrimaryAction } from "./TitleRoute";
@@ -24,7 +25,10 @@ const PLEX = { web: "https://app.plex.tv/#!/x", app: "plex://x" };
 /** No shortcut bound, which is what a title already in the library gets. */
 const NO_KEY: KeyAction = { props: {}, hint: null };
 
-const render = (title: Title, isAdmin: boolean, choosable = false) =>
+/** The page's player at rest. Static markup never presses it. */
+const IDLE_PLAYER: PlayHereControl = { state: { kind: "idle" }, play: async () => {}, player: null };
+
+const render = (title: Title, isAdmin: boolean, choosable = false, resumeAt: number | null = null) =>
   renderToStaticMarkup(
     <PrimaryAction
       title={title}
@@ -33,8 +37,16 @@ const render = (title: Title, isAdmin: boolean, choosable = false) =>
       onRequest={() => {}}
       requestKey={NO_KEY}
       arrLink={null}
+      playback={IDLE_PLAYER}
+      resumeAt={resumeAt}
     />,
   );
+
+test("a title with a point worth resuming names it on the play control", () => {
+  const html = render(makeTitle({ inLibrary: true, hasFile: true }), true, false, 2530);
+  expect(html).toContain("Resume 42:10");
+  expect(html).not.toContain(">Play here<");
+});
 
 describe("a title we hold the file for", () => {
   test("an admin is offered PLAY, and is not told what they can already see", () => {

@@ -8,9 +8,22 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { Title } from "../lib/api";
 import { fireEvent, render, screen, waitFor } from "../test/interact";
 import { makeTitle } from "../test/title-fixture";
+import { usePlayHere } from "./PlayHere";
 import { PlayMenu, playOptions } from "./PlayMenu";
+
+/** The route owns the player; this stands in for it, with the one hook the page would hold. */
+function RoutedPlayMenu({ title }: { title: Title }) {
+  const control = usePlayHere({ tconst: title.tconst, title: title.title });
+  return (
+    <>
+      <PlayMenu title={title} isAdmin arrLink={null} control={control} />
+      {control.player}
+    </>
+  );
+}
 
 const PLEX = { web: "https://app.plex.tv/desktop#!/x", app: "plex://x" };
 const RADARR = { service: "radarr" as const, label: "Radarr", url: "http://radarr.example/movie/1" };
@@ -67,13 +80,7 @@ describe("Play here, from the menu", () => {
       });
     }) as unknown as typeof fetch;
 
-    render(
-      <PlayMenu
-        title={makeTitle({ tconst: "tt1375666", hasFile: true, plex: PLEX })}
-        isAdmin
-        arrLink={null}
-      />,
-    );
+    render(<RoutedPlayMenu title={makeTitle({ tconst: "tt1375666", hasFile: true, plex: PLEX })} />);
     expect(screen.getByRole("link", { name: "Play on Plex" })).toBeTruthy();
 
     fireEvent.keyDown(screen.getByRole("button", { name: /more ways to play/i }), { key: "Enter" });

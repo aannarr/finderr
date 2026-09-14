@@ -24,6 +24,7 @@
  * would be a second thing to keep in step. `../lib/season-gap` does the counting.
  */
 
+import { Check, Play } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { type EpisodeStanding, episodeStanding, todayUtc } from "../../../src/lib/episodes";
 import type { EpisodePlaces, EpisodeState, Place } from "../lib/api";
@@ -46,6 +47,8 @@ import {
 import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
 import { placePrefix } from "../lib/place-links";
 import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap";
+import type { WatchEntry } from "../lib/watch-api";
+import { episodeTitleLine, progressFraction, watchIndex } from "../lib/watch-resume";
 import { ToggleChip } from "./Chip";
 import {
   EpisodeCard,
@@ -101,6 +104,13 @@ export interface SeriesPaneProps {
    * to press a chip -- the season browser's own assertions live behind the Episodes tab.
    */
   initialTab?: TabName;
+  /**
+   * What this reader has watched of each episode, from the server's per-user watch state.
+   * Absent or empty draws every row exactly as before: no bar, no check.
+   */
+  watchEntries?: readonly WatchEntry[];
+  /** Play one episode in this tab. Absent -- every non-admin -- means no row offers it. */
+  onPlayEpisode?: (episode: Episode) => void;
 }
 
 export function SeriesPane({
@@ -114,6 +124,8 @@ export function SeriesPane({
   scores,
   episodePlaces,
   initialTab,
+  watchEntries,
+  onPlayEpisode,
 }: SeriesPaneProps) {
   return (
     <FacetPane
@@ -136,6 +148,8 @@ export function SeriesPane({
           scores={scores}
           episodePlaces={episodePlaces}
           initialTab={initialTab}
+          watchEntries={watchEntries}
+          onPlayEpisode={onPlayEpisode}
         />
       )}
     />
@@ -189,6 +203,8 @@ function SeasonBrowser({
   scores,
   episodePlaces,
   initialTab,
+  watchEntries,
+  onPlayEpisode,
 }: {
   seasons: Season[];
   facets: ResolvedFacets | undefined;
@@ -200,6 +216,8 @@ function SeasonBrowser({
   scores?: readonly EpisodeScore[];
   episodePlaces?: readonly EpisodePlaces[];
   initialTab?: TabName;
+  watchEntries?: readonly WatchEntry[];
+  onPlayEpisode?: (episode: Episode) => void;
 }) {
   const [tab, setTab] = useState<TabName>(initialTab ?? "grid");
   const card = useHoverCard();
@@ -355,6 +373,8 @@ function SeasonBrowser({
               onRequestEpisode={onRequestEpisode}
               scores={scores}
               places={episodePlaces}
+              watchEntries={watchEntries}
+              onPlayEpisode={onPlayEpisode}
             />
           )}
         </>
@@ -477,6 +497,8 @@ function SeasonEpisodes({
   onRequestEpisode,
   scores,
   places,
+  watchEntries,
+  onPlayEpisode,
 }: {
   season: Season;
   episodes: PaneView<"episodes">;
@@ -485,6 +507,8 @@ function SeasonEpisodes({
   onRequestEpisode?: (season: number, episode: number) => void;
   scores?: readonly EpisodeScore[];
   places?: readonly EpisodePlaces[];
+  watchEntries?: readonly WatchEntry[];
+  onPlayEpisode?: (episode: Episode) => void;
 }) {
   if (view.state === "hidden") return null;
 
@@ -517,18 +541,28 @@ function SeasonEpisodes({
   // Keyed on the same provider pair as the scores, which the server already aligned to.
   const placesByPair = new Map((places ?? []).map((p) => [`${p.season}:${p.number}`, p.places]));
 
+  // Once per season, for the same quadratic reason as `state`.
+  const watched = watchIndex(watchEntries);
+
   return (
     <EpisodeRows>
-      {episodes.map((episode) => (
-        <EpisodeRow
-          key={episode.number}
-          episode={episode}
-          standing={episodeStanding(state.get(`${episode.season}:${episode.number}`), today)}
-          onRequest={onRequestEpisode}
-          score={byPair.get(`${episode.season}:${episode.number}`) ?? null}
-          places={placesByPair.get(`${episode.season}:${episode.number}`)}
-        />
-      ))}
+      {episodes.map((episode) => {
+        const pair = `${episode.season}:${episode.number}`;
+        const standing = episodeStanding(state.get(pair), today);
+        return (
+          <EpisodeRow
+            key={episode.number}
+            episode={episode}
+            standing={standing}
+            onRequest={onRequestEpisode}
+            // Only what we hold can be played; the server would answer anything else "nothing playable".
+            onPlay={standing === "owned" && onPlayEpisode ? () => onPlayEpisode(episode) : undefined}
+            watch={watched.get(pair)}
+            score={byPair.get(pair) ?? null}
+            places={placesByPair.get(pair)}
+          />
+        );
+      })}
     </EpisodeRows>
   );
 }
@@ -553,12 +587,18 @@ function EpisodeRow({
   episode,
   standing,
   onRequest,
+  onPlay,
+  watch,
   score,
   places,
 }: {
   episode: Episode;
   standing: EpisodeStanding;
   onRequest?: (season: number, episode: number) => void;
+  /** Play this episode here. Present only for an episode we hold, for a reader who may play. */
+  onPlay?: () => void;
+  /** Where this reader stopped in it, if anywhere. */
+  watch?: WatchEntry;
   /** Null for an unrated or unaired episode, which draws no badge at all. */
   /** The row's aligned score. `EpisodeScore` rather than a narrower literal, so a field
    *  added to the payload (`part` was) reaches here without a second type to update. */
@@ -606,7 +646,18 @@ function EpisodeRow({
             column of scores never reaches the synopsis.
           */}
           {score?.part && <span className="text-xs text-muted italic">{partNote(score.part)}</span>}
+          {/*
+            WATCHED is a word beside a check, not a colour: colour is never the only signal
+            (DESIGN.md). Finished draws this INSTEAD of a full bar -- they are one fact.
+          */}
+          {watch?.finished && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted">
+              <Check className="size-3.5 text-accent" aria-hidden="true" />
+              Watched
+            </span>
+          )}
         </div>
+        <WatchProgress entry={watch} />
         {/*
           Two lines, not the whole synopsis: 73 episodes of full overview is a page nobody
           scrolls, and the row exists to carry the number, the name and the date.
@@ -623,8 +674,34 @@ function EpisodeRow({
       <EpisodeStandingMark
         standing={standing}
         onRequest={onRequest && (() => onRequest(episode.season, episode.number))}
+        onPlay={onPlay}
+        playLabel={`Play ${episodeTitleLine(episode)}`}
       />
     </li>
+  );
+}
+
+/**
+ * How far through this episode the reader is: a hairline bar under the name.
+ *
+ * Nothing for an episode never started or already finished -- the check says the second, and a
+ * bar on 73 rows for the first would be 73 empty tracks.
+ */
+function WatchProgress({ entry }: { entry: WatchEntry | undefined }) {
+  const fraction = progressFraction(entry);
+  if (fraction === null) return null;
+  const percent = Math.round(fraction * 100);
+  return (
+    <div
+      role="progressbar"
+      aria-label="Watched so far"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      className="mt-1 h-0.5 w-full max-w-48 overflow-hidden rounded-full bg-line"
+    >
+      <div className="h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
+    </div>
   );
 }
 
@@ -672,8 +749,40 @@ function EpisodePlacesLine({ places }: { places: readonly Place[] }) {
  * always reachable by keyboard -- `opacity` hides it from the eye and from nothing else --
  * so it is not one of those buttons only a mouse can find.
  */
-function EpisodeStandingMark({ standing, onRequest }: { standing: EpisodeStanding; onRequest?: () => void }) {
+function EpisodeStandingMark({
+  standing,
+  onRequest,
+  onPlay,
+  playLabel,
+}: {
+  standing: EpisodeStanding;
+  onRequest?: () => void;
+  onPlay?: () => void;
+  playLabel?: string;
+}) {
   if (standing === "unknown") return null;
+
+  /*
+    An episode we hold, for a reader who can play it: the play button REPLACES the dot rather than
+    sitting beside it, because being playable is the stronger statement of being held. Always
+    visible, unlike Request -- playing is what an owned row is for, and a control that appears
+    only on hover is one a touch screen never shows.
+  */
+  if (standing === "owned" && onPlay) {
+    return (
+      <span className="flex w-16 shrink-0 items-start justify-end">
+        <button
+          type="button"
+          onClick={onPlay}
+          aria-label={playLabel}
+          className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[11px] text-muted transition hover:border-ink hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <Play className="size-3 fill-current" aria-hidden="true" />
+          Play
+        </button>
+      </span>
+    );
+  }
 
   if (standing === "owned") {
     return (

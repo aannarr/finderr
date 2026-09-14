@@ -88,11 +88,13 @@ describe("starting a session", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /play here/i }));
     // The assertion goes INSIDE waitFor, or the wait resolves on the first tick and the
-    // test races the fetch it is about to check -- a green line that proves nothing.
-    await waitFor(() => expect(posted).toHaveLength(1));
+    // test races the fetch it is about to check -- a green line that proves nothing. Counted
+    // among SESSION requests: pressing play also reads the watch state, in parallel.
+    const sessions = () => posted.filter((p) => p.url.includes("/session"));
+    await waitFor(() => expect(sessions()).toHaveLength(1));
 
-    expect(posted[0]?.url).toContain("/api/play/tt1375666/session");
-    const body = posted[0]?.body as { capabilities?: { video: string[]; audio: string[] } };
+    expect(sessions()[0]?.url).toContain("/api/play/tt1375666/session");
+    const body = sessions()[0]?.body as { capabilities?: { video: string[]; audio: string[] } };
     expect(body.capabilities).toBeDefined();
     expect(Array.isArray(body.capabilities?.video)).toBe(true);
     expect(Array.isArray(body.capabilities?.audio)).toBe(true);

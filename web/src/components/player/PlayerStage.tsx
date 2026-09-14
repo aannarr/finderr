@@ -82,7 +82,7 @@ import {
 import { loadPrefs, safeStorage, savePrefs } from "../../lib/player-prefs";
 import { SUBTITLES_OFF, type TrackChoices } from "../../lib/player-tracks";
 import { realTimers, type Timers } from "../../lib/timers";
-import { useVideoState } from "../../lib/use-video-state";
+import { useVideoState, type VideoState } from "../../lib/use-video-state";
 import { cn } from "../../lib/utils";
 import { CopyReport, PlayerStats } from "../PlayerStats";
 import { ControlButton, PlayerMenu } from "./PlayerMenu";
@@ -116,8 +116,11 @@ export interface PlayerStageProps {
   fatal: string | null;
   readBrowserStats: () => BrowserStats | null;
   onClose: () => void;
-  /** Toasts and cards that belong over the frame -- resume, next episode. */
-  overlay?: ReactNode;
+  /**
+   * Cards that belong over the frame -- resume, up next. A render function because they read the
+   * element's state (how close to the end, whether it ended), which lives in this component.
+   */
+  overlay?: (video: VideoState, actions: { seekTo: (seconds: number) => void }) => ReactNode;
   timers?: Timers;
 }
 
@@ -507,7 +510,7 @@ export function PlayerStage(props: PlayerStageProps) {
         {announcement}
       </div>
 
-      {props.overlay}
+      {props.overlay?.(v, { seekTo })}
 
       {/* ---- top ---- */}
       <div

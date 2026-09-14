@@ -18,6 +18,7 @@ import { hasMissingEpisodes, todayUtc } from "../../../src/lib/episodes";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
 import { BrowseChip } from "../components/BrowseChip";
 import { type KeyAction, useKeyAction } from "../components/Kbd";
+import { type PlayHereControl, type PlayTarget, usePlayHere } from "../components/PlayHere";
 import { hasPlayMenu, PlayMenu } from "../components/PlayMenu";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
@@ -36,7 +37,8 @@ import {
   type Title,
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
-import { formatVotes } from "../lib/facet-panes";
+import { episodeStateIndex, formatVotes } from "../lib/facet-panes";
+import type { Episode } from "../lib/facets";
 import { decadeOf } from "../lib/search-params";
 import { seriesGap } from "../lib/season-gap";
 import { seasonsFromNumbers, summariseSeasons } from "../lib/season-select";
@@ -45,6 +47,9 @@ import { useToasts } from "../lib/toasts";
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "../lib/ui";
 import { useTermLinks } from "../lib/use-term-links";
 import { type TitleDetailView, useTitleDetail } from "../lib/use-title-detail";
+import { useWatchState } from "../lib/use-watch-state";
+import type { WatchEntry } from "../lib/watch-api";
+import { episodeCode, episodeTitleLine, headerResume, nextEpisode } from "../lib/watch-resume";
 
 const KIND_LABEL: Record<string, string> = {
   movie: "Film",
@@ -52,6 +57,33 @@ const KIND_LABEL: Record<string, string> = {
   tvMiniSeries: "Mini-series",
   tvMovie: "TV film",
 };
+
+/**
+ * What "Play here" in the header starts, for a series: the episode the reader was last partway
+ * through, or else the first episode we hold. Undefined for a film, which plays as itself.
+ *
+ * A series has no single file, so the old behaviour -- asking for the title with no episode --
+ * could only ever be answered "nothing playable".
+ */
+function seriesPlayTarget(
+  episodes: readonly Episode[] | null,
+  resume: WatchEntry | null,
+  playable: (season: number, episode: number) => boolean,
+): PlayTarget | undefined {
+  if (resume && resume.season !== null && resume.episode !== null) {
+    const known = episodes?.find((e) => e.season === resume.season && e.number === resume.episode);
+    return {
+      season: resume.season,
+      episode: resume.episode,
+      episodeLabel: known ? episodeTitleLine(known) : episodeCode(resume.season, resume.episode),
+    };
+  }
+  if (!episodes) return undefined;
+  const first = nextEpisode(episodes, { season: 0, episode: Number.MAX_SAFE_INTEGER }, playable);
+  return first
+    ? { season: first.season, episode: first.number, episodeLabel: episodeTitleLine(first) }
+    : undefined;
+}
 
 function runtimeLabel(mins: number): string {
   const h = Math.floor(mins / 60);
@@ -222,6 +254,33 @@ export function TitleRoute() {
   const requestKey = useKeyAction("request", startRequest, canRequest);
   const backKey = useKeyAction("back", () => router.history.back(), canGoBack);
 
+  /*
+    THE PAGE'S ONE PLAYER, and what this reader has watched of this title.
+
+    Held here rather than in `PlayMenu` because the seasons pane starts episodes too, and two
+    hooks would be two players. The watch state is re-read when the player closes, so the header's
+    "Resume" and the rows' progress say where the reader just stopped.
+
+    An episode is playable when OUR Sonarr mirror says it has a file -- local, so "up next" and the
+    row buttons never offer something the server would answer with "nothing playable".
+  */
+  const { watch, refresh: refreshWatch } = useWatchState(tconst);
+  const heldEpisodes = episodeStateIndex(episodeState);
+  const playable = (s: number, e: number) => heldEpisodes.get(`${s}:${e}`)?.hasFile === true;
+  const playback = usePlayHere({
+    tconst,
+    title: title?.title,
+    episodes: seriesEpisodes ?? undefined,
+    playable,
+    onClosed: refreshWatch,
+  });
+  const resumeEntry = headerResume(watch);
+  const playTarget = seriesPlayTarget(seriesEpisodes ?? null, resumeEntry, playable);
+  const playEpisode = isAdmin
+    ? (ep: Episode) =>
+        void playback.play({ season: ep.season, episode: ep.number, episodeLabel: episodeTitleLine(ep) })
+    : undefined;
+
   if (error && !title) {
     return (
       <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm">
@@ -369,6 +428,9 @@ export function TitleRoute() {
               onRequest={startRequest}
               requestKey={requestKey}
               arrLink={arrLink}
+              playback={playback}
+              playTarget={playTarget}
+              resumeAt={resumeEntry?.positionSec ?? null}
             />
 
             {/*
@@ -455,6 +517,9 @@ export function TitleRoute() {
         browser's top layer, so where it sits in the tree costs nothing, and keeping it
         out of the header keeps that block purely local.
       */}
+      {/* Portalled to the body by the hook; where it sits here costs nothing. */}
+      {playback.player}
+
       {chooserSeasons && (
         <SeasonRequestDialog
           open={choosing}
@@ -487,6 +552,8 @@ export function TitleRoute() {
         places={places}
         onRequestEpisode={requestEpisode}
         onRequestSeason={requestSeason}
+        watchEntries={watch?.episodes}
+        onPlayEpisode={playEpisode}
       />
     </>
   );
@@ -513,7 +580,16 @@ export function PrimaryAction({
   onRequest,
   requestKey,
   arrLink,
+  playback,
+  playTarget,
+  resumeAt = null,
 }: {
+  /** The page's one player -- see the note where the route creates it. */
+  playback: PlayHereControl;
+  /** What "Play here" starts. For a series, the episode to resume or the first one we hold. */
+  playTarget?: PlayTarget;
+  /** Where the reader stopped, when worth resuming; names the play control. */
+  resumeAt?: number | null;
   title: Title;
   isAdmin: boolean;
   /** The seasons facet has landed, so Request opens a chooser instead of queueing. */
@@ -536,7 +612,18 @@ export function PrimaryAction({
     from the arr mirror, both on the row at t=0, so which half is the default cannot change
     late and push anything around.
   */
-  if (hasPlayMenu(title, isAdmin)) return <PlayMenu title={title} isAdmin={isAdmin} arrLink={arrLink} />;
+  if (hasPlayMenu(title, isAdmin)) {
+    return (
+      <PlayMenu
+        title={title}
+        isAdmin={isAdmin}
+        arrLink={arrLink}
+        control={playback}
+        playTarget={playTarget}
+        resumeAt={resumeAt}
+      />
+    );
+  }
 
   /*
     We hold it, and this reader cannot start it from here -- the honest end of the road. Not

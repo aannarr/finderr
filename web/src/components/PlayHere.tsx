@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { Episode } from "../lib/facets";
 import { candidateLoader } from "../lib/hls-candidate-loader";
 import { retryingNotReady } from "../lib/hls-retry";
 import {
@@ -38,7 +39,11 @@ import { type BrowserStats, PlaybackTelemetry, watchPolicyViolations } from "../
 import { hlsTrackPreferences, loadPrefs, safeStorage, savePrefs, trackLanguage } from "../lib/player-prefs";
 import { readTrackChoices, SUBTITLES_OFF, type TrackChoices, type TrackReader } from "../lib/player-tracks";
 import { PRIMARY_BUTTON } from "../lib/ui";
+import { useWatchReporter } from "../lib/use-watch-reporter";
+import { getWatch } from "../lib/watch-api";
+import { episodeTitleLine, nextEpisode, resumeFor } from "../lib/watch-resume";
 import { PlayerStage } from "./player/PlayerStage";
+import { ResumeToast, UpNext } from "./player/WatchOverlays";
 
 /**
  * Whether this reader can play this title in this tab -- the two facts, in one place.
@@ -64,7 +69,13 @@ export interface PlayTarget {
 type State =
   | { kind: "idle" }
   | { kind: "starting" }
-  | { kind: "playing"; session: PlaybackSession; target: PlayTarget }
+  | {
+      kind: "playing";
+      session: PlaybackSession;
+      target: PlayTarget;
+      /** Where the reader stopped last time, when there is a point worth resuming. */
+      resumeAt: number | null;
+    }
   | { kind: "failed"; message: string };
 
 export interface PlayHereControl {
@@ -80,12 +91,21 @@ export function usePlayHere({
   title,
   season,
   episode,
+  episodes,
+  playable,
+  onClosed,
 }: {
   tconst: string;
   /** What the player's top bar calls this title. */
   title?: string;
   season?: number;
   episode?: number;
+  /** A series' episodes, in any order, for "up next". Absent for a film. */
+  episodes?: readonly Episode[];
+  /** Whether an episode has a file to play, so "up next" never offers one that would 404. */
+  playable?: (season: number, episode: number) => boolean;
+  /** Told when the reader closes the player, so a page can re-read what they watched. */
+  onClosed?: () => void;
 }): PlayHereControl {
   const [state, setState] = useState<State>({ kind: "idle" });
   /*
@@ -125,6 +145,21 @@ export function usePlayHere({
 
   const session = state.kind === "playing" ? state.session : null;
   const sessionId = session?.sessionId ?? null;
+  const playingTarget = state.kind === "playing" ? state.target : null;
+  /*
+    The resume point for the session being attached, read by the attach effect. A ref rather than
+    a dependency, because it is decided in the same step as the session and must not re-run the
+    attach on its own.
+  */
+  const resumeRef = useRef<number | null>(null);
+
+  // Where the reader is, told to the server as they watch -- see `use-watch-reporter.ts`.
+  useWatchReporter({
+    tconst,
+    season: playingTarget?.season,
+    episode: playingTarget?.episode,
+    media: session ? video : null,
+  });
 
   /** What the browser knows right now, or null before there is an element to ask. */
   const readBrowserStats = useCallback((): BrowserStats | null => {
@@ -171,6 +206,18 @@ export function usePlayHere({
         // Same-origin by construction: the element follows the playlist itself, so there is no
         // loader to retarget a request and multi-homing is an MSE-path feature.
         if (hasNativeHls()) {
+          const resumeAt = resumeRef.current;
+          // The native element has no start-position option; the first moment it will accept a
+          // seek is `loadedmetadata`.
+          if (resumeAt !== null) {
+            el.addEventListener(
+              "loadedmetadata",
+              () => {
+                el.currentTime = resumeAt;
+              },
+              { once: true },
+            );
+          }
           el.src = session.playlist;
           void el.play()?.catch?.(() => {});
         }
@@ -197,6 +244,9 @@ export function usePlayHere({
         // server's read-ahead is already producing past the playhead, and a deeper buffer is
         // what rides out a busy array (STREAM epic, the warm-up stall card).
         maxBufferLength: 60,
+        // Resume by asking for the right segment FIRST, rather than loading the opening and then
+        // seeking away from it -- which would have the server produce segments nobody watches.
+        startPosition: resumeRef.current ?? -1,
         // The remembered track languages, handed over at CONSTRUCTION -- the only point hls.js
         // reads them without overwriting the choice a moment later. See `hlsTrackPreferences`.
         ...hlsTrackPreferences(loadPrefs(safeStorage())),
@@ -317,24 +367,37 @@ export function usePlayHere({
         returnFocus.current = document.activeElement;
       }
     };
-    captureFocus();
-    setState({ kind: "starting" });
+    /*
+      SWITCHING, when a title is already playing -- "up next". The stage stays mounted and the old
+      session keeps playing until the new one is ready, so fullscreen survives and nothing flashes;
+      the attach effect then swaps the source under the same element.
+    */
+    const switching = state.kind === "playing" ? state.session : null;
+    if (!switching) {
+      captureFocus();
+      setState({ kind: "starting" });
+    }
     setFatal(null);
+    const at = { season: target.season ?? season, episode: target.episode ?? episode };
     try {
       // Subtitles are always ASKED FOR and never switched on: the server publishes a
-      // `DEFAULT=NO` WebVTT rendition and nothing is fetched until somebody selects it.
-      const s = await startPlayback(tconst, {
-        season: target.season ?? season,
-        episode: target.episode ?? episode,
-        wantSubtitles: true,
-      });
+      // `DEFAULT=NO` WebVTT rendition and nothing is fetched until somebody selects it. The watch
+      // state is read alongside, never after -- it is one local SQLite read and must not add a
+      // round trip to pressing play.
+      const [s, watch] = await Promise.all([
+        startPlayback(tconst, { ...at, wantSubtitles: true }),
+        getWatch(tconst),
+      ]);
       /*
         Captured AGAIN once the request is back. Started from `PlayMenu`'s item, focus was on a
         menu row that unmounts as the menu closes -- and the menu then hands focus to its trigger.
         The trigger is the control a keyboard reader returns to; the vanished row is nowhere.
       */
-      if (!returnFocus.current?.isConnected) captureFocus();
-      setState({ kind: "playing", session: s, target });
+      if (!switching && !returnFocus.current?.isConnected) captureFocus();
+      if (switching && switching.sessionId !== s.sessionId) stopPlayback(switching.sessionId);
+      const resumeAt = resumeFor(watch, at);
+      resumeRef.current = resumeAt;
+      setState({ kind: "playing", session: s, target: { ...target, ...at }, resumeAt });
     } catch (err) {
       const message =
         err instanceof PlaybackRefused && err.status === 503
@@ -342,7 +405,9 @@ export function usePlayHere({
           : err instanceof Error
             ? err.message
             : "Playback could not start.";
-      setState({ kind: "failed", message });
+      // Mid-film, a refused next episode is an error ON the player the reader is looking at.
+      if (switching) setFatal(message);
+      else setState({ kind: "failed", message });
     }
   }
 
@@ -352,7 +417,14 @@ export function usePlayHere({
     stopPlayback(state.session.sessionId);
     refocusOnIdle.current = true;
     setState({ kind: "idle" });
+    onClosed?.();
   };
+
+  const { target } = state;
+  const next =
+    episodes && target.season !== undefined && target.episode !== undefined
+      ? nextEpisode(episodes, { season: target.season, episode: target.episode }, playable)
+      : null;
 
   // PORTALLED to the body so the page's own root can be made `inert` underneath it -- which is
   // what makes `aria-modal` true rather than a claim, and keeps Tab from wandering behind the film.
@@ -369,6 +441,28 @@ export function usePlayHere({
       fatal={fatal}
       readBrowserStats={readBrowserStats}
       onClose={close}
+      overlay={(v, actions) => (
+        <>
+          {state.resumeAt !== null ? (
+            <ResumeToast
+              key={state.session.sessionId}
+              at={state.resumeAt}
+              onStartOver={() => actions.seekTo(0)}
+            />
+          ) : null}
+          {next ? (
+            <UpNext
+              key={`${target.season}:${target.episode}`}
+              label={episodeTitleLine(next)}
+              remainingSec={v.duration - v.currentTime}
+              ended={v.ended}
+              onPlay={() =>
+                void play({ season: next.season, episode: next.number, episodeLabel: episodeTitleLine(next) })
+              }
+            />
+          ) : null}
+        </>
+      )}
     />,
     document.body,
   );

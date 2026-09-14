@@ -74,12 +74,14 @@ import type {
   Rating,
   ReleaseDates,
   ResolvedFacets,
+  Episode as SeriesEpisode,
   Synopsis,
   Trailer,
   WatchProviders,
 } from "../lib/facets";
 import { partsLabel } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
+import type { WatchEntry } from "../lib/watch-api";
 import { NominationRow, NomineeList } from "./Awards";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
 import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
@@ -157,6 +159,10 @@ export interface TitlePanesProps {
   onRequestEpisode?: (season: number, episode: number) => void;
   /** Ask Sonarr for the rest of one season. Absent means the season control is not offered. */
   onRequestSeason?: (season: number) => void;
+  /** What this reader has watched of each episode. See `SeriesPaneProps`. */
+  watchEntries?: readonly WatchEntry[];
+  /** Play one episode in this tab. Absent (a non-admin) means no row offers it. */
+  onPlayEpisode?: (episode: SeriesEpisode) => void;
   /**
    * What the Academy gave this film, from our own imported tables.
    *
@@ -407,6 +413,8 @@ export function TitleLowerPanes({
   places,
   onRequestEpisode,
   onRequestSeason,
+  watchEntries,
+  onPlayEpisode,
 }: TitlePanesProps) {
   const shared = { facets, working, problems };
   const slot = slotFor(panes);
@@ -426,6 +434,8 @@ export function TitleLowerPanes({
         onRequestSeason={onRequestSeason}
         scores={episodeScores}
         episodePlaces={episodePlaces}
+        watchEntries={watchEntries}
+        onPlayEpisode={onPlayEpisode}
       />
       {slot("title.after-seasons")}
 

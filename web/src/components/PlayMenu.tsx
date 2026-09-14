@@ -15,14 +15,19 @@
  * WHICH OPTIONS a reader gets is `playOptions`, pure and tested without a DOM; the markup
  * only draws the list it is handed. Nothing here can push the header around: `arrLink`
  * arrives with the detail response rather than at t=0, and it lands INSIDE a closed menu.
+ *
+ * THE PLAYER IS NOT OWNED HERE. The route holds the one `usePlayHere` for the page and hands the
+ * control in, because the seasons pane starts episodes from the same player -- two hooks would be
+ * two players. The route renders the player node.
  */
 
 import { AppWindow, ChevronDown, MonitorPlay, SquareArrowOutUpRight } from "lucide-react";
 import type { Title } from "../lib/api";
+import { clock } from "../lib/playback-report";
 import { PRIMARY_BUTTON } from "../lib/ui";
 import type { TitleDetailView } from "../lib/use-title-detail";
 import { cn } from "../lib/utils";
-import { canPlayHere, usePlayHere } from "./PlayHere";
+import { canPlayHere, type PlayHereControl, type PlayTarget } from "./PlayHere";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -74,17 +79,28 @@ export function PlayMenu({
   title,
   isAdmin,
   arrLink,
+  control,
+  playTarget,
+  resumeAt = null,
 }: {
-  title: Pick<Title, "tconst" | "hasFile" | "plex"> & { title?: string };
+  title: Pick<Title, "tconst" | "hasFile" | "plex">;
   isAdmin: boolean;
   arrLink: ArrLink;
+  /** The page's one player. */
+  control: PlayHereControl;
+  /** What "Play here" starts: for a series, the episode to resume or the first one we hold. */
+  playTarget?: PlayTarget;
+  /** Where the reader stopped, when there is a point worth resuming. Names the control. */
+  resumeAt?: number | null;
 }) {
-  const { state, play, player } = usePlayHere({ tconst: title.tconst, title: title.title });
+  const { state, play } = control;
   const primary = playDefault(title, isAdmin);
   if (!primary) return null;
 
   const options = playOptions(title, isAdmin, arrLink);
   const starting = state.kind === "starting";
+  const start = () => void play(playTarget);
+  const hereLabel = resumeAt !== null ? `Resume ${clock(resumeAt)}` : "Play here";
 
   return (
     <div>
@@ -96,11 +112,11 @@ export function PlayMenu({
         ) : (
           <button
             type="button"
-            onClick={() => void play()}
+            onClick={start}
             disabled={starting}
             className={cn(PRIMARY_BUTTON, MAIN_HALF, "disabled:opacity-60")}
           >
-            {starting ? "Starting…" : "Play here"}
+            {starting ? "Starting…" : hereLabel}
           </button>
         )}
 
@@ -123,7 +139,8 @@ export function PlayMenu({
                 key={option.kind}
                 option={option}
                 afterOthers={i > 0}
-                onPlayHere={() => void play()}
+                hereLabel={resumeAt !== null ? `Resume here at ${clock(resumeAt)}` : "Play here"}
+                onPlayHere={start}
               />
             ))}
           </DropdownMenuContent>
@@ -137,7 +154,6 @@ export function PlayMenu({
       {state.kind === "failed" ? (
         <p className="mt-1.5 text-center text-xs text-muted">{state.message}</p>
       ) : null}
-      {player}
     </div>
   );
 }
@@ -157,10 +173,12 @@ const ITEM = "items-start [&_svg]:mt-0.5";
 function PlayOptionItem({
   option,
   afterOthers,
+  hereLabel,
   onPlayHere,
 }: {
   option: PlayOption;
   afterOthers: boolean;
+  hereLabel: string;
   onPlayHere: () => void;
 }) {
   switch (option.kind) {
@@ -168,7 +186,7 @@ function PlayOptionItem({
       return (
         <DropdownMenuItem className={ITEM} onSelect={onPlayHere}>
           <MonitorPlay aria-hidden="true" />
-          <ItemText label="Play here" hint="Stream it in this browser tab" />
+          <ItemText label={hereLabel} hint="Stream it in this browser tab" />
         </DropdownMenuItem>
       );
     case "plex-app":

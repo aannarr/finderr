@@ -63,6 +63,53 @@ function render(facets: ResolvedFacets | undefined, over: Partial<SeriesPaneProp
   );
 }
 
+describe("what this reader has watched", () => {
+  const held = (e: number): EpisodeState => ({
+    season: 1,
+    episode: e,
+    arrEpisodeId: 100 + e,
+    hasFile: true,
+    monitored: true,
+    airDate: "2011-04-17",
+  });
+  const facets: ResolvedFacets = {
+    seasons: { status: "ready", data: GOT_SEASONS },
+    episodes: { status: "ready", data: GOT_EPISODES },
+  } as ResolvedFacets;
+  const watch = (episodeNo: number, positionSec: number, finished: boolean) => ({
+    tconst: "tt0944947",
+    season: 1,
+    episode: episodeNo,
+    positionSec,
+    durationSec: 3600,
+    finished,
+    updatedAt: "2026-09-15T10:00:00Z",
+  });
+
+  test("a partway episode draws a progress bar, a finished one a check and the word", () => {
+    const html = render(facets, {
+      episodeState: [held(1), held(2)],
+      watchEntries: [watch(1, 3590, true), watch(2, 900, false)],
+    });
+    expect(html).toContain("Watched");
+    expect(html).toContain('aria-valuenow="25"');
+    expect(html).toContain("width:25%");
+  });
+
+  test("an episode we hold offers Play, named for the episode, only when the page can play it", () => {
+    const withPlay = render(facets, { episodeState: [held(1)], onPlayEpisode: () => {} });
+    expect(withPlay).toContain('aria-label="Play S1E1 · Winter Is Coming"');
+    const withoutPlay = render(facets, { episodeState: [held(1)] });
+    expect(withoutPlay).not.toContain("Play S1E1");
+  });
+
+  test("no watch state draws the rows exactly as before", () => {
+    const html = render(facets, { episodeState: [held(1)] });
+    expect(html).not.toContain('role="progressbar"');
+    expect(html).not.toContain("Watched");
+  });
+});
+
 /*
   "OR EVEN EPISODE" -- the product ask, and the round-3 review of 2026-09-14 found no episode
   could say where it was filmed. Through a router, because `PlaceLink` is a `<Link>`.
