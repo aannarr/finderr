@@ -20,6 +20,7 @@ import { Pane } from "../components/FacetPane";
 import { useKeyAction } from "../components/Kbd";
 import { PERSON_TILE_SIZE_CLASS, PersonPortrait } from "../components/PersonPortrait";
 import { useChipGroup } from "../components/RovingFocus";
+import { ShareButton } from "../components/ShareButton";
 import { StaleResults, TitleGrid } from "../components/TitleGrid";
 import { PERSON_LINK_CLASS } from "../components/TitlePanes";
 import {
@@ -214,6 +215,17 @@ export function PersonHeader({
         */}
         <PersonAwardsSummary awards={awards ?? null} />
       </div>
+      {/*
+        Pushed to the far edge of the header, level with the name: it acts on the whole page,
+        and nothing about the person should sit between a reader and it. Renders nothing where
+        the browser has no share sheet.
+      */}
+      <ShareButton
+        name={person.name}
+        shareAs={person.name}
+        path={`/person/${person.nconst}`}
+        className="ml-auto h-9"
+      />
     </div>
   );
 }

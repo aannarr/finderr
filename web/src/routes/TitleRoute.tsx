@@ -24,6 +24,7 @@ import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
 import { SaveToWatchlist } from "../components/SaveToWatchlist";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
+import { ShareButton } from "../components/ShareButton";
 import { findTerm } from "../components/TermChip";
 import { TitleFactsCard, TitleLowerPanes, TitleMainPanes } from "../components/TitlePanes";
 import {
@@ -38,6 +39,7 @@ import { formatVotes } from "../lib/facet-panes";
 import { decadeOf } from "../lib/search-params";
 import { seriesGap } from "../lib/season-gap";
 import { seasonsFromNumbers, summariseSeasons } from "../lib/season-select";
+import { shareTitle } from "../lib/share";
 import { useToasts } from "../lib/toasts";
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "../lib/ui";
 import { useTermLinks } from "../lib/use-term-links";
@@ -392,7 +394,20 @@ export function TitleRoute() {
               see `SaveToWatchlist` -- which is exactly why it can sit under the request
               button without competing with it.
             */}
-            <SaveToWatchlist title={title} tone="block" />
+            {/*
+              Sharing sits on the same row: both are things a reader does for themselves and
+              neither asks the server anything. Where the browser has no share sheet the
+              button renders nothing and the watchlist button fills the row as it always did.
+            */}
+            <div className="flex gap-2">
+              <SaveToWatchlist title={title} tone="block" />
+              <ShareButton
+                name={title.title}
+                shareAs={shareTitle(title.title, title.year)}
+                path={`/title/${title.tconst}`}
+                className="mt-2"
+              />
+            </div>
 
             {/*
               Under the button and never inside the header block: it loads its lists on
