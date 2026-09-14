@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PlaybackSession, SessionsReport } from "./playback-api";
-import { playbackReport, type ReportInput } from "./playback-report";
+import { mediaErrorLine, playbackReport, type ReportInput } from "./playback-report";
 import type { BrowserStats } from "./playback-telemetry";
 
 const SESSION: PlaybackSession = {
@@ -66,6 +66,18 @@ const input = (over: Partial<ReportInput> = {}): ReportInput => ({
   page: "https://finderr.example.com/title/tt2209764",
   now: 1_047_000,
   ...over,
+});
+
+describe("a media error in words", () => {
+  test("every spec code reads as a sentence and keeps its number for a bug report", () => {
+    expect(mediaErrorLine(3)).toBe("This browser could not decode the video (media error 3).");
+    for (const code of [1, 2, 4]) expect(mediaErrorLine(code)).toContain(`(media error ${code})`);
+  });
+
+  test("no code never prints the word unknown", () => {
+    expect(mediaErrorLine(undefined)).toBe("The video stopped without saying why.");
+    expect(mediaErrorLine(null)).not.toContain("unknown");
+  });
 });
 
 describe("the copied diagnostics", () => {

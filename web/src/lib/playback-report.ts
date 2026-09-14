@@ -114,6 +114,27 @@ export function violationLine(violation: PolicyViolation | null | undefined): st
 }
 
 /**
+ * The element's `MediaError` as a sentence the viewer can read, keeping the code for the report.
+ *
+ * "Media element error unknown." was what the error panel said; it named the API and told the
+ * viewer nothing. The words follow the four codes the HTML spec defines.
+ */
+export function mediaErrorLine(code: number | null | undefined): string {
+  switch (code) {
+    case 1:
+      return "Playback was stopped before the video loaded (media error 1).";
+    case 2:
+      return "The connection dropped while the video was loading (media error 2).";
+    case 3:
+      return "This browser could not decode the video (media error 3).";
+    case 4:
+      return "This browser refused the stream's format or source (media error 4).";
+    default:
+      return "The video stopped without saying why.";
+  }
+}
+
+/**
  * The last error in words, with any CSP refusal beside it.
  *
  * Both, when both happened: a refused `blob:` is precisely what turns into `media element error 4`

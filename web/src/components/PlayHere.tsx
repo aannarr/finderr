@@ -35,6 +35,7 @@ import {
   startPlayback,
   stopPlayback,
 } from "../lib/playback-api";
+import { mediaErrorLine } from "../lib/playback-report";
 import { type BrowserStats, PlaybackTelemetry, watchPolicyViolations } from "../lib/playback-telemetry";
 import { hlsTrackPreferences, loadPrefs, safeStorage, savePrefs, trackLanguage } from "../lib/player-prefs";
 import { readTrackChoices, SUBTITLES_OFF, type TrackChoices, type TrackReader } from "../lib/player-tracks";
@@ -186,7 +187,7 @@ export function usePlayHere({
     // A refused `blob:` raises nothing in hls.js and only `code 4` on the element -- see
     // `watchPolicyViolations`. Listening is what lets the stats panel and the error name it.
     const stopWatching = watchPolicyViolations(document, telemetry);
-    const onElementError = () => setFatal(`Media element error ${el.error?.code ?? "unknown"}`);
+    const onElementError = () => setFatal(mediaErrorLine(el.error?.code));
     el.addEventListener("error", onElementError);
 
     /*
