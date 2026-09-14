@@ -342,7 +342,7 @@ describe("when the arr will not cooperate", () => {
       ok: false,
       status: 502,
       // SANITISED: the arr's own body named a root folder and none of it reaches the caller.
-      error: "radarr is having trouble -- try again shortly",
+      error: "Radarr is having trouble -- try again shortly",
     });
     expect(store.getRequest("tt1375666")?.status).toBe("available");
     expect(store.libraryMap().has("tt1375666")).toBe(true);

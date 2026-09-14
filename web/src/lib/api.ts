@@ -1969,9 +1969,13 @@ export async function removeMedia(tconst: string, opts: { deleteFiles: boolean }
  *
  * The verdict this produces is deliberately the OPTIMISTIC one -- no diagnostic exists yet
  * for a request a moment old -- and the next poll replaces it with the server's.
+ *
+ * `requestError` is cleared with it, because every status this is called with is a NEW
+ * attempt or no attempt at all. Left in place, the title panel read "Requested" over the
+ * previous attempt's "The request could not be sent" (found in a browser, 2026-09-15).
  */
 export function requestStatePatch(status: RequestStatus | null): Partial<Title> {
-  return { requestStatus: status, ...requestStateOf(status ? { status } : null, null) };
+  return { requestStatus: status, requestError: null, ...requestStateOf(status ? { status } : null, null) };
 }
 
 /**

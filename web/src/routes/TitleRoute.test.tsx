@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { KeyAction } from "../components/Kbd";
-import type { Title } from "../lib/api";
+import { requestStatePatch, type Title } from "../lib/api";
 import { makeTitle } from "../test/title-fixture";
 import { PrimaryAction } from "./TitleRoute";
 
@@ -103,6 +103,23 @@ describe("a title we do not hold the file for", () => {
       const html = render(makeTitle({ requestStatus: "failed", requestVerdict: verdict }), false);
       expect(html).toContain("Try again");
     }
+  });
+
+  /*
+    Found driving the fix in a browser, 2026-09-15: after Try again the panel read "Requested"
+    over "The request could not be sent". The optimistic patch moved the status and left the
+    OLD failure's words standing -- a new attempt with the last attempt's verdict on it.
+  */
+  test("the optimistic patch after Try again drops the old failure's words", () => {
+    const failed = makeTitle({
+      service: "sonarr",
+      requestStatus: "failed",
+      requestVerdict: "failed",
+      requestError: "The request could not be sent",
+    });
+    const html = render({ ...failed, ...requestStatePatch("queued") }, false);
+    expect(html).toContain("Requested");
+    expect(html).not.toContain("could not be sent");
   });
 
   test("a request still being worked on offers no Try again", () => {

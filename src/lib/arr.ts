@@ -274,20 +274,6 @@ export class ArrError extends Error {
 }
 
 /**
- * What a USER may be told about a failed request.
- *
- * > [!CAUTION] An arr's own error text is not safe to forward
- * > `ArrError.message` embeds up to 300 bytes of the arr's response body, which routinely
- * > carries root folder paths (`/plex/movie`), internal hostnames and occasionally a
- * > stack. That string is stored on the request row and the row goes to the browser -- so
- * > before auth it leaked the shape of the NAS to anybody on the LAN, and once finderr is
- * > public it would leak it to the internet.
- *
- * The full message still reaches the LOG, which is where an operator debugging a failed
- * add should be looking. What comes back here is a short, closed vocabulary: enough for a
- * reader to know whether to retry, tell an admin, or give up.
- */
-/**
  * Would sending the same add again plausibly work?
  *
  * YES for a request that never got an answer (a timeout, a refused connection -- anything that
@@ -302,20 +288,44 @@ export function isTransientArrFailure(err: unknown): boolean {
 }
 
 /**
+ * The service as a reader writes it. Every message below is drawn as a SENTENCE on its own --
+ * the title panel, a request row, a toast -- and "sonarr could not find that title" opening a
+ * line read as a typo on the live page (aannarr, 2026-09-15).
+ */
+function serviceName(service: string): string {
+  return service.charAt(0).toUpperCase() + service.slice(1);
+}
+
+/**
  * What a reader is told while a transient failure waits for its retry. The same closed-vocabulary
  * rule as `safeArrMessage` below: the service name and nothing an arr wrote.
  */
 export function safeRetryMessage(service: string): string {
-  return `${service} did not answer -- trying again automatically`;
+  return `${serviceName(service)} did not answer yet -- trying again automatically`;
 }
 
+/**
+ * What a USER may be told about a failed request.
+ *
+ * > [!CAUTION] An arr's own error text is not safe to forward
+ * > `ArrError.message` embeds up to 300 bytes of the arr's response body, which routinely
+ * > carries root folder paths (`/plex/movie`), internal hostnames and occasionally a
+ * > stack. That string is stored on the request row and the row goes to the browser -- so
+ * > before auth it leaked the shape of the NAS to anybody on the LAN, and once finderr is
+ * > public it would leak it to the internet.
+ *
+ * The full message still reaches the LOG, which is where an operator debugging a failed
+ * add should be looking. What comes back here is a short, closed vocabulary: enough for a
+ * reader to know whether to retry, tell an admin, or give up.
+ */
 export function safeArrMessage(err: unknown): string {
-  if (!(err instanceof ArrError)) return "the request could not be sent";
-  if (err.status === 401 || err.status === 403) return `${err.service} rejected our credentials`;
-  if (err.status === 404) return `${err.service} could not find that title`;
-  if (err.status === 400 && /already|exist/i.test(err.body)) return `${err.service} already has that title`;
-  if (err.status >= 500) return `${err.service} is having trouble -- try again shortly`;
-  return `${err.service} refused the request (HTTP ${err.status})`;
+  if (!(err instanceof ArrError)) return "The request could not be sent";
+  const name = serviceName(err.service);
+  if (err.status === 401 || err.status === 403) return `${name} rejected our credentials`;
+  if (err.status === 404) return `${name} could not find that title`;
+  if (err.status === 400 && /already|exist/i.test(err.body)) return `${name} already has that title`;
+  if (err.status >= 500) return `${name} is having trouble -- try again shortly`;
+  return `${name} refused the request (HTTP ${err.status})`;
 }
 
 /**

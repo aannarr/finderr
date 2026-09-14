@@ -143,7 +143,7 @@ describe("a dead-end request asked for again is picked up rather than dropped", 
     expect(store.getRequest(film.tconst)).toMatchObject({
       status: "failed",
       // Sanitised by `safeArrMessage`, which is what makes this a browser-safe column.
-      error: "the request could not be sent",
+      error: "The request could not be sent",
     });
     expect(w.stats().failed).toBe(1);
   });
@@ -208,7 +208,7 @@ describe("a transient arr failure is queued again, not failed", () => {
     expect(waiting).toMatchObject({ status: "queued", send_attempts: 1 });
     expect(waiting?.retry_at).not.toBeNull();
     // The reader is told it is still coming, never "Request failed".
-    expect(waiting?.error).toBe("sonarr did not answer -- trying again automatically");
+    expect(waiting?.error).toBe("Sonarr did not answer yet -- trying again automatically");
 
     await settled(w);
     expect(calls).toEqual([show.tconst, show.tconst]);
@@ -242,7 +242,7 @@ describe("a transient arr failure is queued again, not failed", () => {
     expect(calls).toHaveLength(1);
     expect(store.getRequest(show.tconst)).toMatchObject({
       status: "failed",
-      error: "sonarr could not find that title",
+      error: "Sonarr could not find that title",
     });
   });
 
@@ -299,7 +299,7 @@ describe("the one-off requeue of every failed request", () => {
   test("failed rows are sent again on the first boot only", async () => {
     const show = { title: "The Rehearsal", year: 2022, kind: "tvSeries", service: "sonarr" as const };
     store.createRequest({ ...show, tconst: "tt0000001" });
-    store.updateRequest("tt0000001", { status: "failed", error: "the request could not be sent" });
+    store.updateRequest("tt0000001", { status: "failed", error: "The request could not be sent" });
     store.createRequest({ ...show, tconst: "tt0000002" });
     store.updateRequest("tt0000002", { status: "no_release" });
 
@@ -312,7 +312,7 @@ describe("the one-off requeue of every failed request", () => {
     // Only `failed` is swept. A no_release title is a verdict about indexers, not a send that broke.
     expect(store.getRequest("tt0000002")?.status).toBe("no_release");
 
-    store.updateRequest("tt0000001", { status: "failed", error: "sonarr could not find that title" });
+    store.updateRequest("tt0000001", { status: "failed", error: "Sonarr could not find that title" });
     const again = scriptedSonarr([() => ({ id: 4 })]);
     const second = new RequestWorker({ store, sonarr: again.sonarr, pauseMs: 0, log: () => {} });
     second.start();
