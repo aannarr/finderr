@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { episodesLabel, partsLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "./place-links";
+import {
+  countryCaption,
+  episodesLabel,
+  partsLabel,
+  placeMapUrl,
+  placePrefix,
+  placeWikidataUrl,
+} from "./place-links";
 
 describe("placeMapUrl", () => {
   test("OpenStreetMap, lat before lon, and nothing without a coordinate", () => {
@@ -32,6 +39,20 @@ describe("partsLabel", () => {
     expect(partsLabel({ episodes: 0, seasons: 1 })).toBe("1 season");
     expect(partsLabel({ episodes: 0, seasons: 3 })).toBe("3 seasons");
     expect(partsLabel({ episodes: 0, seasons: 0 })).toBeNull();
+  });
+});
+
+// Seen on /place/Q334, 2026-09-14: "Filmed in Singapore" over a caption reading "Singapore".
+describe("countryCaption", () => {
+  test("a city-state's country is not printed under its own name", () => {
+    expect(countryCaption("Singapore", "Singapore")).toBeNull();
+    expect(countryCaption("Monaco", "monaco")).toBeNull();
+    expect(countryCaption("Vatican City", "Vatican City")).toBeNull();
+  });
+
+  test("any other place keeps its country, and no country is no caption", () => {
+    expect(countryCaption("Almería", "Spain")).toBe("Spain");
+    expect(countryCaption("Almería", null)).toBeNull();
   });
 });
 

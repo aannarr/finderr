@@ -22,7 +22,7 @@ import { PageHeading } from "../components/PageHeading";
 import type { CardNote } from "../components/TitleCard";
 import { TitleGrid } from "../components/TitleGrid";
 import { type PlaceParts, subscribeTitleState, type Title, titleStateVersion } from "../lib/api";
-import { partsLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "../lib/place-links";
+import { countryCaption, partsLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
 import { usePlacePage } from "../lib/use-place-page";
 
@@ -94,7 +94,8 @@ export function PlaceRoute() {
   if (!page) return null;
 
   const { place } = page;
-  const country = countryName(place.country);
+  // Null when it would only repeat the heading -- a city-state is its own country.
+  const country = countryCaption(place.label, countryName(place.country));
   const map = placeMapUrl(place);
 
   return (

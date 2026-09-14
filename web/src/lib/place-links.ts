@@ -54,6 +54,19 @@ export function partsLabel(parts: { episodes: number; seasons: number }): string
   return null;
 }
 
+/**
+ * The country to print under a place's name, or null when it would only repeat the name.
+ *
+ * A city-state is its own country: `/place/Q334` read "Filmed in Singapore" over a caption
+ * reading "Singapore". Compared case- and accent-blind, because the country name comes from
+ * `Intl.DisplayNames` in the reader's language and the label from Wikidata's English.
+ */
+export function countryCaption(label: string, country: string | null): string | null {
+  if (!country) return null;
+  const fold = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+  return fold(country) === fold(label) ? null : country;
+}
+
 /** The place's own Wikidata page: the source of every fact on ours, and where to correct one. */
 export function placeWikidataUrl(place: Pick<Place, "id">): string {
   return `https://www.wikidata.org/wiki/${place.id}`;
