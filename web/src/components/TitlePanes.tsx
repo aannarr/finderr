@@ -75,7 +75,7 @@ import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./Face
 import { PERSON_PORTRAIT_CLASS, PERSON_ROW_CLASS, PERSON_TILE_CLASS, PersonPortrait } from "./PersonPortrait";
 import { PluginPanes, panesForSlot } from "./PluginPane";
 import { SeriesPane } from "./SeriesPane";
-import { findTerm, PlaceChip, TermChip } from "./TermChip";
+import { findTerm, PlaceLink, TermChip } from "./TermChip";
 import { TitleCard } from "./TitleCard";
 
 export interface TitlePanesProps {
@@ -1194,21 +1194,22 @@ function FilmingLocations({ places }: { places: readonly Place[] }) {
   const hidden = places.length - shown.length;
   return (
     <Pane heading="Filming locations" variant="rail">
-      <div className="flex flex-wrap gap-1.5">
+      <ul className="space-y-1 text-sm leading-snug">
         {shown.map((p) => (
-          <PlaceChip key={p.id} place={p} />
+          <li key={p.id}>
+            <PlaceLink place={p} />
+          </li>
         ))}
-        {hidden > 0 && (
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="rounded-full px-2 py-0.5 text-xs text-muted underline decoration-line underline-offset-4
-                       hover:text-ink hover:decoration-muted"
-          >
-            {hidden} more
-          </button>
-        )}
-      </div>
+      </ul>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1.5 text-xs text-muted transition-colors hover:text-ink"
+        >
+          {hidden} more
+        </button>
+      )}
     </Pane>
   );
 }

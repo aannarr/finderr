@@ -4,7 +4,7 @@
  *
  * The sixth view on the shared filtered grid: a header saying what the selection is,
  * `TitleGrid` under it, a loader that differs. Paged like a filmography rather than unpaged
- * like a term, because a place can be long -- Los Angeles is 646 titles.
+ * like a term, because a place can be long -- Los Angeles is 1,374 titles (real build, 2026-09-14).
  *
  * Local SQLite the whole way down. `place` and `title_place` are built into the index from
  * Wikidata, so `/api/place/:id` asks nobody anything.

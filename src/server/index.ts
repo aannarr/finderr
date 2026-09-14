@@ -2521,7 +2521,8 @@ const appRoutes = {
    * built before the stage are all the same 404 -- there is no page here, and the last one
    * fixes itself at the next rebuild.
    *
-   * Paged like a filmography, because a city is a long list: Los Angeles is 646 titles.
+   * Paged like a filmography, because a city is a long list: Los Angeles is 1,374 titles on the
+   * 2026-09-14 build.
    */
   "/api/place/:id": (req: Bun.BunRequest<"/api/place/:id">) => {
     const id = parsePlaceId(req.params.id);

@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import type { ReactNode } from "react";
 import type { Place, Term } from "../lib/api";
 import { renderInRouter as render } from "../test/render-in-router";
-import { findTerm, PlaceChip, TermChip } from "./TermChip";
+import { findTerm, PlaceLink, TermChip } from "./TermChip";
 
 const term = (over: Partial<Term> = {}): Term => ({
   dimension: "keyword",
@@ -75,7 +75,7 @@ describe("TermChip", () => {
   });
 });
 
-describe("PlaceChip", () => {
+describe("PlaceLink", () => {
   const place = (over: Partial<Place> = {}): Place => ({
     id: "Q10400",
     label: "Almería",
@@ -91,13 +91,13 @@ describe("PlaceChip", () => {
 
   /** The same threshold a keyword uses, read from the same constant. */
   test("a place with only this title is plain text", async () => {
-    const html = await renderPlace(<PlaceChip place={place({ titles: 1 })} />);
+    const html = await renderPlace(<PlaceLink place={place({ titles: 1 })} />);
     expect(html).toContain("Almería");
     expect(html).not.toContain("<a ");
   });
 
   test("a place with somewhere to go links to its page and says how many titles are behind it", async () => {
-    const html = await renderPlace(<PlaceChip place={place()} />);
+    const html = await renderPlace(<PlaceLink place={place()} />);
     expect(html).toContain('href="/place/Q10400"');
     expect(html).toContain("80 titles we hold");
   });

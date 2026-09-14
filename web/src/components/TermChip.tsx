@@ -50,16 +50,21 @@ export function TermChip({ term, label }: { term: Term | undefined; label: strin
  *
  * Its own component rather than a fifth term dimension, because a place is built into the
  * title index and goes to `/place/$id` -- but the threshold is `MIN_TERM_TITLES`, read from
- * the same constant, so a place chip and a keyword chip can never disagree about what counts
- * as somewhere to go. The count is the server's, measured at build time.
+ * the same constant, so a place and a keyword can never disagree about what counts as
+ * somewhere to go. The count is the server's, measured at build time.
+ *
+ * A LINE OF TEXT, NOT A PILL. Keywords are one or two words; a place is often a whole name --
+ * "Commodore Schuyler F. Heim Bridge" -- and in the 16rem rail a pill that long wraps into a
+ * two-line blob. Read off a real browser on 2026-09-14. The link is told apart from plain text
+ * by its underline, the same quiet treatment the title page's links row uses.
  */
-export function PlaceChip({ place }: { place: Place }) {
-  if (place.titles < MIN_TERM_TITLES) return <InertChip label={place.label} />;
+export function PlaceLink({ place }: { place: Place }) {
+  if (place.titles < MIN_TERM_TITLES) return <span className="text-ink">{place.label}</span>;
   return (
     <Link
       to="/place/$id"
       params={{ id: place.id }}
-      className={`${CHIP_PILL} hover:text-ink`}
+      className="text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-muted"
       title={`${place.label} -- ${place.titles} titles we hold`}
     >
       {place.label}
