@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { placeMapUrl, placeWikidataUrl } from "./place-links";
+import { episodesLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "./place-links";
 
 describe("placeMapUrl", () => {
   test("OpenStreetMap, lat before lon, and nothing without a coordinate", () => {
@@ -8,6 +8,21 @@ describe("placeMapUrl", () => {
     );
     expect(placeMapUrl({ lat: null, lon: 1 })).toBeNull();
     expect(placeMapUrl({ lat: 1, lon: null })).toBeNull();
+  });
+});
+
+describe("placePrefix", () => {
+  test("an area is filmed IN, a site or a studio is filmed AT", () => {
+    expect(placePrefix({ kind: "area" })).toBe("Filmed in");
+    expect(placePrefix({ kind: "site" })).toBe("Filmed at");
+  });
+});
+
+describe("episodesLabel", () => {
+  test("one is singular, and a count past a thousand is grouped", () => {
+    expect(episodesLabel(1)).toBe("1 episode");
+    expect(episodesLabel(178)).toBe("178 episodes");
+    expect(episodesLabel(1200)).toBe(`${(1200).toLocaleString()} episodes`);
   });
 });
 
