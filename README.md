@@ -279,6 +279,15 @@ dump, so it costs no API call at all. Typing a name finds the person as well as 
 they come back in their own row above the results, best known first, with the face we
 already hold from some title's cast.
 
+A title says where it was filmed, and every place is a page. The index build pulls
+Wikidata's filming-location statements for every title that has an IMDb id -- about 42,000
+of them -- and files each place as a site (Monument Valley, a castle, a studio) or an area
+(Almería, Los Angeles). Countries are dropped: "filmed in the United States" is a caption,
+not a place. `/place/Q10400` is everything we hold that was shot in Almería, most-voted
+first, with a link out to OpenStreetMap and to the Wikidata item a wrong entry is corrected
+on. A place with only the one title you are already looking at stays plain text. No map is
+embedded and no map API is called; it is two local tables.
+
 Requests return immediately. The POST answers `202`, a background worker adds the title
 to Radarr or Sonarr, and a toast tells you how it went. For a series you pick the seasons
 before anything is queued. Retry is a button. There are four grains: a whole title, a
