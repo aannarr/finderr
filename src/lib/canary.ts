@@ -206,7 +206,7 @@ export const CANARY_CASES: CanaryCase[] = [
   {
     query: '"sealook"',
     want: null,
-    note: "unquoted answers Sherlock through the fuzzy tier; the Netflix show has no IMDb id",
+    note: "answered Sully through the fuzzy tier before quotes gated it; the Netflix show has no IMDb id",
   },
   {
     query: '"interstelar"',
