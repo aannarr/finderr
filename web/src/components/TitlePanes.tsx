@@ -1177,21 +1177,28 @@ function LanguageNames({ langs }: { langs: Language[] }) {
  * EIGHT, from the data rather than from taste. Measured 2026-09-14 over the 27,207 titles
  * Wikidata gives a location: median 1, p95 4, p99 8, max 44. So 99% of titles show every place
  * they have, and the 1% that would turn the rail into a wall of chips (a 44-place travelogue)
- * show their eight best -- sites first, most-filmed first -- behind one control.
+ * show their eight best -- the ones with a page first (`placesForTitle` owns that order) --
+ * behind one control.
  */
 const PLACES_SHOWN = 8;
 
 /**
  * Where the title was filmed, each place a link once it has somewhere to go.
  *
- * `PlaceChip` owns the link rule; this component decides only two things: an empty list draws
+ * `PlaceLink` owns the link rule; this component decides only two things: an empty list draws
  * no section at all, and a long one is folded at `PLACES_SHOWN`.
+ *
+ * THE FOLD IS A TOGGLE THAT STAYS MOUNTED. It was a one-way "N more" button that unmounted
+ * itself on click, which dropped keyboard focus onto the body and left no way back -- both
+ * found in a real browser by the 2026-09-14 critique. It now keeps its place, says what it
+ * does in words that survive a screen reader, and carries `aria-expanded`. `min-h-6` is the
+ * 24px target floor for a pointer, sized for this desktop rail rather than a phone's 44.
  */
 function FilmingLocations({ places }: { places: readonly Place[] }) {
   const [expanded, setExpanded] = useState(false);
   if (places.length === 0) return null;
-  const shown = expanded ? places : places.slice(0, PLACES_SHOWN);
-  const hidden = places.length - shown.length;
+  const foldable = places.length > PLACES_SHOWN;
+  const shown = expanded || !foldable ? places : places.slice(0, PLACES_SHOWN);
   return (
     <Pane heading="Filming locations" variant="rail">
       <ul className="space-y-1 text-sm leading-snug">
@@ -1201,13 +1208,14 @@ function FilmingLocations({ places }: { places: readonly Place[] }) {
           </li>
         ))}
       </ul>
-      {hidden > 0 && (
+      {foldable && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
-          className="mt-1.5 text-xs text-muted transition-colors hover:text-ink"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+          className="mt-1 inline-flex min-h-6 items-center text-xs text-muted transition-colors hover:text-ink"
         >
-          {hidden} more
+          {expanded ? "Show fewer" : `Show all ${places.length}`}
         </button>
       )}
     </Pane>

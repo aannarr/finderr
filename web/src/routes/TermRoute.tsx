@@ -19,6 +19,7 @@
 import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { isTermDimension, type TermDimension } from "../../../src/lib/terms";
+import { PageHeading } from "../components/PageHeading";
 import { TitleGrid } from "../components/TitleGrid";
 import { cachedTerm, getTerm, subscribeTitleState, type TermPage, titleStateVersion } from "../lib/api";
 
@@ -112,8 +113,7 @@ export function TermRoute() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-xl font-semibold tracking-tight">
-          <span className="mr-2 text-sm font-normal text-muted">{DIMENSION_LABEL[known]}</span>
+        <PageHeading prefix={DIMENSION_LABEL[known]}>
           {page.term.label}
           {/*
             The country is part of what a service page is, so it is stated rather than
@@ -121,9 +121,12 @@ export function TermRoute() {
             looking at a different catalogue.
           */}
           {known === "service" && country && (
-            <span className="ml-2 text-sm font-normal text-muted">in {country.toUpperCase()}</span>
+            <>
+              {" "}
+              <span className="ml-1 text-sm font-normal text-muted">in {country.toUpperCase()}</span>
+            </>
           )}
-        </h2>
+        </PageHeading>
         <span className="text-xs text-muted tabular-nums">{countLine(page)}</span>
       </div>
 

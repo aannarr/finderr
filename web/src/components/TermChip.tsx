@@ -55,17 +55,21 @@ export function TermChip({ term, label }: { term: Term | undefined; label: strin
  *
  * A LINE OF TEXT, NOT A PILL. Keywords are one or two words; a place is often a whole name --
  * "Commodore Schuyler F. Heim Bridge" -- and in the 16rem rail a pill that long wraps into a
- * two-line blob. Read off a real browser on 2026-09-14. The link is told apart from plain text
- * by its underline, the same quiet treatment the title page's links row uses.
+ * two-line blob. Read off a real browser on 2026-09-14.
+ *
+ * TWO CUES, NOT ONE. A link is full-contrast ink with a `muted` underline; a place with nowhere
+ * to go is `muted` text with none. The first draft used ink for both and a `line`-coloured
+ * underline -- the border token, about 1.3:1 on the card -- so a list of eight read as eight
+ * identical names, which the critique of that date measured and a reader would simply guess at.
  */
 export function PlaceLink({ place }: { place: Place }) {
-  if (place.titles < MIN_TERM_TITLES) return <span className="text-ink">{place.label}</span>;
+  if (place.titles < MIN_TERM_TITLES) return <span className="text-muted">{place.label}</span>;
   return (
     <Link
       to="/place/$id"
       params={{ id: place.id }}
-      className="text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-muted"
-      title={`${place.label} -- ${place.titles} titles we hold`}
+      className="text-ink underline decoration-muted underline-offset-4 transition-colors hover:decoration-ink"
+      title={`${place.label} -- ${place.titles.toLocaleString()} titles we hold`}
     >
       {place.label}
     </Link>

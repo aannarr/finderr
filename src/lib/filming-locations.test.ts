@@ -223,7 +223,11 @@ describe("loadPlaces", () => {
 });
 
 describe("placesForTitle", () => {
-  test("sites first, then areas, each most-filmed first with the label as the tie-break", () => {
+  /*
+    LINKABLE FIRST, then sites before areas. The critique of 2026-09-14 caught the fold at 8
+    keeping one-title plain-text sites and hiding every place with a page behind "N more".
+  */
+  test("places with a page come first, sites before areas within each, most-filmed then label", () => {
     const db = indexWith([
       { tconst: "tt1", votes: 1 },
       { tconst: "tt2", votes: 1 },
@@ -242,14 +246,15 @@ describe("placesForTitle", () => {
         { imdb: "tt1", place: 3 },
         { imdb: "tt1", place: 4 },
         { imdb: "tt2", place: 4 },
+        { imdb: "tt2", place: 1 },
       ],
     );
     for (const sql of INDEXES.places) db.run(sql);
     expect(placesForTitle(db, "tt1").map((p) => p.label)).toEqual([
       "Zebra Rock",
+      "Almería",
       "Fort Bravo",
       "Tabernas Desert",
-      "Almería",
     ]);
     expect(placesForTitle(db, "tt1")[0]).toMatchObject({ id: "Q4", kind: "site", titles: 2 });
   });

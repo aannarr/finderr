@@ -43,12 +43,22 @@ describe("TitleFactsCard filming locations", () => {
     expect(container.textContent).toBe("");
   });
 
-  test("more than eight places fold behind one control, and pressing it shows the rest", async () => {
+  test("more than eight places fold behind one toggle that opens, stays put, and closes again", async () => {
     await renderFacts(Array.from({ length: 11 }, (_, i) => place(i)));
     expect(screen.queryByText("Place 9")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "3 more" }));
+
+    const toggle = screen.getByRole("button", { name: "Show all 11" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
     expect(screen.getByText("Place 11")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "3 more" })).toBeNull();
+
+    // The SAME element, still mounted -- which is what keeps keyboard focus from falling to <body>.
+    const open = screen.getByRole("button", { name: "Show fewer" });
+    expect(open).toBe(toggle);
+    expect(open.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(open);
+    expect(screen.queryByText("Place 9")).toBeNull();
   });
 
   test("exactly eight places need no control", async () => {

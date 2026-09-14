@@ -35,6 +35,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { CrosswalkSource } from "./crosswalk";
+import { MIN_TERM_TITLES } from "./terms";
 
 /**
  * Every place any work was filmed at, one row each, already classified.
@@ -400,9 +401,13 @@ function toPlace(r: PlaceDbRow): Place {
 /**
  * Every place one title was filmed at, in the order a reader should meet them.
  *
- * SITES FIRST, then areas: Monument Valley before Arizona. Within each, the most-filmed place
- * first -- it is the one with somewhere to go -- and the label as the stable tie-break, so the
- * row never reshuffles between two loads of one page.
+ * PLACES WITH A PAGE FIRST, then sites before areas, then the most-filmed, then the label as the
+ * stable tie-break so the row never reshuffles between two loads of one page.
+ *
+ * The first key is the one the 2026-09-14 critique bought. Ordering on kind alone put every
+ * one-title site ahead of every city, so the rail's fold at eight kept the dead ends on screen
+ * and hid Paris, Tokyo and Tangier behind "Show all". The threshold is `MIN_TERM_TITLES`, the
+ * same constant the browser's link rule reads, so "has a page" means one thing on both sides.
  */
 export function placesForTitle(db: Database, tconst: string): Place[] {
   const rows = db
@@ -410,7 +415,8 @@ export function placesForTitle(db: Database, tconst: string): Place[] {
       `select ${PLACE_COLS}
          from title_place tp join place p on p.id = tp.place_id
         where tp.title_rowid = (select rowid_ from title where tconst = ?)
-        order by case p.kind when 'site' then 0 else 1 end, p.titles desc, p.label`,
+        order by p.titles >= ${MIN_TERM_TITLES} desc, case p.kind when 'site' then 0 else 1 end,
+                 p.titles desc, p.label`,
     )
     .all(tconst) as PlaceDbRow[];
   return rows.map(toPlace);

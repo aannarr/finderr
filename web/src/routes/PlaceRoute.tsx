@@ -19,6 +19,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { type Place, placeMapUrl, placeWikidataUrl } from "../../../src/lib/filming-locations";
 import { useKeyAction } from "../components/Kbd";
+import { PageHeading } from "../components/PageHeading";
 import { TitleGrid } from "../components/TitleGrid";
 import { cachedPlaceRun, getPlace, type PlacePage, subscribeTitleState, titleStateVersion } from "../lib/api";
 import { browserLocales } from "../lib/reader-locale";
@@ -45,6 +46,27 @@ function countryName(code: string | null): string | null {
   }
 }
 
+/**
+ * Fetch a place's first page into whichever setters the caller hands over.
+ *
+ * ONE body for the two callers -- the load effect, whose setters are guarded against a stale
+ * navigation, and "Try again", which runs in a click on the page that is already mounted.
+ */
+function loadFirstPage(
+  id: string,
+  set: {
+    setPage: (p: PlacePage) => void;
+    setError: (e: string) => void;
+    setLoading: (l: boolean) => void;
+  },
+): void {
+  set.setLoading(true);
+  getPlace(id, { limit: PAGE, offset: 0 })
+    .then((p) => set.setPage(p))
+    .catch((e: Error) => set.setError(e.message))
+    .finally(() => set.setLoading(false));
+}
+
 export function PlaceRoute() {
   const { id } = useParams({ strict: false }) as { id: string };
   const [page, setPage] = useState<PlacePage | null>(null);
@@ -67,17 +89,11 @@ export function PlaceRoute() {
     // revalidation -- unlike a term page, whose membership grows as the facet cache warms.
     if (cachedPlaceRun(id, PAGE)) return;
     let stale = false;
-    setLoading(true);
-    getPlace(id, { limit: PAGE, offset: 0 })
-      .then((p) => {
-        if (!stale) setPage(p);
-      })
-      .catch((e: Error) => {
-        if (!stale) setError(e.message);
-      })
-      .finally(() => {
-        if (!stale) setLoading(false);
-      });
+    loadFirstPage(id, {
+      setPage: (p) => !stale && setPage(p),
+      setError: (e) => !stale && setError(e),
+      setLoading: (l) => !stale && setLoading(l),
+    });
     return () => {
       stale = true;
     };
@@ -107,11 +123,33 @@ export function PlaceRoute() {
   const loadMoreKey = useKeyAction("loadMore", () => void loadMore(), canLoadMore);
 
   if (error) {
+    /*
+      Two different answers, said differently. A 404 covers an id nobody filmed at in this
+      index, a malformed id and an index built before the stage -- none of which is "a real
+      place with nothing in it", which is what the first draft of this sentence claimed. Any
+      other failure is transient, so it gets a retry instead of a raw `e.message`.
+    */
+    const unknown = error === "unknown place";
     return (
       <p className="py-16 text-center text-muted">
-        {error === "unknown place" ? "We hold nothing filmed there." : error}{" "}
+        {unknown ? "That is not a filming location in our index." : "This place did not load."}{" "}
+        {!unknown && (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                loadFirstPage(id, { setPage, setError, setLoading });
+              }}
+              className="underline hover:text-ink"
+            >
+              Try again
+            </button>{" "}
+            or{" "}
+          </>
+        )}
         <Link to="/" className="underline hover:text-ink">
-          Back to search
+          {unknown ? "Back to search" : "back to search"}
         </Link>
       </p>
     );
@@ -128,10 +166,7 @@ export function PlaceRoute() {
     <>
       <div className="mb-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-xl font-semibold tracking-tight">
-            <span className="mr-2 text-sm font-normal text-muted">{placePrefix(place)}</span>
-            {place.label}
-          </h2>
+          <PageHeading prefix={placePrefix(place)}>{place.label}</PageHeading>
           <span className="text-xs text-muted tabular-nums">
             {page.total.toLocaleString()} {page.total === 1 ? "title" : "titles"}
           </span>
