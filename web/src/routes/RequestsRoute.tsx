@@ -37,7 +37,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SeasonProgress } from "../../../src/lib/episodes";
-import { VERDICT_COPY } from "../../../src/lib/request-diagnostics";
 import type { QuotaState } from "../../../src/lib/request-quota";
 import { isWithdrawable } from "../../../src/lib/request-withdrawal";
 import { ConfirmAction } from "../components/ConfirmAction";
@@ -46,18 +45,17 @@ import { Poster } from "../components/Poster";
 import { RemoveMediaControl } from "../components/RemoveMediaControl";
 import { ProgressBar, RequestVerdictPanel } from "../components/RequestProgress";
 import { RequestsHeader } from "../components/RequestsHeader";
+import { RetryControl } from "../components/RetryControl";
 import {
   getRequests,
   type MediaRequest,
   markRequestsSeen,
   patchTitleState,
   requestStatePatch,
-  retryRequest,
   withdrawRequest,
 } from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { BUCKET_LABEL, groupByState, hasWorkInFlight, newsFirst, seasonLine } from "../lib/request-log";
-import { LINK_BUTTON } from "../lib/ui";
 
 /**
  * Undo one ask, behind a confirmation.
@@ -100,56 +98,6 @@ export function WithdrawControl({
           onWithdrawn();
         }}
       />
-    </div>
-  );
-}
-
-/**
- * Ask again for something that dead-ended.
- *
- * `POST /api/requests/:tconst/retry` has existed since requests did and NOTHING on this page
- * called it -- `RootLayout` reaches for it only from the toast a failed POST raises, which is
- * gone the moment the reader looks away. So the one screen dedicated to watching requests
- * offered no way to act on the ones that had stopped, which is the dead end this product
- * refuses everywhere else.
- *
- * NO CONFIRMATION, unlike `WithdrawControl` beside it, and the asymmetry is the point:
- * withdrawing destroys an ask and cannot be undone, while retrying re-queues one and costs an
- * indexer search. A guard on a harmless verb teaches readers to click through guards.
- *
- * Offered on DEAD ENDS ONLY -- the tone, never a list of verdicts, so a verdict added to
- * `VERDICT_COPY` lands in the right place here without this file being edited. A retry on
- * something already downloading would cancel and re-search a download in progress.
- */
-export function RetryControl({ request, onRetried }: { request: MediaRequest; onRetried: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  if (!request.requestVerdict || VERDICT_COPY[request.requestVerdict].tone !== "dead_end") return null;
-
-  const retry = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await retryRequest(request.tconst);
-      // Every cached view of this title still shows the failure, so it is corrected through
-      // the shared caches rather than by reloading each of them -- the same call and the same
-      // reason as `WithdrawControl` above.
-      patchTitleState(request.tconst, requestStatePatch("queued"));
-      onRetried();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <button type="button" onClick={() => void retry()} disabled={busy} className={LINK_BUTTON}>
-        {busy ? "Asking again…" : "Try again"}
-      </button>
-      {error && <span className="text-xs text-danger">{error}</span>}
     </div>
   );
 }

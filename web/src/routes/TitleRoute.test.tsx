@@ -93,6 +93,23 @@ describe("a title we do not hold the file for", () => {
     expect(html).not.toContain("Monitored, not downloaded");
   });
 
+  /*
+    A DEAD END ON THE ONE SCREEN WITH ROOM FOR IT MUST OFFER THE WAY OUT. Reported by aannarr
+    2026-09-15 from /title/tt10802170: "Request failed" and nothing to press, while the same
+    request on /requests had a Try again beside it.
+  */
+  test("a request that dead-ended offers Try again under its verdict", () => {
+    for (const verdict of ["failed", "no_releases", "nothing_accepted"] as const) {
+      const html = render(makeTitle({ requestStatus: "failed", requestVerdict: verdict }), false);
+      expect(html).toContain("Try again");
+    }
+  });
+
+  test("a request still being worked on offers no Try again", () => {
+    const html = render(makeTitle({ requestStatus: "sent", requestVerdict: "searching" }), false);
+    expect(html).not.toContain("Try again");
+  });
+
   test("monitored with nobody asking says so, with the arr's own percentage", () => {
     const html = render(makeTitle({ inLibrary: true, progress: 0.42 }), true);
     expect(html).toContain("Monitored, not downloaded");

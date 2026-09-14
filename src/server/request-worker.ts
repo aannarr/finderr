@@ -9,10 +9,19 @@
  *
  * So: the HTTP handler writes a row and returns 202. This worker drains the queue at
  * its own pace, one at a time, and the client polls for outcomes.
+ *
+ * > [!IMPORTANT] A BUSY ARR IS NOT A DEAD END (2026-09-15)
+ * > The arr answers an add BEFORE it has finished refreshing the title, so the next add in
+ * > the queue can land on a Sonarr still holding its own database: measured on the NAS, The
+ * > Rehearsal's add waited 30.3 s for `database is locked` behind the series added just
+ * > before it. That used to be terminal -- "Request failed", nothing retrying, for four days.
+ * > Now a transient failure (`isTransientArrFailure`) puts the row back to `queued` with a
+ * > `retry_at`, and the retry goes through the SAME serial queue as everything else when its
+ * > timer fires. Only `MAX_SEND_ATTEMPTS` of them turns it `failed`.
  */
 
 import type { RadarrClient, SonarrClient } from "../lib/arr";
-import { ArrError, safeArrMessage } from "../lib/arr";
+import { ArrError, isTransientArrFailure, safeArrMessage, safeRetryMessage } from "../lib/arr";
 import type { ProwlarrClient } from "../lib/prowlarr";
 import { decodeSeasons } from "../lib/seasons";
 import type { MediaRequest, Store } from "../lib/store";
@@ -46,7 +55,37 @@ export interface WorkerDeps {
    * anything asynchronous is the listener's own business.
    */
   onAvailable?: (request: MediaRequest) => void;
+  /** How long to wait before send attempt `n + 1`, given `n` failures. Injected by tests. */
+  retryDelayMs?: (failures: number) => number;
+  /** The breath between two sends. 400 ms by default; injected by tests. */
+  pauseMs?: number;
 }
+
+/**
+ * The wait after each transient failure: a minute, five, fifteen, thirty, then hourly.
+ *
+ * Front-loaded because the case that motivated it clears itself in seconds -- an arr finishing
+ * the refresh of the title added before -- while the tail covers an arr that is down for a
+ * restart or an update. With `MAX_SEND_ATTEMPTS` that is roughly twenty hours of trying before
+ * a reader is told it failed.
+ */
+export const SEND_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000] as const;
+
+/** Sends, including the first, before a transient failure is allowed to become `failed`. */
+export const MAX_SEND_ATTEMPTS = 24;
+
+export function sendRetryDelay(failures: number): number {
+  return SEND_RETRY_DELAYS_MS[Math.min(Math.max(failures, 1), SEND_RETRY_DELAYS_MS.length) - 1];
+}
+
+/**
+ * The kv key that marks the one-off requeue of every `failed` row as done.
+ *
+ * aannarr, 2026-09-15: "requeue all failed on deploy". Every row failed before this worker
+ * could retry anything, so each gets one pass through it. The flag is what keeps a title that
+ * fails for good (a 404) from being re-sent on every restart after.
+ */
+export const REQUEUE_FAILED_KV = "requests.requeue-failed.2026-09-15";
 
 /**
  * One unit of work.
@@ -72,13 +111,46 @@ export class RequestWorker {
   private running = false;
   private processed = 0;
   private failed = 0;
+  /** Requests waiting out a retry delay, by tconst. Not in `queue`, so they block nothing. */
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private deps: WorkerDeps) {}
 
-  /** Pick up anything left queued by a previous run. */
+  /** Pick up anything left queued by a previous run, honouring any retry time it was given. */
   start(): void {
-    for (const r of this.deps.store.listRequests("queued", 500)) this.enqueue(r.tconst);
-    if (this.queue.length > 0) this.deps.log(`request queue: resuming ${this.queue.length} pending`);
+    const { store, log } = this.deps;
+    if (store.getKv(REQUEUE_FAILED_KV) === null) {
+      const failed = store.listRequests("failed", 500);
+      for (const r of failed) store.requeueRequest(r.tconst);
+      store.setKv(REQUEUE_FAILED_KV, new Date().toISOString());
+      if (failed.length > 0) log(`request queue: requeued ${failed.length} failed request(s) once`);
+    }
+    for (const r of store.listRequests("queued", 500)) {
+      const wait = r.retry_at ? Date.parse(r.retry_at) - Date.now() : 0;
+      if (wait > 0) this.schedule(r.tconst, wait);
+      else this.enqueue(r.tconst);
+    }
+    if (this.queue.length + this.timers.size > 0) {
+      log(`request queue: resuming ${this.queue.length} pending, ${this.timers.size} waiting to retry`);
+    }
+  }
+
+  /** Cancel every scheduled retry. The rows keep their `retry_at`, so `start` picks them up again. */
+  stop(): void {
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+  }
+
+  private schedule(tconst: string, delayMs: number): void {
+    const existing = this.timers.get(tconst);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.timers.delete(tconst);
+      this.enqueue(tconst);
+    }, delayMs);
+    // A pending retry must not hold a process open that is otherwise ready to exit.
+    (timer as { unref?: () => void }).unref?.();
+    this.timers.set(tconst, timer);
   }
 
   enqueue(tconst: string): void {
@@ -107,6 +179,7 @@ export class RequestWorker {
       processed: this.processed,
       failed: this.failed,
       running: this.running,
+      waiting: this.timers.size,
     };
   }
 
@@ -127,7 +200,7 @@ export class RequestWorker {
         if (job.kind === "title") await this.process(job.tconst);
         else await this.processEpisodes(job.tconst, job.episodeIds);
         // Breathe between adds.
-        await Bun.sleep(400);
+        await Bun.sleep(this.deps.pauseMs ?? 400);
       }
     } finally {
       this.running = false;
@@ -139,6 +212,29 @@ export class RequestWorker {
     const req = store.getRequest(tconst);
     if (!req) return;
     if (req.status !== "queued") return;
+    // Not due yet: something enqueued it early. The timer is the one that sends it.
+    const wait = req.retry_at ? Date.parse(req.retry_at) - Date.now() : 0;
+    if (wait > 0) {
+      if (!this.timers.has(tconst)) this.schedule(tconst, wait);
+      return;
+    }
+    // A Try again during the wait already sent it; the timer would only find a non-queued row,
+    // but there is no reason to leave it armed.
+    const pending = this.timers.get(tconst);
+    if (pending) {
+      clearTimeout(pending);
+      this.timers.delete(tconst);
+    }
+
+    // An unconfigured arr is not transient -- no amount of waiting configures it -- so it is
+    // decided here, before the classification below could read a plain Error as "no answer".
+    const client = req.service === "radarr" ? radarr : sonarr;
+    if (!client) {
+      store.updateRequest(tconst, { status: "failed", error: safeArrMessage(null), retry_at: null });
+      this.failed++;
+      log(`request FAILED "${req.title}": ${req.service} is not configured`);
+      return;
+    }
 
     try {
       // Null for every ordinary request, which is what makes this a no-op for them: both
@@ -157,6 +253,7 @@ export class RequestWorker {
           status: "sent",
           arr_id: movie.id,
           error: null,
+          retry_at: null,
         });
         log(`request: added "${req.title}" to Radarr as id ${movie.id}`);
       } else {
@@ -172,6 +269,7 @@ export class RequestWorker {
           status: "sent",
           arr_id: series.id,
           error: null,
+          retry_at: null,
         });
         log(`request: added "${req.title}" to Sonarr as id ${series.id}`);
       }
@@ -182,13 +280,33 @@ export class RequestWorker {
       // user needs to see as red.
       const already = err instanceof ArrError && err.status === 400 && /already|exist/i.test(err.body);
       if (already) {
-        store.updateRequest(tconst, { status: "sent", error: null });
+        // Also the landing of a retry whose previous attempt DID reach the arr before we
+        // stopped waiting for it -- which is why a timeout may be retried blind.
+        store.updateRequest(tconst, { status: "sent", error: null, retry_at: null });
         log(`request: "${req.title}" already existed in ${req.service}`);
         this.processed++;
         return;
       }
+      const attempts = req.send_attempts + 1;
+      if (isTransientArrFailure(err) && attempts < MAX_SEND_ATTEMPTS) {
+        const delay = (this.deps.retryDelayMs ?? sendRetryDelay)(attempts);
+        store.updateRequest(tconst, {
+          status: "queued",
+          send_attempts: attempts,
+          retry_at: new Date(Date.now() + delay).toISOString(),
+          error: safeRetryMessage(req.service),
+        });
+        this.schedule(tconst, delay);
+        log(
+          `request: "${req.title}" not accepted by ${req.service} (attempt ${attempts}/${MAX_SEND_ATTEMPTS}), ` +
+            `retrying in ${Math.round(delay / 1000)}s: ${e.message}`,
+        );
+        return;
+      }
       store.updateRequest(tconst, {
         status: "failed",
+        send_attempts: attempts,
+        retry_at: null,
         // SANITISED. The arr's own message quotes its response body, which carries root
         // folder paths and internal hostnames, and this column is served to the browser.
         // The full text goes to the log line below and stays there.

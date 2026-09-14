@@ -13,9 +13,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { isWithdrawable } from "../../../src/lib/request-withdrawal";
+import { RetryControl } from "../components/RetryControl";
 import type { MediaRequest } from "../lib/api";
 import { fireEvent, render, screen } from "../test/interact";
-import { RequestActions, RetryControl, WithdrawControl } from "./RequestsRoute";
+import { RequestActions, WithdrawControl } from "./RequestsRoute";
 
 const request = (over: Partial<MediaRequest> = {}): MediaRequest => ({
   id: 1,

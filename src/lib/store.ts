@@ -105,6 +105,13 @@ export interface MediaRequest {
   /** How many times we have looked for a release and found nothing. */
   search_attempts: number;
   /**
+   * How many times the ADD itself went unanswered -- a timeout or an arr 5xx. Distinct from
+   * `search_attempts`, which counts searches for a title the arr already holds.
+   */
+  send_attempts: number;
+  /** When the worker next sends a `queued` row that failed transiently, ISO; null = send now. */
+  retry_at: string | null;
+  /**
    * Which seasons the reader asked for, comma-joined ("0,1,2"), or null for "all".
    *
    * NULL is not the same as "every season listed": it means the reader never chose, so
@@ -1005,6 +1012,19 @@ const ADDED_COLUMNS: AddedColumn[] = [
     ddl: "alter table request add column via_agent_key integer not null default 0",
   },
   /*
+    HOW MANY TIMES THE ADD HAS BEEN SENT AND NOT ANSWERED, and when the next try is due.
+
+    A busy arr is not a dead end (`RequestWorker`, 2026-09-15): a timeout or a 5xx leaves the
+    row `queued` with these two set, and only running out of attempts turns it `failed`. Zero
+    and null on every older row, which is exactly "never tried and failed".
+  */
+  {
+    table: "request",
+    column: "send_attempts",
+    ddl: "alter table request add column send_attempts integer not null default 0",
+  },
+  { table: "request", column: "retry_at", ddl: "alter table request add column retry_at text" },
+  /*
     WHICH FACET CHIPS WERE NARROWING A SEARCH. JSON of the four declared scalars, or null.
 
     NO BACKFILL, AND NONE IS POSSIBLE. A row written before this column genuinely does not
@@ -1698,9 +1718,18 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
    *
    * `created_at` and `requested_by` are untouched: this is the SAME ask trying again, so it
    * keeps its place in `/log` and the name of whoever made it.
+   *
+   * `send_attempts` and `retry_at` reset for the same reason: a person pressing Try again
+   * during a scheduled wait means NOW, and a new attempt deserves the whole retry budget.
    */
   requeueRequest(tconst: string): void {
-    this.updateRequest(tconst, { status: "queued", error: null, search_attempts: 0 });
+    this.updateRequest(tconst, {
+      status: "queued",
+      error: null,
+      search_attempts: 0,
+      send_attempts: 0,
+      retry_at: null,
+    });
   }
 
   getRequest(tconst: string): MediaRequest | null {
@@ -1733,7 +1762,10 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
   updateRequest(
     tconst: string,
     patch: Partial<
-      Pick<MediaRequest, "status" | "arr_id" | "error" | "search_attempts" | "available_seen_at">
+      Pick<
+        MediaRequest,
+        "status" | "arr_id" | "error" | "search_attempts" | "send_attempts" | "retry_at" | "available_seen_at"
+      >
     >,
   ): void {
     const sets: string[] = ["updated_at = ?"];

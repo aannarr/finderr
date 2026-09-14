@@ -252,6 +252,15 @@ export interface ArrRemoval {
   remove(arrId: number, opts: { deleteFiles: boolean }): Promise<unknown>;
 }
 
+/**
+ * How long an ADD may take before we stop waiting. Longer than a read's twenty seconds, and
+ * longer than the arr's own SQLite busy wait: measured 2026-09-11, Sonarr held
+ * `POST /api/v3/series` for 30.3 s before answering `database is locked`, so a 20 s client gave
+ * up before the arr could tell us what went wrong. A timeout reads as "no answer" and is retried
+ * blind; a 500 is an answer.
+ */
+export const ADD_TIMEOUT_MS = 60_000;
+
 export class ArrError extends Error {
   constructor(
     readonly service: string,
@@ -278,6 +287,28 @@ export class ArrError extends Error {
  * add should be looking. What comes back here is a short, closed vocabulary: enough for a
  * reader to know whether to retry, tell an admin, or give up.
  */
+/**
+ * Would sending the same add again plausibly work?
+ *
+ * YES for a request that never got an answer (a timeout, a refused connection -- anything that
+ * is not an `ArrError`) and for an arr that answered but could not cope: a 5xx, a 429, a 408.
+ * The standing example is Sonarr's `database is locked`, a 500 it throws while it is still
+ * refreshing the series added just before. NO for everything else the arr said on purpose: a
+ * 404 is a title its metadata source does not know, a 401 is our key, a 400 is the request.
+ */
+export function isTransientArrFailure(err: unknown): boolean {
+  if (!(err instanceof ArrError)) return true;
+  return err.status >= 500 || err.status === 429 || err.status === 408;
+}
+
+/**
+ * What a reader is told while a transient failure waits for its retry. The same closed-vocabulary
+ * rule as `safeArrMessage` below: the service name and nothing an arr wrote.
+ */
+export function safeRetryMessage(service: string): string {
+  return `${service} did not answer -- trying again automatically`;
+}
+
 export function safeArrMessage(err: unknown): string {
   if (!(err instanceof ArrError)) return "the request could not be sent";
   if (err.status === 401 || err.status === 403) return `${err.service} rejected our credentials`;
@@ -389,8 +420,8 @@ export class ServarrHttp<S extends ServarrService = ServarrService> {
   getStream<T>(path: string, query?: Record<string, string | number | undefined>): AsyncGenerator<T> {
     return streamResponseArray<T>(this.send("GET", path, { query, timeoutMs: 120_000 }));
   }
-  post<T>(path: string, body: unknown) {
-    return this.request<T>("POST", path, { body });
+  post<T>(path: string, body: unknown, timeoutMs?: number) {
+    return this.request<T>("POST", path, { body, timeoutMs });
   }
   put<T>(path: string, body: unknown) {
     return this.request<T>("PUT", path, { body });
@@ -605,7 +636,7 @@ export class RadarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
       minimumAvailability: "released",
       addOptions: { searchForMovie: opts.searchOnAdd !== false },
     };
-    const created = await this.post<RadarrMovie>("/movie", body);
+    const created = await this.post<RadarrMovie>("/movie", body, ADD_TIMEOUT_MS);
     if (!created) throw new ArrError("radarr", 500, "", "Radarr returned an empty body when adding");
     return created;
   }
@@ -774,7 +805,7 @@ export class SonarrClient extends ArrClient implements ArrUnmonitor, ArrRemoval 
       seasonFolder: opts.seasonFolder !== false,
       ...seasonSelection(found, opts.seasons, opts.searchOnAdd !== false),
     };
-    const created = await this.post<SonarrSeries>("/series", body);
+    const created = await this.post<SonarrSeries>("/series", body, ADD_TIMEOUT_MS);
     if (!created) throw new ArrError("sonarr", 500, "", "Sonarr returned an empty body when adding");
     return created;
   }

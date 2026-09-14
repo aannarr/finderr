@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { ArrError, type SonarrClient } from "../lib/arr";
 import { loadConfig } from "../lib/config";
 import { type MediaRequest, type RequestStatus, Store } from "../lib/store";
-import { RequestWorker } from "./request-worker";
+import { MAX_SEND_ATTEMPTS, RequestWorker } from "./request-worker";
 
 /**
  * PUSH FOR SPEED, POLL FOR TRUTH -- this file guards the second half.
@@ -145,5 +146,178 @@ describe("a dead-end request asked for again is picked up rather than dropped", 
       error: "the request could not be sent",
     });
     expect(w.stats().failed).toBe(1);
+  });
+});
+
+/**
+ * A BUSY ARR IS NOT A DEAD END.
+ *
+ * Measured 2026-09-11 on the NAS: finderr asked Sonarr for The Rehearsal while Sonarr was still
+ * refreshing the series added just before it. Our 20 s client timeout fired at 08:03:31, Sonarr
+ * answered `database is locked` at 08:03:42, and the request sat on "Request failed" for four
+ * days with nothing retrying it. aannarr: "failed requests should be queued, and retried
+ * (serialized) over time".
+ */
+
+/** A Sonarr whose `add` answers from a script, one entry per call. */
+function scriptedSonarr(script: Array<() => unknown>) {
+  const calls: string[] = [];
+  const sonarr = {
+    add: async (opts: { imdbId: string }) => {
+      calls.push(opts.imdbId);
+      const next = script.shift();
+      if (!next) throw new Error("script exhausted");
+      return next();
+    },
+  } as unknown as SonarrClient;
+  return { sonarr, calls };
+}
+
+/** Nothing queued, nothing sending, nothing waiting on a retry timer. */
+async function settled(w: RequestWorker): Promise<void> {
+  for (let i = 0; i < 1000 && (w.stats().pending > 0 || w.stats().running || w.stats().waiting > 0); i++) {
+    await Bun.sleep(5);
+  }
+}
+
+describe("a transient arr failure is queued again, not failed", () => {
+  const show = { tconst: "tt10802170", title: "The Rehearsal", year: 2022, kind: "tvSeries" };
+
+  const timeout = () => {
+    throw new DOMException("The operation timed out.", "TimeoutError");
+  };
+  const locked = () => {
+    throw new ArrError("sonarr", 500, "database is locked");
+  };
+
+  test("a timeout re-queues it with a retry time, then the retry lands", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    const { sonarr, calls } = scriptedSonarr([timeout, () => ({ id: 77 })]);
+    const w = new RequestWorker({
+      store,
+      sonarr,
+      pauseMs: 0,
+      log: (...a) => logged.push(a.join(" ")),
+      retryDelayMs: () => 20,
+    });
+
+    w.enqueue(show.tconst);
+    for (let i = 0; i < 200 && store.getRequest(show.tconst)?.send_attempts !== 1; i++) await Bun.sleep(2);
+
+    const waiting = store.getRequest(show.tconst);
+    expect(waiting).toMatchObject({ status: "queued", send_attempts: 1 });
+    expect(waiting?.retry_at).not.toBeNull();
+    // The reader is told it is still coming, never "Request failed".
+    expect(waiting?.error).toBe("sonarr did not answer -- trying again automatically");
+
+    await settled(w);
+    expect(calls).toEqual([show.tconst, show.tconst]);
+    expect(store.getRequest(show.tconst)).toMatchObject({
+      status: "sent",
+      arr_id: 77,
+      error: null,
+      retry_at: null,
+    });
+  });
+
+  test("an arr 5xx is transient too", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    const { sonarr } = scriptedSonarr([locked, () => ({ id: 5 })]);
+    const w = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {}, retryDelayMs: () => 1 });
+    w.enqueue(show.tconst);
+    await settled(w);
+    expect(store.getRequest(show.tconst)).toMatchObject({ status: "sent", arr_id: 5 });
+  });
+
+  test("a title the arr cannot find fails at once -- asking again will not change it", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    const { sonarr, calls } = scriptedSonarr([
+      () => {
+        throw new ArrError("sonarr", 404, "", "Sonarr could not resolve tt10802170");
+      },
+    ]);
+    const w = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {}, retryDelayMs: () => 1 });
+    w.enqueue(show.tconst);
+    await settled(w);
+    expect(calls).toHaveLength(1);
+    expect(store.getRequest(show.tconst)).toMatchObject({
+      status: "failed",
+      error: "sonarr could not find that title",
+    });
+  });
+
+  test("it gives up after MAX_SEND_ATTEMPTS and only then says failed", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    const { sonarr, calls } = scriptedSonarr(Array.from({ length: MAX_SEND_ATTEMPTS + 3 }, () => locked));
+    const w = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {}, retryDelayMs: () => 1 });
+    w.enqueue(show.tconst);
+    await settled(w);
+    expect(calls).toHaveLength(MAX_SEND_ATTEMPTS);
+    expect(store.getRequest(show.tconst)).toMatchObject({ status: "failed", retry_at: null });
+  });
+
+  test("Try again during the wait sends now and starts the count over", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    const { sonarr, calls } = scriptedSonarr([timeout, () => ({ id: 9 })]);
+    // An hour: the scheduled retry must NOT be what sends it.
+    const w = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {}, retryDelayMs: () => 3_600_000 });
+    w.enqueue(show.tconst);
+    for (let i = 0; i < 200 && store.getRequest(show.tconst)?.send_attempts !== 1; i++) await Bun.sleep(2);
+
+    store.requeueRequest(show.tconst);
+    expect(store.getRequest(show.tconst)).toMatchObject({ send_attempts: 0, retry_at: null });
+    w.enqueue(show.tconst);
+    for (let i = 0; i < 400 && store.getRequest(show.tconst)?.status !== "sent"; i++) await Bun.sleep(5);
+
+    expect(calls).toHaveLength(2);
+    expect(store.getRequest(show.tconst)).toMatchObject({ status: "sent", arr_id: 9 });
+    w.stop();
+  });
+
+  test("a restart honours a retry time still in the future instead of sending at boot", async () => {
+    store.createRequest({ ...show, service: "sonarr" });
+    store.updateRequest(show.tconst, {
+      send_attempts: 2,
+      retry_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const { sonarr, calls } = scriptedSonarr([() => ({ id: 1 })]);
+    const w = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {} });
+    w.start();
+    await Bun.sleep(30);
+    expect(calls).toHaveLength(0);
+    expect(w.stats().waiting).toBe(1);
+    w.stop();
+  });
+});
+
+describe("the one-off requeue of every failed request", () => {
+  /*
+    aannarr 2026-09-15: "requeue all failed on deploy". Every row that failed under the old
+    worker failed with no retry at all, so each gets ONE more pass through the new one. Once:
+    a flag in kv keeps a permanently failing title from being re-sent on every restart.
+  */
+  test("failed rows are sent again on the first boot only", async () => {
+    const show = { title: "The Rehearsal", year: 2022, kind: "tvSeries", service: "sonarr" as const };
+    store.createRequest({ ...show, tconst: "tt0000001" });
+    store.updateRequest("tt0000001", { status: "failed", error: "the request could not be sent" });
+    store.createRequest({ ...show, tconst: "tt0000002" });
+    store.updateRequest("tt0000002", { status: "no_release" });
+
+    const { sonarr, calls } = scriptedSonarr([() => ({ id: 3 })]);
+    const first = new RequestWorker({ store, sonarr, pauseMs: 0, log: () => {} });
+    first.start();
+    await settled(first);
+    expect(calls).toEqual(["tt0000001"]);
+    expect(store.getRequest("tt0000001")).toMatchObject({ status: "sent", arr_id: 3, error: null });
+    // Only `failed` is swept. A no_release title is a verdict about indexers, not a send that broke.
+    expect(store.getRequest("tt0000002")?.status).toBe("no_release");
+
+    store.updateRequest("tt0000001", { status: "failed", error: "sonarr could not find that title" });
+    const again = scriptedSonarr([() => ({ id: 4 })]);
+    const second = new RequestWorker({ store, sonarr: again.sonarr, pauseMs: 0, log: () => {} });
+    second.start();
+    await settled(second);
+    expect(again.calls).toEqual([]);
+    expect(store.getRequest("tt0000001")?.status).toBe("failed");
   });
 });

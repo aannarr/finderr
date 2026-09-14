@@ -22,6 +22,7 @@ import { hasPlayMenu, PlayMenu } from "../components/PlayMenu";
 import { Poster } from "../components/Poster";
 import { RequestOptions } from "../components/RequestOptions";
 import { RequestVerdictPanel } from "../components/RequestProgress";
+import { RetryControl } from "../components/RetryControl";
 import { SaveToWatchlist } from "../components/SaveToWatchlist";
 import { SeasonRequestDialog } from "../components/SeasonRequestDialog";
 import { ShareButton } from "../components/ShareButton";
@@ -559,7 +560,15 @@ export function PrimaryAction({
     argument: a bare library row means only that the arr is watching, so it must not shadow
     a verdict about an ask somebody actually made.
   */
-  if (title.requestVerdict) return <RequestVerdictPanel state={title} error={title.requestError} />;
+  if (title.requestVerdict) {
+    return (
+      <>
+        <RequestVerdictPanel state={title} error={title.requestError} />
+        {/* Draws nothing unless the verdict is a dead end -- `RetryControl` owns that rule. */}
+        <RetryControl request={title} tone="primary" />
+      </>
+    );
+  }
 
   /*
     Monitored, nobody asked here. Same amber as a working verdict, same reason as the card's
