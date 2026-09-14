@@ -35,14 +35,7 @@ import {
   stopPlayback,
 } from "../lib/playback-api";
 import { type BrowserStats, PlaybackTelemetry, watchPolicyViolations } from "../lib/playback-telemetry";
-import {
-  loadPrefs,
-  preferredAudio,
-  preferredSubtitle,
-  safeStorage,
-  savePrefs,
-  trackLanguage,
-} from "../lib/player-prefs";
+import { hlsTrackPreferences, loadPrefs, safeStorage, savePrefs, trackLanguage } from "../lib/player-prefs";
 import { readTrackChoices, SUBTITLES_OFF, type TrackChoices, type TrackReader } from "../lib/player-tracks";
 import { PRIMARY_BUTTON } from "../lib/ui";
 import { PlayerStage } from "./player/PlayerStage";
@@ -204,35 +197,16 @@ export function usePlayHere({
         // server's read-ahead is already producing past the playhead, and a deeper buffer is
         // what rides out a busy array (STREAM epic, the warm-up stall card).
         maxBufferLength: 60,
+        // The remembered track languages, handed over at CONSTRUCTION -- the only point hls.js
+        // reads them without overwriting the choice a moment later. See `hlsTrackPreferences`.
+        ...hlsTrackPreferences(loadPrefs(safeStorage())),
         // NO `maxBufferHole` OVERRIDE, and its absence is the assertion: `SEGMENT_MUXER_OPTIONS`
         // in `playback-plan.ts` moved each fragment's position into its own `tfdt`.
       });
       hlsRef.current = hls;
       // THE MENUS ARE FED BY EVENTS, because the renditions do not exist until the manifest is
       // parsed, and the switch events keep the control agreeing with the player.
-      /*
-        THE REMEMBERED LANGUAGES ARE APPLIED ONCE PER KIND, the first time that kind has tracks.
-        Once, because after that a switch is the viewer's own and re-applying on every
-        `*_TRACK_SWITCH` would fight them; per kind, because subtitles can arrive in a later
-        `SUBTITLE_TRACKS_UPDATED` than the audio. Written straight to hls.js rather than through
-        `selectSubtitles`, so applying a preference does not also re-save it.
-      */
-      const applied = { audio: false, subtitles: false };
-      const syncTracks = () => {
-        const offered = readTrackChoices(hls);
-        const prefs = loadPrefs(safeStorage());
-        if (!applied.subtitles && offered.subtitles.length > 0) {
-          applied.subtitles = true;
-          const pick = preferredSubtitle(offered, prefs.subtitleLanguage);
-          if (pick !== null && pick !== offered.subtitlesAt) hls.subtitleTrack = pick;
-        }
-        if (!applied.audio && offered.audio.length > 1) {
-          applied.audio = true;
-          const pick = preferredAudio(offered, prefs.audioLanguage);
-          if (pick !== null && pick !== offered.audioAt) hls.audioTrack = pick;
-        }
-        setTracks(readTrackChoices(hls));
-      };
+      const syncTracks = () => setTracks(readTrackChoices(hls));
       hls.on(Hls.Events.MANIFEST_PARSED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncTracks);

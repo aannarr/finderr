@@ -16,7 +16,7 @@
  * on in a language nobody chose.
  */
 
-import { SUBTITLES_OFF, type TrackChoices, type TrackOption } from "./player-tracks";
+import type { TrackOption } from "./player-tracks";
 
 /** Versioned, so a future shape can be read side by side with this one rather than misread. */
 export const PREFS_KEY = "finderr.player.prefs.v1";
@@ -118,18 +118,27 @@ export function trackLanguage(options: readonly TrackOption[] | undefined, index
 }
 
 /**
- * The subtitle track the preference asks for, or null to leave the player as it is.
+ * The remembered languages as hls.js CONSTRUCTION options.
  *
- * `"off"` asks for off. A language with no matching track answers null -- never "the first one".
+ * > [!CAUTION] SELECTING A TRACK AFTER hls.js HAS PARSED THE MANIFEST DOES NOT STICK
+ * > Measured in Chromium 2026-09-15: a remembered English track switched on at `MANIFEST_PARSED`
+ * > left the second title's subtitles Off. hls.js 1.7.2 rebuilds the subtitle group later,
+ * > resets `trackId` to -1, fires `SUBTITLE_TRACKS_UPDATED` and THEN calls `setSubtitleTrack`
+ * > with its own choice (`subtitle-track-controller.ts`, around line 339) -- so a selection made
+ * > in any event handler before or at that point is overwritten. `subtitlePreference` and
+ * > `audioPreference` are read at exactly that moment, which is why the preference goes in here.
+ *
+ * It also gives "never force a track" for free: with no track in that language hls.js selects
+ * nothing, so subtitles stay off rather than coming on in some other language. `"off"` needs no
+ * option at all, because the server publishes every subtitle rendition `DEFAULT=NO`.
  */
-export function preferredSubtitle(choices: TrackChoices, language: string | null): number | null {
-  if (language === null) return null;
-  if (language === "off") return SUBTITLES_OFF;
-  return choices.subtitles.find((o) => languageOf(o.lang) === language)?.index ?? null;
-}
-
-/** The audio track the preference asks for, or null to leave the player on its default. */
-export function preferredAudio(choices: TrackChoices, language: string | null): number | null {
-  if (language === null) return null;
-  return choices.audio.find((o) => languageOf(o.lang) === language)?.index ?? null;
+export function hlsTrackPreferences(prefs: PlayerPrefs): {
+  subtitlePreference?: { lang: string };
+  audioPreference?: { lang: string };
+} {
+  const subtitles = prefs.subtitleLanguage;
+  return {
+    ...(subtitles && subtitles !== "off" ? { subtitlePreference: { lang: subtitles } } : {}),
+    ...(prefs.audioLanguage ? { audioPreference: { lang: prefs.audioLanguage } } : {}),
+  };
 }

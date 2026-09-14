@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_PREFS,
+  hlsTrackPreferences,
   loadPrefs,
   PREFS_KEY,
   type PrefsStorage,
   parsePrefs,
-  preferredAudio,
-  preferredSubtitle,
   savePrefs,
   trackLanguage,
 } from "./player-prefs";
@@ -96,20 +95,17 @@ describe("a stored value is untrusted", () => {
   });
 });
 
-describe("languages pick tracks and never force one", () => {
-  test("a known language picks its track", () => {
-    expect(preferredSubtitle(choices, "eng")).toBe(1);
-    expect(preferredAudio(choices, "eng")).toBe(1);
+describe("languages go to hls.js as preferences, never as a forced track", () => {
+  test("a remembered language becomes hls.js's own preference option", () => {
+    expect(hlsTrackPreferences({ ...DEFAULT_PREFS, subtitleLanguage: "eng", audioLanguage: "jpn" })).toEqual({
+      subtitlePreference: { lang: "eng" },
+      audioPreference: { lang: "jpn" },
+    });
   });
 
-  test("an unknown language changes nothing -- subtitles are not switched on in some other language", () => {
-    expect(preferredSubtitle(choices, "swe")).toBeNull();
-    expect(preferredAudio(choices, "swe")).toBeNull();
-  });
-
-  test("off is off, and no preference leaves the player alone", () => {
-    expect(preferredSubtitle(choices, "off")).toBe(SUBTITLES_OFF);
-    expect(preferredSubtitle(choices, null)).toBeNull();
+  test("off and no preference hand hls.js nothing, so the server's DEFAULT=NO keeps subtitles off", () => {
+    expect(hlsTrackPreferences({ ...DEFAULT_PREFS, subtitleLanguage: "off" })).toEqual({});
+    expect(hlsTrackPreferences({ ...DEFAULT_PREFS })).toEqual({});
   });
 
   test("the language of a chosen track is what gets remembered", () => {
