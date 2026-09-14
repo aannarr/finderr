@@ -117,6 +117,7 @@ import { episodePlacesFor, episodeScoresFor, skeletonFromFacets } from "./episod
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload, warmHealth } from "./health";
+import { HTML_HEADERS } from "./html-headers";
 import { ImageCache } from "./images";
 import { buildingPage, INDEX_GATE_PUBLIC_PATHS, IndexBuild, withIndexGate } from "./index-build";
 import { IndexRefresher, staleIndexReason } from "./index-refresh";
@@ -1051,30 +1052,6 @@ if (coldAwards.length > 0) {
 setInterval(() => void refreshAwards(), 24 * 60 * 60 * 1000);
 
 // --- helpers ---------------------------------------------------------------
-
-/**
- * The headers every HTML response carries. finderr will be internet-facing, and the app
- * ships no inline scripts, no external fonts and no cross-origin fetches (posters and
- * facet images are proxied through our own origin; the only third-party URLs are plain
- * navigations) -- so `'self'` everywhere is a statement of fact, not an aspiration.
- * `style-src` allows inline because Tailwind-driven style ATTRIBUTES fall under it.
- */
-const HTML_HEADERS = {
-  "Content-Security-Policy": [
-    "default-src 'self'",
-    "img-src 'self' data:",
-    "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
-    "connect-src 'self'",
-    "frame-ancestors 'none'",
-    "base-uri 'none'",
-    "form-action 'self'",
-    "object-src 'none'",
-  ].join("; "),
-  "X-Frame-Options": "DENY",
-  "X-Content-Type-Options": "nosniff",
-  "Referrer-Policy": "same-origin",
-} as const;
 
 const bad = (msg: string, status = 400) => json({ error: msg }, { status });
 

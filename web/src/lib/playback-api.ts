@@ -295,7 +295,14 @@ export async function electStreamEndpoint(
   pageOrigin: string,
 ): Promise<EndpointRing> {
   const token = session.streamToken ?? null;
-  const bases = (session.endpoints ?? []).map((e) => e.base).filter((base) => base !== pageOrigin);
+  // A page loaded over https can never fetch from an http candidate -- mixed content, refused by
+  // the browser before any request leaves -- so racing one only prints a console error per
+  // candidate. Measured 2026-09-15: the NAS container advertised its two Docker bridge
+  // addresses to a Safari on finderr.frst.dev and both were refused this way.
+  const reachable = (base: string) => !pageOrigin.startsWith("https:") || base.startsWith("https:");
+  const bases = (session.endpoints ?? [])
+    .map((e) => e.base)
+    .filter((base) => base !== pageOrigin && reachable(base));
   const ring = new EndpointRing([...bases, pageOrigin], token);
   if (bases.length === 0) return ring;
 
