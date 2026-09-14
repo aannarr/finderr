@@ -23,7 +23,13 @@
  * > `episodesOf` becomes a real method the probe simply always succeeds.
  */
 
-import { alignEpisodes, type IndexEpisode, type SkeletonEpisode } from "../lib/episode-align";
+import {
+  alignEpisodePairs,
+  alignEpisodes,
+  type IndexEpisode,
+  type SkeletonEpisode,
+} from "../lib/episode-align";
+import type { EpisodePlaces } from "../lib/filming-locations";
 
 /**
  * What the browser is sent per episode, keyed to the PROVIDER's coordinates.
@@ -112,4 +118,45 @@ export function skeletonFromFacets(facets: unknown): SkeletonEpisode[] | undefin
   return (eps.data as SkeletonEpisode[]).filter(
     (e) => typeof e?.season === "number" && typeof e?.number === "number",
   );
+}
+
+/** The slice of `SearchEngine` `episodePlacesFor` needs, beside what scores need. */
+interface EpisodePlacesCapable extends EpisodeCapable {
+  episodePlacesOf?: (parent: string) => readonly EpisodePlaces[];
+}
+
+/**
+ * Where each episode of a series was filmed, keyed to the PROVIDER's `(season, number)`.
+ *
+ * Aligned through `alignEpisodePairs`, the mapping the scores use, so a place can never sit on
+ * a different row from the score beside it -- the index and skyhook number some shows
+ * differently, and the failure there is a row naming another episode's location. With no
+ * skeleton the index's own coordinates go out unaligned, the same honest answer the scores give.
+ *
+ * `[]` for a film, an index without the stage, and a series no episode of which says. Only a
+ * series with at least one episode place pays for the second `episodesOf` read the alignment
+ * needs, and that is a covering seek on `ix_ep_parent`.
+ */
+export function episodePlacesFor(
+  engine: unknown,
+  parent: string,
+  isSeries: boolean,
+  skeleton?: readonly SkeletonEpisode[],
+): EpisodePlaces[] {
+  if (!isSeries) return [];
+  const capable = engine as EpisodePlacesCapable | null;
+  if (!capable || typeof capable.episodePlacesOf !== "function") return [];
+  try {
+    const places = capable.episodePlacesOf(parent);
+    if (places.length === 0) return [];
+    if (!skeleton || skeleton.length === 0 || typeof capable.episodesOf !== "function") return [...places];
+    const byIndex = new Map(places.map((p) => [`${p.season}:${p.number}`, p.places]));
+    return alignEpisodePairs(skeleton, capable.episodesOf(parent)).flatMap(({ season, number, episode }) => {
+      const hit = byIndex.get(`${episode.season}:${episode.number}`);
+      return hit ? [{ season, number, places: hit }] : [];
+    });
+  } catch {
+    // A half-present stage is a broken index, not a broken title page -- same rule as scores.
+    return [];
+  }
 }

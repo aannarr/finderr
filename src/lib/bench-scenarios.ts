@@ -60,9 +60,11 @@ export interface BenchFixtures {
   genre: string;
   /**
    * The most-filmed place, so the place page is measured at its longest rather than its easiest.
-   * `null` on an index built before the filming-location stage.
+   * `titles` is its precomputed count, read here once so `place.pageLast` times ONE page read
+   * rather than a second lookup to find where the last page starts. `null` on an index built
+   * before the filming-location stage.
    */
-  placeId: number | null;
+  place: { id: number; titles: number } | null;
 }
 
 /**
@@ -72,12 +74,12 @@ export interface BenchFixtures {
  * resolve their fixtures by hand. Guarded on the engine's own probe, because asking an index
  * built before the stage throws `no such table` and takes the whole bench down with it.
  */
-export function busiestPlaceId(engine: SearchEngine): number | null {
+export function busiestPlace(engine: SearchEngine): { id: number; titles: number } | null {
   if (!engine.hasPlaces) return null;
-  const row = engine.rawDb.query("select id from place order by titles desc limit 1").get() as
-    | { id: number }
+  const row = engine.rawDb.query("select id, titles from place order by titles desc limit 1").get() as
+    | { id: number; titles: number }
     | undefined;
-  return row?.id ?? null;
+  return row ?? null;
 }
 
 /**
@@ -135,30 +137,28 @@ export function countRows(v: unknown): number {
  * prints a row indistinguishable from a very fast place page. The runners print
  * `placeScenariosSkipped` instead, so the absence is said out loud.
  */
-function placeScenarios(placeId: number | null): Scenario[] {
-  if (placeId === null) return [];
+function placeScenarios(place: BenchFixtures["place"]): Scenario[] {
+  if (place === null) return [];
+  const last = Math.max(0, place.titles - 60);
   return [
     {
       id: "place.page",
       surface: "place",
-      args: `place=Q${placeId} limit=60 offset=0`,
-      run: (e) => e.placePage(placeId, { limit: 60, offset: 0 }),
+      args: `place=Q${place.id} limit=60 offset=0`,
+      run: (e) => e.placePage(place.id, { limit: 60, offset: 0 }),
     },
     {
       id: "place.pageLast",
       surface: "place",
-      args: `place=Q${placeId} limit=60 offset=last`,
-      run: (e) => {
-        const total = e.placePage(placeId, { limit: 1, offset: 0 })?.total ?? 0;
-        return e.placePage(placeId, { limit: 60, offset: Math.max(0, total - 60) });
-      },
+      args: `place=Q${place.id} limit=60 offset=${last}`,
+      run: (e) => e.placePage(place.id, { limit: 60, offset: last }),
     },
   ];
 }
 
 /** The line a runner prints when the place scenarios were left out, or null when they ran. */
 export function placeScenariosSkipped(f: BenchFixtures): string | null {
-  return f.placeId === null
+  return f.place === null
     ? "# place.page, place.pageLast: NOT MEASURED -- this index has no place tables"
     : null;
 }
@@ -173,7 +173,7 @@ export function scenarios(f: BenchFixtures): Scenario[] {
       args: `tconst=${f.tconst}`,
       run: (e) => e.placesOf(f.tconst),
     },
-    ...placeScenarios(f.placeId),
+    ...placeScenarios(f.place),
 
     // --- the front page. Every one of these runs before anything is on screen.
     { id: "discover.topGenres", surface: "discover", args: "limit=6", run: (e) => e.topGenres(6) },

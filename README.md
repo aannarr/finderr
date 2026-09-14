@@ -286,8 +286,9 @@ as a site (Monument Valley, a castle, a studio) or an area (Almería, Los Angele
 Countries, continents, oceans and seas are dropped: "filmed in the United States" is a
 caption, not a place. `/place/Q10400` is everything we hold that was shot in Almería,
 most-voted first, with a link out to OpenStreetMap and to the Wikidata item a wrong entry
-is corrected on. A series that is there because of some of its episodes says how many under
-its poster. A place with only the one title you are already looking at stays plain text. No
+is corrected on. A series that is there because of some of its episodes says how many, under
+its poster there and beside the place in the title's own list, and the episode itself says
+where it was filmed on its row in the Episodes tab. A place with only the one title you are already looking at stays plain text. No
 map is embedded and no map API is called; it is two local tables.
 
 Requests return immediately. The POST answers `202`, a background worker adds the title

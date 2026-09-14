@@ -23,7 +23,16 @@
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import { isTermLinkable, termKey } from "../../../src/lib/terms";
-import type { EpisodeState, PersonLinks, Place, RenderedPane, Term, Title, TitleAwards } from "../lib/api";
+import type {
+  EpisodePlaces,
+  EpisodeState,
+  PersonLinks,
+  RenderedPane,
+  Term,
+  Title,
+  TitleAwards,
+  TitlePlace,
+} from "../lib/api";
 import { useApp } from "../lib/app-context";
 import { prettyCategory } from "../lib/awards-format";
 import type { EpisodeScore } from "../lib/episode-scores";
@@ -69,6 +78,7 @@ import type {
   Trailer,
   WatchProviders,
 } from "../lib/facets";
+import { episodesLabel } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
 import { NominationRow, NomineeList } from "./Awards";
 import { FacetPane, Pane, Skeleton, SkeletonLines, SkeletonRepeat } from "./FacetPane";
@@ -113,7 +123,7 @@ export interface TitlePanesProps {
    * `paneView` and has no skeleton. Undefined before the response and empty for most titles,
    * and both draw nothing.
    */
-  places?: readonly Place[];
+  places?: readonly TitlePlace[];
   /**
    * The rest of this title's collection, already decorated and already filtered to what
    * we hold. Separate from `facets` for the same reason `people` is: the facet is the
@@ -141,6 +151,8 @@ export interface TitlePanesProps {
    * other question about the same rows: that one is what we HOLD, this is what it is WORTH.
    */
   episodeScores?: readonly EpisodeScore[];
+  /** Where each episode was filmed, at the scores' coordinates. See `SeriesPaneProps`. */
+  episodePlaces?: readonly EpisodePlaces[];
   /** Ask Sonarr for one episode. Absent means the per-episode control is not offered. */
   onRequestEpisode?: (season: number, episode: number) => void;
   /** Ask Sonarr for the rest of one season. Absent means the season control is not offered. */
@@ -240,7 +252,7 @@ function factsVisible(
   facets: ResolvedFacets | undefined,
   working: readonly FacetName[] | undefined,
   problems: readonly FacetProblem[] | undefined,
-  places: readonly Place[] | undefined,
+  places: readonly TitlePlace[] | undefined,
 ) {
   // Places are the one fact here that is not a facet, so they are asked directly: a title
   // every provider came back empty for can still have been filmed somewhere.
@@ -389,6 +401,7 @@ export function TitleLowerPanes({
   panes,
   episodeState,
   episodeScores,
+  episodePlaces,
   awards,
   terms,
   places,
@@ -412,6 +425,7 @@ export function TitleLowerPanes({
         onRequestEpisode={onRequestEpisode}
         onRequestSeason={onRequestSeason}
         scores={episodeScores}
+        episodePlaces={episodePlaces}
       />
       {slot("title.after-seasons")}
 
@@ -1194,7 +1208,7 @@ const PLACES_SHOWN = 8;
  * does in words that survive a screen reader, and carries `aria-expanded`. `min-h-6` is the
  * 24px target floor for a pointer, sized for this desktop rail rather than a phone's 44.
  */
-function FilmingLocations({ places }: { places: readonly Place[] }) {
+function FilmingLocations({ places }: { places: readonly TitlePlace[] }) {
   /*
     OPEN FOR ONE SET OF PLACES, not open in general. `TitleRoute` is not remounted between
     titles, so a plain boolean carried "Show all" from one film onto the next -- found by the
@@ -1217,6 +1231,14 @@ function FilmingLocations({ places }: { places: readonly Place[] }) {
         {shown.map((p) => (
           <li key={p.id}>
             <PlaceLink place={p} />
+            {/*
+              Said beside the place, because "Game of Thrones: Azure Window" reads as the show's
+              home until you learn one episode went there. Muted and small: it qualifies the
+              link, it is not a second destination.
+            */}
+            {p.episodes > 0 && (
+              <span className="ml-1.5 text-xs tabular-nums text-muted">{episodesLabel(p.episodes)}</span>
+            )}
           </li>
         ))}
       </ul>

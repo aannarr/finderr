@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  episodePlacesForSeries,
   loadPlaces,
   type PlaceSourceRow,
   parseCsvRecord,
@@ -258,6 +259,38 @@ describe("loadPlaces", () => {
       { place_id: 100, episodes: 3 },
       { place_id: 200, episodes: 0 },
     ]);
+  });
+
+  /*
+    "OR EVEN EPISODE" -- the product ask. The round-3 review of 2026-09-14 found every episode's
+    place rolled up to its series and none kept on the episode, so no episode could say where it
+    was filmed. An episode reached only through P179 has no id of ours and keeps nothing here.
+  */
+  test("an episode with its own IMDb id keeps its places, sites first, for its own row", () => {
+    const db = indexWith([{ tconst: "tt2", votes: 5 }]);
+    db.run(
+      "insert into episode (tconst, parent, season, number) values ('tt9001', 'tt2', 1, 1), ('tt9002', 'tt2', 1, 2)",
+    );
+    loadPlaces(
+      db,
+      [site(100, "Dubrovnik", { kind: "area" }), site(200, "Gaztelugatxe")],
+      [
+        pair("tt9001", 100, 9001),
+        pair("tt9001", 200, 9001),
+        pair("tt2", 100, 9001, true), // the same episode by P179 -- no second row
+        pair("tt9002", 100, 9002),
+        pair("tt2", 100, 9003, true), // no IMDb id of its own -- nothing to hang a row on
+        pair("tt2", 200, 2), // the series' own statement
+      ],
+    );
+    for (const sql of INDEXES.places) db.run(sql);
+    expect(
+      episodePlacesForSeries(db, "tt2").map((e) => [e.season, e.number, e.places.map((p) => p.label)]),
+    ).toEqual([
+      [1, 1, ["Gaztelugatxe", "Dubrovnik"]],
+      [1, 2, ["Dubrovnik"]],
+    ]);
+    expect(episodePlacesForSeries(db, "tt404")).toEqual([]);
   });
 
   test("denormalises votes, so the place page's order needs no join to find its rows", () => {

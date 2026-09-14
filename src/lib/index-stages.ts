@@ -370,7 +370,9 @@ export const INDEX_STAGES = {
    */
   // v3: continents, oceans, seas and former states dropped as captions, and `title_place`
   // gained `episodes` -- both change what an existing index would answer.
-  places: () => JSON.stringify({ v: 3 }),
+  // v4: England, Scotland, Wales and Northern Ireland kept; islands, lakes and populated
+  // structures filed as areas; `episode_place` keeps each episode's own places.
+  places: () => JSON.stringify({ v: 4 }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.

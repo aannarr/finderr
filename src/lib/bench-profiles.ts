@@ -109,11 +109,15 @@ const SLIM_INDEXES: readonly string[] = [
   // 15,456-episode soap". Which machine produced those numbers is not recorded, and that
   // omission is a reason this harness exists.
   "create index ix_ep_parent on episode(parent, season, number)",
-  // UNCHANGED, both. Every column in either is a seek or an ORDER column -- `title_rowid` in
-  // ix_place_titles is the stable tie-break of the place page's order, not payload -- so there
-  // is no narrower form that answers the same query.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid)",
+  // UNCHANGED, both. Every column but one is a seek or an ORDER column -- `title_rowid` in
+  // ix_place_titles is the stable tie-break of the place page's order, not payload. The one
+  // payload column, `episodes`, stays too: dropping it turns the page's offset walk from
+  // skipping index entries into fetching a table row per skipped title, which is an ordering
+  // question rather than this profile's.
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
   "create index ix_title_place on title_place(title_rowid, place_id)",
+  // Unchanged: two key columns, the episode seek and the place it names. Nothing to drop.
+  "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ];
 
 /**
@@ -173,9 +177,12 @@ const SLIM_PAYLOAD_INDEXES: readonly string[] = [
   // Drops five payload columns, keeps the whole key. The pure case, and the one whose
   // docstring already claims 20-30% warm and up to 496 ms cold.
   "create index ix_ep_parent on episode(parent, season, number)",
-  // Unchanged for the reason `slim` gives: no payload columns to drop.
-  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid)",
+  // Unchanged for the reason `slim` gives, `episodes` included: it is payload by position, but
+  // the page reads it inside an OFFSET walk, where a non-covering index fetches every skipped row.
+  "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
   "create index ix_title_place on title_place(title_rowid, place_id)",
+  // Unchanged for the reason `slim` gives: both columns are key.
+  "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ];
 
 /** A named index shape to measure. `shipped` is filled by the runner from `allIndexes()`. */

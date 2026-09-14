@@ -26,7 +26,14 @@ import { BREAKOUT_META, BREAKOUT_SHELF } from "./breakout";
 import type { Config } from "./config";
 import { ENGLISH_LANG, type TitleIds, titleIds, UNKNOWN_LANG } from "./crosswalk";
 import type { PersonCredit } from "./facets";
-import { type Place, placeById, placesForTitle } from "./filming-locations";
+import {
+  type EpisodePlaces,
+  episodePlacesForSeries,
+  type Place,
+  placeById,
+  placesForTitle,
+  type TitlePlace,
+} from "./filming-locations";
 // The builder is already in the server's module graph (`src/server/index.ts` imports
 // `rollback`), so sharing the shelf-genre owner costs no new dependency -- and sharing it is
 // the point: the live fallback and the build must compute the same answer or the precompute
@@ -1957,8 +1964,16 @@ export class SearchEngine {
    * the absence -- the title pane simply draws no section -- so the distinction would be a
    * branch every caller writes and none of them uses.
    */
-  placesOf(tconst: string): Place[] {
+  placesOf(tconst: string): TitlePlace[] {
     return this.hasPlaces ? placesForTitle(this.db, tconst) : [];
+  }
+
+  /**
+   * Where each episode of a series was filmed, at the INDEX's `(season, number)`. `[]` on an
+   * index without the stage, for a film, and for a series no episode of which says.
+   */
+  episodePlacesOf(parent: string): EpisodePlaces[] {
+    return this.hasPlaces ? episodePlacesForSeries(this.db, parent) : [];
   }
 
   /**

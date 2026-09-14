@@ -15,7 +15,7 @@ import type { AwardMark } from "../../../src/lib/award-marks";
 import { AWARDS } from "../../../src/lib/award-registry";
 import type { CollectionSummary } from "../../../src/lib/collections";
 import type { EpisodeState, SeasonProgress } from "../../../src/lib/episodes";
-import type { Place } from "../../../src/lib/filming-locations";
+import type { EpisodePlaces, Place, TitlePlace } from "../../../src/lib/filming-locations";
 // TYPE-ONLY, like `CollectionSummary` and `HiddenByFloor` above. Erased at build, so no
 // server module reaches the bundle -- the `decadeOf` note in `web/src/lib/search-params.ts`
 // is about a VALUE import, which is a different and genuinely costly thing.
@@ -405,6 +405,7 @@ const DETAIL_ONLY: Record<keyof TitleDetailExtras, true> = {
   arrLink: true,
   episodeState: true,
   episodeScores: true,
+  episodePlaces: true,
   awards: true,
 };
 
@@ -664,9 +665,10 @@ export interface TitleDetail extends Title {
    *
    * NOT a facet, like `awards`: complete when the response lands and never `pending`. Each
    * place carries how many titles we hold for it, which is what decides whether its chip is
-   * a link. Absent on a server older than the stage; empty for most of the corpus.
+   * a link, and how many of this title's episodes stand behind it. Absent on a server older
+   * than the stage; empty for most of the corpus.
    */
-  places?: Place[];
+  places?: TitlePlace[];
   /**
    * The other films in this title's collection, as OUR rows, in release order.
    *
@@ -714,6 +716,12 @@ export interface TitleDetail extends Title {
    * NORMAL answer for an unaired episode: IMDb lists one only once it exists.
    */
   episodeScores?: EpisodeScore[];
+  /**
+   * Where each episode of this series was filmed, keyed to the SAME `(season, number)` the
+   * scores are -- the server aligns both through one mapping. Absent for a film and on a server
+   * older than the stage, empty for nearly every series; an episode with no entry draws nothing.
+   */
+  episodePlaces?: EpisodePlaces[];
   /**
    * What the Academy gave this film, from our own imported tables.
    *
@@ -912,7 +920,7 @@ export async function getPerson(nconst: string, opts: PersonQuery = {}): Promise
 
 // --- places ----------------------------------------------------------------
 
-export type { Place };
+export type { EpisodePlaces, Place, TitlePlace };
 
 /** One filming location and a page of what was filmed there, most-voted first. */
 export interface PlacePage {

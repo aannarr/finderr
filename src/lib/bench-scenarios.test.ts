@@ -76,7 +76,7 @@ describe("place scenarios", () => {
     seriesTconst: "tt2",
     nconst: "nm1",
     genre: "Drama",
-    placeId: 65,
+    place: { id: 65, titles: 1377 },
   };
   const placeIds = (f: BenchFixtures) =>
     scenarios(f)
@@ -88,8 +88,23 @@ describe("place scenarios", () => {
     expect(placeScenariosSkipped(base)).toBeNull();
   });
 
+  // The last page's offset comes from the fixture, so the timed scenario is ONE page read.
+  test("the last page starts from the fixture's count, not from a second lookup", () => {
+    const calls: { id: number; limit: number; offset: number }[] = [];
+    const engine = {
+      placePage: (id: number, opts: { limit: number; offset: number }) => {
+        calls.push({ id, ...opts });
+        return null;
+      },
+    };
+    scenarios(base)
+      .find((s) => s.id === "place.pageLast")
+      ?.run(engine as never);
+    expect(calls).toEqual([{ id: 65, limit: 60, offset: 1317 }]);
+  });
+
   test("are left out, and said to be, when it has none", () => {
-    const none = { ...base, placeId: null };
+    const none = { ...base, place: null };
     expect(placeIds(none)).toEqual([]);
     expect(placeScenariosSkipped(none)).toMatch(/NOT MEASURED/);
   });

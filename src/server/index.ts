@@ -113,7 +113,7 @@ import {
   staticAssetPolicy,
   stripImageExt,
 } from "./cache-policy";
-import { episodeScoresFor, skeletonFromFacets } from "./episode-scores";
+import { episodePlacesFor, episodeScoresFor, skeletonFromFacets } from "./episode-scores";
 import { FACET_IMAGE_PATH, FacetImageProxy, facetImagePath, personFaces } from "./facet-images";
 import { FrontPage } from "./front-page";
 import { healthPayload, warmHealth } from "./health";
@@ -2283,6 +2283,17 @@ const appRoutes = {
             the alignment needs never leave this process. See `src/lib/episode-align.ts`.
           */
         episodeScores: episodeScoresFor(
+          live.current,
+          row.tconst,
+          entity.kind === "series",
+          skeletonFromFacets(cached),
+        ),
+        /*
+            WHERE EACH EPISODE WAS FILMED, from our own index, keyed like the scores -- to the
+            provider's numbering, through the same alignment -- so the episode row that shows a
+            score shows the place beside it. `[]` for a film and for nearly every series.
+          */
+        episodePlaces: episodePlacesFor(
           live.current,
           row.tconst,
           entity.kind === "series",

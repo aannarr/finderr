@@ -54,7 +54,7 @@ import { assertNotLiveIndex, cloneIndex, ioReadBytes, prefaultFile } from "../li
 import { profileDrift, STORAGE_PROFILES } from "../lib/bench-profiles";
 import {
   type BenchFixtures,
-  busiestPlaceId,
+  busiestPlace,
   countRows,
   placeScenariosSkipped,
   type Scenario,
@@ -499,10 +499,10 @@ async function main(): Promise<void> {
     seriesTconst: series?.tconst ?? "tt0944947",
     nconst: person,
     genre: engine.topGenres(1)[0] ?? "Drama",
-    placeId: busiestPlaceId(engine),
+    place: busiestPlace(engine),
   };
   console.log(
-    `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre} place=${fixtures.placeId === null ? "none" : `Q${fixtures.placeId}`}`,
+    `# fixtures: title=${fixtures.tconst} series=${fixtures.seriesTconst} person=${fixtures.nconst} genre=${fixtures.genre} place=${fixtures.place === null ? "none" : `Q${fixtures.place.id}`}`,
   );
   const skipped = placeScenariosSkipped(fixtures);
   if (skipped) console.log(skipped);

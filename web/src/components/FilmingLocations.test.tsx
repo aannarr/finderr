@@ -9,12 +9,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { useState } from "react";
-import type { Place } from "../lib/api";
+import type { TitlePlace } from "../lib/api";
 import { fireEvent, render, screen } from "../test/interact";
 import { inRouter } from "../test/render-in-router";
 import { TitleFactsCard } from "./TitlePanes";
 
-const place = (i: number): Place => ({
+const place = (i: number): TitlePlace => ({
   id: `Q${i + 1}`,
   label: `Place ${i + 1}`,
   kind: "site",
@@ -23,10 +23,11 @@ const place = (i: number): Place => ({
   lat: 1,
   lon: 2,
   titles: 3,
+  episodes: 0,
 });
 
 /** No facet answered and nobody owes one, so every facet pane is hidden and only places remain. */
-async function renderFacts(places: Place[]) {
+async function renderFacts(places: TitlePlace[]) {
   return render(
     await inRouter(<TitleFactsCard facets={{}} working={[]} problems={[]} places={places} />, ["/place/$id"]),
   );
@@ -95,6 +96,14 @@ describe("TitleFactsCard filming locations", () => {
     fireEvent.click(screen.getByRole("button", { name: "next title" }));
     expect(screen.getByRole("button", { name: "Show all 10" }).getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Place 110")).toBeNull();
+  });
+
+  // Found by the round-3 review of 2026-09-14: the count existed only on the place page.
+  test("a place a series reached through some of its episodes says how many, and no other does", async () => {
+    await renderFacts([{ ...place(0), episodes: 2 }, place(1), { ...place(2), episodes: 1 }]);
+    expect(screen.getByText("2 episodes")).toBeTruthy();
+    expect(screen.getByText("1 episode")).toBeTruthy();
+    expect(screen.queryAllByText(/episode/)).toHaveLength(2);
   });
 
   test("exactly eight places need no control", async () => {

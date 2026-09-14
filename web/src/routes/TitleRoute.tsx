@@ -79,6 +79,7 @@ export function TitleRoute() {
     arrLink,
     episodeState,
     episodeScores,
+    episodePlaces,
     awards,
     error,
   } = useTitleDetail(tconst);
@@ -475,6 +476,7 @@ export function TitleRoute() {
         panes={panes}
         episodeState={episodeState}
         episodeScores={episodeScores}
+        episodePlaces={episodePlaces}
         awards={awards}
         terms={terms}
         places={places}

@@ -110,6 +110,15 @@ export const LIMITS = {
   /** How many items a client may put in one array field. */
   listItems: 200,
   /**
+   * How many rows one paged read may ask for, and how deep it may start.
+   *
+   * finderr's own pages ask for 60 at a time, so 200 is the ceiling a hand-built URL may raise
+   * that to. The deepest real page on the 2026-09-14 build is Los Angeles' last, offset 1,320;
+   * 100,000 is 75x that and still keeps an OFFSET walk over a covering index to milliseconds.
+   */
+  pageSize: 200,
+  pageOffset: 100_000,
+  /**
    * A filesystem path reported by an arr, before we try to open it.
    *
    * It is not typed by a human, which is exactly why it needs a bound: it arrives over HTTP
@@ -133,7 +142,7 @@ export const LIMITS = {
 } as const;
 
 /** Why a value was refused. A CODE, so a caller can decide what to say about it. */
-export type RefusalReason = "too-long" | "too-many" | "wrong-type" | "empty";
+export type RefusalReason = "too-long" | "too-many" | "wrong-type" | "empty" | "out-of-range";
 
 export type Guarded<T> = { ok: true; value: T } | { ok: false; reason: RefusalReason; limit?: number };
 
@@ -274,6 +283,23 @@ export function clampInt(
 }
 
 /**
+ * A whole number off the wire that must sit in a range -- REFUSED past it, never clamped.
+ *
+ * `clampInt`'s sibling for a value the fifth rule covers: a bound that is exceeded is a refusal
+ * naming the limit, not a quiet substitution of a number the caller did not send. Absent (null,
+ * undefined or the empty string) is `null`, so the caller supplies its own default for "not
+ * sent". Digits only: a sign, a decimal point, an exponent or whitespace is `wrong-type`, and
+ * sixteen or more digits never reach `Number`.
+ */
+export function boundedInt(v: unknown, opts: { min: number; max: number }): Guarded<number | null> {
+  if (v === null || v === undefined || v === "") return { ok: true, value: null };
+  if (typeof v !== "string" || !/^\d{1,15}$/.test(v)) return refuse("wrong-type");
+  const n = Number(v);
+  if (n < opts.min || n > opts.max) return refuse("out-of-range", opts.max);
+  return { ok: true, value: n };
+}
+
+/**
  * An array off the wire, bounded in length, with every item guarded.
  *
  * The whole list is refused when any item is, rather than the bad items being dropped: a
@@ -343,6 +369,8 @@ export function refusalMessage(field: string, g: { reason: RefusalReason; limit?
       return `${field} has too many items (limit ${g.limit})`;
     case "empty":
       return `${field} is required`;
+    case "out-of-range":
+      return `${field} is out of range (limit ${g.limit})`;
     default:
       return `${field} has the wrong type`;
   }

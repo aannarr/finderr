@@ -25,6 +25,7 @@ import { FORBIDDEN_PATTERNS, HOSTILE, HOSTILE_CASES, NON_STRINGS, RLO } from "./
 import { parsePlaceId } from "./filming-locations";
 import {
   boundedHeader,
+  boundedInt,
   boundedList,
   boundedQuery,
   boundedText,
@@ -78,6 +79,7 @@ const TEXT_ENTRY_POINTS: {
   { name: "boundedText", run: (v) => boundedText(v, LIMITS.text), accepts: "unknown", textOut: guardedText },
   { name: "boundedQuery", run: (v) => boundedQuery(v), accepts: "unknown", textOut: guardedText },
   { name: "clampInt", run: (v) => clampInt(v, { min: 0, max: 100 }), accepts: "unknown" },
+  { name: "boundedInt", run: (v) => boundedInt(v, { min: 0, max: 100 }), accepts: "unknown" },
   { name: "boundedList", run: (v) => boundedList(v, (x) => boundedText(x, 10)), accepts: "unknown" },
   { name: "urlWithinBounds", run: (v) => urlWithinBounds(v as string), accepts: "string" },
   {

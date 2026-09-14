@@ -30,14 +30,28 @@
  * The continent/ocean/sea/former-state half was added 2026-09-14, after the quality review
  * found Europe filed as a site and Antarctica and Yugoslavia as areas. Those four classes are
  * dropped ONLY when the item is not also a human settlement: Hamburg and Bremen are typed as
- * historical countries (the old city-states), and they are cities people film in. Islands and
- * the UK's constituent countries (England, Scotland) are deliberately kept as areas.
+ * historical countries (the old city-states), and they are cities people film in. The UK's
+ * constituent countries (Q3336843) are EXCLUDED from the caption test by name, because Wikidata
+ * types England, Scotland, Wales and Northern Ireland under "country" too -- the v3 build
+ * dropped all four, 87 pairs including Northern Ireland's Game of Thrones locations, while
+ * this comment claimed they were kept. Found by the round-3 review, 2026-09-14.
  *
  * The classification is Wikidata's own class tree (`P31/P279*`), asked in the query rather than
  * re-derived here, with ONE correction measured against the data: Czech and German castles are
  * typed as human settlements as well as castles, so 199 castles, stations and palaces came out
  * as areas. An area is therefore a settlement or administrative entity that is NOT also an
  * architectural structure (Q811979), which leaves 21.
+ *
+ * Two widenings, measured against QLever 2026-09-14 over every P915 place:
+ *
+ * - **An island (Q23442) or a lake (Q23397) is an area.** Tahiti, Gran Canaria, Long Island,
+ *   Lake Como: places a reader goes to, and ones a whole run of titles share. NOT "body of
+ *   water" or "geographic region" -- the first also means waterfalls and canals, and the
+ *   second matched 8,534 places, thermal baths among them.
+ * - **A structure WITH A POPULATION (P1082) is still an area.** 506 places are both a
+ *   settlement-or-admin-entity and a structure; the 55 with a population are towns (Ostend,
+ *   Saint-Tropez, Malmö, Val-d'Isère) and the 451 without are castles, abbeys and camps. The
+ *   population is the fact that separates them, where the class tree does not.
  */
 
 import type { Database } from "bun:sqlite";
@@ -66,9 +80,11 @@ SELECT ?place (SAMPLE(?l) AS ?label) (SAMPLE(?co) AS ?coord) (SAMPLE(?cc) AS ?co
   OPTIONAL { ?place wdt:P625 ?co }
   OPTIONAL { ?place wdt:P17 ?c . ?c wdt:P297 ?cc }
   BIND(EXISTS { ?place wdt:P31/wdt:P279* wd:Q375336 } AS ?st)
-  BIND((EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q56061 })
-       && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q811979 } AS ?ar)
-  BIND(EXISTS { ?place wdt:P31/wdt:P279* wd:Q6256 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3624078 }
+  BIND((EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q56061 }
+        || EXISTS { ?place wdt:P31/wdt:P279* wd:Q23442 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q23397 })
+       && (!EXISTS { ?place wdt:P31/wdt:P279* wd:Q811979 } || EXISTS { ?place wdt:P1082 ?pop }) AS ?ar)
+  BIND(((EXISTS { ?place wdt:P31/wdt:P279* wd:Q6256 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3624078 })
+        && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q3336843 })
        || ((EXISTS { ?place wdt:P31/wdt:P279* wd:Q5107 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q9430 }
             || EXISTS { ?place wdt:P31/wdt:P279* wd:Q165 } || EXISTS { ?place wdt:P31/wdt:P279* wd:Q3024240 })
            && !EXISTS { ?place wdt:P31/wdt:P279* wd:Q486972 }) AS ?cy)
@@ -149,6 +165,15 @@ create table title_place (
   votes       integer not null default 0,
   episodes    integer not null default 0
 );
+
+-- One row per (episode, place), for an episode whose OWN IMDb id the index holds in episode.
+-- title_place already rolls these up to the series; this keeps the episode itself, so the
+-- episode's row on the series page can say where it was filmed. An episode Wikidata reaches
+-- only through P179 has no id of ours to hang a row on, and counts toward the series alone.
+create table episode_place (
+  episode_rowid integer not null,
+  place_id      integer not null
+);
 `;
 
 /** The index DDL, built by the stage after the rows are in. `INDEXES.places` holds it. */
@@ -159,6 +184,8 @@ export const PLACE_INDEXES = [
   "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
   // The title pane: every place one title was filmed at.
   "create index ix_title_place on title_place(title_rowid, place_id)",
+  // An episode row's places: `ix_ep_parent` finds the series' episodes, this finds each one's.
+  "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ] as const;
 
 export type PlaceKind = "site" | "area";
@@ -201,6 +228,17 @@ export interface Place {
   lon: number | null;
   /** How many titles in THIS index were filmed here. What decides link versus plain text. */
   titles: number;
+}
+
+/**
+ * A place as ONE title's list carries it.
+ *
+ * `episodes` is how many of that title's episodes were filmed there, and 0 when the title said
+ * it of itself. It lives on the pair, never on `Place`, because the same Dubrovnik is "2
+ * episodes" of Game of Thrones and a whole film of something else.
+ */
+export interface TitlePlace extends Place {
+  episodes: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +439,16 @@ export function loadPlaces(
       join place_in p on p.id = i.place
      group by i.place, t.rowid_
   `);
+  // The episode itself, before `tp_in` goes: only ids the episode table holds, and only for a
+  // series this index holds, so every row here has a `title_place` row above it.
+  db.run(`
+    insert into episode_place (episode_rowid, place_id)
+    select distinct e.rowid_, i.place
+      from tp_in i
+      join episode e on e.tconst = i.imdb
+      join title t on t.tconst = e.parent
+      join place_in p on p.id = i.place
+  `);
   db.run("drop table tp_in");
 
   db.run("create temporary table place_count (place_id integer primary key, n integer not null)");
@@ -467,17 +515,52 @@ function toPlace(r: PlaceDbRow): Place {
  * `title.places` 0.01 ms p50, 0.04 ms p99, 1.6 ms cold. No index can serve this order anyway:
  * two of its keys live on `place`, not on the table the seek walks.
  */
-export function placesForTitle(db: Database, tconst: string): Place[] {
+export function placesForTitle(db: Database, tconst: string): TitlePlace[] {
   const rows = db
     .query(
-      `select ${PLACE_COLS}
+      `select ${PLACE_COLS}, tp.episodes
          from title_place tp join place p on p.id = tp.place_id
         where tp.title_rowid = (select rowid_ from title where tconst = ?)
         order by p.titles >= ${MIN_TERM_TITLES} desc, case p.kind when 'site' then 0 else 1 end,
                  p.titles desc, p.label`,
     )
-    .all(tconst) as PlaceDbRow[];
-  return rows.map(toPlace);
+    .all(tconst) as (PlaceDbRow & { episodes: number })[];
+  return rows.map((r) => ({ ...toPlace(r), episodes: r.episodes }));
+}
+
+/** One episode's places, at the INDEX's `(season, number)`. */
+export interface EpisodePlaces {
+  season: number;
+  number: number;
+  places: Place[];
+}
+
+/**
+ * Where each episode of one series was filmed, for the episodes that say.
+ *
+ * `ix_ep_parent` finds the series' episodes and `ix_episode_place` each one's places, so it is
+ * two seeks and a primary-key read per place. The coordinates are the INDEX's, which disagree
+ * with the provider's for some shows -- the handler aligns them the way it aligns scores.
+ * Sites before areas within an episode, then the label, the order the title pane uses.
+ */
+export function episodePlacesForSeries(db: Database, parent: string): EpisodePlaces[] {
+  const rows = db
+    .query(
+      `select e.season, e.number, ${PLACE_COLS}
+         from episode e
+         join episode_place ep on ep.episode_rowid = e.rowid_
+         join place p on p.id = ep.place_id
+        where e.parent = ?
+        order by e.season, e.number, case p.kind when 'site' then 0 else 1 end, p.label`,
+    )
+    .all(parent) as (PlaceDbRow & { season: number; number: number })[];
+  const out: EpisodePlaces[] = [];
+  for (const r of rows) {
+    const last = out.at(-1);
+    if (last && last.season === r.season && last.number === r.number) last.places.push(toPlace(r));
+    else out.push({ season: r.season, number: r.number, places: [toPlace(r)] });
+  }
+  return out;
 }
 
 /** One place, or null when we hold no title filmed there. */

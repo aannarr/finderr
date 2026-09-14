@@ -99,6 +99,6 @@ describe("PlaceLink", () => {
   test("a place with somewhere to go links to its page and says how many titles are behind it", async () => {
     const html = await renderPlace(<PlaceLink place={place()} />);
     expect(html).toContain('href="/place/Q10400"');
-    expect(html).toContain("80 titles we hold");
+    expect(html).toContain("80 titles filmed here, this one included");
   });
 });

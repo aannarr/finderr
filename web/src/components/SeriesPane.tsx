@@ -24,9 +24,9 @@
  * would be a second thing to keep in step. `../lib/season-gap` does the counting.
  */
 
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import { type EpisodeStanding, episodeStanding, todayUtc } from "../../../src/lib/episodes";
-import type { EpisodeState } from "../lib/api";
+import type { EpisodePlaces, EpisodeState, Place } from "../lib/api";
 import { bandFor, type EpisodeScore, scoreIndex } from "../lib/episode-scores";
 import {
   adjacentSeasonNumber,
@@ -44,6 +44,7 @@ import {
   seasonLabel,
 } from "../lib/facet-panes";
 import type { Episode, FacetName, FacetProblem, ResolvedFacets, Season } from "../lib/facets";
+import { placePrefix } from "../lib/place-links";
 import { type SeasonGap, seriesGap, summariseSeriesGap } from "../lib/season-gap";
 import { ToggleChip } from "./Chip";
 import {
@@ -59,6 +60,7 @@ import {
 import { FacetPane, type PaneVariant, ProblemNote, Skeleton, SkeletonRepeat } from "./FacetPane";
 import { mergeKeyProps, useKeyAction } from "./Kbd";
 import { useChipGroup } from "./RovingFocus";
+import { PlaceLink } from "./TermChip";
 
 export interface SeriesPaneProps {
   facets: ResolvedFacets | undefined;
@@ -85,6 +87,12 @@ export interface SeriesPaneProps {
    */
   scores?: readonly EpisodeScore[];
   /**
+   * Where each episode was filmed, from our own index, at the same `(season, number)` the
+   * scores use -- the server aligned both through one mapping. Undefined or empty is the
+   * ordinary case, and a row with no entry draws exactly what it drew before.
+   */
+  episodePlaces?: readonly EpisodePlaces[];
+  /**
    * Which tab opens first. Grid, unless a caller says otherwise.
    *
    * Seeded rather than forced: it sets the INITIAL value and the reader still owns the
@@ -104,6 +112,7 @@ export function SeriesPane({
   onRequestEpisode,
   onRequestSeason,
   scores,
+  episodePlaces,
   initialTab,
 }: SeriesPaneProps) {
   return (
@@ -125,6 +134,7 @@ export function SeriesPane({
           onRequestEpisode={onRequestEpisode}
           onRequestSeason={onRequestSeason}
           scores={scores}
+          episodePlaces={episodePlaces}
           initialTab={initialTab}
         />
       )}
@@ -177,6 +187,7 @@ function SeasonBrowser({
   onRequestEpisode,
   onRequestSeason,
   scores,
+  episodePlaces,
   initialTab,
 }: {
   seasons: Season[];
@@ -187,6 +198,7 @@ function SeasonBrowser({
   onRequestEpisode?: (season: number, episode: number) => void;
   onRequestSeason?: (season: number) => void;
   scores?: readonly EpisodeScore[];
+  episodePlaces?: readonly EpisodePlaces[];
   initialTab?: TabName;
 }) {
   const [tab, setTab] = useState<TabName>(initialTab ?? "grid");
@@ -342,6 +354,7 @@ function SeasonBrowser({
               today={today}
               onRequestEpisode={onRequestEpisode}
               scores={scores}
+              places={episodePlaces}
             />
           )}
         </>
@@ -463,6 +476,7 @@ function SeasonEpisodes({
   today,
   onRequestEpisode,
   scores,
+  places,
 }: {
   season: Season;
   episodes: PaneView<"episodes">;
@@ -470,6 +484,7 @@ function SeasonEpisodes({
   today: string;
   onRequestEpisode?: (season: number, episode: number) => void;
   scores?: readonly EpisodeScore[];
+  places?: readonly EpisodePlaces[];
 }) {
   if (view.state === "hidden") return null;
 
@@ -499,6 +514,9 @@ function SeasonEpisodes({
   // find() per row is quadratic on a show with 73 of them.
   const state = episodeStateIndex(episodeState);
 
+  // Keyed on the same provider pair as the scores, which the server already aligned to.
+  const placesByPair = new Map((places ?? []).map((p) => [`${p.season}:${p.number}`, p.places]));
+
   return (
     <EpisodeRows>
       {episodes.map((episode) => (
@@ -508,6 +526,7 @@ function SeasonEpisodes({
           standing={episodeStanding(state.get(`${episode.season}:${episode.number}`), today)}
           onRequest={onRequestEpisode}
           score={byPair.get(`${episode.season}:${episode.number}`) ?? null}
+          places={placesByPair.get(`${episode.season}:${episode.number}`)}
         />
       ))}
     </EpisodeRows>
@@ -535,6 +554,7 @@ function EpisodeRow({
   standing,
   onRequest,
   score,
+  places,
 }: {
   episode: Episode;
   standing: EpisodeStanding;
@@ -543,6 +563,8 @@ function EpisodeRow({
   /** The row's aligned score. `EpisodeScore` rather than a narrower literal, so a field
    *  added to the payload (`part` was) reaches here without a second type to update. */
   score?: EpisodeScore | null;
+  /** Where this episode was filmed, sites first. Absent for nearly every episode. */
+  places?: readonly Place[];
 }) {
   return (
     <li className={EPISODE_ROW_CLASS}>
@@ -591,6 +613,22 @@ function EpisodeRow({
         */}
         {episode.overview && (
           <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted">{episode.overview}</p>
+        )}
+        {/*
+          One quiet line under the synopsis: a fact about THIS episode a reader may follow, not
+          the row's subject. `PlaceLink` owns link versus plain text, exactly as in the rail, and
+          the prefix is the place page's own ("Filmed at" a site, "Filmed in" an area).
+        */}
+        {places && places.length > 0 && (
+          <p className="mt-0.5 text-xs text-muted">
+            {placePrefix(places[0])}{" "}
+            {places.map((p, i) => (
+              <Fragment key={p.id}>
+                {i > 0 && ", "}
+                <PlaceLink place={p} />
+              </Fragment>
+            ))}
+          </p>
         )}
       </div>
       <EpisodeStandingMark

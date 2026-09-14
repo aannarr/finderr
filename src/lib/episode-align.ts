@@ -274,7 +274,35 @@ export function alignEpisodes(
   skeleton: readonly SkeletonEpisode[],
   index: readonly IndexEpisode[],
 ): AlignedScore[] {
-  if (skeleton.length === 0 || index.length === 0) return [];
+  const m = mapSkeleton(skeleton, index);
+  return m ? withParts(m.sky, m.mapped) : [];
+}
+
+/**
+ * The same mapping as `alignEpisodes`, as `(skeleton coordinate, index episode)` pairs, for a
+ * per-episode fact that is not a score.
+ *
+ * ONE alignment for every such fact, because two would be two chances to put a fact on a
+ * different row from the score beside it. Filming locations were the second consumer
+ * (2026-09-14). A skeleton episode the alignment refuses is absent, exactly as for a score.
+ */
+export function alignEpisodePairs<E extends IndexEpisode>(
+  skeleton: readonly SkeletonEpisode[],
+  index: readonly E[],
+): { season: number; number: number; episode: E }[] {
+  const m = mapSkeleton(skeleton, index);
+  if (!m) return [];
+  return [...m.mapped]
+    .sort(([a], [b]) => a - b)
+    .map(([at, episode]) => ({ season: m.sky[at].season, number: m.sky[at].number, episode: episode as E }));
+}
+
+/** skeleton position -> index episode, the core both public forms are built from. */
+function mapSkeleton(
+  skeleton: readonly SkeletonEpisode[],
+  index: readonly IndexEpisode[],
+): { sky: readonly SkeletonEpisode[]; mapped: Map<number, IndexEpisode> } | null {
+  if (skeleton.length === 0 || index.length === 0) return null;
 
   const sky = sortEpisodes(skeleton);
   const imdb = sortEpisodes(index);
@@ -379,7 +407,7 @@ export function alignEpisodes(
     if (hit) mapped.set(at, hit);
   });
 
-  return withParts(sky, mapped);
+  return { sky, mapped };
 }
 
 /**

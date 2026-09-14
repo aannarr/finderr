@@ -69,7 +69,7 @@ export function PlaceLink({ place }: { place: Place }) {
       to="/place/$id"
       params={{ id: place.id }}
       className="text-ink underline decoration-muted underline-offset-4 transition-colors hover:decoration-ink"
-      title={`${place.label} -- ${place.titles.toLocaleString()} titles we hold`}
+      title={`${place.label}: ${place.titles.toLocaleString()} titles filmed here, this one included`}
     >
       {place.label}
     </Link>

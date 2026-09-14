@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ACUTE, HOSTILE, RLO, SHY } from "./abuse-corpus";
 import {
   boundedHeader,
+  boundedInt,
   boundedList,
   boundedQuery,
   boundedText,
@@ -133,6 +134,37 @@ describe("boundedQuery", () => {
     const g = boundedQuery("   ");
     expect(g.ok).toBe(true);
     if (g.ok) expect(g.value).toBe("");
+  });
+});
+
+/*
+  REFUSED, not clamped: the fifth rule's guard for a number. Added 2026-09-14 when the place
+  page's `limit` turned out to be quietly clamping a million down to 200.
+*/
+describe("boundedInt", () => {
+  test("refuses past either end of the bound and names the limit", () => {
+    expect(boundedInt("201", { min: 1, max: 200 })).toEqual({
+      ok: false,
+      reason: "out-of-range",
+      limit: 200,
+    });
+    expect(boundedInt("0", { min: 1, max: 200 })).toEqual({ ok: false, reason: "out-of-range", limit: 200 });
+    expect(boundedInt("200", { min: 1, max: 200 })).toEqual({ ok: true, value: 200 });
+    expect(boundedInt("1", { min: 1, max: 200 })).toEqual({ ok: true, value: 1 });
+  });
+
+  test("absent is null, so the caller owns the default for 'not sent'", () => {
+    for (const v of [null, undefined, ""])
+      expect(boundedInt(v, { min: 0, max: 5 })).toEqual({ ok: true, value: null });
+  });
+
+  test("plain digits only -- a sign, a decimal, an exponent, whitespace, hex or a non-string is the wrong type", () => {
+    for (const v of ["-1", "1.5", "1e3", " 7", "7 ", "0x10", "9".repeat(16), 7, {}]) {
+      expect(boundedInt(v, { min: 0, max: Number.MAX_SAFE_INTEGER })).toEqual({
+        ok: false,
+        reason: "wrong-type",
+      });
+    }
   });
 });
 

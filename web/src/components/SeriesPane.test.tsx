@@ -10,8 +10,9 @@
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { EpisodeState } from "../lib/api";
+import type { EpisodePlaces, EpisodeState, Place } from "../lib/api";
 import type { Episode, ResolvedFacets, Season } from "../lib/facets";
+import { renderInRouter } from "../test/render-in-router";
 import { SeriesPane, type SeriesPaneProps } from "./SeriesPane";
 
 function season(over: Partial<Season> & { number: number }): Season {
@@ -61,6 +62,61 @@ function render(facets: ResolvedFacets | undefined, over: Partial<SeriesPaneProp
     <SeriesPane facets={facets} working={["seasons", "episodes"]} initialTab="episodes" {...over} />,
   );
 }
+
+/*
+  "OR EVEN EPISODE" -- the product ask, and the round-3 review of 2026-09-14 found no episode
+  could say where it was filmed. Through a router, because `PlaceLink` is a `<Link>`.
+*/
+describe("where an episode was filmed", () => {
+  const ready: ResolvedFacets = {
+    seasons: { status: "ready", data: GOT_SEASONS },
+    episodes: { status: "ready", data: GOT_EPISODES },
+  };
+  const place = (over: Partial<Place> & Pick<Place, "id" | "label">): Place => ({
+    kind: "site",
+    studio: false,
+    country: "HR",
+    lat: null,
+    lon: null,
+    titles: 1,
+    ...over,
+  });
+  const episodePlaces: EpisodePlaces[] = [
+    {
+      season: 1,
+      number: 1,
+      places: [
+        place({ id: "Q3", label: "Gaztelugatxe" }),
+        place({ id: "Q1722", label: "Dubrovnik", kind: "area", titles: 6 }),
+      ],
+    },
+  ];
+
+  test("the episode that says gets one line naming its places, linked where they go somewhere", async () => {
+    const html = await renderInRouter(
+      <SeriesPane
+        facets={ready}
+        working={["seasons", "episodes"]}
+        initialTab="episodes"
+        episodePlaces={episodePlaces}
+      />,
+      ["/place/$id"],
+    );
+    expect(html).toContain("Filmed at");
+    expect(html).toContain("Gaztelugatxe");
+    expect(html).toContain('href="/place/Q1722"');
+    // One episode has places, so one line -- The Kingsroad's row says nothing.
+    expect(html.match(/Filmed at/g)).toHaveLength(1);
+  });
+
+  test("with no places every row draws exactly as before", async () => {
+    const html = await renderInRouter(
+      <SeriesPane facets={ready} working={["seasons", "episodes"]} initialTab="episodes" />,
+      ["/place/$id"],
+    );
+    expect(html).not.toContain("Filmed");
+  });
+});
 
 describe("a film", () => {
   /** `seasons` is declared for series only, so the key is simply absent on a film. */

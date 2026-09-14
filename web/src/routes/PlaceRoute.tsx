@@ -16,36 +16,17 @@
  */
 
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { useKeyAction } from "../components/Kbd";
 import { PageHeading } from "../components/PageHeading";
 import type { CardNote } from "../components/TitleCard";
 import { TitleGrid } from "../components/TitleGrid";
-import {
-  cachedPlaceRun,
-  getPlace,
-  type Place,
-  type PlacePage,
-  subscribeTitleState,
-  type Title,
-  titleStateVersion,
-} from "../lib/api";
-import { placeMapUrl, placeWikidataUrl } from "../lib/place-links";
+import { subscribeTitleState, type Title, titleStateVersion } from "../lib/api";
+import { episodesLabel, placeMapUrl, placePrefix, placeWikidataUrl } from "../lib/place-links";
 import { browserLocales } from "../lib/reader-locale";
+import { usePlacePage } from "../lib/use-place-page";
 
 const PAGE = 60;
-
-/**
- * What the page is a page OF, in the muted prefix before the name -- the same slot a term
- * page uses for "Keyword" or "Streaming on". A studio says so, because "filmed at Pinewood"
- * means a sound stage rather than a location anybody could visit.
- */
-function placePrefix(place: Place): string {
-  // A studio is "Filmed at Pinewood Studios" -- nearly every studio's own name already says
-  // "Studios", so "Filmed at the studio Pinewood Studios" said it twice. The kind is stated in
-  // the caption line under the heading instead.
-  return place.kind === "area" ? "Filmed in" : "Filmed at";
-}
 
 /** "Spain", in the reader's own language. Made here and never stored, like a language name. */
 function countryName(code: string | null): string | null {
@@ -68,99 +49,17 @@ function episodeNoteFor(episodes: Record<string, number>): (t: Title) => CardNot
   return (t) => {
     const n = episodes[t.tconst];
     if (!n) return null;
-    const text = n === 1 ? "1 episode" : `${n} episodes`;
+    const text = episodesLabel(n);
     return { text, full: `Filmed here in ${text}` };
   };
 }
 
-/**
- * Fetch a place's first page into whichever setters the caller hands over.
- *
- * ONE body for the two callers -- the load effect, whose setters are guarded against a stale
- * navigation, and "Try again", which runs in a click on the page that is already mounted.
- */
-function loadFirstPage(
-  id: string,
-  set: {
-    setPage: (p: PlacePage) => void;
-    setError: (e: string) => void;
-    setLoading: (l: boolean) => void;
-  },
-): void {
-  set.setLoading(true);
-  getPlace(id, { limit: PAGE, offset: 0 })
-    .then((p) => set.setPage(p))
-    .catch((e: Error) => set.setError(e.message))
-    .finally(() => set.setLoading(false));
-}
-
 export function PlaceRoute() {
   const { id } = useParams({ strict: false }) as { id: string };
-  const [page, setPage] = useState<PlacePage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  /*
-    A failed "Show more" is its OWN state, beside the grid, never `error`. `error` replaces the
-    whole page, so a page-2 failure used to throw away the sixty titles already on screen --
-    found by the quality review of 2026-09-14.
-
-    Held as WHICH place failed rather than a boolean, because this route is not remounted
-    between places: a failure on Almería used to follow the reader onto Tabernas.
-  */
-  const [moreFailedFor, setMoreFailedFor] = useState<string | null>(null);
-  const moreFailed = moreFailedFor === id;
+  // The loading, paging and failure rules live in the hook, where a test can drive them.
+  const { page, error, loading, moreFailed, canLoadMore, loadMore, retry } = usePlacePage(id, PAGE);
 
   useSyncExternalStore(subscribeTitleState, titleStateVersion);
-
-  // Seeded during render, for the reason every grid route is: opening a title unmounts this
-  // one, and a null first state would blank the page on the way back.
-  const [seededFor, setSeededFor] = useState<string | null>(null);
-  if (seededFor !== id) {
-    setSeededFor(id);
-    setError(null);
-    setPage(cachedPlaceRun(id, PAGE) ?? null);
-  }
-
-  useEffect(() => {
-    // The index only changes at a rebuild, so a page we already hold IS the answer. No
-    // revalidation -- unlike a term page, whose membership grows as the facet cache warms.
-    if (cachedPlaceRun(id, PAGE)) return;
-    let stale = false;
-    loadFirstPage(id, {
-      setPage: (p) => !stale && setPage(p),
-      setError: (e) => !stale && setError(e),
-      setLoading: (l) => !stale && setLoading(l),
-    });
-    return () => {
-      stale = true;
-    };
-  }, [id]);
-
-  const canLoadMore = Boolean(page && !loading && page.titles.length < page.total);
-
-  const loadMore = async () => {
-    if (!page || !canLoadMore) return;
-    setLoading(true);
-    setMoreFailedFor(null);
-    try {
-      const next = await getPlace(id, { limit: PAGE, offset: page.titles.length });
-      // Appended only onto the SAME place: a reader who navigated away mid-fetch must not get
-      // this page's rows stitched under another place's header.
-      setPage((prev) =>
-        prev && prev.place.id === next.place.id
-          ? {
-              ...next,
-              titles: [...prev.titles, ...next.titles],
-              episodes: { ...prev.episodes, ...next.episodes },
-            }
-          : prev,
-      );
-    } catch {
-      setMoreFailedFor(id);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadMoreKey = useKeyAction("loadMore", () => void loadMore(), canLoadMore);
   const episodes = page?.episodes;
@@ -179,14 +78,7 @@ export function PlaceRoute() {
         {unknown ? "That is not a filming location in our index." : "This place did not load."}{" "}
         {!unknown && (
           <>
-            <button
-              type="button"
-              onClick={() => {
-                setError(null);
-                loadFirstPage(id, { setPage, setError, setLoading });
-              }}
-              className="underline hover:text-ink"
-            >
+            <button type="button" onClick={retry} className="underline hover:text-ink">
               Try again
             </button>{" "}
             or{" "}

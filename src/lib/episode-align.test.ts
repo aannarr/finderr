@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  alignEpisodePairs,
   alignEpisodes,
   foldEpisodeTitle,
   type IndexEpisode,
@@ -27,6 +28,47 @@ function idx(season: number, number: number, title: string | null, rating: numbe
 function at(rows: ReturnType<typeof alignEpisodes>, season: number, number: number) {
   return rows.find((r) => r.season === season && r.number === number) ?? null;
 }
+
+/*
+  The mapping as PAIRS, for a per-episode fact that is not a score -- filming locations were the
+  second consumer, 2026-09-14. It must agree with `alignEpisodes` on every coordinate, or a place
+  and a score for one episode would land on two different rows.
+*/
+describe("alignEpisodePairs", () => {
+  const skeleton = [
+    sky(1, 1, "Encounter at Farpoint (1)"),
+    sky(1, 2, "Encounter at Farpoint (2)"),
+    sky(1, 3, "The Naked Now"),
+    sky(1, 4, "Code of Honor"),
+  ];
+  const index = [
+    idx(1, 1, "Encounter at Farpoint", 7.6),
+    idx(1, 2, "The Naked Now", 6.6),
+    idx(1, 3, "Code of Honor", 4.9),
+  ];
+
+  test("each skeleton slot names the index episode it is, shifted where the sources disagree", () => {
+    expect(alignEpisodePairs(skeleton, index).map((p) => [p.season, p.number, p.episode.number])).toEqual([
+      [1, 1, 1],
+      [1, 2, 1],
+      [1, 3, 2],
+      [1, 4, 3],
+    ]);
+  });
+
+  test("covers exactly the coordinates alignEpisodes scores, with the same episode behind each", () => {
+    const pairs = alignEpisodePairs(skeleton, index);
+    const scores = alignEpisodes(skeleton, index);
+    expect(pairs.map((p) => [p.season, p.number, p.episode.rating])).toEqual(
+      scores.map((s) => [s.season, s.number, s.rating]),
+    );
+  });
+
+  test("nothing to align is nothing", () => {
+    expect(alignEpisodePairs([], index)).toEqual([]);
+    expect(alignEpisodePairs(skeleton, [])).toEqual([]);
+  });
+});
 
 describe("the shapes already agree", () => {
   const skeleton = [sky(1, 1, "Pilot"), sky(1, 2, "Second"), sky(1, 3, "Third")];

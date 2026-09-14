@@ -17,15 +17,16 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   type ArrLink,
   cachedTitle,
+  type EpisodePlaces,
   type EpisodeState,
   getTitleDetail,
   type PersonLinks,
-  type Place,
   type RenderedPane,
   subscribeTitleState,
   type Title,
   type TitleAwards,
   type TitleDetail,
+  type TitlePlace,
   titleStateVersion,
 } from "./api";
 import type { EpisodeScore } from "./episode-scores";
@@ -141,7 +142,7 @@ export interface TitleDetailView {
    * Where this title was filmed, from our own index. Undefined until the response lands, and
    * like `awards` it arrives complete -- nothing about it belongs in the poll.
    */
-  places: Place[] | undefined;
+  places: TitlePlace[] | undefined;
   /** The rest of this title's collection, decorated. Undefined until the response lands. */
   collectionTitles: Title[] | undefined;
   /**
@@ -184,6 +185,8 @@ export interface TitleDetailView {
    * response and never sits `pending`, so nothing about it belongs in the poll.
    */
   episodeScores: EpisodeScore[] | undefined;
+  /** Where each episode was filmed, at the scores' coordinates. Arrives complete, like the scores. */
+  episodePlaces: EpisodePlaces[] | undefined;
   /**
    * What the Academy gave this film. `null` for nearly every title, undefined before the
    * response lands -- and the pane draws nothing in either case.
@@ -264,6 +267,7 @@ export function useTitleDetail(tconst: string): TitleDetailView {
     arrLink: detail?.arrLink ?? null,
     episodeState: detail?.episodeState,
     episodeScores: detail?.episodeScores,
+    episodePlaces: detail?.episodePlaces,
     awards: detail?.awards,
     error,
   };
