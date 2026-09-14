@@ -122,6 +122,17 @@ describe("a title we do not hold the file for", () => {
     expect(html).not.toContain("could not be sent");
   });
 
+  test("Try again shows keyboard focus in the accent and dims while busy", () => {
+    const html = render(makeTitle({ requestStatus: "failed", requestVerdict: "failed" }), false);
+    expect(html).toContain("focus-visible:outline-accent");
+    expect(html).toContain("disabled:opacity-60");
+  });
+
+  test("the verdict slot announces its changes to a screen reader", () => {
+    const html = render(makeTitle({ requestStatus: "failed", requestVerdict: "failed" }), false);
+    expect(html).toContain('aria-live="polite"');
+  });
+
   test("a request still being worked on offers no Try again", () => {
     const html = render(makeTitle({ requestStatus: "sent", requestVerdict: "searching" }), false);
     expect(html).not.toContain("Try again");

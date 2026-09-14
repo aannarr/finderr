@@ -23,20 +23,6 @@
 export const LINK_BUTTON = "text-sm text-muted underline underline-offset-4 hover:text-ink";
 
 /**
- * THE one action a block is for: full width, filled with the accent, unmissable.
- *
- * The title page's Request button and its Plex play button had written this out
- * character for character, and "Play here" was about to be the third -- which is the line
- * this file draws. It is what makes the primary slot recognisable as one slot: whatever a
- * title's state turns out to be, the thing to press looks the same.
- *
- * `block` and `text-center` are redundant on a `<button>` and required on an `<a>`, and they
- * live here rather than at the two call sites so the two elements cannot drift apart.
- */
-export const PRIMARY_BUTTON = `block w-full rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium
-   text-black transition-opacity hover:opacity-90 active:opacity-75`;
-
-/**
  * The colours of an outlined control at rest and under the pointer: a hairline and muted text,
  * both going to ink on hover. `SECONDARY_BUTTON`, the watchlist toggle and the share button had
  * each written it out, which is the line this file draws.
@@ -57,6 +43,25 @@ export const OUTLINE_TONE = "border-line text-muted hover:border-ink hover:text-
  */
 export const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+
+/**
+ * THE one action a block is for: full width, filled with the accent, unmissable.
+ *
+ * The title page's Request button and its Plex play button had written this out
+ * character for character, and "Play here" was about to be the third -- which is the line
+ * this file draws. It is what makes the primary slot recognisable as one slot: whatever a
+ * title's state turns out to be, the thing to press looks the same.
+ *
+ * `block` and `text-center` are redundant on a `<button>` and required on an `<a>`, and they
+ * live here rather than at the two call sites so the two elements cannot drift apart.
+ *
+ * The focus ring and the busy dim live here too (2026-09-15). Without them keyboard focus fell
+ * back to the browser's grey outline and a disabled "Asking again…" looked pressable; two call
+ * sites had each bolted `disabled:opacity-60` on by hand. Declared BELOW `FOCUS_RING` because it
+ * interpolates it -- see the note on `OUTLINE_TONE`.
+ */
+export const PRIMARY_BUTTON = `block w-full rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium
+   text-black transition-opacity hover:opacity-90 active:opacity-75 disabled:opacity-60 ${FOCUS_RING}`;
 
 /**
  * A real action that is not the point: the same size as `PRIMARY_BUTTON`, with an outline

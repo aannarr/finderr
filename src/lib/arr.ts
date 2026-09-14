@@ -304,6 +304,11 @@ export function safeRetryMessage(service: string): string {
   return `${serviceName(service)} did not answer yet -- trying again automatically`;
 }
 
+/** What a reader is told once every retry of a transient failure has been spent. */
+export function safeGaveUpMessage(service: string, attempts: number): string {
+  return `${serviceName(service)} did not accept it after ${attempts} tries`;
+}
+
 /**
  * What a USER may be told about a failed request.
  *

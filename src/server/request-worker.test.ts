@@ -253,7 +253,13 @@ describe("a transient arr failure is queued again, not failed", () => {
     w.enqueue(show.tconst);
     await settled(w);
     expect(calls).toHaveLength(MAX_SEND_ATTEMPTS);
-    expect(store.getRequest(show.tconst)).toMatchObject({ status: "failed", retry_at: null });
+    // Names the cause and the effort. "The request could not be sent" under a "Request failed"
+    // label said the same thing twice and told the reader nothing about why.
+    expect(store.getRequest(show.tconst)).toMatchObject({
+      status: "failed",
+      retry_at: null,
+      error: `Sonarr did not accept it after ${MAX_SEND_ATTEMPTS} tries`,
+    });
   });
 
   test("Try again during the wait sends now and starts the count over", async () => {

@@ -561,12 +561,18 @@ export function PrimaryAction({
     a verdict about an ask somebody actually made.
   */
   if (title.requestVerdict) {
+    /*
+      A LIVE REGION, because pressing Try again unmounts the button that had focus and swaps
+      "Request failed" for "Requested" -- a change a screen reader would otherwise never hear.
+      Here and not inside `RequestVerdictPanel`: `/requests` draws one panel per row and refreshes
+      them on a timer, and a live region per row would read the whole list aloud every tick.
+    */
     return (
-      <>
+      <div aria-live="polite">
         <RequestVerdictPanel state={title} error={title.requestError} />
         {/* Draws nothing unless the verdict is a dead end -- `RetryControl` owns that rule. */}
         <RetryControl request={title} tone="primary" />
-      </>
+      </div>
     );
   }
 

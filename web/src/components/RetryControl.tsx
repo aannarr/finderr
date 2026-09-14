@@ -67,7 +67,11 @@ export function RetryControl({
         <button type="button" onClick={() => void retry()} disabled={busy} className={PRIMARY_BUTTON}>
           {label}
         </button>
-        {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+        {error && (
+          <p role="alert" className="mt-1 text-xs text-danger">
+            {error}
+          </p>
+        )}
       </div>
     );
   }
@@ -77,7 +81,11 @@ export function RetryControl({
       <button type="button" onClick={() => void retry()} disabled={busy} className={LINK_BUTTON}>
         {label}
       </button>
-      {error && <span className="text-xs text-danger">{error}</span>}
+      {error && (
+        <span role="alert" className="text-xs text-danger">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

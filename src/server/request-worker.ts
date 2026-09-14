@@ -21,7 +21,13 @@
  */
 
 import type { RadarrClient, SonarrClient } from "../lib/arr";
-import { ArrError, isTransientArrFailure, safeArrMessage, safeRetryMessage } from "../lib/arr";
+import {
+  ArrError,
+  isTransientArrFailure,
+  safeArrMessage,
+  safeGaveUpMessage,
+  safeRetryMessage,
+} from "../lib/arr";
 import type { ProwlarrClient } from "../lib/prowlarr";
 import { decodeSeasons } from "../lib/seasons";
 import type { MediaRequest, Store } from "../lib/store";
@@ -310,7 +316,11 @@ export class RequestWorker {
         // SANITISED. The arr's own message quotes its response body, which carries root
         // folder paths and internal hostnames, and this column is served to the browser.
         // The full text goes to the log line below and stays there.
-        error: safeArrMessage(err),
+        //
+        // A transient failure that used up every attempt says THAT, rather than the generic
+        // sentence: "could not be sent" under a "Request failed" label repeats the label and
+        // hides that finderr spent a day trying.
+        error: isTransientArrFailure(err) ? safeGaveUpMessage(req.service, attempts) : safeArrMessage(err),
       });
       this.failed++;
       log(`request FAILED "${req.title}": ${e.message}`);
