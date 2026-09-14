@@ -24,6 +24,11 @@
  *   BENCH_CAPS     "copy" (h264+hevc, aac: video copied) or "h264" (h264 only: hevc re-encodes)
  *   BENCH_SECONDS  media seconds to walk (default 90)
  *   BENCH_SETTLE_MS  wait before reading the cost report, so a background run is charged (5000)
+ *   BENCH_BUFFER   seconds of buffer to hold, like hls.js `maxBufferLength`. Unset = walk back to
+ *                  back (the warm-up case). Set = playback starts once both renditions hold one
+ *                  segment and advances in real time; a rendition fetches only while it is below
+ *                  the buffer, which is the steady-state case read-ahead exists for. Paced runs
+ *                  also report rebuffer: seconds the playhead would have waited on a rendition.
  */
 
 export {};
@@ -46,6 +51,7 @@ const caps =
     : { video: ["h264", "hevc"], audio: ["aac"] };
 const walkSeconds = Number(process.env.BENCH_SECONDS ?? 90);
 const settleMs = Number(process.env.BENCH_SETTLE_MS ?? 5000);
+const bufferSec = process.env.BENCH_BUFFER ? Number(process.env.BENCH_BUFFER) : null;
 /** How long one segment may keep answering 404 before the walk gives up on it. */
 const SEGMENT_GIVE_UP_MS = 60_000;
 const RETRY_MS = 250;
@@ -136,7 +142,20 @@ async function runTitle(tconst: string): Promise<void> {
       }
     };
 
-    const rows: { rendition: string; index: number; ms: number; bytes: number; tries: number }[] = [];
+    // The playhead, for a paced run: null until both renditions hold their first segment, then
+    // real time since then minus every stall. A stall pauses it, which is what a player does.
+    let playStart: number | null = null;
+    let rebufferSec = 0;
+    const position = () => (playStart === null ? 0 : (performance.now() - playStart) / 1000);
+
+    const rows: {
+      rendition: string;
+      index: number;
+      ms: number;
+      bytes: number;
+      tries: number;
+      paced: boolean;
+    }[] = [];
     await Promise.all(
       renditions.map(async (r) => {
         if (r.init) await fetchUntilReady(`${base}${dir}${r.init}${q}`);
@@ -144,10 +163,25 @@ async function runTitle(tconst: string): Promise<void> {
         for (let i = 0; i < r.segments.length && seconds < walkSeconds; i++) {
           const seg = r.segments[i];
           if (!seg) break;
+          let paced = false;
+          if (bufferSec !== null && playStart !== null) {
+            while (seconds - position() >= bufferSec) {
+              paced = true;
+              await Bun.sleep(100);
+            }
+          }
           const got = await fetchUntilReady(`${base}${dir}${seg.uri}${q}`);
-          rows.push({ rendition: r.name, index: i, ...got });
+          if (bufferSec !== null && playStart !== null) {
+            const starved = position() - seconds;
+            if (starved > 0) {
+              rebufferSec += starved;
+              playStart += starved * 1000;
+            }
+          }
+          rows.push({ rendition: r.name, index: i, paced, ...got });
           seconds += seg.sec;
           have.set(r.name, seconds);
+          if (playStart === null && Math.min(...have.values()) > 0) playStart = performance.now();
           note();
         }
       }),
@@ -176,6 +210,22 @@ async function runTitle(tconst: string): Promise<void> {
         p90: Math.round(pct(video, 90)),
         max: Math.round(Math.max(...video)),
       },
+      // Only requests made once the buffer was full, i.e. at the pace playback consumes media.
+      pacedMs:
+        bufferSec === null
+          ? null
+          : (() => {
+              const xs = rows.filter((r) => r.paced).map((r) => r.ms);
+              return xs.length === 0
+                ? null
+                : {
+                    n: xs.length,
+                    p50: Math.round(pct(xs, 50)),
+                    p90: Math.round(pct(xs, 90)),
+                    max: Math.round(Math.max(...xs)),
+                  };
+            })(),
+      rebufferSec: bufferSec === null ? null : Math.round(rebufferSec * 100) / 100,
       retries404: rows.reduce((n, r) => n + r.tries - 1, 0),
       mb: Math.round(rows.reduce((n, r) => n + r.bytes, 0) / 1048576),
       ffmpegCpuMs: mine?.cpuMs ?? null,

@@ -73,10 +73,15 @@ import { type Session, SessionRefused, type TranscodeSessions } from "../lib/tra
 const FIRST_SEGMENT_WAIT_MS = 5_000;
 
 /**
- * How many leading segments of each first-frame rendition the start request tries to have on
- * disk before it answers: the first eighteen seconds, still inside `FIRST_SEGMENT_WAIT_MS`.
+ * How many leading segments of each first-frame rendition the start request WAITS for: one.
+ *
+ * Asking for segment 0 aims the session's read-ahead at 1..3, so the next segments are already
+ * being made in the background when the answer goes out. Waiting for three instead was
+ * measured on the J4125 on 2026-09-15 and rejected: the start request went from 659-1039 ms to
+ * 1551-1728 ms, because the three audio segments are produced one after another, so the first
+ * frame arrived about a second LATER to save the player two requests it no longer waits on.
  */
-const WARM_SEGMENTS = 3;
+const WARM_SEGMENTS = 1;
 
 export interface PlaybackDeps {
   store: Store;
