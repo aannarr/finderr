@@ -183,7 +183,9 @@ export const PLACE_INDEXES = [
   // not fetch a table row for every title it skips.
   "create index ix_place_titles on title_place(place_id, votes desc, title_rowid, episodes)",
   // The title pane: every place one title was filmed at.
-  "create index ix_title_place on title_place(title_rowid, place_id)",
+  // `episodes` rides along so the title pane's read stays COVERING: without it the v4 bench
+  // (M1 Max, 2026-09-14) showed `SEARCH tp USING INDEX`, a table row fetched per place.
+  "create index ix_title_place on title_place(title_rowid, place_id, episodes)",
   // An episode row's places: `ix_ep_parent` finds the series' episodes, this finds each one's.
   "create index ix_episode_place on episode_place(episode_rowid, place_id)",
 ] as const;
