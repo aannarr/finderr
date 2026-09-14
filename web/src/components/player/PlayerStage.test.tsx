@@ -90,7 +90,12 @@ function fakeMedia(el: HTMLVideoElement, media: FakeMedia) {
 }
 
 function renderStage(
-  opts: { tracks?: TrackChoices | null; onClose?: () => void; buffered?: [number, number][] } = {},
+  opts: {
+    tracks?: TrackChoices | null;
+    onClose?: () => void;
+    buffered?: [number, number][];
+    fatal?: string | null;
+  } = {},
 ) {
   const clock: FakeClock = fakeTimers();
   const media: FakeMedia = { buffered: opts.buffered ?? [] };
@@ -110,7 +115,7 @@ function renderStage(
         tracks={opts.tracks ?? null}
         onAudio={() => {}}
         onSubtitles={() => {}}
-        fatal={null}
+        fatal={opts.fatal ?? null}
         readBrowserStats={() => null}
         onClose={opts.onClose ?? (() => {})}
         timers={clock.timers}
@@ -168,6 +173,20 @@ describe("the chrome never squats", () => {
     act(() => p.clock.advance(10_000));
     expect(screen.getByRole("menu", { name: "Subtitles" })).toBeTruthy();
     expect(p.stage().dataset.chrome).toBe("shown");
+  });
+
+  test("an error hides the chrome and shows the dialog alone, with its sentence ended once", () => {
+    const p = renderStage({ fatal: "The video stopped without saying why." });
+    act(() => void fireEvent.pointerMove(p.stage(), { pointerType: "mouse" }));
+    expect(p.stage().dataset.chrome).toBe("hidden");
+    const detail = screen.getByRole("alertdialog").textContent ?? "";
+    expect(detail).toContain("The video stopped without saying why. Copy the diagnostics");
+    expect(detail).not.toContain("..");
+  });
+
+  test("an error without its own full stop is given one", () => {
+    renderStage({ fatal: "The player gave up: fragLoadError" });
+    expect(screen.getByRole("alertdialog").textContent).toContain("fragLoadError. Copy the diagnostics");
   });
 
   test("a touch on the frame toggles the chrome and never playback", () => {

@@ -109,6 +109,19 @@ export function hasNativeHls(): boolean {
 }
 
 /**
+ * How the player attaches a playlist: hls.js over MSE, the element's own HLS, or not at all.
+ *
+ * MSE FIRST, native only when there is no MSE -- the order is the fix, and `PlayHere` carries the
+ * measurement behind it (Chromium says `"maybe"` to HLS it cannot play). This is the ONLY path iOS
+ * has, so it is a function a test can pin rather than a branch a refactor could quietly drop.
+ * `nativeHls` is a thunk because the probe creates an element, and the MSE case never needs it.
+ */
+export function attachMode(mseSupported: boolean, nativeHls: () => boolean): "mse" | "native" | "none" {
+  if (mseSupported) return "mse";
+  return nativeHls() ? "native" : "none";
+}
+
+/**
  * What the server knows about this playback that will not change while it runs.
  *
  * A structural copy of `src/lib/playback-diagnostics.ts`, for the same reason

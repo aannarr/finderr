@@ -27,6 +27,7 @@ import type { Episode } from "../lib/facets";
 import { candidateLoader } from "../lib/hls-candidate-loader";
 import { retryingNotReady } from "../lib/hls-retry";
 import {
+  attachMode,
   electStreamEndpoint,
   hasNativeHls,
   PlaybackRefused,
@@ -204,10 +205,11 @@ export function usePlayHere({
     void (async () => {
       const { default: Hls } = await import("hls.js");
       if (cancelled) return;
-      if (!Hls.isSupported()) {
+      const mode = attachMode(Hls.isSupported(), hasNativeHls);
+      if (mode !== "mse") {
         // Same-origin by construction: the element follows the playlist itself, so there is no
         // loader to retarget a request and multi-homing is an MSE-path feature.
-        if (hasNativeHls()) {
+        if (mode === "native") {
           const resumeAt = resumeRef.current;
           // The native element has no start-position option; the first moment it will accept a
           // seek is `loadedmetadata`.

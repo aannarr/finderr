@@ -78,3 +78,19 @@ export function planSummary(plan: PlaybackPlan): string {
   }
   return parts.join(" · ");
 }
+
+/**
+ * The plan at a glance: `copy hevc · → aac`, what happens to the picture and to the sound.
+ *
+ * The stats panel's first row, which has to fit one line beside its label over a video frame.
+ * Track counts and subtitle handling are real facts but not the glance; `planSummary` keeps them
+ * and the panel shows it one click down.
+ */
+export function planGlance(plan: PlaybackPlan): string {
+  const parts: string[] = [];
+  if (plan.video)
+    parts.push(plan.video.action === "copy" ? `copy ${plan.video.codec}` : `→ ${plan.video.codec}`);
+  const audio = plan.audio[0];
+  if (audio) parts.push(audio.action === "copy" ? audio.codec : `→ ${audio.codec}`);
+  return parts.length > 0 ? parts.join(" · ") : "—";
+}

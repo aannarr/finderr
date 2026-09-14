@@ -168,8 +168,10 @@ export function PlayerStage(props: PlayerStageProps) {
     };
   }, [wake, timers]);
 
-  const pinned = v.paused || v.ended || menu !== null || help || scrubbing || focusInBar || fatal !== null;
-  const visible = chromeVisible(awake, pinned);
+  const pinned = v.paused || v.ended || menu !== null || help || scrubbing || focusInBar;
+  // An error HIDES the chrome rather than pinning it: nothing in the bar works once playback has
+  // failed, and the comp's error state shows the dialog alone.
+  const visible = fatal === null && chromeVisible(awake, pinned);
 
   /* ---- while the stage is up: own the keyboard, freeze the page, take focus ---- */
 
@@ -530,13 +532,13 @@ export function PlayerStage(props: PlayerStageProps) {
 
       {/* ---- stats ---- */}
       {stats ? (
-        <div className="absolute top-16 left-4 z-10 max-h-[calc(100%-11rem)] w-[min(40rem,calc(100%-2rem))] overflow-y-auto sm:left-6">
+        <div className="absolute top-16 left-4 z-10 max-h-[calc(100%-11rem)] w-[min(36rem,calc(100%-2rem))] overflow-y-auto sm:left-6">
           <PlayerStats
             session={session}
             readBrowserStats={props.readBrowserStats}
-            // 90%, not the comp's 75%: measured over a saturated frame in Chromium, 75% let the
-            // colours behind bleed through the numbers.
-            className="rounded-xl bg-black/90 px-3 py-2 text-left ring-1 ring-white/10 backdrop-blur"
+            // 85% and a stronger blur than the comp's 75%: read off Chromium over a saturated test
+            // frame, 75% let the colour bars bleed through the numbers.
+            className="rounded-xl bg-black/85 px-3 py-2.5 text-left ring-1 ring-white/10 backdrop-blur-md"
           />
         </div>
       ) : null}
@@ -698,8 +700,8 @@ export function PlayerStage(props: PlayerStageProps) {
               This title stopped playing
             </h2>
             <p id="player-error-detail" className="mt-1.5 text-sm text-muted">
-              {fatal}. Copy the diagnostics into a bug report: they say what the player and the server were
-              doing.
+              {/[.!?]$/.test(fatal) ? fatal : `${fatal}.`} Copy the diagnostics into a bug report: they say
+              what the player and the server were doing.
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <CopyReport

@@ -47,7 +47,7 @@ import {
   videoLine,
 } from "../lib/playback-report";
 import { type BrowserStats, readyStateLabel } from "../lib/playback-telemetry";
-import { isExpensivePlan, planSummary } from "../lib/playback-types";
+import { isExpensivePlan, planGlance, planSummary } from "../lib/playback-types";
 import { uptime } from "../lib/units";
 import { Fact, Facts } from "./Facts";
 
@@ -63,37 +63,77 @@ const COPIED_MS = 2_000;
 /** `2 of 3` -- the shape both limits are read in. */
 const spent = (budget: Budget): string => `${budget.used} of ${budget.max}`;
 
-/** The server half: the plan, the file it was made from, and what the box is spending. */
-function ServerFacts(props: { session: PlaybackSession; report: SessionsReport | null; now: number }) {
+/*
+  THE PANEL IS THE COMP'S: four facts a side, over the picture, and everything else one click down.
+  Eight rows are what answers "why is this not playing" at a glance -- the plan, the encoder, the
+  video and the cut on the server side; ready state, buffer, throughput and the last error on the
+  browser's. The rest stays one `<details>` away rather than being dropped, because the Copy button
+  already reports all of it and a diagnostic panel that hides a fact from the screen but not from
+  the report would disagree with its own paste.
+*/
+
+/** The server half at a glance: what was planned, with what, from what, cut how. */
+function ServerSummary(props: { session: PlaybackSession }) {
+  const { plan, diagnostics } = props.session;
+  const encoder = diagnostics?.encoder;
+  return (
+    <Facts compact>
+      <Fact label="Plan" value={planGlance(plan)} />
+      <Fact
+        label="Encoder"
+        // Reported even when nothing is encoding, because "which encoder would this box use" is a
+        // question about the box -- `idle` is what stops it reading as a claim of a re-encode.
+        value={encoder ? `${encoder.name}${isExpensivePlan(plan) ? "" : ", idle"}` : UNKNOWN}
+      />
+      <Fact label="Video" value={diagnostics ? videoLine(diagnostics.source) : UNKNOWN} />
+      <Fact label="Segments" value={diagnostics ? segmentLine(diagnostics.segmenting) : UNKNOWN} />
+    </Facts>
+  );
+}
+
+/** The browser half at a glance, which is the one no server log can answer. */
+function BrowserSummary(props: { stats: BrowserStats | null }) {
+  const s = props.stats;
+  const error = lastErrorLine(s);
+  return (
+    <Facts compact>
+      <Fact
+        label="Ready state"
+        value={s ? readyStateLabel(s.readyState) : UNKNOWN}
+        hint={
+          s?.readyState === 0
+            ? "The element has no data at all: either nothing was requested or every request failed."
+            : undefined
+        }
+      />
+      <Fact
+        label="Buffer ahead"
+        value={s ? `${s.bufferedAheadSec.toFixed(1)}s` : UNKNOWN}
+        hint={
+          s && s.readyState > 0 && s.bufferedAheadSec === 0
+            ? "Nothing is buffered ahead of the playhead, which is what a stall looks like."
+            : undefined
+        }
+      />
+      <Fact label="Throughput" value={bitrate(s?.bandwidthBps ?? null)} />
+      <Fact label="Last error" value={error ?? "none"} danger={error !== null} />
+    </Facts>
+  );
+}
+
+/** The server half in full: the file, the session, and what the box is spending. */
+function ServerDetails(props: { session: PlaybackSession; report: SessionsReport | null; now: number }) {
   const { plan, diagnostics } = props.session;
   const mine = props.report?.sessions.find((s) => s.id === props.session.sessionId);
   const startedAt = mine ? Date.parse(mine.startedAt) : Number.NaN;
-  const encoder = diagnostics?.encoder;
-
   return (
-    <Facts>
-      <Fact label="Plan" value={planSummary(plan)} />
-      <Fact
-        label="Encoder"
-        value={text(encoder?.name)}
-        // Reported even when nothing is encoding, because "which encoder would this box use"
-        // is a question about the box. The hint is what stops that reading as a claim that
-        // this title is being re-encoded.
-        hint={
-          encoder
-            ? isExpensivePlan(plan)
-              ? encoder.reason
-              : `${encoder.reason}, idle — this video is copied`
-            : undefined
-        }
-        tone="info"
-      />
+    <Facts compact>
+      <Fact label="Tracks" value={planSummary(plan)} />
+      <Fact label="Why this encoder" value={text(diagnostics?.encoder?.reason)} />
       <Fact label="Container" value={text(diagnostics?.source.container)} />
-      <Fact label="Video" value={diagnostics ? videoLine(diagnostics.source) : UNKNOWN} />
       <Fact label="Audio" value={diagnostics ? audioLine(diagnostics.source) : UNKNOWN} />
       <Fact label="Runtime" value={clock(diagnostics?.source.durationSec ?? props.session.durationSec)} />
       <Fact label="File" value={bytes(diagnostics?.source.sizeBytes)} />
-      <Fact label="Segments" value={diagnostics ? segmentLine(diagnostics.segmenting) : UNKNOWN} />
       <Fact label="Session" value={props.session.sessionId} />
       <Fact
         label="Running for"
@@ -115,29 +155,11 @@ function ServerFacts(props: { session: PlaybackSession; report: SessionsReport |
   );
 }
 
-/** The browser half, which is the one no server log can answer. */
-function BrowserFacts(props: { stats: BrowserStats | null }) {
+/** The browser half in full. */
+function BrowserDetails(props: { stats: BrowserStats | null }) {
   const s = props.stats;
   return (
-    <Facts>
-      <Fact
-        label="Ready state"
-        value={s ? readyStateLabel(s.readyState) : UNKNOWN}
-        hint={
-          s?.readyState === 0
-            ? "The element has no data at all: either nothing was requested or every request failed."
-            : undefined
-        }
-      />
-      <Fact
-        label="Buffer ahead"
-        value={s ? `${s.bufferedAheadSec.toFixed(1)}s` : UNKNOWN}
-        hint={
-          s && s.readyState > 0 && s.bufferedAheadSec === 0
-            ? "Nothing is buffered ahead of the playhead, which is what a stall looks like."
-            : undefined
-        }
-      />
+    <Facts compact>
       <Fact label="Position" value={clock(s?.positionSec)} />
       <Fact
         label="Dropped frames"
@@ -147,13 +169,7 @@ function BrowserFacts(props: { stats: BrowserStats | null }) {
             : `${s.droppedFrames} of ${s.totalFrames ?? 0}`
         }
       />
-      <Fact label="Throughput" value={bitrate(s?.bandwidthBps ?? null)} />
       <Fact label="Last segment" value={fragmentLine(s)} />
-      <Fact
-        label="Last error"
-        value={lastErrorLine(s) ? "yes" : "none"}
-        hint={lastErrorLine(s) ?? undefined}
-      />
     </Facts>
   );
 }
@@ -162,12 +178,12 @@ function BrowserFacts(props: { stats: BrowserStats | null }) {
  * The plan's own sentences, which the server already writes in plain English for exactly this.
  *
  * Below the columns rather than beside them: they are prose of unpredictable length, and a
- * paragraph in a right-aligned tabular column is the one shape `Facts` is wrong for.
+ * paragraph in a tabular column is the one shape `Facts` is wrong for.
  */
 function PlanReasons(props: { reasons: string[] }) {
   if (props.reasons.length === 0) return null;
   return (
-    <ul className="mt-2 list-disc space-y-0.5 border-t border-line/60 pt-2 pl-4 text-xs text-muted">
+    <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-muted">
       {props.reasons.map((reason) => (
         <li key={reason}>{reason}</li>
       ))}
@@ -286,14 +302,24 @@ export function PlayerStats(props: {
 
   return (
     <div className={props.className ?? "rounded-lg border border-line bg-black/60 px-3 py-2 text-left"}>
-      <div className="grid gap-x-6 sm:grid-cols-2">
-        <ServerFacts session={props.session} report={report} now={now} />
-        <BrowserFacts stats={browser} />
-      </div>
-      <PlanReasons reasons={props.session.plan.reasons} />
-      <div className="mt-2 flex justify-end border-t border-line/60 pt-2">
+      <div className="mb-2 flex items-baseline justify-between gap-4">
+        <h2 className="text-xs font-semibold text-ink">Stats for nerds</h2>
         <CopyReport build={build} />
       </div>
+      <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+        <ServerSummary session={props.session} />
+        <BrowserSummary stats={browser} />
+      </div>
+      <details className="mt-2 border-t border-white/10 pt-2">
+        <summary className="cursor-pointer text-xs text-muted outline-none select-none hover:text-ink focus-visible:text-ink">
+          All details
+        </summary>
+        <div className="mt-2 grid gap-x-8 gap-y-1 sm:grid-cols-2">
+          <ServerDetails session={props.session} report={report} now={now} />
+          <BrowserDetails stats={browser} />
+        </div>
+        <PlanReasons reasons={props.session.plan.reasons} />
+      </details>
     </div>
   );
 }
