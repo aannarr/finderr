@@ -21,12 +21,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { stripImageExt } from "../server/cache-policy";
+import { parseWatchWrite } from "../server/watch-routes";
 import { FORBIDDEN_PATTERNS, HOSTILE, HOSTILE_CASES, NON_STRINGS, RLO } from "./abuse-corpus";
 import { parsePlaceId } from "./filming-locations";
 import {
   boundedHeader,
   boundedInt,
   boundedList,
+  boundedNumber,
   boundedQuery,
   boundedText,
   clampInt,
@@ -80,6 +82,18 @@ const TEXT_ENTRY_POINTS: {
   { name: "boundedQuery", run: (v) => boundedQuery(v), accepts: "unknown", textOut: guardedText },
   { name: "clampInt", run: (v) => clampInt(v, { min: 0, max: 100 }), accepts: "unknown" },
   { name: "boundedInt", run: (v) => boundedInt(v, { min: 0, max: 100 }), accepts: "unknown" },
+  { name: "boundedNumber", run: (v) => boundedNumber(v, { min: 0, max: 100 }), accepts: "unknown" },
+  /*
+    `parseWatchWrite` is the `/api/watch/:tconst` body guard. It emits NUMBERS and fixed refusal
+    sentences that never echo the input, so it declares no `textOut` -- the `parsePlaceId`
+    reasoning. It inherits that a hostile value in any field cannot make it throw or crawl.
+  */
+  { name: "parseWatchWrite", run: (v) => parseWatchWrite(v), accepts: "unknown" },
+  {
+    name: "parseWatchWrite (every field)",
+    run: (v) => parseWatchWrite({ season: v, episode: v, positionSec: v, durationSec: v }),
+    accepts: "unknown",
+  },
   { name: "boundedList", run: (v) => boundedList(v, (x) => boundedText(x, 10)), accepts: "unknown" },
   { name: "urlWithinBounds", run: (v) => urlWithinBounds(v as string), accepts: "string" },
   {

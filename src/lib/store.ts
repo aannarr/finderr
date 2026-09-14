@@ -29,6 +29,7 @@ import { encodeSeasons } from "./seasons";
 import { applyShelfPreferenceSchema } from "./shelf-preferences";
 import { type AddedColumn, addMissingColumns } from "./sqlite-columns";
 import type { TermPair } from "./terms";
+import { applyWatchStateSchema } from "./watch-state";
 import { applyWatchlistSchema } from "./watchlist";
 
 /**
@@ -1047,6 +1048,8 @@ export class Store implements SearchLogSink, AiCallSink, ConversationStore {
     // Same rule, same reason: `shelf_pref` cascades off `app_user`. See
     // `SHELF_PREFERENCE_SCHEMA`.
     applyShelfPreferenceSchema(this.db);
+    // Same rule again: `watch_state` cascades off `app_user`. See `WATCH_STATE_SCHEMA`.
+    applyWatchStateSchema(this.db);
     // Where a file can be cut, remembered per file. Order-independent -- it cascades off
     // nothing, because it is keyed by a path on disk rather than by anything this app owns.
     applyKeyframeCacheSchema(this.db);

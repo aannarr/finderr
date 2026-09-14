@@ -119,6 +119,33 @@ export const LIMITS = {
   pageSize: 200,
   pageOffset: 100_000,
   /**
+   * A season or episode NUMBER off the wire. Season 0 is the specials and is real, so the floor
+   * is 0 at every caller. The longest-running series in the corpus are daily soaps with a few
+   * thousand episodes and a season per year, so both are far past anything real.
+   */
+  seasonNumber: 9999,
+  episodeNumber: 99_999,
+  /**
+   * A play position or runtime, in seconds. 24 hours: the longest title in the corpus is well
+   * under that, and a value past it is not a runtime anybody's player reported.
+   */
+  watchSeconds: 86_400,
+  /**
+   * How far a reported position may sit PAST the reported runtime before it is refused.
+   *
+   * A real player does overshoot: `currentTime` at the last frame can exceed a runtime the
+   * server rounded, by a fraction of a second or up to one segment when the two came from
+   * different readings of the file. Ten seconds admits that and still refuses a position that
+   * describes a different file.
+   */
+  watchOvershootSec: 10,
+  /**
+   * The raw body of one watch-state write, in characters. The largest legal body is four
+   * numbers and their names -- under 100 characters -- so 1,024 bounds what `JSON.parse` is
+   * ever handed on a route the player calls every fifteen seconds.
+   */
+  watchBody: 1024,
+  /**
    * A filesystem path reported by an arr, before we try to open it.
    *
    * It is not typed by a human, which is exactly why it needs a bound: it arrives over HTTP
@@ -297,6 +324,27 @@ export function boundedInt(v: unknown, opts: { min: number; max: number }): Guar
   const n = Number(v);
   if (n < opts.min || n > opts.max) return refuse("out-of-range", opts.max);
   return { ok: true, value: n };
+}
+
+/**
+ * A JSON number off the wire that must sit in a range -- REFUSED past it, never clamped.
+ *
+ * `boundedInt`'s sibling for a BODY field, where the value arrives as a number rather than as
+ * query-string text. Absent (null or undefined) is `null`, so the caller decides what "not sent"
+ * means. A string holding digits is `wrong-type`: a client that sends `"12"` is sending the wrong
+ * shape, and coercing it would accept a body no documented client produces. `NaN` and the
+ * infinities are `wrong-type` too -- JSON cannot carry them, so only a caller that skipped
+ * `JSON.parse` could present one.
+ */
+export function boundedNumber(
+  v: unknown,
+  opts: { min: number; max: number; integer?: boolean },
+): Guarded<number | null> {
+  if (v === null || v === undefined) return { ok: true, value: null };
+  if (typeof v !== "number" || !Number.isFinite(v)) return refuse("wrong-type");
+  if (opts.integer && !Number.isInteger(v)) return refuse("wrong-type");
+  if (v < opts.min || v > opts.max) return refuse("out-of-range", opts.max);
+  return { ok: true, value: v };
 }
 
 /**

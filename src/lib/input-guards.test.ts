@@ -4,6 +4,7 @@ import {
   boundedHeader,
   boundedInt,
   boundedList,
+  boundedNumber,
   boundedQuery,
   boundedText,
   clampInt,
@@ -13,6 +14,32 @@ import {
   sanitizeText,
   urlWithinBounds,
 } from "./input-guards";
+
+describe("boundedNumber", () => {
+  test("absent is null, a number in range is itself", () => {
+    expect(boundedNumber(undefined, { min: 0, max: 10 })).toEqual({ ok: true, value: null });
+    expect(boundedNumber(null, { min: 0, max: 10 })).toEqual({ ok: true, value: null });
+    expect(boundedNumber(0, { min: 0, max: 10 })).toEqual({ ok: true, value: 0 });
+    expect(boundedNumber(10, { min: 0, max: 10 })).toEqual({ ok: true, value: 10 });
+    expect(boundedNumber(2.5, { min: 0, max: 10 })).toEqual({ ok: true, value: 2.5 });
+  });
+
+  test("past either end is refused naming the max, never clamped", () => {
+    expect(boundedNumber(11, { min: 0, max: 10 })).toEqual({ ok: false, reason: "out-of-range", limit: 10 });
+    expect(boundedNumber(-0.1, { min: 0, max: 10 })).toEqual({
+      ok: false,
+      reason: "out-of-range",
+      limit: 10,
+    });
+  });
+
+  test("a string, NaN, an infinity, or a fraction where an integer is asked is the wrong type", () => {
+    for (const v of ["5", Number.NaN, Number.POSITIVE_INFINITY, true, {}, []]) {
+      expect(boundedNumber(v, { min: 0, max: 10 })).toMatchObject({ ok: false, reason: "wrong-type" });
+    }
+    expect(boundedNumber(1.5, { min: 0, max: 10, integer: true })).toMatchObject({ reason: "wrong-type" });
+  });
+});
 
 /*
   The fixtures come from `abuse-corpus.ts` and are NOT redeclared here.

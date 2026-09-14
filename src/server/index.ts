@@ -97,6 +97,7 @@ import { TranscodeMeter } from "../lib/transcode-meter";
 import { bindShutdown, TranscodeSessions } from "../lib/transcode-session";
 import { syncArrCalendars, syncTmdbTrending, syncTmdbUpcoming } from "../lib/upcoming";
 import { keepPortMapped } from "../lib/upnp-igd";
+import { WatchStateStore } from "../lib/watch-state";
 import { WatchlistStore } from "../lib/watchlist";
 import { addonConfigRoutes } from "./addon-config-routes";
 import { AGENT_MANIFEST_PATH, agentManifestRoute, agentWaitMs, withAgentApi } from "./agent-api";
@@ -147,6 +148,7 @@ import {
   frontPageTitles,
   type ShelfTier,
 } from "./shelves";
+import { watchRoutes } from "./watch-routes";
 import { withdrawRequest } from "./withdraw-request";
 
 const cfg = loadConfig();
@@ -355,6 +357,7 @@ const authStore = new AuthStore(store.db, () => siteSettings.read().assistantAll
   path is not reachable from any route below that touches it. See `src/lib/watchlist.ts`.
 */
 const watchlistStore = new WatchlistStore(store.db);
+const watchStateStore = new WatchStateStore(store.db);
 
 /*
   Each reader's own order for the front page, on the same connection and for the same reason.
@@ -3843,6 +3846,8 @@ const allRoutes = {
     encoder: videoEncoder,
     log,
   }),
+  // Every reader, not admin-only like playback: a position is the reader's own state.
+  ...watchRoutes({ store: watchStateStore, readerId }),
   ...auth.routes(),
   ...addonConfigRoutes({
     registry: plugins,

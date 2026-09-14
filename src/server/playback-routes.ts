@@ -474,8 +474,8 @@ export function playbackRoutes(deps: PlaybackDeps): Record<string, unknown> {
         const hasEpisode = b.season !== undefined || b.episode !== undefined;
         const at = hasEpisode
           ? {
-              season: clampInt(b.season, { min: 0, max: 9999 }) ?? NOT_AN_EPISODE,
-              episode: clampInt(b.episode, { min: 0, max: 99999 }) ?? NOT_AN_EPISODE,
+              season: clampInt(b.season, { min: 0, max: LIMITS.seasonNumber }) ?? NOT_AN_EPISODE,
+              episode: clampInt(b.episode, { min: 0, max: LIMITS.episodeNumber }) ?? NOT_AN_EPISODE,
             }
           : undefined;
 

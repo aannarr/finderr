@@ -102,7 +102,8 @@ function preferredSize(url: string, size: string): string {
  */
 export const DEFAULT_IMAGE_SIZE = "w342";
 
-const IMDB_ID = /^tt\d{7,10}$/;
+/** A well-formed IMDb title id. Also the watch-state routes' guard on `:tconst`. */
+export const IMDB_ID = /^tt\d{7,10}$/;
 
 export class ArtworkService {
   private dir: string;
