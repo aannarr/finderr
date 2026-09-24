@@ -15,6 +15,7 @@ import { DumpStateStore, fetchDump, SchemaDriftError } from "../lib/dumps";
 import { buildIndex, gateCapabilities, gateVolume, promote } from "../lib/index-builder";
 import { describeStale, staleStagesOf } from "../lib/index-stages";
 import { prepareSqlite } from "../lib/spellfix";
+import { fetchPopularityExport, POPULARITY_EXPORTS } from "../lib/tmdb-popularity";
 
 const args = new Set(process.argv.slice(2));
 const force = args.has("--force");
@@ -80,6 +81,10 @@ async function main(): Promise<number> {
       a crosswalk is the ONLY thing that moved.
     */
     for (const source of CROSSWALK_SOURCES) await fetchCrosswalk(source, p.dumps, { log });
+
+    // TMDB's popularity is daily like the IMDb dumps, and like the crosswalks it does not set
+    // `anyChanged`: it rides the build IMDb's own daily publish already triggers.
+    for (const source of POPULARITY_EXPORTS) await fetchPopularityExport(source, p.dumps, { log });
   } else {
     anyChanged = true;
     log("--no-fetch: building from the dumps already on disk");

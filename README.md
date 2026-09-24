@@ -861,6 +861,14 @@ similarity on a single scale. The fuzzy vocabulary only holds titles above
 `FUZZY_MIN_VOTES`, which is what stops a typo surfacing some 40-vote short over the film
 you meant.
 
+A film that has not come out yet has almost no votes, so on votes alone it loses to every
+older film with the same name. For titles dated this year or last, the nightly build reads
+TMDB's keyless daily popularity export and credits each one with the votes an established
+title of the same popularity has: 49 is worth about 314k votes, 10 about 16k. The scorer
+takes the larger of that and the real count, so the lift fades by itself once real votes
+arrive. Older titles are left alone, because today's popularity says little about a film
+from 2005. `sacrifice` went from ranking Netflix's new *Sacrifice* tenth to first.
+
 `spellfix1` replaced a hand-rolled trigram index that got rebuilt in RAM on every boot.
 That thing cost 1.5 GB and nine million live objects, and kept the garbage collector busy
 enough to burn 14% of a core on an idle container. The extension does the same job from
@@ -1485,9 +1493,9 @@ people and is not covered by that licence:
   for personal and non-commercial use. A private request UI for one household is inside
   that. A public or commercial deployment is not.
 - TMDB's image CDN serves the posters and, with a key, its API serves streaming
-  availability and series keywords. *This product uses the TMDB API but is not endorsed or
-  certified by TMDB.* The availability catalogue is JustWatch's, credited on the pane
-  beside the data.
+  availability and series keywords. Its public daily id export supplies the popularity that
+  ranks new releases. *This product uses the TMDB API but is not endorsed or certified by
+  TMDB.* The availability catalogue is JustWatch's, credited on the pane beside the data.
 - The Servarr metadata proxies (`api.radarr.video`, `skyhook.sonarr.tv`) are run by the
   Servarr team for Radarr and Sonarr clients. finderr is a third party on them and behaves
   like one.

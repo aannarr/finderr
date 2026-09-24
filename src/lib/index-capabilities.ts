@@ -150,6 +150,7 @@ export const INDEX_CAPABILITIES = {
   langYear: (db) => columnExists(db, "title_lang", "year") && indexCovers(db, "ix_lang_rank", "year"),
   langVotes: (db) => columnExists(db, "title_lang", "votes") && indexExists(db, "ix_lang_votes"),
   titleLang: (db) => columnExists(db, "title", "lang"),
+  buzz: (db) => columnExists(db, "title", "buzz_votes"),
   genreVotes: (db) => columnExists(db, "title_genre", "votes"),
   genreYear: (db) => columnExists(db, "title_genre", "year"),
   browseCounts: (db) => tableExists(db, "browse_count"),

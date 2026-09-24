@@ -192,6 +192,7 @@ import {
   SPELLFIX_MAP_TABLE,
   SPELLFIX_TABLE,
 } from "./spellfix";
+import { loadBuzz, POPULARITY_EXPORTS, popularityDatePath, readPopularityExport } from "./tmdb-popularity";
 import { buildVocabTrigrams } from "./vocab-trigrams";
 
 export interface BuildStats {
@@ -305,6 +306,12 @@ create table title (
   -- NULL where nothing knows, and never UNKNOWN_LANG: the empty string is a storage
   -- device belonging to the filter's in-list, not a fact about a title. See TitleRow.
   lang      text,
+  -- Votes IMPUTED from TMDB's daily popularity, for a title dated this year or last whose
+  -- popularity says it has a bigger audience than its IMDb votes do yet. 0 for everything
+  -- else, which is nearly everything. Ranking reads max(votes, buzz_votes), so it never adds
+  -- to real votes and stops mattering once they overtake it. Written by buzzStage(); the
+  -- mapping and the measurements that chose it live in ./tmdb-popularity.
+  buzz_votes integer not null default 0,
   -- normalized forms, precomputed once so every query is a lookup not a transform
   ntitle    text not null default '',
   norig     text not null default '',
@@ -1206,6 +1213,8 @@ export async function buildIndex(
   log("indexing people for search ...");
   buildPersonSearchIndex(db, log);
   const idRows = crosswalkStage(db, dumpDir, log);
+  // AFTER the crosswalk, which is the only thing that knows a title's TMDB id.
+  const buzz = await buzzStage(db, dumpDir, log);
   // AFTER the cast stage, not beside it: this one keeps only people `person` already holds,
   // so running it first would restrict against an empty table and keep nothing.
   const personIdRows = personCrosswalkStage(db, dumpDir, log);
@@ -1241,6 +1250,8 @@ export async function buildIndex(
   setMeta.run("episode_series_min_votes", String(cfg.index.episodeSeriesMinVotes));
   setMeta.run("id_rows", String(idRows));
   setMeta.run("person_id_rows", String(personIdRows));
+  setMeta.run("buzz_rows", String(buzz.imputed));
+  setMeta.run("buzz_export", buzz.exportDate ?? "");
   setMeta.run("origin_lang_titles", String(origin.withLang));
   setMeta.run("origin_country_titles", String(origin.withCountry));
   setMeta.run("breakout_rows", String(breakout.rows));
@@ -1340,6 +1351,40 @@ function crosswalkStage(db: Database, dumpDir: string, log: (m: string) => void)
   const kept = loadCrosswalk(db, rows);
   log(`  ${kept.toLocaleString()} of our titles carry an id (${rows.length.toLocaleString()} in the source)`);
   return kept;
+}
+
+/**
+ * Fill `title.buzz_votes` from TMDB's daily popularity export. See `./tmdb-popularity`.
+ *
+ * ADDITIVE AND OPTIONAL like every stage around it: with no export on disk every title keeps
+ * `buzz_votes = 0` and search ranks exactly as it did before this existed, on votes and the
+ * anticipation curve. It still stamps -- no source is an answer.
+ *
+ * **READS THE DISK AND NEVER THE NETWORK**, the same division `crosswalkStage` follows.
+ */
+async function buzzStage(
+  db: Database,
+  dumpDir: string,
+  log: (m: string) => void,
+): Promise<{ imputed: number; exportDate: string | null }> {
+  const [movies, series] = POPULARITY_EXPORTS.map((e) => `${dumpDir}/${e.file}`);
+  if (!existsSync(movies) || !existsSync(series)) {
+    log("no TMDB popularity on disk -- recent titles rank on votes and year alone, as before");
+    return { imputed: 0, exportDate: null };
+  }
+  const datePath = popularityDatePath(movies);
+  const exportDate = existsSync(datePath) ? readFileSync(datePath, "utf8").trim() : null;
+
+  log(`imputing votes from TMDB popularity (${exportDate ?? "export of unknown date"}) ...`);
+  const res = await loadBuzz(db, {
+    movies: readPopularityExport(movies),
+    series: readPopularityExport(series),
+  });
+  log(
+    `  ${res.imputed.toLocaleString()} recent titles lifted, mapped over ${res.reference.toLocaleString()} ` +
+      `established ones (${res.matched.toLocaleString()} of our titles carry a popularity)`,
+  );
+  return { imputed: res.imputed, exportDate };
 }
 
 /**

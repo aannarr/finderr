@@ -130,6 +130,28 @@ export interface Hit extends TitleRow {
   coverage: number;
 }
 
+/**
+ * One search candidate as the tiers fetch it: the display row plus what only ranking reads.
+ *
+ * `buzz_votes` is `title.buzz_votes` -- votes imputed from TMDB popularity, 0 for all but
+ * recent titles -- and it is never displayed: `votes` stays the IMDb count a card prints.
+ */
+type CandidateRow = TitleRow & { rowid: number; ntitle: string; norig: string; buzz_votes: number };
+type Candidates = CandidateRow[];
+
+/** A hit still carrying its imputed votes, which `weak()` reads alongside the score. */
+type RankedHit = Hit & { buzz_votes: number };
+
+/**
+ * The votes a ranking decision reads: the IMDb count, or the imputed one where it is larger.
+ *
+ * A max and never a sum, so the imputation cannot double-count the votes it stands in for, and
+ * it goes quiet by itself the day the real count overtakes it.
+ */
+export function rankingVotes(r: { votes: number; buzz_votes?: number }): number {
+  return Math.max(r.votes, r.buzz_votes ?? 0);
+}
+
 export interface Facets {
   genre: { value: string; count: number }[];
   decade: { value: number; count: number }[];
@@ -863,6 +885,14 @@ export class SearchEngine {
   readonly hasPlaces: boolean;
 
   /**
+   * `title.buzz_votes`, the votes imputed from TMDB popularity. False on an index built before
+   * that stage, and then the ranker reads `0 as buzz_votes` and ranks exactly as it did before
+   * -- a literal rather than the column, because naming a column the file lacks is `no such
+   * column` on every search at once.
+   */
+  readonly hasBuzz: boolean;
+
+  /**
    * The engine's OWN handle, for the one caller that needs raw SQL.
    *
    * `findConnections` walks the cast graph with SQL this class does not expose, and the
@@ -953,6 +983,7 @@ export class SearchEngine {
     this.hasRankIndexes = has("rankIndexes");
     this.hasEpisodes = has("episodes");
     this.hasPlaces = has("places");
+    this.hasBuzz = has("buzz");
     this.kinds = (this.db.query("select distinct kind from title").all() as { kind: string }[]).map(
       (r) => r.kind,
     );
@@ -1194,22 +1225,30 @@ export class SearchEngine {
     return rows.map((r) => ({ ...r, score: 1.6 * Math.log(r.votes + 10), coverage: 1 }));
   }
 
-  private ftsCandidates(expr: string): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
+  private ftsCandidates(expr: string): Candidates {
+    /*
+      THE WINDOW IS ORDERED ON THE SAME EFFECTIVE VOTES `rank()` SCORES ON. A hot new title
+      with 464 real votes sits behind every older namesake here, and with a common word the
+      window fills before it is reached -- so a lift applied only in `rank()` would score a
+      row that never arrived. `max(votes, buzz_votes)` is `votes` for all but the few
+      thousand recent titles the build imputed, so the order is otherwise unchanged.
+    */
+    const votes = this.hasBuzz ? "max(t.votes, t.buzz_votes)" : "t.votes";
     return this.db
       .query(
-        `select t.rowid_ as rowid, ${titleCols(this.hasTitleLang, "t.")},
+        `select t.rowid_ as rowid, ${titleCols(this.hasTitleLang, "t.")}, ${this.buzzCol("t.")},
                 t.ntitle, t.norig, -bm25(tfts) as bm
          from tfts join title t on t.rowid_ = tfts.rowid
          where tfts match ?
-         order by (-bm25(tfts)) + 1.6 * ln(t.votes + 10) desc
+         order by (-bm25(tfts)) + 1.6 * ln(${votes} + 10) desc
          limit ${CANDIDATE_WINDOW}`,
       )
-      .all(expr) as (TitleRow & {
-      rowid: number;
-      bm: number;
-      ntitle: string;
-      norig: string;
-    })[];
+      .all(expr) as Candidates;
+  }
+
+  /** The imputed-votes column, or a zero literal on an index built before the stage. */
+  private buzzCol(prefix = ""): string {
+    return this.hasBuzz ? `${prefix}buzz_votes` : "0 as buzz_votes";
   }
 
   /**
@@ -1278,10 +1317,7 @@ export class SearchEngine {
    * > denominator. Nothing else. Run `bun run search:replay` on your own base first -- it
    * > prints the click count beside the mean, and the count has already moved once.
    */
-  private rank(
-    rows: (TitleRow & { rowid: number; ntitle?: string; norig?: string })[],
-    p: ParsedQuery,
-  ): Hit[] {
+  private rank(rows: Candidates, p: ParsedQuery): RankedHit[] {
     const nq = normalizeStripped(p.text);
     const dq = despace(p.text);
     const gq = trigrams(nq);
@@ -1322,7 +1358,7 @@ export class SearchEngine {
     };
 
     const seen = new Set<number>();
-    const out: Hit[] = [];
+    const out: RankedHit[] = [];
 
     /*
       MEASURE EVERY CANDIDATE FIRST, THEN SCORE THEM.
@@ -1436,15 +1472,24 @@ export class SearchEngine {
         Anybody re-running this with a bigger log should expect the shape to change; anybody
         re-running it with this one is reading the same noise again.
       */
+      /*
+        THE POPULARITY TERM READS `rankingVotes`, and ONLY this term and `weak()` do. That is
+        the shape that was measured (`./tmdb-popularity` has the table): the exact-match
+        plausibility and the typo-twin test still read the IMDb count, so a hot new title lifts
+        its own popularity and nothing else's verdict. The anticipation curve stays on top of it
+        as the fallback for a recent title TMDB has no popularity for, and a title whose imputed
+        votes already clear `ANTICIPATED_VOTES` gets nothing from it -- the max(0, ...) inside
+        `popularity` is what keeps the two from stacking.
+      */
       const score =
         22 * c.textSim +
         match +
-        popularity(r.votes, anticipationOf(r.year)) +
+        popularity(rankingVotes(r), anticipationOf(r.year)) +
         c.ys +
         kindScore(r.kind, p.kind) +
         recencyScore(r.year);
 
-      out.push({ ...r, score, coverage: c.coverage } as Hit);
+      out.push({ ...r, score, coverage: c.coverage });
     }
 
     /*
@@ -1564,23 +1609,19 @@ export class SearchEngine {
   }
 
   /** Load full rows for a set of rowids, preserving nothing about order. */
-  private hydrate(rowids: number[]): (TitleRow & { rowid: number; ntitle: string; norig: string })[] {
+  private hydrate(rowids: number[]): Candidates {
     if (rowids.length === 0) return [];
-    const out: (TitleRow & { rowid: number; ntitle: string; norig: string })[] = [];
+    const out: Candidates = [];
     // Chunk to stay under SQLite's variable limit on large candidate sets.
     for (let i = 0; i < rowids.length; i += 500) {
       const chunk = rowids.slice(i, i + 500);
       out.push(
         ...(this.db
           .query(
-            `select rowid_ as rowid, ${titleCols(this.hasTitleLang)}, ntitle, norig
+            `select rowid_ as rowid, ${titleCols(this.hasTitleLang)}, ${this.buzzCol()}, ntitle, norig
              from title where rowid_ in (${chunk.map(() => "?").join(",")})`,
           )
-          .all(...chunk) as (TitleRow & {
-          rowid: number;
-          ntitle: string;
-          norig: string;
-        })[]),
+          .all(...chunk) as Candidates),
       );
     }
     return out;
@@ -1608,8 +1649,8 @@ export class SearchEngine {
     // Candidates accumulate across tiers; rank() scores them all on one scale and the
     // best answer wins regardless of which tier found it. Choosing a tier and
     // discarding the others is how a 439-vote exact match beats a 2.6M-vote near match.
-    const candidates = new Map<number, TitleRow & { rowid: number; ntitle: string; norig: string }>();
-    const add = (rows: (TitleRow & { rowid: number; ntitle: string; norig: string })[]) => {
+    const candidates = new Map<number, CandidateRow>();
+    const add = (rows: Candidates) => {
       for (const r of rows) if (!candidates.has(r.rowid)) candidates.set(r.rowid, r);
     };
 
@@ -1621,12 +1662,16 @@ export class SearchEngine {
      * obscure. The obscurity check is the one that catches "interstelar": an exact
      * title match on a 439-vote film looks confident but almost certainly means the
      * user typo'd something famous.
+     *
+     * Obscure is judged on `rankingVotes`, the same count the score used: a hot new title
+     * with a few hundred real votes is not a likely typo, and escalating past it would buy
+     * an OR scan and a fuzzy pass to second-guess a hit the ranking already believed.
      */
-    const weak = (hits: Hit[]): boolean =>
+    const weak = (hits: (Hit & { buzz_votes?: number })[]): boolean =>
       hits.length === 0 ||
       hits[0].score < 20 ||
       hits[0].coverage < 0.6 ||
-      hits[0].votes < 5000 ||
+      rankingVotes(hits[0]) < 5000 ||
       (hits[1] !== undefined && hits[0].score - hits[1].score < 1.0 && hits[0].score < 26);
 
     /*

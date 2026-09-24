@@ -51,6 +51,7 @@ import type { Config } from "./config";
 // question. `index-builder.ts` owns the constant because the build bakes it into a column.
 import { BROWSE_VOTE_FLOOR } from "./index-builder";
 import { STOPWORD_VOTE_FLOOR } from "./search-stopwords";
+import { buzzFromYear } from "./tmdb-popularity";
 
 /**
  * The `meta` key holding the stamp, as a JSON object of `stage -> recipe`.
@@ -378,6 +379,15 @@ export const INDEX_STAGES = {
   // v6: city-states kept (Singapore, Monaco), Great Britain and Ireland dropped as captions, and
   // `title_place` gained `seasons` with both counts zeroed when the title claims a place itself.
   places: () => JSON.stringify({ v: 6 }),
+
+  /**
+   * `title.buzz_votes` -- votes imputed from TMDB's daily popularity. See `./tmdb-popularity`.
+   *
+   * **`from` is in the recipe because the eligible set moves without anything else moving**,
+   * the argument `cast` makes for `unreleasedFrom`: on 1 January last year's titles stop being
+   * imputed, and an index built on 31 December would otherwise go on lifting them.
+   */
+  buzz: () => JSON.stringify({ v: 1, from: buzzFromYear() }),
   // `satisfies` rather than an annotation: the keys stay literal, so `INDEX_STAGES.cast` is
   // a function rather than a possibly-undefined index read, and a typo in a caller is a
   // compile error instead of a stage that silently never matches.
