@@ -263,6 +263,22 @@ export const CROSSWALK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const crosswalkQueryStampPath = (csvPath: string): string => `${csvPath}.query`;
 
+/**
+ * Whether a CSV carries at least one row under its header.
+ *
+ * **A 200 WITH NO ROWS IS AN OUTAGE, NOT AN ANSWER.** On 2026-09-21 QLever answered three of
+ * these queries with a bare header. `fetchCrosswalk` took it, wrote it over a good 10 MB file,
+ * stamped it as the answer to today's query, and reused it for the whole week -- so the live
+ * index carried no TMDB/TVDB ids, no languages and no countries, and every gate stayed green
+ * because the tables existed and were merely empty. Found on 2026-09-24 when TMDB popularity,
+ * which joins through those ids, matched no titles on the NAS. Every query here returns
+ * hundreds of thousands of rows, so an empty one is always the mirror failing.
+ */
+export function hasDataRows(text: string): boolean {
+  const nl = text.indexOf("\n");
+  return nl !== -1 && text.slice(nl + 1).trim().length > 0;
+}
+
 /** One title's ids, as the index holds them. Absent rather than null when unknown. */
 export interface TitleIds {
   tmdb?: number;
@@ -362,7 +378,10 @@ export async function fetchCrosswalk(
   const path = `${dumpDir}/${source.file}`;
 
   const stampPath = crosswalkQueryStampPath(path);
-  const cached = existsSync(path) ? statSync(path) : null;
+  // A cached file with no rows is not a copy worth keeping -- see `hasDataRows` -- so it counts
+  // as absent here, and a deployment already holding one heals on its next build.
+  const cached =
+    existsSync(path) && hasDataRows(readFileSync(path, "utf8").slice(0, 4096)) ? statSync(path) : null;
   const answersThisQuery = existsSync(stampPath) && readFileSync(stampPath, "utf8") === source.query;
   if (cached && answersThisQuery && now() - cached.mtimeMs < maxAge) {
     log(`crosswalk ${source.label}: reusing ${(cached.size / 1e6).toFixed(1)} MB already on disk`);
@@ -379,6 +398,7 @@ export async function fetchCrosswalk(
     });
     if (!res.ok) throw new Error(`answered ${res.status}`);
     const text = await res.text();
+    if (!hasDataRows(text)) throw new Error("answered with a header and no rows");
     // Written only after the whole body has arrived: a half-written CSV would parse into a
     // crosswalk that is missing its tail, which is worse than not having one.
     await Bun.write(path, text);

@@ -23,6 +23,7 @@ import {
   exportUrl,
   fetchPopularityExport,
   loadBuzz,
+  MIN_EXPORT_BYTES,
   POPULARITY_EXPORTS,
   type PopularityRow,
   parsePopularityLine,
@@ -138,6 +139,30 @@ test("readPopularityExport streams a gzip, skipping bad lines and keeping an unt
 
 describe("fetchPopularityExport", () => {
   const source = POPULARITY_EXPORTS[0];
+  /** Bytes shaped like a real export: gzip magic, and the size of one. */
+  const exportBytes = () => {
+    const b = new Uint8Array(MIN_EXPORT_BYTES + 1);
+    b[0] = 0x1f;
+    b[1] = 0x8b;
+    return b;
+  };
+
+  /**
+   * The crosswalk bug of 2026-09-21 in this file's clothes: a 200 that is not the export -- an
+   * error page, an empty object -- must never replace the copy on disk.
+   */
+  test("a 200 that is not a gzip of plausible size is refused, and the day before is tried", async () => {
+    const dumps = mkdtempSync(join(dir, "dumps-"));
+    const ok = await fetchPopularityExport(source, dumps, {
+      now: () => NOW.getTime(),
+      fetchImpl: (async (url: string) =>
+        url.includes("09_24_2026")
+          ? new Response("<Error/>")
+          : new Response(exportBytes())) as unknown as typeof fetch,
+    });
+    expect(ok).toBe(true);
+    expect(readFileSync(popularityDatePath(join(dumps, source.file)), "utf8")).toBe("2026-09-23");
+  });
 
   test("falls back to yesterday while today's export is not published yet", async () => {
     const dumps = mkdtempSync(join(dir, "dumps-"));
@@ -147,7 +172,7 @@ describe("fetchPopularityExport", () => {
       fetchImpl: (async (url: string) => {
         asked.push(url);
         // The bucket answers 403, not 404, for a file that does not exist yet.
-        return url.includes("09_24_2026") ? new Response("", { status: 403 }) : new Response("gz-bytes");
+        return url.includes("09_24_2026") ? new Response("", { status: 403 }) : new Response(exportBytes());
       }) as unknown as typeof fetch,
     });
     expect(ok).toBe(true);
@@ -156,7 +181,7 @@ describe("fetchPopularityExport", () => {
       "movie_ids_09_23_2026.json.gz",
     ]);
     const path = join(dumps, source.file);
-    expect(readFileSync(path, "utf8")).toBe("gz-bytes");
+    expect(readFileSync(path).length).toBe(MIN_EXPORT_BYTES + 1);
     expect(readFileSync(popularityDatePath(path), "utf8")).toBe("2026-09-23");
     expect(existsSync(`${path}.part`)).toBe(false);
   });

@@ -131,6 +131,13 @@ export const MIN_ESTABLISHED = 1_000;
  */
 export const POPULARITY_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 
+/**
+ * The smallest body taken as an export. The real ones are ~28 MB and ~5 MB gzipped; anything
+ * under this is an error page or an empty answer wearing a 200, the crosswalk failure of
+ * 2026-09-21 (`hasDataRows` in `./crosswalk`), and must never replace the copy on disk.
+ */
+export const MIN_EXPORT_BYTES = 100_000;
+
 /** The export's own date, kept beside the file so the build can say which day it ranked on. */
 export const popularityDatePath = (path: string): string => `${path}.date`;
 
@@ -185,6 +192,12 @@ export async function fetchPopularityExport(
       const res = await doFetch(url, { headers: { "User-Agent": "finderr (self-hosted media request UI)" } });
       if (!res.ok) continue;
       const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length < MIN_EXPORT_BYTES || bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
+        log(
+          `popularity ${source.stem}: ${url.slice(url.lastIndexOf("/") + 1)} is not an export (${bytes.length} bytes)`,
+        );
+        continue;
+      }
       const part = `${path}.part`;
       await Bun.write(part, bytes);
       renameSync(part, path);

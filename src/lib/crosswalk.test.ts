@@ -148,6 +148,13 @@ describe("loadCrosswalk", () => {
 describe("fetchCrosswalk", () => {
   const path = () => `${dir}/${TITLE_CROSSWALK.file}`;
   const ok = (body: string) => async () => new Response(body);
+  /**
+   * A CSV with a header and one row, labelled so two answers can be told apart. A body with
+   * no rows is not an answer any more -- see the empty-answer tests below -- so every fixture
+   * that stands for a real download has to carry one.
+   */
+  const csv = (label: string) => `imdb,tmdbMovie,tmdbTv,tvdb\n${label}\n`;
+  const HEADER_ONLY = "imdb,tmdbMovie,tmdbTv,tvdb\n";
   /** A cached file as a successful download leaves it: the CSV plus the query it answers. */
   const cache = (body: string, query = TITLE_CROSSWALK.query) => {
     writeFileSync(path(), body);
@@ -161,32 +168,32 @@ describe("fetchCrosswalk", () => {
   test("downloads and writes when there is nothing on disk", async () => {
     expect(
       await fetchCrosswalk(TITLE_CROSSWALK, dir, {
-        fetchImpl: ok("imdb,a,b,c\n") as unknown as typeof fetch,
+        fetchImpl: ok(csv("tt1,1,,")) as unknown as typeof fetch,
       }),
     ).toBe(true);
-    expect(await Bun.file(path()).text()).toBe("imdb,a,b,c\n");
+    expect(await Bun.file(path()).text()).toBe(csv("tt1,1,,"));
     expect(await Bun.file(crosswalkQueryStampPath(path())).text()).toBe(TITLE_CROSSWALK.query);
   });
 
   test("a recent file is reused and nothing is asked for", async () => {
-    cache("cached");
+    cache(csv("cached"));
     let called = false;
     const spy = (async () => {
       called = true;
-      return new Response("fresh");
+      return new Response(csv("fresh"));
     }) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
     expect(called).toBe(false);
-    expect(await Bun.file(path()).text()).toBe("cached");
+    expect(await Bun.file(path()).text()).toBe(csv("cached"));
   });
 
   test("past the age window it is fetched again", async () => {
-    cache("stale");
+    cache(csv("stale"));
     age(path());
 
-    await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok("fresh") as unknown as typeof fetch });
-    expect(await Bun.file(path()).text()).toBe("fresh");
+    await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok(csv("fresh")) as unknown as typeof fetch });
+    expect(await Bun.file(path()).text()).toBe(csv("fresh"));
   });
 
   /**
@@ -195,26 +202,26 @@ describe("fetchCrosswalk", () => {
    * OLD query, and nothing anywhere said so. Age cannot see a query edit.
    */
   test("a file answering an older query is refetched however fresh it is", async () => {
-    cache("answers the old question", "SELECT ?a WHERE { ?a ?b ?c }");
+    cache(csv("answers the old question"), "SELECT ?a WHERE { ?a ?b ?c }");
     let called = false;
     const spy = (async () => {
       called = true;
-      return new Response("answers this one");
+      return new Response(csv("answers this one"));
     }) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
     expect(called).toBe(true);
-    expect(await Bun.file(path()).text()).toBe("answers this one");
+    expect(await Bun.file(path()).text()).toBe(csv("answers this one"));
     expect(await Bun.file(crosswalkQueryStampPath(path())).text()).toBe(TITLE_CROSSWALK.query);
   });
 
   /** Every deployment upgrading into this change has a CSV and no stamp. It refetches once. */
   test("a file with no stamp at all is refetched", async () => {
-    writeFileSync(path(), "from before the stamp existed");
+    writeFileSync(path(), csv("from before the stamp existed"));
     let called = false;
     const spy = (async () => {
       called = true;
-      return new Response("fresh");
+      return new Response(csv("fresh"));
     }) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
@@ -226,16 +233,16 @@ describe("fetchCrosswalk", () => {
    * disagreeing, or one failed download would freeze the wrong answer in for a whole week.
    */
   test("a failed refetch of an edited query leaves the stamp disagreeing, so the next build retries", async () => {
-    cache("answers the old question", "SELECT ?a WHERE { ?a ?b ?c }");
+    cache(csv("answers the old question"), "SELECT ?a WHERE { ?a ?b ?c }");
     const dead = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(true);
-    expect(await Bun.file(path()).text()).toBe("answers the old question");
+    expect(await Bun.file(path()).text()).toBe(csv("answers the old question"));
 
     let called = false;
     const spy = (async () => {
       called = true;
-      return new Response("fresh");
+      return new Response(csv("fresh"));
     }) as unknown as typeof fetch;
     await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy });
     expect(called).toBe(true);
@@ -246,12 +253,48 @@ describe("fetchCrosswalk", () => {
    * the only cost is that a title Wikidata gained this week pays a `/find` call.
    */
   test("a failed download leaves the copy on disk alone and still reports usable", async () => {
-    cache("cached");
+    cache(csv("cached"));
     age(path());
     const dead = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
 
     expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: dead })).toBe(true);
-    expect(await Bun.file(path()).text()).toBe("cached");
+    expect(await Bun.file(path()).text()).toBe(csv("cached"));
+  });
+
+  /**
+   * THE BUG, found on the live NAS 2026-09-24: on 09-21 QLever answered three queries with a
+   * 200 and a bare header. The header replaced a good 10 MB crosswalk, got stamped as the
+   * answer, and was reused for the week -- so production ran with no ids, no languages and no
+   * countries while every gate stayed green. A header is not an answer.
+   */
+  test("a 200 with a header and no rows is refused, and the good copy on disk survives it", async () => {
+    cache(csv("good"));
+    age(path());
+    expect(
+      await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok(HEADER_ONLY) as unknown as typeof fetch }),
+    ).toBe(true);
+    expect(await Bun.file(path()).text()).toBe(csv("good"));
+  });
+
+  test("an empty answer with nothing cached writes nothing and reports false", async () => {
+    expect(
+      await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: ok(HEADER_ONLY) as unknown as typeof fetch }),
+    ).toBe(false);
+    expect(await Bun.file(path()).exists()).toBe(false);
+    expect(await Bun.file(crosswalkQueryStampPath(path())).exists()).toBe(false);
+  });
+
+  /** And the deployment already holding one heals on its next build, not a week later. */
+  test("a cached file with no rows is refetched however fresh its stamp", async () => {
+    cache(HEADER_ONLY);
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response(csv("fresh"));
+    }) as unknown as typeof fetch;
+    expect(await fetchCrosswalk(TITLE_CROSSWALK, dir, { fetchImpl: spy })).toBe(true);
+    expect(called).toBe(true);
+    expect(await Bun.file(path()).text()).toBe(csv("fresh"));
   });
 
   test("a failed download with nothing cached reports false rather than throwing", async () => {
@@ -269,10 +312,10 @@ describe("fetchCrosswalk", () => {
    */
   test("each source writes to its own file", async () => {
     for (const source of CROSSWALK_SOURCES) {
-      await fetchCrosswalk(source, dir, { fetchImpl: ok(source.label) as unknown as typeof fetch });
+      await fetchCrosswalk(source, dir, { fetchImpl: ok(csv(source.label)) as unknown as typeof fetch });
     }
     for (const source of CROSSWALK_SOURCES) {
-      expect(await Bun.file(`${dir}/${source.file}`).text()).toBe(source.label);
+      expect(await Bun.file(`${dir}/${source.file}`).text()).toBe(csv(source.label));
     }
     expect(new Set(CROSSWALK_SOURCES.map((s) => s.file)).size).toBe(CROSSWALK_SOURCES.length);
   });
