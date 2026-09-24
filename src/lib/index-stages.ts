@@ -152,7 +152,10 @@ export const INDEX_STAGES = {
    * whole question. It is still a JSON object rather than a bare string so a knob arriving
    * later is an edit to this line and not a change of shape.
    */
-  ids: () => JSON.stringify({ v: 1 }),
+  // v2 (2026-09-24): no shape change. An index built from the EMPTY crosswalk QLever served on
+  // 2026-09-21 is complete by its own lights and holds no ids; the bump is what makes it stale
+  // now that `hasDataRows` refuses such an answer. Same for `origin` v8.
+  ids: () => JSON.stringify({ v: 2 }),
 
   /**
    * `person_external`, the bulk `TMDB person id -> nconst` crosswalk.
@@ -321,7 +324,7 @@ export const INDEX_STAGES = {
    * the feature is invisibly absent -- which is exactly the shape of the `hasIds` incident
    * this whole stamp mechanism was built after.
    */
-  origin: () => JSON.stringify({ v: 7 }),
+  origin: () => JSON.stringify({ v: 8 }),
 
   /**
    * `title_breakout` -- how far each title travelled beyond its own locale.
