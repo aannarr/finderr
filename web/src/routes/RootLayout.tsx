@@ -14,6 +14,7 @@ import { flushSync } from "react-dom";
 import { Assistant } from "../components/Assistant";
 import { JumpKeysProvider } from "../components/JumpKeys";
 import { Kbd, type KeyAction, mergeKeyProps, useKeyAction } from "../components/Kbd";
+import { isCurrentSection, type NavLink, SiteMenu } from "../components/SiteMenu";
 import {
   getRequests,
   patchTitleState,
@@ -59,8 +60,11 @@ function summariseSent(t: Title, seasons?: readonly number[] | null): string {
  *
  * `Admin` and the account link are deliberately NOT here: those are conditional on who is
  * signed in and they live on the right, away from the sections everyone shares.
+ *
+ * Below `md` the whole table renders inside `SiteMenu` instead of across the bar, so a line
+ * added here reaches a phone too.
  */
-const NAV_LINKS: { to: string; label: string }[] = [
+const NAV_LINKS: NavLink[] = [
   { to: "/lists", label: "Lists" },
   // The one list here whose membership a reader writes themselves. Not gated on being signed
   // in: every route but the sign-in ceremonies already is, so there is nobody in the chrome
@@ -378,13 +382,12 @@ export function RootLayout() {
               underline is what a sighted reader sees and the attribute is what everyone
               else gets, and one of those without the other is half a signal.
 
-              Matched with `startsWith` so a page BELOW a section still marks its parent:
-              `/lists` stays lit on a list's own sub-page. An exact match would unlight the
-              bar the moment somebody navigated one step in, which reads as having left.
+              `md` and up only: narrower, the row does not fit and these move into
+              `SiteMenu` at the right-hand end.
             */}
-            <nav className="flex items-baseline gap-3 text-xs text-muted">
+            <nav className="hidden items-baseline gap-3 text-xs text-muted md:flex">
               {NAV_LINKS.map((link) => {
-                const current = pathname === link.to || pathname.startsWith(`${link.to}/`);
+                const current = isCurrentSection(pathname, link.to);
                 return (
                   <Link
                     key={link.to}
@@ -397,8 +400,9 @@ export function RootLayout() {
                 );
               })}
             </nav>
+            {/* Narrower than `md` the count moves onto the menu's Requests row. */}
             {pendingCount > 0 && (
-              <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
+              <span className="hidden rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted md:inline">
                 {pendingCount} queued
               </span>
             )}
@@ -444,15 +448,16 @@ export function RootLayout() {
               */}
               <Assistant userId={me?.id ?? null} />
               {me?.role === "admin" && (
-                <Link to="/admin" className="hover:text-ink">
+                <Link to="/admin" className="hidden hover:text-ink md:inline">
                   Admin
                 </Link>
               )}
               {me && (
-                <Link to="/account" className="hover:text-ink">
+                <Link to="/account" className="hidden hover:text-ink md:inline">
                   {me.displayName}
                 </Link>
               )}
+              <SiteMenu links={NAV_LINKS} pathname={pathname} me={me} pendingCount={pendingCount} />
             </span>
           </div>
 
