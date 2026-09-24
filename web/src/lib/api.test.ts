@@ -12,13 +12,15 @@
  * they are served by two different mechanisms.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
   browse,
   cachedBrowse,
   cachedBrowseRun,
   cachedDiscover,
   cachedPersonRun,
+  cachedSearch,
+  freshSearch,
   getDiscover,
   getPerson,
   getTitleDetail,
@@ -31,6 +33,7 @@ import {
   type SearchResponse,
   search,
 } from "./api";
+import { CACHE_FRESH_MS } from "./cache";
 
 const realFetch = globalThis.fetch;
 
@@ -52,6 +55,30 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+});
+
+/**
+ * THE BUG, 2026-09-24: after the index swapped in a new ranking, an open tab went on showing
+ * `sacrifice` in the old order. `SearchRoute` skipped the network whenever `cachedSearch` --
+ * a PAINT read -- held anything, so it never asked the server again for the life of the tab.
+ * `freshSearch` is the read that decides whether to ask, and it lets go after the window.
+ */
+describe("a held search stops being the answer after the freshness window", () => {
+  afterEach(() => setSystemTime());
+
+  test("painted still, but the route is told to ask, and asking reaches the server", async () => {
+    setSystemTime(new Date("2026-09-24T03:00:00Z"));
+    stubFetch({ hits: [], facets: { genre: [], decade: [], year: [], kind: [] }, tier: "fts", ms: 1 });
+    await search("sacrifice");
+    expect(freshSearch("sacrifice", {})).toBeDefined();
+
+    setSystemTime(new Date(Date.parse("2026-09-24T03:00:00Z") + CACHE_FRESH_MS + 1));
+    expect(cachedSearch("sacrifice", {})).toBeDefined();
+    expect(freshSearch("sacrifice", {})).toBeUndefined();
+
+    await search("sacrifice");
+    expect(calls.filter((u) => u.startsWith("/api/search"))).toHaveLength(2);
+  });
 });
 
 describe("getDiscover", () => {
