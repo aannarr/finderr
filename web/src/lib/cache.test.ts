@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Cache } from "./cache";
+import { CACHE_FRESH_MS, Cache } from "./cache";
 
 describe("eviction", () => {
   test("the oldest entry goes when the cap is passed", () => {
@@ -113,6 +113,42 @@ describe("stale entries", () => {
     c.stale("discover");
     c.set("discover", "fetched");
     expect(c.fresh("discover")).toBe("fetched");
+  });
+});
+
+/**
+ * THE BUG, 2026-09-24: the index now swaps in place at any hour, and a tab that had asked
+ * `sacrifice` before the swap went on answering from its own copy -- the old order -- for as
+ * long as it stayed open, because nothing here ever stopped vouching for an entry. On a phone
+ * with the app installed that is days.
+ */
+describe("entries age out of being an answer", () => {
+  test("past the window fresh refuses an entry and get still draws it", () => {
+    let t = 1_000_000;
+    const c = new Cache<string>(10, { freshForMs: 60_000, now: () => t });
+    c.set("q", "before the swap");
+    t += 59_999;
+    expect(c.fresh("q")).toBe("before the swap");
+    t += 2;
+    expect(c.fresh("q")).toBeUndefined();
+    expect(c.get("q")).toBe("before the swap");
+  });
+
+  test("the refetch that follows restarts the clock", () => {
+    let t = 0;
+    const c = new Cache<string>(10, { freshForMs: 60_000, now: () => t });
+    c.set("q", "old");
+    t += 120_000;
+    c.set("q", "new");
+    expect(c.fresh("q")).toBe("new");
+  });
+
+  test("the default window is bounded, so no caller can opt out by accident", () => {
+    let t = 0;
+    const c = new Cache<string>(10, { now: () => t });
+    c.set("q", "held");
+    t += CACHE_FRESH_MS + 1;
+    expect(c.fresh("q")).toBeUndefined();
   });
 });
 

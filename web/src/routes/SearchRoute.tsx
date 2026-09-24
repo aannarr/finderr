@@ -29,6 +29,7 @@ import {
   cachedSearch,
   type DiscoverShelf,
   type Filters,
+  freshSearch,
   getDiscover,
   reportSearchClick,
   type SearchResponse,
@@ -143,8 +144,8 @@ export function SearchRoute() {
     const q = debouncedQuery.trim();
     if (q.length === 0) return;
     const key = answerKey(q, filters);
-    // Already painted from cache above.
-    if (cachedSearch(q, filters)) return;
+    // Painted from cache above; skip the network only while that copy is still an answer.
+    if (freshSearch(q, filters)) return;
 
     abortRef.current?.abort();
     const ctrl = new AbortController();

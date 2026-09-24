@@ -22,6 +22,7 @@ import {
   type AwardIdentity,
   type CeremonyPage,
   cachedCeremony,
+  freshCeremony,
   getCeremony,
   type NominationView,
   subscribeTitleState,
@@ -71,7 +72,7 @@ export function CeremonyRoute() {
       setError("unknown ceremony");
       return;
     }
-    if (cachedCeremony(award, number)) return;
+    if (freshCeremony(award, number)) return;
     let stale = false;
     getCeremony(award, number)
       .then((p) => {

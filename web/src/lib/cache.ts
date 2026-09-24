@@ -11,9 +11,10 @@
  */
 
 /**
- * LRU-ish cache. Entries never expire during a session -- the index only changes
- * once a day, and library state is patched in separately rather than invalidating
- * the whole search cache.
+ * LRU-ish cache. Entries are never DROPPED for age -- they stay available to paint -- but
+ * `fresh` stops vouching for one after `CACHE_FRESH_MS`, because the index can swap in place
+ * at any hour. Library state is patched in separately rather than invalidating the whole
+ * search cache.
  *
  * > [!IMPORTANT] `get` PAINTS, `fresh` ANSWERS, and the difference is what makes a held
  * > copy usable after it has stopped being the answer
@@ -28,6 +29,21 @@
  * > stops being an answer: something this session did that changes what the server would
  * > now say.
  */
+/**
+ * How long an entry this session fetched is still vouched for by `fresh`.
+ *
+ * **"THE INDEX ONLY CHANGES ONCE A DAY" STOPPED BEING A REASON NEVER TO ASK AGAIN** the day the
+ * index began swapping in place, at any hour, with no restart. On 2026-09-24 a tab that had
+ * searched `sacrifice` before a swap went on answering with the old order for as long as it
+ * stayed open -- the server was right and the page never asked it. An installed app stays open
+ * for days.
+ *
+ * Five minutes still covers what the short-circuit is FOR: a repeated keystroke, Back to a page
+ * just left. Past it the entry still PAINTS (`get`) and the fetch goes out behind it, so an
+ * aged entry costs one cheap local-SQLite read and never a blank screen.
+ */
+export const CACHE_FRESH_MS = 5 * 60 * 1000;
+
 export class Cache<T> {
   private map = new Map<string, T>();
   /**
@@ -46,7 +62,18 @@ export class Cache<T> {
   /** Bumped on every write. `CachePersistence` uses it to skip an unchanged snapshot. */
   private writes = 0;
 
-  constructor(private max = 500) {}
+  /** When each key was last written by a real response, for `fresh`'s age check. */
+  private writtenAt = new Map<string, number>();
+  private readonly freshForMs: number;
+  private readonly now: () => number;
+
+  constructor(
+    private max = 500,
+    opts: { freshForMs?: number; now?: () => number } = {},
+  ) {
+    this.freshForMs = opts.freshForMs ?? CACHE_FRESH_MS;
+    this.now = opts.now ?? Date.now;
+  }
 
   /** Anything held, including a copy we no longer trust as an answer. For DRAWING. */
   get(key: string): T | undefined {
@@ -62,12 +89,16 @@ export class Cache<T> {
   /** Only what this session fetched and still stands behind. For deciding NOT to fetch. */
   fresh(key: string): T | undefined {
     if (this.paintOnly.has(key)) return undefined;
+    // Aged out: the server may have swapped its index since. See `CACHE_FRESH_MS`.
+    const at = this.writtenAt.get(key);
+    if (at !== undefined && this.now() - at > this.freshForMs) return undefined;
     return this.get(key);
   }
 
   set(key: string, value: T): void {
     if (this.map.has(key)) this.map.delete(key);
     this.map.set(key, value);
+    this.writtenAt.set(key, this.now());
     // A real response supersedes whatever doubt was on this key: it is the answer again.
     this.paintOnly.delete(key);
     this.writes++;
@@ -76,6 +107,7 @@ export class Cache<T> {
       if (oldest !== undefined) {
         this.map.delete(oldest);
         this.paintOnly.delete(oldest);
+        this.writtenAt.delete(oldest);
       }
     }
   }
@@ -102,6 +134,7 @@ export class Cache<T> {
   clear(): void {
     this.map.clear();
     this.paintOnly.clear();
+    this.writtenAt.clear();
     this.writes++;
   }
 
@@ -153,6 +186,7 @@ export class Cache<T> {
       if (oldest === undefined) break;
       this.map.delete(oldest);
       this.paintOnly.delete(oldest);
+      this.writtenAt.delete(oldest);
     }
   }
 }

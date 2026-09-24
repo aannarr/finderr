@@ -27,6 +27,7 @@ import {
   type AwardsTimeline,
   type CeremonySummary,
   cachedAwards,
+  freshAwards,
   getAwards,
   subscribeTitleState,
   type Title,
@@ -55,7 +56,7 @@ export function AwardsRoute() {
   }
 
   useEffect(() => {
-    if (cachedAwards(award)) return;
+    if (freshAwards(award)) return;
     let stale = false;
     getAwards(award)
       .then((p) => {

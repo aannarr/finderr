@@ -23,7 +23,7 @@ import { AwardSourceLine } from "../components/Awards";
 import { ToggleChip } from "../components/Chip";
 import { PeopleLeaderboard } from "../components/PeopleLeaderboard";
 import { useChipGroup } from "../components/RovingFocus";
-import { type AwardPeople, cachedAwardPeople, getAwardPeople } from "../lib/api";
+import { type AwardPeople, cachedAwardPeople, freshAwardPeople, getAwardPeople } from "../lib/api";
 
 export function AwardPeopleRoute() {
   const { award } = useParams({ strict: false }) as { award: string };
@@ -45,7 +45,7 @@ export function AwardPeopleRoute() {
   }
 
   useEffect(() => {
-    if (cachedAwardPeople(award, asked)) return;
+    if (freshAwardPeople(award, asked)) return;
     let stale = false;
     getAwardPeople(award, asked)
       .then((p) => {

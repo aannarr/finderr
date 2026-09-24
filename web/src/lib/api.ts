@@ -567,6 +567,17 @@ export function cachedSearch(q: string, f: Filters): SearchResponse | undefined 
   return searchCache.get(filterKey(q, f));
 }
 
+/**
+ * The copy a route may SKIP THE NETWORK for -- `cachedSearch` is only for painting.
+ *
+ * `SearchRoute` used to short-circuit on `cachedSearch`, a paint read, so a tab that had
+ * asked a question once never asked it again: on 2026-09-24 it went on showing the ranking
+ * from before an index swap for as long as it stayed open. See `CACHE_FRESH_MS`.
+ */
+export function freshSearch(q: string, f: Filters): SearchResponse | undefined {
+  return searchCache.fresh(filterKey(q, f));
+}
+
 export async function search(q: string, f: Filters = {}, signal?: AbortSignal): Promise<SearchResponse> {
   const key = filterKey(q, f);
   const hit = searchCache.fresh(key);
@@ -1126,6 +1137,11 @@ export function cachedAwards(award: string): AwardsTimeline | undefined {
   return timelineCache.get(award);
 }
 
+/** The copy a route may skip the network for -- see `freshSearch`. */
+export function freshAwards(award: string): AwardsTimeline | undefined {
+  return timelineCache.fresh(award);
+}
+
 export async function getAwards(award: string): Promise<AwardsTimeline> {
   const hit = timelineCache.fresh(award);
   if (hit) return hit;
@@ -1148,6 +1164,11 @@ function ceremonyKey(award: string, ceremony: number): string {
 
 export function cachedCeremony(award: string, ceremony: number): CeremonyPage | undefined {
   return ceremonyCache.get(ceremonyKey(award, ceremony));
+}
+
+/** The copy a route may skip the network for -- see `freshSearch`. */
+export function freshCeremony(award: string, ceremony: number): CeremonyPage | undefined {
+  return ceremonyCache.fresh(ceremonyKey(award, ceremony));
 }
 
 export async function getCeremony(award: string, ceremony: number): Promise<CeremonyPage> {
@@ -1194,6 +1215,11 @@ function awardPeopleKey(award: string, className: string | null): string {
 
 export function cachedAwardPeople(award: string, className: string | null): AwardPeople | undefined {
   return awardPeopleCache.get(awardPeopleKey(award, className));
+}
+
+/** The copy a route may skip the network for -- see `freshSearch`. */
+export function freshAwardPeople(award: string, className: string | null): AwardPeople | undefined {
+  return awardPeopleCache.fresh(awardPeopleKey(award, className));
 }
 
 export async function getAwardPeople(award: string, className: string | null): Promise<AwardPeople> {
@@ -2048,8 +2074,9 @@ export function cacheStats(): { searches: number; titles: number } {
 }
 
 /**
- * Drop everything. Tests only -- the app has no reason to, since the index changes once
- * a day and library state is patched in rather than invalidated.
+ * Drop everything. Tests only -- the app has no reason to: an index swap is covered by
+ * entries ageing out of `fresh` (`CACHE_FRESH_MS`), and library state is patched in rather
+ * than invalidated.
  */
 export function resetCaches(): void {
   searchCache.clear();
