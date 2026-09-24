@@ -181,7 +181,7 @@ import {
   TITLE_PLACE_SOURCE,
 } from "./filming-locations";
 import { capabilitiesOfFile, type IndexCapability } from "./index-capabilities";
-import { INDEX_STAGES, stampStages, unreleasedCastCutoffYear } from "./index-stages";
+import { castAgeFromYear, INDEX_STAGES, stampStages } from "./index-stages";
 import { despace, normalizeStripped } from "./normalize";
 import { buildPersonSearchIndex } from "./people";
 import { POPULAR_TITLE_INDEX } from "./search-stopwords";
@@ -1873,7 +1873,7 @@ function hasCastData(path: string): boolean {
  * live on `castMinVotes` in `./config.ts`, which owns them.
  *
  * **The floor is on votes OR AGE**, because a title that has not come out yet has no votes
- * by construction -- see `unreleasedCastCutoffYear` and the block inside `buildCast`.
+ * by construction -- see `castAgeFromYear` and the block inside `buildCast`.
  *
  * Two passes, in this order, because the second depends on the first: principals decides
  * WHICH people matter, and only then is `name.basics` worth reading -- it carries 15.6M
@@ -1914,9 +1914,9 @@ async function buildCast(
     `title_principal` rows, so it was missing from `/person/nm0000093` entirely, while
     `title.principals` carried twelve rows for it including Brad Pitt billed first.
 
-    `unreleasedCastCutoffYear` is the single owner of the boundary, and it is deliberately
-    the same one `anticipationWeight` uses: a zero is unmeasured through the release year
-    and evidence after it. Two floors disagreeing about which titles are "too new to judge"
+    `castAgeFromYear` is the single owner of the boundary, and it is deliberately the
+    ranker's own imputation window (`buzzFromYear`): a title the search lifts for being new
+    must have the cast its page links to. Two floors disagreeing about which titles are "too new to judge"
     is exactly how a search result and the filmography behind it come to contradict.
 
     THE COST IS REAL AND IT IS THE AGREED SIDE OF THE TRADE. Measured on the live corpus:
@@ -1925,7 +1925,7 @@ async function buildCast(
     somebody is working on next, which is the one thing a filmography is for.
   */
   const eligible = new Map<string, number>();
-  const cutoff = unreleasedCastCutoffYear();
+  const cutoff = castAgeFromYear();
   for (const row of db
     .query("select tconst, rowid_ from title where votes >= ? or (year is not null and year >= ?)")
     .all(cfg.index.castMinVotes, cutoff) as { tconst: string; rowid_: number }[]) {

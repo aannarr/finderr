@@ -79,22 +79,25 @@ export const STAGES_META_KEY = "stages";
 /**
  * The earliest release year a title may carry and still earn cast credits on age alone.
  *
- * The current year, and it is the SAME boundary `anticipationWeight` draws in
- * `./query-parser.ts` -- stated there at length, in one sentence here: a year stamp cannot
- * say whether a title dated this year has come out yet, so its zero votes are the absence
- * of a measurement rather than a low one. The two must AGREE, or a search result and the
- * filmography behind it disagree about which titles are too new to judge.
+ * **LAST YEAR, the ranker's imputation window (`buzzFromYear`), and the two must AGREE**, or a
+ * search result and the filmography behind it disagree about which titles are too new to be
+ * judged on their votes. It was the current year -- the boundary `anticipationWeight` draws --
+ * until 2026-09-24, when TMDB popularity started lifting last year's titles in search: the 2025
+ * *Sacrifice* ranked first for `sacrifice` and was absent from Chris Evans's page one click
+ * away, because it had 464 votes at the cast scan and a year stamp one short of the cutoff.
+ *
+ * Imported rather than restated: this IS the ranker's window, and a second copy of the number
+ * is how the two drifted apart in the first place. It costs a third more eligible titles --
+ * 34,888 dated 2025 under the vote floor against 89,415 eligible, measured on the 2026-09-14
+ * index -- and that is build time and disk, the side of the trade the third rule pays.
  *
  * It lives HERE rather than in `index-builder.ts` because both the build filter and the
- * stage recipe need it, and the builder already imports this module -- putting it the other
- * way round would be a cycle. Not imported from `query-parser` for the opposite reason: a
- * ranking weight and a build filter are different questions that happen to share a number,
- * and coupling them would let a scoring tweak silently reshape the index.
+ * stage recipe need it, and the builder already imports this module.
  *
  * It shifts on 1 January, which is why it is in the recipe -- see `INDEX_STAGES.cast`.
  */
-export function unreleasedCastCutoffYear(now: Date = new Date()): number {
-  return now.getUTCFullYear();
+export function castAgeFromYear(now: Date = new Date()): number {
+  return buzzFromYear(now);
 }
 
 export const INDEX_STAGES = {
@@ -102,8 +105,9 @@ export const INDEX_STAGES = {
    * `person` + `title_principal`. Reuses the SAME derivation the carry-forward decision
    * uses (`castRecipe`), so the two cannot disagree about what "the same cast" means.
    *
-   * **`unreleasedFrom` is in the recipe because the eligible set moves without the config
-   * moving**, which nothing else here does. Credits are kept for a title clearing
+   * **`ageFrom` is in the recipe because the eligible set moves without the config
+   * moving**, which nothing else here does. (It was `unreleasedFrom` while the boundary was the
+   * current year; renamed when it moved to last year, which also forced the rescan.) Credits are kept for a title clearing
    * `minVotes` OR dated from that year on, so the set changes on two occasions the config
    * cannot see: the release that introduced the age rule, and every 1 January afterwards.
    * Leaving it out is precisely the crosswalk failure documented below -- a carried-forward
@@ -115,7 +119,7 @@ export const INDEX_STAGES = {
     JSON.stringify({
       categories: [...new Set(cfg.index.castCategories)].sort(),
       minVotes: cfg.index.castMinVotes,
-      unreleasedFrom: unreleasedCastCutoffYear(),
+      ageFrom: castAgeFromYear(),
     }),
 
   /**
@@ -387,7 +391,7 @@ export const INDEX_STAGES = {
    * `title.buzz_votes` -- votes imputed from TMDB's daily popularity. See `./tmdb-popularity`.
    *
    * **`from` is in the recipe because the eligible set moves without anything else moving**,
-   * the argument `cast` makes for `unreleasedFrom`: on 1 January last year's titles stop being
+   * the argument `cast` makes for `ageFrom`: on 1 January last year's titles stop being
    * imputed, and an index built on 31 December would otherwise go on lifting them.
    */
   buzz: () => JSON.stringify({ v: 1, from: buzzFromYear() }),
