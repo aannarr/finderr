@@ -256,14 +256,24 @@ describe("the meter cannot become the leak it measures", () => {
       what somebody rotating source addresses controls. A ratio rather than an absolute
       number, because this has to pass on CI hardware nobody has benchmarked: the shape is
       the assertion, not the speed.
+
+      THE MINIMUM OF FIVE SAMPLES, never one. A single ~2 ms loop is at the mercy of one GC
+      or scheduler slice: measured 2026-09-24 on the M1 Max over 40 runs, one sample per side
+      put this ratio anywhere from 0.07 to 27.79, and it went red at 8.1x during a gate run
+      beside a dev server. Min-of-5 spans 0.95 to 3.27 -- and the O(n) shape it exists to
+      catch reads ~200x, so the floor removes the noise without loosening the check.
     */
     const time = (callers: number) => {
       const m = new CostMeter();
       for (let i = 0; i < callers; i++) m.record(`c${i}`, 1);
       const N = 20_000;
-      const t0 = Bun.nanoseconds();
-      for (let i = 0; i < N; i++) m.shouldRefuse("c0");
-      return (Bun.nanoseconds() - t0) / N;
+      let best = Number.POSITIVE_INFINITY;
+      for (let s = 0; s < 5; s++) {
+        const t0 = Bun.nanoseconds();
+        for (let i = 0; i < N; i++) m.shouldRefuse("c0");
+        best = Math.min(best, (Bun.nanoseconds() - t0) / N);
+      }
+      return best;
     };
     time(10); // warm the JIT so the first real sample is not the slow one
     const few = time(10);
