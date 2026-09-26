@@ -339,6 +339,21 @@ export function applyAuthSchema(db: Database): void {
   // AFTER the create-if-not-exists above, so a fresh database is already the new shape and
   // this is a no-op, and an old one is rebuilt from what it actually holds.
   migrateAgentKeys(db);
+  backfillUserLastSeen(db);
+}
+
+/**
+ * Carry each live session's activity onto its person, once, for databases written before
+ * `touchSession` did it. Forward-only (`>`), so it never moves a stamp backwards and is a
+ * no-op on every boot after the first. Expired sessions are already swept, so a person whose
+ * only activity was on one of those keeps their sign-in date -- nothing else remembers it.
+ */
+function backfillUserLastSeen(db: Database): void {
+  db.run(`update app_user set last_seen_at = (
+            select max(s.last_seen_at) from session s where s.user_id = app_user.id)
+          where exists (
+            select 1 from session s where s.user_id = app_user.id
+              and s.last_seen_at > coalesce(app_user.last_seen_at, ''))`);
 }
 
 interface UserRow {
@@ -941,14 +956,25 @@ export class AuthStore {
    * `last_seen_at` answers "when was this device active", and for that question a
    * value under a minute old is already the answer. An UPDATE that matches no row
    * never enters the WAL.
+   *
+   * The PERSON's `last_seen_at` rides the same gate. It used to be stamped only by
+   * `signIn`, so on a 30-day session /admin/users showed the day somebody logged in and
+   * called it "last seen". Stamping it only when the session row actually moved keeps it
+   * at one extra write per minute per active device, never one per request.
    */
   touchSession(idHash: string, now?: Date): void {
     const t = now ?? new Date();
-    bookkeeping("touchSession", () =>
-      this.db
+    bookkeeping("touchSession", () => {
+      const moved = this.db
         .query("update session set last_seen_at = ? where id_hash = ? and last_seen_at <= ?")
-        .run(isoNow(t), idHash, isoIn(-SWEEP_INTERVAL_MS, t)),
-    );
+        .run(isoNow(t), idHash, isoIn(-SWEEP_INTERVAL_MS, t));
+      if (moved.changes === 0) return;
+      this.db
+        .query(
+          "update app_user set last_seen_at = ? where id = (select user_id from session where id_hash = ?)",
+        )
+        .run(isoNow(t), idHash);
+    });
   }
 
   sessionsFor(userId: string): Session[] {

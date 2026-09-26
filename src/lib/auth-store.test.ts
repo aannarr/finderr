@@ -510,6 +510,39 @@ describe("the hot path stays cheap without ever trusting the sweep", () => {
     expect(auth.sessionsFor(u.id)[0]?.lastSeenAt).toBe(later.toISOString());
   });
 
+  test("using a session moves the PERSON's last seen, not only the device's", () => {
+    // Regression, 2026-09-26: /admin/users "Last seen" was only ever stamped at sign-in, so a
+    // member browsing every day on a 30-day session read as last seen the day they logged in.
+    const u = auth.createUser({ displayName: "A", role: "user" });
+    auth.touchUser(u.id);
+    const token = auth.createSession({ userId: u.id, expiresAt: isoIn(30 * 86_400_000) });
+    const browsing = new Date(Date.now() + 3 * 86_400_000);
+    auth.touchSession(hashToken(token), browsing);
+    expect(auth.getUser(u.id)?.lastSeenAt).toBe(browsing.toISOString());
+  });
+
+  test("an existing database backfills last seen from its live sessions", () => {
+    const db = new Database(":memory:");
+    db.run("pragma foreign_keys = on");
+    applyAuthSchema(db);
+    const store = new AuthStore(db);
+    const u = store.createUser({ displayName: "A", role: "user" });
+    store.touchUser(u.id, new Date("2026-09-01T10:00:00Z"));
+    const token = store.createSession({ userId: u.id, expiresAt: isoIn(30 * 86_400_000) });
+    // Written behind the store's back, the shape a pre-fix build left: the session moved on,
+    // the user row never did.
+    db.query("update session set last_seen_at = ? where id_hash = ?").run(
+      "2026-09-25T20:00:00.000Z",
+      hashToken(token),
+    );
+    applyAuthSchema(db);
+    expect(store.getUser(u.id)?.lastSeenAt).toBe("2026-09-25T20:00:00.000Z");
+    // And never moves it BACKWARDS.
+    store.touchUser(u.id, new Date("2026-09-26T08:00:00Z"));
+    applyAuthSchema(db);
+    expect(store.getUser(u.id)?.lastSeenAt).toBe("2026-09-26T08:00:00.000Z");
+  });
+
   test("beginning a ceremony sweeps expired challenges -- finishing one is not the only exit", () => {
     // Own database handle: the row count is the observable, and AuthStore's is private.
     const db = new Database(":memory:");
