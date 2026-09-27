@@ -5,6 +5,7 @@ import {
   INITIAL_HEADER_STATE,
   nextHeaderState,
   SCROLL_STEP_PX,
+  searchRowClass,
 } from "./header-scroll";
 
 /** Feed a sequence of scroll positions through the reducer and return the final state. */
@@ -110,5 +111,31 @@ describe("nextHeaderState", () => {
     expect(state.collapsed).toBe(false);
     state = nextHeaderState(state, { y: 600, pinned: false });
     expect(state.collapsed).toBe(true);
+  });
+});
+
+describe("searchRowClass", () => {
+  /*
+    Regression, 2026-09-27: collapsing by animating `grid-rows` and `mt-3` shrank the sticky
+    header in FLOW. Scroll anchoring then pulled scrollY up by the same ~47px to hold the
+    content still, `nextHeaderState` read that as a scroll up and re-opened the box, which
+    grew the header, which pushed scrollY back down -- one `scrollTo(0, 150)` measured 108
+    scroll events in two seconds in Chromium, the box blinking the whole time. The policy
+    was right; its input was being written by its own output. The loop can only close if
+    collapsing moves layout, so the two states may differ in PAINT and nothing else.
+  */
+  test("open and collapsed differ only in paint, never in layout", () => {
+    const open = new Set(searchRowClass(false).split(/\s+/));
+    const shut = new Set(searchRowClass(true).split(/\s+/));
+    const differing = [...open, ...shut].filter((c) => !(open.has(c) && shut.has(c)));
+    const paintOnly = /^(-?translate-[xy]-|opacity-|pointer-events-)/;
+    expect(differing.filter((c) => !paintOnly.test(c))).toEqual([]);
+    expect(differing.length).toBeGreaterThan(0);
+  });
+
+  test("never transitions `all`, which would animate a layout property if one crept in", () => {
+    for (const collapsed of [false, true]) {
+      expect(searchRowClass(collapsed).split(/\s+/)).not.toContain("transition-all");
+    }
   });
 });

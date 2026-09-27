@@ -26,7 +26,12 @@ import {
 } from "../lib/api";
 import { AppProvider } from "../lib/app-context";
 import { getAuthState, type PublicUser } from "../lib/auth-api";
-import { type HeaderState, INITIAL_HEADER_STATE, nextHeaderState } from "../lib/header-scroll";
+import {
+  type HeaderState,
+  INITIAL_HEADER_STATE,
+  nextHeaderState,
+  searchRowClass,
+} from "../lib/header-scroll";
 import { ariaKeyShortcuts, HOST_PLATFORM, KEYMAP } from "../lib/keymap";
 import type { SearchParams } from "../lib/search-params";
 import { summariseSeasons } from "../lib/season-select";
@@ -238,7 +243,7 @@ export function RootLayout() {
    * Always live: the box is on every screen. It is also the one binding whose glyph must
    * go away while it is being typed into -- see the hint below.
    */
-  // The input is never UNMOUNTED while collapsed -- only sized to nothing -- so the ref is
+  // The input is never UNMOUNTED while collapsed -- only slid out of sight -- so the ref is
   // live either way and `/` stays one atomic action. See `focusSearch`.
   const searchKey = useKeyAction("focusSearch", focusSearch);
   /*
@@ -371,9 +376,15 @@ export function RootLayout() {
           padding rather than on `top`, so the translucent background still bleeds up under
           the clock and only the wordmark and the search box move down. `--safe-top` is
           `0px` everywhere without a cutout, so this is `pt-5` on every desktop.
+
+          The header itself paints NOTHING and takes no clicks. Each of its two rows carries
+          its own background, so when the search row slides away there is no empty band of
+          header left behind it -- the page shows through and answers clicks there. That is
+          what lets the collapse reclaim space without changing the header's height, which
+          it must never do: see `searchRowClass`.
         */}
-        <header className="sticky top-0 z-30 -mx-4 mb-4 bg-bg/85 px-4 pt-[calc(1.25rem+var(--safe-top))] pb-3 backdrop-blur">
-          <div className="flex items-baseline gap-3">
+        <header className="pointer-events-none sticky top-0 z-30 -mx-4 mb-4">
+          <div className="pointer-events-auto relative z-10 flex items-baseline gap-3 bg-bg/85 px-4 pt-[calc(1.25rem+var(--safe-top))] pb-3 backdrop-blur">
             <Link to="/" search={{}} className="text-lg font-semibold tracking-tight">
               finderr
             </Link>
@@ -467,26 +478,20 @@ export function RootLayout() {
             is here. No CSS focus rule: the same withdrawal serves every other glyph in
             the app, and a second one here would be a second owner of the rule.
 
-            > [!IMPORTANT] The input is SIZED to nothing when collapsed, never unmounted
+            > [!IMPORTANT] The input is SLID out of sight when collapsed, never unmounted
             > `/` has to expand and focus in one handler, and an unmounted input has no
             > element to focus -- which would make the binding a two-step dance with a
             > render in the middle. Animating a wrapper is also the only way to get a
             > transition at all; there is nothing to tween between "present" and "absent".
             >
-            > `inert` is what keeps that honest. A zero-height input is still in the tab
-            > order and still announced, so a keyboard or screen-reader user would land in
-            > a control nobody can see. `inert` removes it from both, and `expand()` runs
+            > `inert` is what keeps that honest. A hidden input is still in the tab order
+            > and still announced, so a keyboard or screen-reader user would land in a
+            > control nobody can see. `inert` removes it from both -- and from hit-testing,
+            > which is what makes the vacated band click-through -- and `expand()` runs
             > before any focus we ask for ourselves.
           */}
-          <div
-            inert={collapsed || undefined}
-            className={`grid transition-all duration-200 ease-out motion-reduce:transition-none ${
-              collapsed ? "mt-0 grid-rows-[0fr] opacity-0" : "mt-3 grid-rows-[1fr] opacity-100"
-            }`}
-          >
-            {/* `grid-rows-[0fr]` -> `[1fr]` is the one way to transition to auto height
-                without measuring anything in JS. The inner div owns the overflow. */}
-            <div className="relative overflow-hidden">
+          <div inert={collapsed || undefined} className={searchRowClass(collapsed)}>
+            <div className="relative">
               <input
                 ref={searchBox}
                 // Search IS the product, so the caret belongs here the moment the app loads. This

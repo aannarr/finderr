@@ -83,3 +83,29 @@ export function nextHeaderState(prev: HeaderState, input: ScrollInput): HeaderSt
   */
   return prev;
 }
+
+/**
+ * The search row's classes, open or collapsed.
+ *
+ * > [!CAUTION] Collapsing must change PAINT, never LAYOUT -- or it becomes a feedback loop
+ * > The row used to collapse by animating `grid-rows` and its top margin, which shrank the
+ * > sticky header in flow. The browser's scroll anchoring then moved `scrollY` up by the
+ * > same amount to hold the content still, `nextHeaderState` read that as the reader
+ * > scrolling UP and re-opened the box, which grew the header and moved `scrollY` back down.
+ * > Measured 2026-09-27 in Chromium: one `scrollTo(0, 150)` produced 108 scroll events in
+ * > two seconds with the box blinking throughout. The reducer's input was being written by
+ * > its own output, and no threshold in it can fix that.
+ * >
+ * > So the row keeps its box whatever the state and slides up UNDER the top row, which is
+ * > painted above it. The header's height never changes, so nothing moves `scrollY` except
+ * > the reader. The space it reclaims is still reclaimed: the header draws no background of
+ * > its own and is click-through, so the page shows and answers through where the row was.
+ *
+ * Tailwind v4's `translate-y-*` sets the `translate` property, not `transform`, which is
+ * why the transition names it.
+ */
+export function searchRowClass(collapsed: boolean): string {
+  return `pointer-events-auto relative bg-bg/85 px-4 pb-3 backdrop-blur transition-[translate,opacity] duration-200 ease-out motion-reduce:transition-none ${
+    collapsed ? "-translate-y-full opacity-0" : "translate-y-0 opacity-100"
+  }`;
+}
